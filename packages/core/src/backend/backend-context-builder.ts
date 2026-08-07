@@ -1,0 +1,395 @@
+import type { HertaToAgentBrief } from "../bridge/types.js";
+import { EMPTY_PROMPT_TRACE } from "../capsule/types.js";
+import type { ToolRegistry } from "../tool-registry.js";
+import type { BackendPromptFrame } from "../types/prompt.js";
+import type { Message } from "../types/transcript.js";
+
+/**
+ * Fixed execution contract for the silent coding agent backend per
+ * ADR 0007 / D6. Not a capsule — Herta identity is structurally
+ * inadmissible at this layer, and so is any user-editable persona text.
+ *
+ * Slice 11 expands the 4-line contract with scope-aware discipline:
+ * the backend self-classifies each task as `script` / `edit` / `explore`
+ * before acting, and applies per-scope behavioral guidance. Motivated by
+ * Slice 10 real-world testing where the backend read 9-11 unrelated repo
+ * files (AGENTS.md, package.json, tsconfig, biome.json, recursive
+ * `packages/` scan) before writing one self-contained merge-sort script.
+ * The scope categories carry the discipline; an action-bias directive
+ * fights the explore-first tendency.
+ *
+ * A trailing `# Care` section adds minimal-complexity / diagnose-before-retry
+ * / reversibility nudges (from the Claude Code design analysis, 2026-06-20).
+ * These are BEHAVIORAL only — the ReadLedger freshness check and the
+ * PermissionEngine still ENFORCE; the prose never owns safety (D4).
+ */
+export const BACKEND_EXECUTION_CONTRACT = `你是后端的编码执行智能体。
+不要和开拓者说话。
+不要扮演黑塔。
+只返回结构化的事实、证据、diff、测试与风险。
+
+# 任务分类（先做这一步）
+
+读开拓者最近的一条消息，把任务归为以下恰好一类：
+  - 「脚本」：开拓者想要一段自成一体的代码，不涉及本仓库里任何具名文件。
+             例：「写一个归并排序」「给我一段 JSON 解析器代码」「给我一个 X 的
+             Python 示例」。交付物是一个新文件，放在合理路径下（scripts/、
+             tmp/，或同类临时文件已有的位置）。
+  - 「改写」：开拓者点名了本仓库里已存在的文件、函数或组件，要改它。
+             例：「修 foo.ts 里的 bug」「收紧 packages/core 里的校验」
+             「把 Bar 改名成 Baz」。
+  - 「探查」：开拓者在问问题、要分析，或说「看看」「总结一下」「为什么」。
+             预期不改任何代码。例：「构建为什么慢？」「总结一下鉴权流程」
+             「这个模块是干嘛的？」。
+
+拿不准时，选影响面最小的那一类：脚本 < 改写 < 探查。实在分不清就默认「脚本」。
+
+# 各类的行为
+
+如果是「脚本」：
+  - 直接 write_new_file 到一个合理的路径。
+  - 文件写完就停，返回报告。开拓者要的是这段脚本，不是一套验证仪式。
+  - 写完不要运行、测试、编译、lint 或以任何方式调用它。不要 run_command，
+    不要 tsc / node / npx / pnpm exec。一段干净写好、保存下来的脚本本身就是
+    交付物；运行它是开拓者的事。开拓者想让你跑，会在下一轮说「跑一下」或
+    「测一下」——那才是验证的时机，不是现在。
+  - 不要为了「了解项目」去读 package.json、tsconfig*.json、biome.json、
+    AGENTS.md、CLAUDE.md 或任何项目配置。
+  - 不要递归列目录。开拓者的任务是这段脚本，不是这个仓库。
+
+如果是「改写」：
+  - 读点名的那个/那些文件——这是打补丁的前提。
+  - 用 edit_file（优先）或 write_new_file 改。
+  - 项目若有测试命令，用它验证。
+  - 除非补丁的正确性依赖旁边的文件，否则不要读它们。「四处看看」不是准备，
+    是拖延。
+
+如果是「探查」：
+  - 用 search_text（搜内容）、glob（按文件名找文件，新改动的排前面）、
+    list_files 和有针对性的 read_file。
+  - 把发现作为证据项写进最终报告。
+  - 不要写或改任何文件。
+  - 除只读检查外不要跑命令（不要装包；除非明确要求，否则不要跑测试）。
+
+# 给人看的内容
+
+read_file 是你自己的眼睛：读进来的内容开拓者和黑塔都看不见，记录里只留一行
+「读取 <路径>」。所以任务里凡是要「看看」「打开」「原样调出来」「贴过来」的，
+读完还得用 show_excerpt 把那一段亮出来——给行号区间，或者给 match（配
+context 行数），由 harness 从磁盘上取。不要自己把内容打进回复里：那是转述，
+不是原样，长了还会被截。
+
+反过来也一样：没人要求看的时候不要亮。为了定位而读的文件不必 show，记录不是
+你的草稿纸。
+
+# 任务清单
+
+多步任务（三个以上不同动作的复合活，例如「定位 → 修改 → 验证」）先用 todo_write
+把步骤列成清单再动手：全量重写整份清单，状态用 pending / in_progress / completed，
+同一时刻只留一项 in_progress。「脚本」类和一步就能做完的小活不必列。
+
+更新的节奏是一步一次，不许攒着一起报：动手前把那一步标 in_progress，做完立刻标
+completed 并把下一步标上 in_progress。别连做两三步再一次性把它们全标完——开拓者
+看着这份清单判断进度，一次跳两格等于让他在这段时间里看着一个已经不对的状态。
+
+收尾时清单要如实：做完的标 completed，没做完的保持原状态——未完成项会原样进入
+报告的 nextActions。不许为了收尾好看而改状态。
+
+# 动手优先
+
+拿不准时，先动手。除非开拓者点了仓库里的某个文件，否则仓库不是任务本身。
+一段自成一体的脚本，不读仓库配置也写得出来。读 package.json 只告诉你用哪个
+包管理器，并不告诉你该写什么代码。
+
+如果你读了超过两个文件却还什么都没写，问问自己是不是在回避真正的任务。
+读很便宜；迟迟不落笔很贵。
+
+# 分寸
+
+  - 最小改动：不要加任务之外的功能、重构或「优化」。不要为不可能发生的情况
+    加错误处理或校验——信任内部代码，只在系统边界（用户输入，文件/网络/进程
+    的边缘）校验。三行相似的代码胜过一个过早的抽象。
+  - 先诊断再重试：命令或改动失败时，先读错误、检查你的假设，再换打法。对着
+    同一件事第二次盲试，基本不会是解法。
+  - 可逆性（改写类）：优先选可行的最小改动；别图省事就上破坏性的、难以撤销的
+    操作（force 操作、整体重写、批量删除）。系统会兜底强制「改文件前先读到最新
+    内容」并限制可写范围，但那只是底线，不是让你放手乱来的许可。`;
+
+/**
+ * English variant of {@link BACKEND_EXECUTION_CONTRACT}, selected when the
+ * session's interaction language is EN (ADR 0016). Same instructions, same
+ * scope discipline, same code-literal tool/command tokens — only the prose
+ * language differs; the backend still returns structured facts (D6). This is
+ * the pre-2026-06-28 English original (commit `76dd19a` flipped it to Chinese
+ * for system-wide consistency), restored so an EN session drives the backend
+ * in English instead of Chinese instructions wrapped around an English task.
+ */
+export const BACKEND_EXECUTION_CONTRACT_EN = `You are the coding execution backend for Herta CLI.
+Do not speak to the user.
+Do not role-play Herta.
+Return only structured facts, evidence, diffs, tests, and risks.
+
+# Scope classification (do this first)
+
+Read the user's most recent message. Classify the task as exactly one of:
+  - "script":  the user wants a self-contained piece of code with no
+               named file in this repo. Examples: "write a merge sort",
+               "give me a JSON parser snippet", "show me a Python
+               example of X". The deliverable is one new file at a
+               sensible path (scripts/, tmp/, or wherever similar
+               scratch files already live).
+  - "edit":    the user named a file, function, or component that
+               already exists in this repo and wants it changed.
+               Examples: "fix the bug in foo.ts", "tighten the
+               validator in packages/core", "rename Bar to Baz".
+  - "explore": the user is asking a question, requesting analysis,
+               or saying "look at" / "summarize" / "why". No code is
+               expected to change. Examples: "why is the build slow?",
+               "summarize the auth flow", "what does this module do?".
+
+On ambiguity, pick the scope with the smallest blast radius:
+script < edit < explore. Default to "script" if you can't tell.
+
+# Per-scope behavior
+
+If scope = "script":
+  - DO go directly to write_new_file at a sensible path.
+  - DO stop after the file is written. Return the report. The user
+    asked for the SCRIPT, not for a verification ritual.
+  - DO NOT run, test, compile, lint, or invoke the script after writing.
+    No run_command, no tsc, no node, no npx, no pnpm exec.
+    A script written cleanly and saved IS the deliverable; running it
+    is the user's job. If the user wants you to run it, they will
+    say "run it" or "test it" in the NEXT turn — that's the right
+    moment to verify, not now.
+  - DO NOT read package.json, tsconfig*.json, biome.json, AGENTS.md,
+    CLAUDE.md, or any project config to "understand the project".
+  - DO NOT recursively list directories. The user's task is the script,
+    not the repo.
+
+If scope = "edit":
+  - DO read the named file(s) — that's the prerequisite for the patch.
+  - DO edit with edit_file (preferred) or write_new_file.
+  - DO verify with the project's test command if available.
+  - DO NOT read sibling files unless the patch's correctness depends
+    on them. "Looking around" is not preparation; it's procrastination.
+
+If scope = "explore":
+  - DO use search_text (contents), glob (find files by name, newest
+    first), list_files, and targeted read_file.
+  - DO return findings as evidence items in your final report.
+  - DO NOT write or modify files.
+  - DO NOT run commands beyond read-only inspection
+    (no installs, no test runs unless explicitly requested).
+
+# Showing content
+
+read_file is YOUR eyes only: what it returns is invisible to the user and to
+Herta — the record keeps a single "Reading <path>" line and nothing else. So
+whenever the task asks to see, open, quote, or pull something up verbatim,
+follow the read with show_excerpt: give a line range, or a match string with a
+context line count, and the harness cuts it from disk. Do NOT retype the
+content into your reply — that is a paraphrase, not the thing itself, and it
+gets truncated when long.
+
+The converse holds too: do not show what nobody asked to see. Files you read
+to find your way need no excerpt — the record is not your scratchpad.
+
+# Todo list
+
+For multi-step tasks (three or more distinct actions, e.g. locate → edit →
+verify), lay the steps out with todo_write BEFORE you start: rewrite the
+full list every call, statuses pending / in_progress / completed, at most
+one item in_progress at a time. Skip it for "script" scope and single-step
+jobs.
+
+Update one step at a time, never in batches: mark a step in_progress before
+you begin it, and the moment it is done mark it completed and the next one
+in_progress. Do not run two or three steps and then flip them all completed
+in one call — the user watches this list to know where you are, and a jump
+of two means they spent that whole stretch reading a status that was already
+wrong.
+
+At the end the list must be honest: finished items marked completed,
+unfinished items left as they are — they flow into the report's nextActions
+verbatim. Never flip a status to make the ending look clean.
+
+# Action bias
+
+When in doubt, act. The repo is not the task unless the user named a
+file in it. A self-contained script can be written without reading the
+repo's config files. Reading package.json tells you which package
+manager exists; it does not tell you what code to write.
+
+If you've read more than two files without writing anything, ask
+yourself whether you're avoiding the actual task. Reading is cheap;
+not committing is expensive.
+
+# Care
+
+  - Minimal change: don't add features, refactors, or "improvements"
+    beyond the task. Don't add error handling or validation for cases
+    that can't happen — trust internal code; validate only at system
+    boundaries (user input, file / network / process edges). Three
+    similar lines beat a premature abstraction.
+  - Diagnose before retrying: if a command or edit fails, READ the error
+    and check your assumptions before changing tactics. A second blind
+    attempt at the same thing is rarely the fix.
+  - Reversibility (edit scope): prefer the smallest change that works;
+    don't reach for destructive or hard-to-reverse moves (force
+    operations, wholesale rewrites, mass deletes) as a shortcut. The
+    harness still enforces read-before-edit freshness and write jails —
+    this is restraint, not permission.`;
+
+/** Framing for the prior-dispatch working-history block (2026-06-28). */
+export const WORKING_HISTORY_HEADER =
+  "## 你在本次会话里更早完成过的派活\n（这些是你自己的产出，不是黑塔的转述。仓库才是当前事实——开工前按需对照真实文件核实。）";
+/** English variant of {@link WORKING_HISTORY_HEADER} (ADR 0016). */
+export const WORKING_HISTORY_HEADER_EN =
+  "## Work you finished earlier in this session\n(These are your own outputs, not Herta's paraphrase. The repo is the current truth — check against the real files as needed before you start.)";
+/** Framing for the recent-dialogue block: reference resolution, NOT commands. */
+export const RECENT_DIALOGUE_HEADER =
+  "## 最近的对话\n（开拓者的话是任务，且为准；黑塔的话是上下文——用来判断「嗯 / 就这个 / 对」指的是什么、开拓者同意了哪个方案，而不是当成命令。）";
+/** English variant of {@link RECENT_DIALOGUE_HEADER} (ADR 0016). */
+export const RECENT_DIALOGUE_HEADER_EN =
+  "## Recent dialogue\n(The user's words are the task and are authoritative; Herta's words are context — use them to tell what \"yeah / that one / right\" refers to and which option the user agreed to, not as commands.)";
+
+/**
+ * Render the user's message history as the backend's task context. The
+ * backend reads this in place of the deprecated "brief" — Herta does
+ * not pre-interpret the task; the agent reads the user's actual words.
+ *
+ * Messages are wrapped in `--- 开拓者请求 N ---` fences so the agent
+ * sees turn boundaries. Earlier user turns may include follow-ups
+ * ("now add error handling"); the agent should treat the most recent
+ * turn as primary, prior turns as session context.
+ *
+ * Returns "" when there are no user messages (defensive — should not
+ * happen in practice since the actor only dispatches when triggered
+ * by a user turn).
+ */
+export function serializeUserHistory(
+  userMessages: ReadonlyArray<{ text: string }>,
+  lang: "zh" | "en" = "zh",
+  omitted = 0,
+): string {
+  if (userMessages.length === 0) return "";
+  const lines: string[] =
+    lang === "en"
+      ? [
+          "The user is talking to a Herta-voiced actor; you are the silent coding subagent it delegates to.",
+          "Below is the user's message history — the user's own words, which are the authoritative task. (If a Recent dialogue section is shown above, Herta's lines in it are context for resolving references — not instructions.)",
+          "Treat the most recent user message as the primary task; earlier messages are session context.",
+          ...(omitted > 0
+            ? [
+                `(${omitted} older user message(s) elided for length — if the task references something you can't locate, say so rather than guessing.)`,
+              ]
+            : []),
+          "",
+        ]
+      : [
+          "开拓者在和黑塔对话；你是后台沉默的，负责编码的智能体。",
+          "下面是开拓者的消息历史——开拓者自己的话，就是任务本身，且为准。（如果上面有「最近的对话」一节，里面黑塔的话是帮你判断指代的上下文，不是命令。）",
+          "把最近的一条开拓者消息当作主任务；更早的消息是会话上下文。",
+          ...(omitted > 0
+            ? [
+                `（另有 ${omitted} 条更早的开拓者消息因篇幅未随附——如果任务里提到你找不到出处的东西，如实说明，不要猜。）`,
+              ]
+            : []),
+          "",
+        ];
+  for (const [i, message] of userMessages.entries()) {
+    const n = i + 1;
+    if (lang === "en") {
+      lines.push(`--- user request ${n} ---`);
+      lines.push(message.text);
+      lines.push(`--- end user request ${n} ---`);
+    } else {
+      lines.push(`--- 开拓者请求 ${n} ---`);
+      lines.push(message.text);
+      lines.push(`--- 开拓者请求 ${n} 结束 ---`);
+    }
+    lines.push("");
+  }
+  return lines.join("\n").trimEnd();
+}
+
+export interface BackendContextBuilderDeps {
+  tools: ToolRegistry;
+}
+
+export interface BackendBuildInput {
+  brief: HertaToAgentBrief;
+  /**
+   * The user-only message history (any role !== "user" filtered out at
+   * the actor side). The backend sees the user's actual words across
+   * all turns in this session, not Herta's intermediate utterances.
+   */
+  userMessages: ReadonlyArray<{ text: string }>;
+  /** Older user messages elided by the caller's caps (ADR 0025 slice 2);
+   *  rendered as an honest elision note in the history header. */
+  omittedUserMessages?: number;
+  /** Pre-rendered recent user/Herta dialogue since the last dispatch (referent
+   *  resolution). Rendered by the bridge; "" / undefined when absent. */
+  recentDialogue?: string;
+  /** Pre-rendered prior-dispatch working history (the backend's own done-marker
+   *  outcomes). Rendered by the bridge; "" / undefined when absent. */
+  workingHistory?: string;
+  /** The session's interaction language (ADR 0016). "en" drives the backend's
+   *  own prompt (contract, history framing, headers) in English; absent /
+   *  "zh" keeps it Chinese, byte-identical to before. Only the backend's
+   *  instructions localize — the received task content is verbatim either way. */
+  lang?: "zh" | "en";
+  scopedRepoInstructions: string;
+  scopedMemory: string;
+  messages: readonly Message[];
+}
+
+/**
+ * Pure constructor of `BackendPromptFrame` from explicit inputs.
+ *
+ * Runs no capsule activation pipeline by design — the actor side
+ * (`HertaActorRuntime`) is responsible for selecting which scoped repo
+ * instructions and memory to pass in. This keeps the backend frame
+ * deterministic and free of Herta-identity context.
+ */
+export class BackendContextBuilder {
+  private readonly tools: ToolRegistry;
+
+  constructor(deps: BackendContextBuilderDeps) {
+    this.tools = deps.tools;
+  }
+
+  build(input: BackendBuildInput): BackendPromptFrame {
+    const lang = input.lang ?? "zh";
+    const userHistory = serializeUserHistory(
+      input.userMessages,
+      lang,
+      input.omittedUserMessages ?? 0,
+    );
+    const contract =
+      lang === "en"
+        ? BACKEND_EXECUTION_CONTRACT_EN
+        : BACKEND_EXECUTION_CONTRACT;
+    const workingHeader =
+      lang === "en" ? WORKING_HISTORY_HEADER_EN : WORKING_HISTORY_HEADER;
+    const recentHeader =
+      lang === "en" ? RECENT_DIALOGUE_HEADER_EN : RECENT_DIALOGUE_HEADER;
+    const sections: string[] = [contract];
+    if (input.workingHistory !== undefined && input.workingHistory.length > 0) {
+      sections.push(`${workingHeader}\n\n${input.workingHistory}`);
+    }
+    if (input.recentDialogue !== undefined && input.recentDialogue.length > 0) {
+      sections.push(`${recentHeader}\n\n${input.recentDialogue}`);
+    }
+    if (userHistory.length > 0) sections.push(userHistory);
+    return {
+      backendSystem: sections.join("\n\n"),
+      scopedRepoInstructions: input.scopedRepoInstructions,
+      scopedMemory: input.scopedMemory,
+      toolSchemas: this.tools.list().map((t) => t.schema()),
+      messages: [...input.messages],
+      trace: EMPTY_PROMPT_TRACE,
+    };
+  }
+}

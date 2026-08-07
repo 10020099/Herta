@@ -1,0 +1,453 @@
+import { mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import {
+  type AgentEvent,
+  BackgroundHost,
+  InMemoryEventBus,
+  NoopMemoryManager,
+  ReadLedger,
+  TodoStore,
+} from "@herta/core";
+import { afterEach, describe, expect, it } from "vitest";
+import { mkTmpWorkspace, type TmpWorkspace } from "../testing/tmp-workspace.js";
+import { type SearchTextData, searchTextTool } from "./index.js";
+import { detectRg } from "./rg-engine.js";
+
+const rgBin = await detectRg();
+
+let ws: TmpWorkspace;
+afterEach(async () => {
+  if (ws) await ws.cleanup();
+});
+
+function ctx(workspaceRoot: string, reads = new ReadLedger()) {
+  return {
+    sessionId: "s",
+    signal: new AbortController().signal,
+    workspaceRoot,
+    reads,
+    todos: new TodoStore(),
+    bg: new BackgroundHost(),
+    bus: new InMemoryEventBus<AgentEvent>(),
+    memory: new NoopMemoryManager(),
+  };
+}
+const noopProgress = () => {};
+
+describe("searchTextTool", () => {
+  it("throws AbortError on an aborted signal (audit M4: interrupt, not a tool result)", async () => {
+    ws = await mkTmpWorkspace({ "a.ts": "const foo = 1;\n" });
+    const tool = searchTextTool();
+    const ac = new AbortController();
+    ac.abort();
+    await expect(
+      tool.run(
+        { id: "1", tool: "search_text", input: { pattern: "foo" } },
+        { ...ctx(ws.root), signal: ac.signal },
+        noopProgress,
+      ),
+    ).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("rejects a catastrophic-backtracking pattern as invalid_pattern (audit 2026-07-13 T2.3)", async () => {
+    ws = await mkTmpWorkspace({ "a.ts": "aaaa\n" });
+    const tool = searchTextTool();
+    const r = await tool.run(
+      { id: "1", tool: "search_text", input: { pattern: "(a+)+$" } },
+      ctx(ws.root),
+      noopProgress,
+    );
+    expect(r.ok).toBe(false);
+    const error = (r as { error: { code: string; retryable: boolean } }).error;
+    expect(error.code).toBe("invalid_pattern");
+    expect(error.retryable).toBe(false);
+  });
+
+  it("finds literal-style matches with regex pattern", async () => {
+    ws = await mkTmpWorkspace({
+      "a.ts": "const foo = 1;\nconst bar = 2;\n",
+      "b.ts": "function foo() {}\n",
+    });
+    const tool = searchTextTool();
+    const r = await tool.run(
+      { id: "1", tool: "search_text", input: { pattern: "foo" } },
+      ctx(ws.root),
+      noopProgress,
+    );
+    expect(r.ok).toBe(true);
+    const data = r.data as {
+      matches: { path: string; line: number; content: string }[];
+      truncated: boolean;
+    };
+    expect(data.matches).toHaveLength(2);
+    expect(data.matches.map((m) => m.path).sort()).toEqual(["a.ts", "b.ts"]);
+    expect(data.truncated).toBe(false);
+  });
+
+  it("sorts matches by path then line", async () => {
+    ws = await mkTmpWorkspace({
+      "z.ts": "foo\nfoo\nfoo\n",
+      "a.ts": "foo\nfoo\n",
+    });
+    const tool = searchTextTool();
+    const r = await tool.run(
+      { id: "1", tool: "search_text", input: { pattern: "foo" } },
+      ctx(ws.root),
+      noopProgress,
+    );
+    expect(r.ok).toBe(true);
+    const data = r.data as { matches: { path: string; line: number }[] };
+    expect(data.matches.map((m) => `${m.path}:${m.line}`)).toEqual([
+      "a.ts:1",
+      "a.ts:2",
+      "z.ts:1",
+      "z.ts:2",
+      "z.ts:3",
+    ]);
+  });
+
+  it("supports case-insensitive search", async () => {
+    ws = await mkTmpWorkspace({
+      "a.ts": "Foo\nFOO\nbar\n",
+    });
+    const tool = searchTextTool();
+    const r = await tool.run(
+      {
+        id: "1",
+        tool: "search_text",
+        input: { pattern: "foo", caseSensitive: false },
+      },
+      ctx(ws.root),
+      noopProgress,
+    );
+    expect(r.ok).toBe(true);
+    const data = r.data as { matches: unknown[] };
+    expect(data.matches).toHaveLength(2);
+  });
+
+  it("returns context lines when requested", async () => {
+    ws = await mkTmpWorkspace({
+      "a.ts": "line1\nline2\nMATCH\nline4\nline5\n",
+    });
+    const tool = searchTextTool();
+    const r = await tool.run(
+      {
+        id: "1",
+        tool: "search_text",
+        input: { pattern: "MATCH", contextLines: 1 },
+      },
+      ctx(ws.root),
+      noopProgress,
+    );
+    expect(r.ok).toBe(true);
+    const data = r.data as {
+      matches: {
+        contextBefore?: string[];
+        contextAfter?: string[];
+      }[];
+    };
+    expect(data.matches[0]?.contextBefore).toEqual(["line2"]);
+    expect(data.matches[0]?.contextAfter).toEqual(["line4"]);
+  });
+
+  it("truncates at maxMatches", async () => {
+    const lines = Array.from({ length: 10 }, () => "foo").join("\n");
+    ws = await mkTmpWorkspace({ "a.ts": lines });
+    const tool = searchTextTool();
+    const r = await tool.run(
+      {
+        id: "1",
+        tool: "search_text",
+        input: { pattern: "foo", maxMatches: 3 },
+      },
+      ctx(ws.root),
+      noopProgress,
+    );
+    expect(r.ok).toBe(true);
+    const data = r.data as { matches: unknown[]; truncated: boolean };
+    expect(data.matches).toHaveLength(3);
+    expect(data.truncated).toBe(true);
+  });
+
+  it("skips files with NUL byte in first 4KB", async () => {
+    const buf = new Uint8Array(100);
+    buf[5] = 0;
+    ws = await mkTmpWorkspace({
+      "bin.dat": buf,
+      "good.ts": "foo\n",
+    });
+    const tool = searchTextTool();
+    const r = await tool.run(
+      { id: "1", tool: "search_text", input: { pattern: "foo" } },
+      ctx(ws.root),
+      noopProgress,
+    );
+    expect(r.ok).toBe(true);
+    const data = r.data as { matches: { path: string }[] };
+    expect(data.matches.map((m) => m.path)).toEqual(["good.ts"]);
+  });
+
+  it("returns invalid_pattern for bad regex", async () => {
+    ws = await mkTmpWorkspace({ "a.ts": "x" });
+    const tool = searchTextTool();
+    const r = await tool.run(
+      { id: "1", tool: "search_text", input: { pattern: "[unclosed" } },
+      ctx(ws.root),
+      noopProgress,
+    );
+    expect(r.ok).toBe(false);
+    expect(r.error?.code).toBe("invalid_pattern");
+    expect(r.error?.retryable).toBe(false);
+  });
+
+  it("returns invalid_input for empty pattern", async () => {
+    ws = await mkTmpWorkspace({ "a.ts": "x" });
+    const tool = searchTextTool();
+    const r = await tool.run(
+      { id: "1", tool: "search_text", input: { pattern: "" } },
+      ctx(ws.root),
+      noopProgress,
+    );
+    expect(r.ok).toBe(false);
+    expect(r.error?.code).toBe("invalid_input");
+  });
+
+  it("respects skip list", async () => {
+    ws = await mkTmpWorkspace({
+      "src/foo.ts": "foo\n",
+      "node_modules/lib.js": "foo\n",
+    });
+    const tool = searchTextTool();
+    const r = await tool.run(
+      { id: "1", tool: "search_text", input: { pattern: "foo" } },
+      ctx(ws.root),
+      noopProgress,
+    );
+    expect(r.ok).toBe(true);
+    const data = r.data as { matches: { path: string }[] };
+    expect(data.matches.map((m) => m.path)).toEqual(["src/foo.ts"]);
+  });
+
+  it("returns not_found for missing path", async () => {
+    ws = await mkTmpWorkspace({});
+    const tool = searchTextTool();
+    const r = await tool.run(
+      {
+        id: "1",
+        tool: "search_text",
+        input: { pattern: "x", path: "nope" },
+      },
+      ctx(ws.root),
+      noopProgress,
+    );
+    expect(r.ok).toBe(false);
+    expect(r.error?.code).toBe("not_found");
+  });
+
+  it("returns invalid_input when path is a file", async () => {
+    ws = await mkTmpWorkspace({ "a.ts": "foo\n" });
+    const tool = searchTextTool();
+    const r = await tool.run(
+      {
+        id: "1",
+        tool: "search_text",
+        input: { pattern: "foo", path: "a.ts" },
+      },
+      ctx(ws.root),
+      noopProgress,
+    );
+    expect(r.ok).toBe(false);
+    expect(r.error?.code).toBe("invalid_input");
+  });
+
+  it("denies path outside workspace", async () => {
+    ws = await mkTmpWorkspace({});
+    const tool = searchTextTool();
+    const r = await tool.run(
+      {
+        id: "1",
+        tool: "search_text",
+        input: { pattern: "x", path: "../../etc" },
+      },
+      ctx(ws.root),
+      noopProgress,
+    );
+    expect(r.ok).toBe(false);
+    expect(r.error?.code).toBe("path_outside_workspace");
+  });
+
+  it("exposes JSON Schema via schema()", async () => {
+    const tool = searchTextTool();
+    const schema = tool.schema();
+    expect(schema.name).toBe("search_text");
+    expect(schema.description.length).toBeGreaterThan(0);
+    expect(schema.inputSchema).toBeDefined();
+  });
+
+  // 2026-07-10 audit, finding 1: only the search ROOT was validated — the
+  // walk read `.env` / `*.pem` past the credential denylist and returned
+  // their contents as matches, straight into the model-facing transcript.
+
+  it("skips credential-denylisted files instead of matching inside them", async () => {
+    ws = await mkTmpWorkspace({
+      ".env": "DEEPSEEK_API_KEY=sk-supersecret123456789\n",
+      "sub/server.pem": "-----BEGIN PRIVATE KEY-----\n",
+      id_rsa: "API_KEY material\n",
+      "src/config.ts": 'const name = "API_KEY";\n',
+    });
+    const tool = searchTextTool();
+    const r = await tool.run(
+      { id: "1", tool: "search_text", input: { pattern: "API_KEY" } },
+      ctx(ws.root),
+      noopProgress,
+    );
+    expect(r.ok).toBe(true);
+    const data = r.data as { matches: { path: string; content: string }[] };
+    expect(data.matches.map((m) => m.path)).toEqual(["src/config.ts"]);
+    expect(JSON.stringify(data)).not.toContain("sk-supersecret");
+
+    const pem = await tool.run(
+      { id: "2", tool: "search_text", input: { pattern: "PRIVATE" } },
+      ctx(ws.root),
+      noopProgress,
+    );
+    expect(pem.ok).toBe(true);
+    expect((pem.data as { matches: unknown[] }).matches).toHaveLength(0);
+  });
+
+  it("redacts secret values in match content and context lines", async () => {
+    ws = await mkTmpWorkspace({
+      "docker-compose.yml":
+        "services:\n  GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789\n",
+    });
+    const tool = searchTextTool();
+    const r = await tool.run(
+      {
+        id: "1",
+        tool: "search_text",
+        input: { pattern: "services", contextLines: 1 },
+      },
+      ctx(ws.root),
+      noopProgress,
+    );
+    expect(r.ok).toBe(true);
+    const data = r.data as {
+      matches: { content: string; contextAfter?: string[] }[];
+    };
+    expect(data.matches).toHaveLength(1);
+    expect(JSON.stringify(data)).not.toContain("ghp_abcdef");
+    expect(data.matches[0]?.contextAfter?.[0]).toContain("[REDACTED");
+  });
+
+  it("does not follow a file symlink out of the workspace", async () => {
+    ws = await mkTmpWorkspace({ "readme.md": "no secrets here\n" });
+    const outside = `${ws.root}-outside`;
+    await mkdir(outside, { recursive: true });
+    await writeFile(join(outside, "secret.txt"), "LEAKME=oops\n");
+    try {
+      await symlink(join(outside, "secret.txt"), join(ws.root, "notes.txt"));
+    } catch {
+      // Windows without admin / Developer Mode cannot create file symlinks;
+      // the underlying realpath check is covered by path-safety tests.
+      await rm(outside, { recursive: true, force: true });
+      return;
+    }
+    const tool = searchTextTool();
+    const r = await tool.run(
+      { id: "1", tool: "search_text", input: { pattern: "LEAKME" } },
+      ctx(ws.root),
+      noopProgress,
+    );
+    await rm(outside, { recursive: true, force: true });
+    expect(r.ok).toBe(true);
+    expect((r.data as { matches: unknown[] }).matches).toHaveLength(0);
+  });
+
+  it("falls back to the JS scanner for JS-only regex dialect (lookbehind) — works with or without rg", async () => {
+    ws = await mkTmpWorkspace({
+      "a.ts": "const fooBar = 1;\nconst bar = 2;\n",
+    });
+    const r = await searchTextTool().run(
+      // Rust regex has no lookbehind — rg exits 2 with no candidates and
+      // the JS engine takes over transparently.
+      { id: "1", tool: "search_text", input: { pattern: "(?<=foo)Bar" } },
+      ctx(ws.root),
+      noopProgress,
+    );
+    expect(r.ok).toBe(true);
+    const data = r.data as SearchTextData;
+    expect(data.matches).toHaveLength(1);
+    expect(data.matches[0]?.line).toBe(1);
+  });
+});
+
+describe.skipIf(rgBin === null)(
+  "searchTextTool — ripgrep engine parity",
+  () => {
+    it("rg and JS engines return identical results on a mixed fixture", async () => {
+      ws = await mkTmpWorkspace({
+        "src/a.ts": "alpha();\nbeta();\nalpha();\n",
+        "src/deep/b.md": "gamma alpha\n",
+        ".hidden/c.ts": "alpha hidden\n",
+        "node_modules/dep/d.ts": "alpha ignored\n",
+        "big.txt": "alpha\n",
+      });
+      const input = { pattern: "alpha", contextLines: 1 };
+      const auto = await searchTextTool().run(
+        { id: "1", tool: "search_text", input },
+        ctx(ws.root),
+        noopProgress,
+      );
+      const js = await searchTextTool({ engine: "js" }).run(
+        { id: "2", tool: "search_text", input },
+        ctx(ws.root),
+        noopProgress,
+      );
+      expect(auto.ok).toBe(true);
+      expect(js.ok).toBe(true);
+      expect(auto.data).toEqual(js.data);
+      const paths = (auto.data as SearchTextData).matches.map((m) => m.path);
+      expect(paths).toContain(".hidden/c.ts"); // --hidden parity with the walker
+      expect(paths.some((p) => p.includes("node_modules"))).toBe(false);
+    });
+
+    it("rg path preserves redact-before-match: a pattern targeting a raw secret finds nothing", async () => {
+      ws = await mkTmpWorkspace({
+        "config.ts":
+          "const t = 'ghp_abcdefabcdefabcdefabcdefabcdefabcdef12';\nplain line\n",
+      });
+      const r = await searchTextTool().run(
+        // Matches the RAW token; the redacted line no longer matches, so the
+        // verification stage must drop rg's candidate (no probe oracle).
+        {
+          id: "1",
+          tool: "search_text",
+          input: { pattern: "ghp_abcdefabcdef" },
+        },
+        ctx(ws.root),
+        noopProgress,
+      );
+      expect(r.ok).toBe(true);
+      expect((r.data as SearchTextData).matches).toHaveLength(0);
+    });
+
+    it("rg path caps at maxMatches with truncated=true", async () => {
+      const files: Record<string, string> = {};
+      for (let i = 0; i < 6; i += 1) files[`f${i}.txt`] = "needle\nneedle\n";
+      ws = await mkTmpWorkspace(files);
+      const r = await searchTextTool().run(
+        {
+          id: "1",
+          tool: "search_text",
+          input: { pattern: "needle", maxMatches: 5 },
+        },
+        ctx(ws.root),
+        noopProgress,
+      );
+      expect(r.ok).toBe(true);
+      const data = r.data as SearchTextData;
+      expect(data.matches).toHaveLength(5);
+      expect(data.truncated).toBe(true);
+    });
+  },
+);

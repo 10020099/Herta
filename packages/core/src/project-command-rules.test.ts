@@ -1,0 +1,262 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  deriveProjectCommandRule,
+  isRuleEligibleAskCode,
+  ProjectCommandRuleStore,
+  ruleDisplay,
+} from "./project-command-rules.js";
+
+let root: string;
+
+beforeEach(() => {
+  root = mkdtempSync(join(tmpdir(), "herta-rules-"));
+});
+
+afterEach(() => {
+  rmSync(root, { recursive: true, force: true });
+});
+
+function store(): ProjectCommandRuleStore {
+  return new ProjectCommandRuleStore(() => root);
+}
+
+describe("isRuleEligibleAskCode", () => {
+  it("accepts only the unknown and interpreter ask classes", () => {
+    expect(isRuleEligibleAskCode("command_ask_unknown")).toBe(true);
+    expect(isRuleEligibleAskCode("command_ask_interpreter")).toBe(true);
+    expect(isRuleEligibleAskCode("command_ask_destructive")).toBe(false);
+    expect(isRuleEligibleAskCode("command_ask_network")).toBe(false);
+    expect(isRuleEligibleAskCode("command_ask_write")).toBe(false);
+    expect(isRuleEligibleAskCode("command_ask_reader_path")).toBe(false);
+    expect(isRuleEligibleAskCode("command_ask_recursive_read")).toBe(false);
+    expect(isRuleEligibleAskCode(undefined)).toBe(false);
+  });
+});
+
+describe("deriveProjectCommandRule", () => {
+  it("interpreter + workspace script → pinned prefix with free args", () => {
+    const rule = deriveProjectCommandRule(["node", "src/index.mjs", "a.txt"]);
+    expect(rule).toEqual({
+      argvPrefix: ["node", "src/index.mjs"],
+      anyArgs: true,
+    });
+    expect(ruleDisplay(rule as NonNullable<typeof rule>)).toBe(
+      "node src/index.mjs:*",
+    );
+  });
+
+  it("interpreter with a flag operand (-e eval) derives NOTHING", () => {
+    expect(deriveProjectCommandRule(["node", "-e", "code"])).toBeNull();
+    expect(deriveProjectCommandRule(["python", "-c", "code"])).toBeNull();
+    expect(deriveProjectCommandRule(["node", "--eval", "x"])).toBeNull();
+  });
+
+  it("interpreter with an out-of-workspace script derives NOTHING", () => {
+    expect(deriveProjectCommandRule(["node", "/etc/x.js"])).toBeNull();
+    expect(deriveProjectCommandRule(["node", "C:\\x.js"])).toBeNull();
+    expect(deriveProjectCommandRule(["node", "../x.js"])).toBeNull();
+    expect(deriveProjectCommandRule(["node", "~/x.js"])).toBeNull();
+    expect(deriveProjectCommandRule(["node"])).toBeNull();
+  });
+
+  it("interpreter matching is basename-normalized but tokens stay verbatim", () => {
+    const rule = deriveProjectCommandRule(["node.exe", "src/i.mjs"]);
+    expect(rule).toEqual({
+      argvPrefix: ["node.exe", "src/i.mjs"],
+      anyArgs: true,
+    });
+  });
+
+  it("shells, wrappers, npx and make are never derivable", () => {
+    expect(deriveProjectCommandRule(["bash", "-c", "x"])).toBeNull();
+    expect(
+      deriveProjectCommandRule(["powershell", "-Command", "x"]),
+    ).toBeNull();
+    expect(deriveProjectCommandRule(["env", "node", "x.js"])).toBeNull();
+    expect(deriveProjectCommandRule(["xargs", "rm"])).toBeNull();
+    expect(deriveProjectCommandRule(["npx", "tsc"])).toBeNull();
+    expect(deriveProjectCommandRule(["make", "build"])).toBeNull();
+    expect(deriveProjectCommandRule(["sudo", "ls"])).toBeNull();
+    expect(deriveProjectCommandRule(["CMD.EXE", "/c", "dir"])).toBeNull();
+  });
+
+  it("plain binary with a subcommand-shaped argv[1] → prefix rule", () => {
+    expect(deriveProjectCommandRule(["dotnet", "build", "-c", "Rel"])).toEqual({
+      argvPrefix: ["dotnet", "build"],
+      anyArgs: true,
+    });
+  });
+
+  it("plain binary without a subcommand → exact argv rule", () => {
+    const rule = deriveProjectCommandRule(["ffmpeg", "-i", "in.mp4", "o.mp4"]);
+    expect(rule).toEqual({
+      argvPrefix: ["ffmpeg", "-i", "in.mp4", "o.mp4"],
+      anyArgs: false,
+    });
+    expect(ruleDisplay(rule as NonNullable<typeof rule>)).toBe(
+      "ffmpeg -i in.mp4 o.mp4",
+    );
+  });
+
+  it("empty / malformed argv derives nothing", () => {
+    expect(deriveProjectCommandRule([])).toBeNull();
+    expect(deriveProjectCommandRule([""])).toBeNull();
+  });
+});
+
+describe("ProjectCommandRuleStore", () => {
+  it("starts empty and matches nothing without a file", () => {
+    expect(store().list()).toEqual([]);
+    expect(store().matches(["node", "src/index.mjs"])).toBe(false);
+  });
+
+  it("add → persists; matches prefix rules with any trailing args", () => {
+    const s = store();
+    s.add({ argvPrefix: ["node", "src/index.mjs"], anyArgs: true });
+    expect(s.matches(["node", "src/index.mjs"])).toBe(true);
+    expect(s.matches(["node", "src/index.mjs", "sample.txt"])).toBe(true);
+    expect(s.matches(["node", "src/other.mjs"])).toBe(false);
+    expect(s.matches(["node"])).toBe(false);
+    // A fresh store instance reads the same file (persistence, not memory).
+    expect(store().matches(["node", "src/index.mjs", "x"])).toBe(true);
+  });
+
+  it("exact rules match only the identical argv", () => {
+    const s = store();
+    s.add({ argvPrefix: ["ffmpeg", "-i", "a.mp4"], anyArgs: false });
+    expect(s.matches(["ffmpeg", "-i", "a.mp4"])).toBe(true);
+    expect(s.matches(["ffmpeg", "-i", "a.mp4", "extra"])).toBe(false);
+  });
+
+  it("duplicate adds write one entry", () => {
+    const s = store();
+    s.add({ argvPrefix: ["node", "a.js"], anyArgs: true });
+    s.add({ argvPrefix: ["node", "a.js"], anyArgs: true });
+    expect(s.list()).toHaveLength(1);
+  });
+
+  it("remove by display form", () => {
+    const s = store();
+    s.add({ argvPrefix: ["node", "a.js"], anyArgs: true });
+    s.add({ argvPrefix: ["dotnet", "build"], anyArgs: true });
+    expect(s.remove("node a.js:*")).toBe(true);
+    expect(s.remove("node a.js:*")).toBe(false);
+    expect(s.list().map(ruleDisplay)).toEqual(["dotnet build:*"]);
+  });
+
+  it("a hand-written shell rule NEVER matches (defense-in-depth)", () => {
+    const s = store();
+    // Seed a legit rule so the directory exists, then corrupt the file by hand.
+    s.add({ argvPrefix: ["node", "a.js"], anyArgs: true });
+    const file = join(root, ".herta", "permissions.json");
+    const payload = {
+      version: 1,
+      commandAllow: [
+        { argvPrefix: ["bash", "-c"], anyArgs: true, addedAt: "x", cwd: "" },
+        { argvPrefix: ["node", "a.js"], anyArgs: true, addedAt: "x", cwd: "" },
+      ],
+    };
+    writeFileSync(file, JSON.stringify(payload), "utf8");
+    expect(s.matches(["bash", "-c", "rm -rf /"])).toBe(false);
+    expect(s.list()).toHaveLength(1); // the bash entry is dropped on load
+    expect(s.matches(["node", "a.js"])).toBe(true);
+  });
+
+  it("add refuses a shell shape even if a caller passes one", () => {
+    const s = store();
+    s.add({ argvPrefix: ["bash", "-c"], anyArgs: true });
+    expect(s.list()).toEqual([]);
+  });
+
+  it("malformed file or entries load as empty / partial, never throw", () => {
+    const s = store();
+    s.add({ argvPrefix: ["node", "a.js"], anyArgs: true });
+    const file = join(root, ".herta", "permissions.json");
+    writeFileSync(file, "{not json", "utf8");
+    expect(s.list()).toEqual([]);
+    writeFileSync(
+      file,
+      JSON.stringify({
+        version: 1,
+        commandAllow: [
+          { argvPrefix: [], anyArgs: true, addedAt: "x", cwd: "" },
+          { argvPrefix: ["ok", "fine"], anyArgs: "yes", addedAt: "x", cwd: "" },
+          // No cwd — a pre-BL15 rule. Dropped, not defaulted to the root:
+          // defaulting would silently keep granting the broad any-directory
+          // match the field exists to narrow.
+          { argvPrefix: ["legacy", "build"], anyArgs: true, addedAt: "x" },
+          {
+            argvPrefix: ["dotnet", "build"],
+            anyArgs: true,
+            addedAt: "x",
+            cwd: "",
+          },
+        ],
+      }),
+      "utf8",
+    );
+    expect(s.list().map(ruleDisplay)).toEqual(["dotnet build:*"]);
+  });
+
+  describe("a rule is scoped to the directory it was granted in (audit BL15)", () => {
+    it("does not match the same command from another cwd", () => {
+      const s = store();
+      // `node src/index.mjs:*` pins a workspace-RELATIVE script path, and cwd
+      // is model-supplied — so without this the one approval covered
+      // src/index.mjs under every directory in the tree that had one.
+      s.add({ argvPrefix: ["node", "src/index.mjs"], anyArgs: true, cwd: "" });
+      expect(s.matches(["node", "src/index.mjs", "a.txt"])).toBe(true);
+      expect(
+        s.matches(["node", "src/index.mjs", "a.txt"], "vendor/other"),
+      ).toBe(false);
+    });
+
+    it("treats undefined, empty and '.' as the workspace root", () => {
+      const s = store();
+      s.add({ argvPrefix: ["dotnet", "build"], anyArgs: true, cwd: "." });
+      for (const cwd of [undefined, "", ".", "./"]) {
+        expect(s.matches(["dotnet", "build"], cwd), String(cwd)).toBe(true);
+      }
+    });
+
+    it("normalizes separators so a rule survives platform differences", () => {
+      const s = store();
+      s.add({ argvPrefix: ["dotnet", "build"], anyArgs: true, cwd: "a\\b" });
+      expect(s.matches(["dotnet", "build"], "a/b")).toBe(true);
+      expect(s.matches(["dotnet", "build"], "a/b/")).toBe(true);
+    });
+
+    it("the same command in two directories is two grants", () => {
+      const s = store();
+      s.add({ argvPrefix: ["dotnet", "build"], anyArgs: true, cwd: "" });
+      s.add({ argvPrefix: ["dotnet", "build"], anyArgs: true, cwd: "svc" });
+      expect(s.list()).toHaveLength(2);
+      // …and adding the same one twice is still one.
+      s.add({ argvPrefix: ["dotnet", "build"], anyArgs: true, cwd: "svc" });
+      expect(s.list()).toHaveLength(2);
+    });
+  });
+
+  it("follows a moved workspace root via the provider", () => {
+    const rootB = mkdtempSync(join(tmpdir(), "herta-rules-b-"));
+    try {
+      let current = root;
+      const s = new ProjectCommandRuleStore(() => current);
+      s.add({ argvPrefix: ["node", "a.js"], anyArgs: true });
+      expect(s.matches(["node", "a.js"])).toBe(true);
+      current = rootB;
+      expect(s.matches(["node", "a.js"])).toBe(false); // other workspace
+      s.add({ argvPrefix: ["dotnet", "build"], anyArgs: true });
+      expect(
+        JSON.parse(
+          readFileSync(join(rootB, ".herta", "permissions.json"), "utf8"),
+        ).commandAllow,
+      ).toHaveLength(1);
+    } finally {
+      rmSync(rootB, { recursive: true, force: true });
+    }
+  });
+});

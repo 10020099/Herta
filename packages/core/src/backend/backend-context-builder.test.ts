@@ -1,0 +1,483 @@
+import { describe, expect, it } from "vitest";
+import type { HertaToAgentBrief } from "../bridge/types.js";
+import { EMPTY_PROMPT_TRACE } from "../capsule/types.js";
+import { InMemoryToolRegistry } from "../tool-registry.js";
+import {
+  BACKEND_EXECUTION_CONTRACT,
+  BACKEND_EXECUTION_CONTRACT_EN,
+  BackendContextBuilder,
+  RECENT_DIALOGUE_HEADER,
+  RECENT_DIALOGUE_HEADER_EN,
+  serializeUserHistory,
+  WORKING_HISTORY_HEADER,
+  WORKING_HISTORY_HEADER_EN,
+} from "./backend-context-builder.js";
+
+const sampleBrief: HertaToAgentBrief = { taskId: "t-1" };
+const sampleUserMessages = [
+  { text: "look at the repo" },
+  { text: "fix the failing parser test" },
+];
+
+describe("BACKEND_EXECUTION_CONTRACT", () => {
+  it("is a non-empty string mentioning the backend role", () => {
+    expect(BACKEND_EXECUTION_CONTRACT.length).toBeGreaterThan(0);
+    expect(BACKEND_EXECUTION_CONTRACT).toContain("后端");
+  });
+
+  it("instructs the model not to role-play Herta and not to address the user", () => {
+    expect(BACKEND_EXECUTION_CONTRACT).toMatch(/不要扮演黑塔/);
+    expect(BACKEND_EXECUTION_CONTRACT).toMatch(/不要和开拓者说话/);
+  });
+
+  // -- Slice 11: scope-aware discipline --
+
+  it("opens with the four original-contract lines in order (identity invariants)", () => {
+    const head = BACKEND_EXECUTION_CONTRACT.slice(0, 400);
+    const lines = head.split("\n");
+    expect(lines[0]).toBe("你是后端的编码执行智能体。");
+    expect(lines[1]).toBe("不要和开拓者说话。");
+    expect(lines[2]).toBe("不要扮演黑塔。");
+    expect(lines[3]).toBe("只返回结构化的事实、证据、diff、测试与风险。");
+  });
+
+  it("contains a # Scope classification heading and the three scope labels", () => {
+    expect(BACKEND_EXECUTION_CONTRACT).toContain("# 任务分类");
+    expect(BACKEND_EXECUTION_CONTRACT).toContain("「脚本」");
+    expect(BACKEND_EXECUTION_CONTRACT).toContain("「改写」");
+    expect(BACKEND_EXECUTION_CONTRACT).toContain("「探查」");
+  });
+
+  it("states the ambiguity tie-breaker (default to script, smallest blast radius)", () => {
+    expect(BACKEND_EXECUTION_CONTRACT).toMatch(/影响面最小/);
+    expect(BACKEND_EXECUTION_CONTRACT).toMatch(/默认「脚本」/);
+  });
+
+  it("contains the per-scope behavior section with do/do-not for each scope", () => {
+    expect(BACKEND_EXECUTION_CONTRACT).toContain("# 各类的行为");
+    // Script scope: forbidden reads named explicitly.
+    expect(BACKEND_EXECUTION_CONTRACT).toContain("package.json");
+    expect(BACKEND_EXECUTION_CONTRACT).toContain("AGENTS.md");
+    expect(BACKEND_EXECUTION_CONTRACT).toContain("CLAUDE.md");
+    // Edit scope: read target, patch, verify.
+    expect(BACKEND_EXECUTION_CONTRACT).toMatch(/edit_file/i);
+    // Explore scope: read-only.
+    expect(BACKEND_EXECUTION_CONTRACT).toMatch(/search_text/i);
+  });
+
+  it("forbids running / testing / compiling on script scope (write-and-stop rule)", () => {
+    // Regression guard for the Slice 12 "stop after write" rule. The
+    // backend used to be told to "DO verify with run_command" for
+    // script tasks, which led to a multi-attempt run/test spiral
+    // (npx → cmd /c npx → pnpm exec tsx → tsc + node → multiple
+    // stdin variants) on a freshly-written merge-sort script. The
+    // contract now explicitly forbids post-write execution for
+    // script scope and reserves verification for the user's NEXT
+    // turn (if they ask for it).
+    expect(BACKEND_EXECUTION_CONTRACT).toMatch(/不要运行、测试、编译/);
+    expect(BACKEND_EXECUTION_CONTRACT).toMatch(/本身就是\s*交付物/);
+    const scriptSectionMatch = BACKEND_EXECUTION_CONTRACT.match(
+      /如果是「脚本」：([\s\S]*?)如果是「改写」：/,
+    );
+    expect(scriptSectionMatch).not.toBeNull();
+    const scriptSection = scriptSectionMatch?.[1] ?? "";
+    expect(scriptSection).not.toMatch(/run_command\s*验证/);
+    expect(scriptSection).not.toMatch(/用\s*run_command/);
+  });
+
+  it("contains the # Action bias section with the 'when in doubt, act' directive", () => {
+    expect(BACKEND_EXECUTION_CONTRACT).toContain("# 动手优先");
+    expect(BACKEND_EXECUTION_CONTRACT).toMatch(/拿不准时，先动手/);
+  });
+
+  it("contains the 'more than two files' self-check trigger", () => {
+    expect(BACKEND_EXECUTION_CONTRACT).toMatch(/超过两个文件/);
+  });
+
+  // -- Care nudges (CC design analysis, 2026-06-20) --
+
+  it("contains a # Care section with minimal-complexity, diagnose-before-retry, and reversibility guidance", () => {
+    expect(BACKEND_EXECUTION_CONTRACT).toContain("# 分寸");
+    expect(BACKEND_EXECUTION_CONTRACT).toMatch(/只在系统边界[\s\S]*校验/);
+    expect(BACKEND_EXECUTION_CONTRACT).toMatch(/先诊断再重试/);
+    expect(BACKEND_EXECUTION_CONTRACT).toMatch(/可逆性/);
+  });
+
+  it("frames care as restraint, not a safety gate (the harness still enforces — D4)", () => {
+    expect(BACKEND_EXECUTION_CONTRACT).toMatch(/系统会兜底强制/);
+    expect(BACKEND_EXECUTION_CONTRACT).toMatch(/不是让你放手乱来的许可/);
+  });
+
+  // -- Negative assertions: deferred features must NOT leak in --
+
+  it("does not contain platform-specific wording (Slice 11 defers platform handling)", () => {
+    expect(BACKEND_EXECUTION_CONTRACT).not.toMatch(/cmd \/c/i);
+    expect(BACKEND_EXECUTION_CONTRACT).not.toMatch(/windows/i);
+    expect(BACKEND_EXECUTION_CONTRACT).not.toMatch(/darwin/i);
+    expect(BACKEND_EXECUTION_CONTRACT).not.toMatch(/linux/i);
+    expect(BACKEND_EXECUTION_CONTRACT).not.toMatch(/\.cmd shim/i);
+  });
+
+  it("does not impose a numeric read budget (Slice 11 defers budget enforcement)", () => {
+    expect(BACKEND_EXECUTION_CONTRACT).not.toMatch(/read budget/i);
+    expect(BACKEND_EXECUTION_CONTRACT).not.toMatch(/budget exhausted/i);
+  });
+});
+
+describe("serializeUserHistory", () => {
+  it("renders each user message under a numbered fence", () => {
+    const text = serializeUserHistory(sampleUserMessages);
+    expect(text).toContain("look at the repo");
+    expect(text).toContain("fix the failing parser test");
+    expect(text).toMatch(/--- 开拓者请求 1 ---/);
+    expect(text).toMatch(/--- 开拓者请求 2 ---/);
+  });
+
+  it("instructs the backend to treat the latest message as primary", () => {
+    const text = serializeUserHistory(sampleUserMessages);
+    expect(text).toMatch(/最近的一条开拓者消息/);
+  });
+
+  it("frames the user history as the authoritative task", () => {
+    const text = serializeUserHistory(sampleUserMessages);
+    expect(text).toMatch(/任务本身/);
+  });
+
+  it("returns empty string for empty input", () => {
+    expect(serializeUserHistory([])).toBe("");
+  });
+
+  it("is deterministic across calls", () => {
+    expect(serializeUserHistory(sampleUserMessages)).toBe(
+      serializeUserHistory(sampleUserMessages),
+    );
+  });
+
+  it("renders an honest elision note when older messages were capped (ADR 0025 slice 2)", () => {
+    const zh = serializeUserHistory(sampleUserMessages, "zh", 6);
+    expect(zh).toContain("另有 6 条更早的开拓者消息因篇幅未随附");
+    expect(zh).toContain("不要猜");
+    const en = serializeUserHistory(sampleUserMessages, "en", 6);
+    expect(en).toContain("6 older user message(s) elided for length");
+    // No note when nothing was elided — byte-identical to the old output.
+    expect(serializeUserHistory(sampleUserMessages, "zh", 0)).toBe(
+      serializeUserHistory(sampleUserMessages),
+    );
+  });
+});
+
+describe("BackendContextBuilder", () => {
+  it("builds a frame containing the execution contract and user history", () => {
+    const tools = new InMemoryToolRegistry();
+    const builder = new BackendContextBuilder({ tools });
+
+    const frame = builder.build({
+      brief: sampleBrief,
+      userMessages: sampleUserMessages,
+      scopedRepoInstructions: "Repo prefers edit_file over write_new_file.",
+      scopedMemory: "User dislikes overlong replies.",
+      messages: [],
+    });
+
+    expect(frame.backendSystem).toContain(BACKEND_EXECUTION_CONTRACT);
+    expect(frame.backendSystem).toContain("fix the failing parser test");
+    expect(frame.scopedRepoInstructions).toBe(
+      "Repo prefers edit_file over write_new_file.",
+    );
+    expect(frame.scopedMemory).toBe("User dislikes overlong replies.");
+    expect(frame.messages).toEqual([]);
+    expect(frame.toolSchemas).toEqual([]);
+    expect(frame.trace).toBe(EMPTY_PROMPT_TRACE);
+  });
+
+  it("returns a fresh frame on every build call", () => {
+    const tools = new InMemoryToolRegistry();
+    const builder = new BackendContextBuilder({ tools });
+
+    const a = builder.build({
+      brief: sampleBrief,
+      userMessages: sampleUserMessages,
+      scopedRepoInstructions: "",
+      scopedMemory: "",
+      messages: [],
+    });
+    const b = builder.build({
+      brief: sampleBrief,
+      userMessages: sampleUserMessages,
+      scopedRepoInstructions: "",
+      scopedMemory: "",
+      messages: [],
+    });
+
+    expect(a).not.toBe(b);
+    expect(a.toolSchemas).not.toBe(b.toolSchemas);
+    expect(a.messages).not.toBe(b.messages);
+  });
+
+  it("forwards tool schemas from the registry", () => {
+    const tools = new InMemoryToolRegistry();
+    tools.register({
+      name: "read_file",
+      schema: () => ({
+        name: "read_file",
+        description: "Read a file from the workspace",
+        inputSchema: { type: "object", properties: {} },
+      }),
+      run: async () => ({
+        ok: true,
+        summary: "",
+      }),
+    });
+
+    const builder = new BackendContextBuilder({ tools });
+    const frame = builder.build({
+      brief: sampleBrief,
+      userMessages: sampleUserMessages,
+      scopedRepoInstructions: "",
+      scopedMemory: "",
+      messages: [],
+    });
+
+    expect(frame.toolSchemas).toHaveLength(1);
+    expect(frame.toolSchemas[0]?.name).toBe("read_file");
+  });
+
+  it("emits contract-only backendSystem when userMessages is empty", () => {
+    const tools = new InMemoryToolRegistry();
+    const builder = new BackendContextBuilder({ tools });
+    const frame = builder.build({
+      brief: sampleBrief,
+      userMessages: [],
+      scopedRepoInstructions: "",
+      scopedMemory: "",
+      messages: [],
+    });
+    expect(frame.backendSystem).toBe(BACKEND_EXECUTION_CONTRACT);
+  });
+
+  it("with no dialogue/history, the system prompt is byte-identical to contract + user history", () => {
+    const builder = new BackendContextBuilder({
+      tools: new InMemoryToolRegistry(),
+    });
+    const frame = builder.build({
+      brief: sampleBrief,
+      userMessages: sampleUserMessages,
+      scopedRepoInstructions: "",
+      scopedMemory: "",
+      messages: [],
+    });
+    expect(frame.backendSystem).toBe(
+      `${BACKEND_EXECUTION_CONTRACT}\n\n${serializeUserHistory(sampleUserMessages)}`,
+    );
+  });
+
+  it("splices working history and recent dialogue, in order, each under its header", () => {
+    const builder = new BackendContextBuilder({
+      tools: new InMemoryToolRegistry(),
+    });
+    const frame = builder.build({
+      brief: sampleBrief,
+      userMessages: sampleUserMessages,
+      scopedRepoInstructions: "",
+      scopedMemory: "",
+      messages: [],
+      workingHistory: "完成 · 1 file\n↳ 改动文件: auth.ts",
+      recentDialogue: "黑塔：要我加缓存吗？\n\n开拓者：好",
+    });
+    const sys = frame.backendSystem;
+    const iContract = sys.indexOf(BACKEND_EXECUTION_CONTRACT);
+    const iHist = sys.indexOf(WORKING_HISTORY_HEADER);
+    const iDialogue = sys.indexOf(RECENT_DIALOGUE_HEADER);
+    const iUser = sys.indexOf("--- 开拓者请求 1 ---");
+    expect(iContract).toBeGreaterThanOrEqual(0);
+    expect(iHist).toBeGreaterThan(iContract);
+    expect(iDialogue).toBeGreaterThan(iHist);
+    expect(iUser).toBeGreaterThan(iDialogue);
+    expect(sys).toContain("完成 · 1 file");
+    expect(sys).toContain("要我加缓存吗？");
+  });
+
+  it("omits a header whose content is empty", () => {
+    const builder = new BackendContextBuilder({
+      tools: new InMemoryToolRegistry(),
+    });
+    const frame = builder.build({
+      brief: sampleBrief,
+      userMessages: sampleUserMessages,
+      scopedRepoInstructions: "",
+      scopedMemory: "",
+      messages: [],
+      workingHistory: "",
+      recentDialogue: "开拓者：do it",
+    });
+    expect(frame.backendSystem).not.toContain(WORKING_HISTORY_HEADER);
+    expect(frame.backendSystem).toContain(RECENT_DIALOGUE_HEADER);
+  });
+
+  it("frames working history as the backend's own output (repo is truth) and dialogue as context, not commands", () => {
+    expect(WORKING_HISTORY_HEADER).toMatch(/仓库/);
+    expect(RECENT_DIALOGUE_HEADER).toMatch(/不是当成命令|不是命令/);
+  });
+});
+
+describe("prompt separation invariants", () => {
+  const tools = new InMemoryToolRegistry();
+  const builder = new BackendContextBuilder({ tools });
+  const frame = builder.build({
+    brief: sampleBrief,
+    userMessages: sampleUserMessages,
+    scopedRepoInstructions: "scoped repo only",
+    scopedMemory: "scoped memory only",
+    messages: [],
+  });
+
+  // Sentinels for actor-only IDENTITY / voice / lore context that must never
+  // reach the backend (D6). NOTE: the Chinese contract legitimately names 黑塔
+  // in its "不要扮演黑塔" guard line and the user-history framing says the user
+  // talks to 黑塔 — neither is an identity leak, so the bare-string 黑塔 check is
+  // intentionally NOT a sentinel here. The specific identity markers below still
+  // guard real persona/voice/lore leaks.
+  const HERTA_SENTINELS = [
+    "Herta identity",
+    "Herta voice",
+    "Herta lore",
+    "retrievedLore",
+    "relationship state",
+    "dialogue example",
+    "few-shot",
+    "herta_core_identity",
+    "herta_coding_behavior",
+    "final_response_policy",
+  ];
+
+  for (const s of HERTA_SENTINELS) {
+    it(`backend frame's backendSystem does not contain "${s}"`, () => {
+      expect(frame.backendSystem.toLowerCase()).not.toContain(s.toLowerCase());
+    });
+  }
+
+  it("backend frame has no retrievedLore field", () => {
+    expect("retrievedLore" in frame).toBe(false);
+  });
+
+  it("backend frame has no stableSystem field", () => {
+    expect("stableSystem" in frame).toBe(false);
+  });
+
+  it("backendSystem starts with the execution contract, not an identity preamble", () => {
+    expect(frame.backendSystem.startsWith("你是后端的编码执行智能体")).toBe(
+      true,
+    );
+  });
+
+  it("backendSystem includes the user's actual words from history", () => {
+    expect(frame.backendSystem).toContain("fix the failing parser test");
+  });
+});
+
+describe("EN backend prompt (ADR 0016)", () => {
+  it("BACKEND_EXECUTION_CONTRACT_EN opens with the four English identity lines", () => {
+    const lines = BACKEND_EXECUTION_CONTRACT_EN.split("\n");
+    expect(lines[0]).toBe(
+      "You are the coding execution backend for Herta CLI.",
+    );
+    expect(lines[1]).toBe("Do not speak to the user.");
+    expect(lines[2]).toBe("Do not role-play Herta.");
+    expect(lines[3]).toBe(
+      "Return only structured facts, evidence, diffs, tests, and risks.",
+    );
+  });
+
+  it("carries the same scope discipline in English (sections + labels)", () => {
+    expect(BACKEND_EXECUTION_CONTRACT_EN).toContain("# Scope classification");
+    expect(BACKEND_EXECUTION_CONTRACT_EN).toContain("# Per-scope behavior");
+    expect(BACKEND_EXECUTION_CONTRACT_EN).toContain("# Action bias");
+    expect(BACKEND_EXECUTION_CONTRACT_EN).toContain("# Care");
+    expect(BACKEND_EXECUTION_CONTRACT_EN).toMatch(/"script"/);
+    expect(BACKEND_EXECUTION_CONTRACT_EN).toMatch(/"edit"/);
+    expect(BACKEND_EXECUTION_CONTRACT_EN).toMatch(/"explore"/);
+  });
+
+  it("keeps code-literal tool + command tokens verbatim (not translated)", () => {
+    for (const tok of [
+      "write_new_file",
+      "edit_file",
+      "read_file",
+      "search_text",
+      "list_files",
+      "run_command",
+      "package.json",
+      "AGENTS.md",
+      "CLAUDE.md",
+      "tsc",
+      "pnpm exec",
+    ]) {
+      expect(BACKEND_EXECUTION_CONTRACT_EN).toContain(tok);
+    }
+  });
+
+  it("EN prose contains no CJK (fully English contract + headers)", () => {
+    expect(BACKEND_EXECUTION_CONTRACT_EN).not.toMatch(/[一-鿿]/);
+    expect(WORKING_HISTORY_HEADER_EN).not.toMatch(/[一-鿿]/);
+    expect(RECENT_DIALOGUE_HEADER_EN).not.toMatch(/[一-鿿]/);
+  });
+
+  it("serializeUserHistory(en) uses English framing and English fences", () => {
+    const text = serializeUserHistory(sampleUserMessages, "en");
+    expect(text).toMatch(/--- user request 1 ---/);
+    expect(text).toMatch(/--- end user request 1 ---/);
+    expect(text).toMatch(/--- user request 2 ---/);
+    expect(text).toContain("fix the failing parser test");
+    expect(text).toMatch(/most recent user message as the primary task/);
+    expect(text).not.toMatch(/[一-鿿]/);
+  });
+
+  it("build(lang:en) uses the EN contract, EN headers, and EN user history, in order", () => {
+    const builder = new BackendContextBuilder({
+      tools: new InMemoryToolRegistry(),
+    });
+    const frame = builder.build({
+      brief: sampleBrief,
+      userMessages: sampleUserMessages,
+      scopedRepoInstructions: "",
+      scopedMemory: "",
+      messages: [],
+      lang: "en",
+      workingHistory: "done · 1 file",
+      recentDialogue: "Herta: want caching?\n\nUser: yes",
+    });
+    const sys = frame.backendSystem;
+    expect(sys.startsWith("You are the coding execution backend")).toBe(true);
+    const iHist = sys.indexOf(WORKING_HISTORY_HEADER_EN);
+    const iDialogue = sys.indexOf(RECENT_DIALOGUE_HEADER_EN);
+    const iUser = sys.indexOf("--- user request 1 ---");
+    expect(iHist).toBeGreaterThan(0);
+    expect(iDialogue).toBeGreaterThan(iHist);
+    expect(iUser).toBeGreaterThan(iDialogue);
+    // No zh backend prose leaks into an EN frame.
+    expect(sys).not.toContain(BACKEND_EXECUTION_CONTRACT);
+    expect(sys).not.toContain("开拓者请求");
+    expect(sys).not.toContain(WORKING_HISTORY_HEADER);
+  });
+
+  it("zh is unchanged: omitting lang equals lang:'zh' (byte-identical)", () => {
+    const builder = new BackendContextBuilder({
+      tools: new InMemoryToolRegistry(),
+    });
+    const common = {
+      brief: sampleBrief,
+      userMessages: sampleUserMessages,
+      scopedRepoInstructions: "",
+      scopedMemory: "",
+      messages: [],
+      workingHistory: "完成 · 1 file",
+      recentDialogue: "黑塔：要我加缓存吗？\n\n开拓者：好",
+    };
+    const omitted = builder.build({ ...common });
+    const explicitZh = builder.build({ ...common, lang: "zh" });
+    expect(explicitZh.backendSystem).toBe(omitted.backendSystem);
+    expect(omitted.backendSystem.startsWith("你是后端的编码执行智能体")).toBe(
+      true,
+    );
+  });
+});

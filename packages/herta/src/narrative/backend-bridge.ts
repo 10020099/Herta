@@ -1,0 +1,1295 @@
+import { randomUUID } from "node:crypto";
+import type {
+  AgentError,
+  AgentEvent,
+  AgentExecutionReport,
+  CodingAgentRuntime,
+  DoneMarkerSummary,
+  EventBus,
+  EvidenceSection,
+  RunCommandData,
+  ShowExcerptData,
+  SystemBlock,
+  SystemBlockDigest,
+  TerminalRecord,
+  TerminalRecordBlock,
+  TodoDigestItem,
+  TodoItem,
+  TodoStatus,
+} from "@herta/core";
+import { composeMarkerSummary, type MarkerSummaryLabels } from "@herta/core";
+import {
+  extractRecentDialogue,
+  extractWorkingHistory,
+  findLastDispatchBoundary,
+} from "./backend-record-slices.js";
+import type { BeatPolicy, TriggerSpec } from "./beat-policy.js";
+import { boundedTail } from "./bounded-tail.js";
+import { sanitizeActorText } from "./escape.js";
+import type { PromptLang } from "./prompt-lang.js";
+import type { ActorStreamingSink } from "./streaming-sink.js";
+
+/** system-body sanitize for one string field (see `sanitizeSystemBlock`). */
+function cleanBody(s: string): string {
+  return sanitizeActorText(s, { role: "system-body" });
+}
+
+/** Sanitize a digest's backend-derived string fields. Compaction renders
+ *  digests into `[历史已压缩 · 板砖]` summary bodies that reach prompts, so a
+ *  hostile inputSummary must not launder a forged marker through them.
+ *  Union-typed literals (`verb`, `status`) are harness-authored — untouched. */
+function sanitizeDigest(digest: SystemBlockDigest): SystemBlockDigest {
+  switch (digest.kind) {
+    case "op":
+      return { ...digest, arg: cleanBody(digest.arg) };
+    case "tests":
+      return { ...digest, summary: cleanBody(digest.summary) };
+    case "tool-fail":
+      return {
+        ...digest,
+        tool: cleanBody(digest.tool),
+        code: cleanBody(digest.code),
+        ...(digest.message !== undefined
+          ? { message: cleanBody(digest.message) }
+          : {}),
+      };
+    case "text":
+      return { ...digest, text: cleanBody(digest.text) };
+    case "bg":
+      // `id` is harness-generated (BackgroundHost) but rides the same
+      // sanitize as every other string field — fail closed.
+      return { ...digest, id: cleanBody(digest.id) };
+    case "excerpt":
+      // `path` is backend-derived like every other string field; the line
+      // numbers are harness-computed and pass through.
+      return { ...digest, path: cleanBody(digest.path) };
+    case "todo":
+      // Every string here is backend-authored item text: `current` (the
+      // in-flight step) and each `items[].content` (the full list both todo
+      // block kinds carry). Sanitize all of them — a renderer prints the
+      // items, and compaction may yet learn to. Counts and the `status`
+      // literals (a harness-owned enum) pass through.
+      return {
+        ...digest,
+        ...(digest.current === undefined
+          ? {}
+          : { current: cleanBody(digest.current) }),
+        ...(digest.items === undefined
+          ? {}
+          : {
+              items: digest.items.map((item) => ({
+                ...item,
+                content: cleanBody(item.content),
+              })),
+            }),
+      };
+    case "skip":
+      return digest;
+  }
+}
+
+/** Sanitize an evidence section's backend-derived strings. Every field here is
+ *  the same text that composes `evidenceDetail` — command output, excerpt
+ *  bodies, repo paths, risk/todo/error prose — so it rides the same cleaner.
+ *  A renderer prints these, and skipping them would let a hostile diff forge a
+ *  role marker in the detail pane that the canonical string cannot carry. */
+function sanitizeSection(s: EvidenceSection): EvidenceSection {
+  switch (s.kind) {
+    case "output":
+      return { ...s, text: cleanBody(s.text) };
+    case "excerpt":
+      // Line numbers are harness-computed and pass through.
+      return { ...s, path: cleanBody(s.path), text: cleanBody(s.text) };
+    case "files":
+      return { ...s, paths: s.paths.map(cleanBody) };
+    case "risks":
+    case "todos":
+      return { ...s, items: s.items.map(cleanBody) };
+    case "error":
+      return { ...s, message: cleanBody(s.message) };
+  }
+}
+
+// No `default` arm, deliberately: a future section kind must fail the
+// exhaustiveness check here rather than slip through the trust boundary
+// unsanitized. (Extracted from the map callback so the exhaustive switch and
+// biome's always-return-a-value rule can both hold.)
+function sanitizeEvidence(
+  sections: readonly EvidenceSection[],
+): readonly EvidenceSection[] {
+  return sections.map(sanitizeSection);
+}
+
+/**
+ * The system-block half of the slice-2 trust boundary: every block the
+ * bridge appends to the record carries backend-derived text (tool
+ * argv summaries, command output tails, diffs, error messages) that a
+ * hostile repo or provider can shape. Neutralize cross-role markers and
+ * strip display-unsafe characters at construction so a diff can never
+ * open a fake （开拓者 说） block or plant a forged label in tomorrow's
+ * prompt. `evidenceDetail` is prompt-only, `digest` feeds compaction
+ * summaries, and `evidence` feeds the localized detail pane — all the same
+ * trust class as `body`.
+ */
+function sanitizeSystemBlock(block: SystemBlock): SystemBlock {
+  return {
+    ...block,
+    body: cleanBody(block.body),
+    ...(block.evidenceDetail !== undefined
+      ? { evidenceDetail: cleanBody(block.evidenceDetail) }
+      : {}),
+    ...(block.evidence !== undefined
+      ? { evidence: sanitizeEvidence(block.evidence) }
+      : {}),
+    ...(block.digest !== undefined
+      ? { digest: sanitizeDigest(block.digest) }
+      : {}),
+  };
+}
+
+/**
+ * Pure projection from a backend-layer bus event to a `→ 差分协处理器`
+ * or `→ 系统` SystemBlock. Returns `null` for events that should not
+ * appear in TerminalRecord — actor-layer events (D6), happy-path tool
+ * finishes (the workflow-start block already covers the user-visible
+ * beat), and turn-lifecycle events. Every non-null block is passed
+ * through `sanitizeSystemBlock` (slice 2) before it reaches a caller.
+ *
+ * Mapping per SPEC v0.2 §5.3, §7.3:
+ *   tool.call.started (backend, known workflow kind) → → 差分协处理器  "<verb> <inputSummary>"
+ *   tool.call.finished (failure)                     → → 系统          "↳ failed: <code>: <message>"
+ *   patch.preview                                    → → 系统          "patch preview: <files>\n```diff\n...\n```"
+ *   permission.requested                             → null (N3 — the resolver's interactive prompt is the user-facing surface)
+ *   permission.resolved                              → null (compaction-companion 2026-05-24 — outcomes no longer enter the record)
+ */
+export function projectBackendEvent(event: AgentEvent): SystemBlock | null {
+  const block = projectBackendEventUnsanitized(event);
+  return block === null ? null : sanitizeSystemBlock(block);
+}
+
+function projectBackendEventUnsanitized(event: AgentEvent): SystemBlock | null {
+  if (event.layer !== "backend") return null;
+
+  switch (event.type) {
+    case "tool.call.started": {
+      // todo_write projects from `plan.updated` instead (2026-07-23): the
+      // event carries the full structured list, so the drain emits the first
+      // layout block + compact "todo k/n: <current>" progress rows. A
+      // started-row here would double-project every update ("Planning 2/3"
+      // AND the progress row); a FAILED todo_write still surfaces via the
+      // tool.call.finished failure row below.
+      if (event.tool === "todo_write") return null;
+      const label = workflowLabel(event.tool);
+      if (label === null) return null;
+      const body = `${label} ${event.inputSummary}`.trim();
+      return {
+        kind: "system",
+        label: "差分协处理器",
+        body,
+        // Structured digest (M-projection-3): compaction digests from THIS,
+        // not by regex-parsing the rendered body back apart.
+        digest: { kind: "op", verb: label, arg: event.inputSummary.trim() },
+      };
+    }
+
+    case "tool.call.finished": {
+      if (event.result.ok) {
+        // show_excerpt exists to be SEEN (ADR 0027): the excerpt rides
+        // `evidenceDetail`, which is the two-state lane — verbatim in
+        // Herta's prompt for the turn it happened, then dropped when the
+        // block folds into the compaction summary. Deliberately NOT the
+        // body: bodies become digest lines, so content there would either
+        // bloat the digest or survive verbatim into every later prompt.
+        if (event.tool === "show_excerpt") {
+          const data = event.result.data as ShowExcerptData | undefined;
+          if (data === undefined) return null;
+          return {
+            kind: "system",
+            label: "差分协处理器",
+            body: `↳ excerpt ${data.relPath}:${data.range[0]}-${data.range[1]}${
+              data.truncated ? " (truncated)" : ""
+            }`,
+            digest: {
+              kind: "excerpt",
+              path: data.relPath,
+              from: data.range[0],
+              to: data.range[1],
+            },
+            evidenceDetail: `↳ 摘录 ${data.relPath}:${data.range[0]}-${data.range[1]}\n${data.excerpt}`,
+            evidence: [
+              {
+                kind: "excerpt",
+                path: data.relPath,
+                from: data.range[0],
+                to: data.range[1],
+                text: data.excerpt,
+              },
+            ],
+          };
+        }
+        // Success: run_command (incl. the background trio) surfaces a result
+        // block — its output is otherwise invisible. Other tools' successes
+        // stay silent; their Writing/Reading start-line already covered them.
+        if (
+          event.tool !== "run_command" &&
+          event.tool !== "command_output" &&
+          event.tool !== "command_stop"
+        )
+          return null;
+        const data = event.result.data as Partial<RunCommandData> | undefined;
+        if (data === undefined) return null;
+
+        // Managed background commands (ADR 0025 slice 4): a "background …"
+        // status row instead of an exit row, so the record shows a dev
+        // server as running rather than "exit ?". Structured `bg` digest
+        // (2026-07-23) lets renderers localize; a null exitCode means the
+        // process ended by signal/kill — never render a literal "null".
+        if (data.backgroundId !== undefined) {
+          const bgState =
+            event.tool === "command_stop"
+              ? "stopped"
+              : data.running === true
+                ? "running"
+                : "exited";
+          const bgVerb =
+            bgState === "exited"
+              ? data.exitCode === null || data.exitCode === undefined
+                ? "exited (signal)"
+                : `exited (${data.exitCode})`
+              : bgState;
+          const bgStdout = (data.stdout ?? "").trimEnd();
+          const bgTail =
+            event.tool === "command_output" && bgStdout.length > 0
+              ? boundedTail(data.stdout ?? "", "", { sourceTruncated: false })
+              : { text: "" };
+          return {
+            kind: "system",
+            label: "差分协处理器",
+            body: `↳ background ${data.backgroundId}: ${bgVerb}`,
+            digest: {
+              kind: "bg",
+              id: data.backgroundId,
+              state: bgState,
+              ...(bgState === "exited"
+                ? { exitCode: data.exitCode ?? null }
+                : {}),
+            },
+            ...(bgTail.text.length > 0
+              ? {
+                  evidenceDetail: `↳ 输出:\n${bgTail.text}`,
+                  evidence: [{ kind: "output", text: bgTail.text }] as const,
+                }
+              : {}),
+          };
+        }
+
+        // Test runs: terse tests line, no output detail (the testRun summary
+        // is complete on its own).
+        if (data.testRun !== undefined) {
+          return {
+            kind: "system",
+            label: "差分协处理器",
+            body: `↳ tests: ${data.testRun.summary}`,
+            digest: {
+              kind: "tests",
+              status: data.testRun.status,
+              summary: data.testRun.summary,
+            },
+          };
+        }
+
+        // Non-test: terse exit + line-count body; bounded output tail in detail.
+        // exitCode is null only on signal/timeout; on the success path a real
+        // timeout returns ok:false, so the timedOut branch here is defensive.
+        const exitText =
+          data.exitCode === null || data.exitCode === undefined
+            ? data.timedOut === true
+              ? "timed out"
+              : data.signal != null
+                ? `signal ${data.signal}`
+                : "exit ?"
+            : `exit ${data.exitCode}`;
+        const stdout = data.stdout ?? "";
+        const stderr = data.stderr ?? "";
+        const trimmedStdout = stdout.trimEnd();
+        const lineCount =
+          trimmedStdout.length > 0 ? trimmedStdout.split("\n").length : 0;
+        const body = `↳ ${exitText} · ${lineCount} lines`;
+        const tail = boundedTail(stdout, stderr, {
+          logPath: data.logPath,
+          sourceTruncated:
+            data.stdoutTruncated === true || data.stderrTruncated === true,
+        });
+        return {
+          kind: "system",
+          label: "差分协处理器",
+          body,
+          // exitCode/lineCount mirror the body's numbers so the GUI can
+          // compose a localized exit row (2026-07-10); the canonical body
+          // stays authoritative for prompts/compaction. Only stamped for a
+          // REAL exit code — signal/timeout rows fall back to the body.
+          digest: {
+            kind: "text",
+            text: body,
+            ...(typeof data.exitCode === "number"
+              ? { exitCode: data.exitCode, lineCount }
+              : {}),
+          },
+          ...(tail.text.length > 0
+            ? {
+                evidenceDetail: `↳ 输出:\n${tail.text}`,
+                evidence: [{ kind: "output", text: tail.text }] as const,
+              }
+            : {}),
+        };
+      }
+      // Failure path (structured digest; `message` added 2026-07-10 so the
+      // GUI's localized failure row keeps it).
+      const err = event.result.error;
+      const code = err?.code ?? "unknown";
+      // Permission outcomes are exempt (D7 / audit 2026-07-10, finding 5):
+      // projecting the denied gate's tool result put "↳ edit_file failed:
+      // permission_denied: User denied edit_file" into the canonical record —
+      // persisted, streamed, and fed to Herta's prompt — while the
+      // permission.requested/resolved cases below correctly return null.
+      // Permission is fully user-machine; the record shows only operations
+      // that actually ran. Deterministic rule-denies (command_blocked,
+      // path_denied, …) still project — those are harness refusals, not user
+      // clicks. Mirrors beat-policy.ts's identical exemption.
+      if (code === "permission_denied" || code === "permission_failed") {
+        return null;
+      }
+      const message = err?.message ?? "(no message)";
+      return {
+        kind: "system",
+        label: "系统",
+        body: `↳ ${event.tool} failed: ${code}: ${message}`,
+        digest: { kind: "tool-fail", tool: event.tool, code, message },
+      };
+    }
+
+    case "patch.preview": {
+      const files = event.files.join(", ");
+      const body = [
+        `patch preview: ${files}`,
+        "",
+        "```diff",
+        event.diff.trimEnd(),
+        "```",
+      ].join("\n");
+      // skip: the preview never contributes a digest line — the Writing
+      // op that follows it covers the same ground (spec §4.1).
+      return { kind: "system", label: "系统", body, digest: { kind: "skip" } };
+    }
+
+    case "permission.requested": {
+      // N3 (2026-05-23): the resolver's interactive `[y/a/N]`
+      // prompt IS the user-facing permission request. Projecting
+      // a parallel system block here meant two writers landed on
+      // stdout for the same logical event — and because the
+      // resolver writes synchronously while the bridge drain is
+      // on a setImmediate cycle, the system block always raced
+      // with the prompt. Dropping the projection eliminates the
+      // duplicate. Per CLAUDE.md D7 permission is fully
+      // user-machine: NEITHER the request NOR the outcome enters
+      // the record (`permission.resolved` below also returns
+      // null). The proposed operation reaches the record only
+      // through the resulting → 系统 Writing / Running blocks
+      // once it actually runs.
+      return null;
+    }
+
+    case "permission.resolved": {
+      // N3-compaction-companion (2026-05-24): permission outcomes
+      // are no longer projected to the record. Permission is a
+      // user-machine interaction; Herta has nothing to add and
+      // shouldn't comment on the user's clicks. Once permissions
+      // are decided, the consequences (Writing / Running / Tests)
+      // appear in the record via the resulting backend events.
+      // See docs/superpowers/specs/2026-05-24-narrative-compaction-design.md §5.
+      return null;
+    }
+
+    default:
+      return null;
+  }
+}
+
+/**
+ * Map a backend tool name to a coarse workflow verb the user (and Herta)
+ * recognise. Returns null for tools that are too internal to surface —
+ * the corresponding `tool.call.started` event is dropped silently.
+ * The return type is the digest's verb union so the projected block's
+ * `digest.verb` and rendered body can never disagree.
+ */
+function workflowLabel(
+  tool: string,
+): Extract<SystemBlockDigest, { kind: "op" }>["verb"] | null {
+  switch (tool) {
+    case "read_file":
+    case "list_files":
+    case "search_text":
+    case "glob":
+    // show_excerpt starts as a Reading row like any other read; what makes
+    // it different is its FINISHED row, which carries the excerpt.
+    case "show_excerpt":
+      return "Reading";
+    case "edit_file":
+    case "write_new_file":
+      return "Writing";
+    case "run_command":
+    case "command_output":
+    case "command_stop":
+      return "Running";
+    case "todo_write":
+      return "Planning";
+    case "git_status":
+    case "git_diff":
+      return "Inspecting";
+    case "memory_save":
+      return "Saving memory";
+    default:
+      return null;
+  }
+}
+
+/** Canonical CN wording of the done-marker's record body — the exact wording
+ *  the GUI zh catalog pins (`record.marker.*`) and the CLI zh passthrough
+ *  displays raw. `stateWord` is resolved per report via STATUS_WORD. */
+const CN_MARKER_LABELS = (stateWord: string): MarkerSummaryLabels => ({
+  stateWord,
+  file: (n) => `${n} 个文件`,
+  tests: (passed, failed) =>
+    failed === 0
+      ? `测试 ${passed}/${passed}`
+      : `测试 ${passed} 通过，${failed} 失败`,
+  risk: (n) => `${n} 风险`,
+  aborted: "运行异常中止",
+});
+
+const STATUS_WORD: Record<string, string> = {
+  completed: "完成",
+  blocked: "受阻",
+  failed: "失败",
+  // The user's own Stop — never 失败 (audit 2026-07-24, 1.4). The record is
+  // durable and Herta-visible, so calling a deliberate stop a failure made
+  // her narrate that 板砖 broke and fed the next dispatch a phantom
+  // prior-run failure through workingHistory.
+  interrupted: "中断",
+  partial: "部分完成",
+};
+
+/**
+ * Build the run-terminal `差分协处理器` done-marker block from the backend's
+ * `AgentExecutionReport`. The body is a terse status roll-up
+ * (完成/受阻/失败/部分完成 · N files · tests P/F); `evidenceDetail` carries a
+ * bounded roll-up (last command tail + changed files + residual risks) for
+ * Herta's prompt. `role: "done-marker"` lets the renderer/actor recognise the
+ * end of the run.
+ */
+function buildDoneMarker(
+  report: AgentExecutionReport,
+  lastCommandTail: string | undefined,
+  lastCommandEvidence: readonly EvidenceSection[] | undefined,
+): SystemBlock {
+  const word = STATUS_WORD[report.status] ?? report.status;
+  const fileCount = report.changedFiles.length;
+  // Test counts computed once; feed both the canonical body and the structured
+  // markerSummary so they can never drift.
+  const testCounts =
+    report.tests.length > 0
+      ? {
+          passed: report.tests.filter((t) => t.status === "passed").length,
+          failed: report.tests.filter((t) => t.status === "failed").length,
+        }
+      : undefined;
+  const riskCount = report.residualRisks.length;
+
+  // Structured mirror for localizing renderers (the GUI). The body below stays
+  // canonical (D7); this is display-only data, never read by Herta's prompt.
+  const markerSummary: DoneMarkerSummary = {
+    kind: "done",
+    state: report.status,
+    fileCount,
+    ...(testCounts !== undefined ? { tests: testCounts } : {}),
+    riskCount,
+  };
+
+  // Canonical CN body, composed from the SAME structured summary through the
+  // SAME core composer the localizing renderers use — body and display can
+  // never drift. The wording mirrors the GUI zh catalog / ADR 0018 verbatim
+  // (`N 个文件`, `测试 P/总`, `N 风险`). The first live GUI e2e (2026-07-17)
+  // caught the previous hand-rolled body mixing English segments into the
+  // record grammar (`完成 · 2 files`, `完成 · 1 file · 1 风险`) — the CLI's zh
+  // passthrough displayed that mixed body raw.
+  const body = composeMarkerSummary(markerSummary, CN_MARKER_LABELS(word));
+
+  // The canonical string and its structured mirror are built from the SAME
+  // values in the SAME order, so the detail pane can never show a different
+  // roll-up than the prompt reads.
+  const detailParts: string[] = [];
+  const sections: EvidenceSection[] = [];
+  if (lastCommandTail !== undefined) detailParts.push(lastCommandTail);
+  if (lastCommandEvidence !== undefined) sections.push(...lastCommandEvidence);
+  if (fileCount > 0) {
+    const paths = report.changedFiles.map((f) => f.path).slice(0, 20);
+    detailParts.push(`↳ 改动文件: ${paths.join(", ")}`);
+    sections.push({ kind: "files", paths });
+  }
+  if (report.residualRisks.length > 0) {
+    const items = report.residualRisks.slice(0, 5);
+    detailParts.push(`↳ 风险: ${items.join("; ")}`);
+    sections.push({ kind: "risks", items });
+  }
+  // Unfinished todos (ADR 0025 §2): folded from the report's nextActions so
+  // the next dispatch inherits them through workingHistory (which reads the
+  // marker body + evidenceDetail), and Herta can name what's still open.
+  if (report.nextActions.length > 0) {
+    const items = report.nextActions.slice(0, 5);
+    detailParts.push(`↳ 待办: ${items.join("; ")}`);
+    sections.push({ kind: "todos", items });
+  }
+  const evidenceDetail =
+    detailParts.length > 0 ? detailParts.join("\n") : undefined;
+
+  return {
+    kind: "system",
+    label: "差分协处理器",
+    body,
+    role: "done-marker",
+    markerSummary,
+    ...(evidenceDetail !== undefined ? { evidenceDetail } : {}),
+    ...(sections.length > 0 ? { evidence: sections } : {}),
+  };
+}
+
+/** The digest's structured copy of the list. A fresh array of fresh objects,
+ *  never the caller's — a record block is durable and must not alias the
+ *  backend's live todo state. */
+function todoDigestItems(
+  todos: readonly TodoItem[],
+): readonly TodoDigestItem[] {
+  return todos.map((t) => ({ content: t.content, status: t.status }));
+}
+
+/**
+ * The dispatch's first todo layout as one record block (ADR 0025 §2
+ * rendering). English chrome header (matching every other projected row's
+ * chrome — renderers localize from the digest), item text verbatim as the
+ * backend wrote it. Status marks mirror the todo states:
+ * `[ ]` pending · `[~]` in_progress · `[x]` completed.
+ */
+function buildTodoLayoutBlock(todos: readonly TodoItem[]): SystemBlock {
+  const mark = (status: TodoStatus): string =>
+    status === "completed" ? "[x]" : status === "in_progress" ? "[~]" : "[ ]";
+  const completed = todos.filter((t) => t.status === "completed").length;
+  const lines = todos.map((t) => `${mark(t.status)} ${t.content}`);
+  return {
+    kind: "system",
+    label: "差分协处理器",
+    body: [`todo list (${todos.length}):`, ...lines].join("\n"),
+    // No `current` here — the layout's [~] mark already shows it; `current`
+    // is the progress rows' field (buildTodoProgressBlock below). `items`,
+    // by contrast, rides BOTH kinds: a renderer reading "the newest todo
+    // digest" must find a list there whether or not an update has landed
+    // yet, and one code path beats a layout-parse plus a counts-only path.
+    digest: {
+      kind: "todo",
+      total: todos.length,
+      completed,
+      items: todoDigestItems(todos),
+    },
+  };
+}
+
+/**
+ * A LATER todo_write update as one compact progress row (2026-07-23, user
+ * request: with a 任务清单 in play, the record should show which step 板砖
+ * is on). English chrome like every projected row; the in_progress item's
+ * text rides both the body and the digest (`current`) so the GUI can render
+ * a localized "步骤 k/n · <item>" line. Replaces the old "Planning k/n" op
+ * row (suppressed at tool.call.started). Compaction and the dream digest
+ * skip kind "todo" — working state, not an outcome — exactly as they did
+ * for the Planning rows.
+ *
+ * The one-line body is deliberately lossy (counts + the in-flight step); the
+ * digest's `items` carries the full list behind it, because under full-list
+ * replacement the plan a renderer should show is the plan on THIS update,
+ * not the one the layout block froze.
+ */
+function buildTodoProgressBlock(todos: readonly TodoItem[]): SystemBlock {
+  const completed = todos.filter((t) => t.status === "completed").length;
+  const current = todos.find((t) => t.status === "in_progress")?.content;
+  return {
+    kind: "system",
+    label: "差分协处理器",
+    body: `todo ${completed}/${todos.length}${current === undefined ? "" : `: ${current}`}`,
+    digest: {
+      kind: "todo",
+      total: todos.length,
+      completed,
+      ...(current === undefined ? {} : { current }),
+      items: todoDigestItems(todos),
+    },
+  };
+}
+
+/** Dedup signature for todo progress: a rewrite that changes none of the
+ *  list length, the completed count, or the in-flight item projects nothing.
+ *
+ *  `total` joined the signature on 2026-07-26. Full-list replacement lets
+ *  板砖 legitimately grow or prune the plan mid-run, and with a
+ *  `completed|current` signature an ADDED (or dropped) step while the same
+ *  item stayed in flight projected NOTHING — so the record's last
+ *  `todo k/n` row, and every renderer reading it, went on quoting a stale n
+ *  for the rest of the dispatch.
+ *
+ *  Deliberately NOT in the signature: item text and ordering. A pending
+ *  tail gets reworded constantly, and a row per reword would spam the
+ *  record — which IS Herta's prompt, not just a screen. The trade is
+ *  explicit: the newest projected digest's `items` can lag a pure reword of
+ *  a non-in-flight item until the next update that does move a count or the
+ *  in-flight step. The numbers and the step being worked — what a reader
+ *  acts on — stay honest; item text is eventually consistent. */
+function todoProgressSignature(todos: readonly TodoItem[]): string {
+  const completed = todos.filter((t) => t.status === "completed").length;
+  const current = todos.find((t) => t.status === "in_progress")?.content ?? "";
+  // Free text last: an item containing "|" then cannot collide across fields.
+  return `${completed}|${todos.length}|${current}`;
+}
+
+/**
+ * Terminal block for a true no-op delegation: `@板砖` was triggered but the
+ * backend produced no file/directory/command work (e.g. Herta delegated
+ * chitchat / public-data / out-of-scope). Emitting a concrete marker (instead
+ * of a bare 完成) gives the next iteration's prompt something to react to,
+ * preventing the duplicate-speech bug (2026-05-23). The `body` starts with
+ * 无产出 so compact-record.ts digests it to （板砖无产出）. Carries
+ * `role: "noop-marker"` so the synthesized block is structurally identifiable
+ * (like the done-marker) and compaction can key on the role rather than the
+ * body prefix. It is NOT a `role: "done-marker"` — this is not a completion
+ * roll-up, so the compaction lifecycle folds it into the summary rather than
+ * passing it through verbatim.
+ */
+function buildNoopMarker(): SystemBlock {
+  return {
+    kind: "system",
+    label: "差分协处理器",
+    body: "无产出 — 这次没有触发任何文件、目录或命令操作。",
+    role: "noop-marker",
+  };
+}
+
+/**
+ * Terminal block for an INFRA failure: `runBrief` itself threw (workspace
+ * mkdir failure, double-brief guard, an internal bug) rather than returning
+ * a `failed` report the way ordinary tool/provider failures do. Pre-fix the
+ * bridge rethrew without returning `current`, so every block already
+ * rendered via the sink existed on screen but in neither memory nor disk
+ * (D7 divergence), and the GUI's activity group just stopped with no
+ * terminal state. Converging on the same `role: "done-marker"` shape as an
+ * ordinary failed run gives Herta a concrete 失败 marker to react to and
+ * lets the GUI terminate the live activity group exactly like any other
+ * run-terminal block. The raw error text rides `evidenceDetail` (prompt/
+ * detail lane; sanitized by the caller like every backend-derived string).
+ */
+function buildBridgeFailureMarker(err: unknown): SystemBlock {
+  const message =
+    err instanceof Error
+      ? err.message
+      : typeof (err as { message?: unknown })?.message === "string"
+        ? (err as { message: string }).message
+        : String(err);
+  return {
+    kind: "system",
+    label: "差分协处理器",
+    body: "失败 · 运行异常中止",
+    role: "done-marker",
+    // `aborted` (not a synthetic riskCount: 1) mirrors the body's 运行异常中止:
+    // localizing renderers compose "run aborted" instead of "1 risk".
+    markerSummary: {
+      kind: "done",
+      state: "failed",
+      fileCount: 0,
+      riskCount: 0,
+      aborted: true,
+    },
+    evidenceDetail: `↳ 错误: ${message}`,
+    evidence: [{ kind: "error", message }],
+  };
+}
+
+export type BeatFirer = (
+  record: TerminalRecord,
+  trigger: TriggerSpec,
+  signal: AbortSignal,
+) => Promise<TerminalRecordBlock | null>;
+
+export interface BanzhuanBridgeDeps {
+  /** Shared event bus the backend's `CodingAgentRuntime` publishes onto. */
+  readonly bus: EventBus<AgentEvent>;
+  /** Factory that constructs a fresh `CodingAgentRuntime` per invocation
+   *  (the actor doesn't share runtime state across calls per ADR 0007). */
+  readonly runtimeFactory: () => CodingAgentRuntime;
+  /** The session's interaction language (ADR 0016). Passed through to the
+   *  backend so an EN session drives the backend prompt in English; absent
+   *  → the backend defaults to Chinese (byte-identical to before). */
+  readonly lang?: PromptLang;
+  readonly signal?: AbortSignal;
+  /** Optional beat policy. If both `beatPolicy` and `fireBeat` are
+   *  provided, the bridge fires in-turn beats between projected events. */
+  readonly beatPolicy?: BeatPolicy;
+  readonly fireBeat?: BeatFirer;
+  /**
+   * Optional streaming sink (Slice 9). When provided, the bridge calls
+   * `sink.flushBlocks(current)` after each projected system block and
+   * after each fired beat block. This lets the renderer surface system
+   * blocks and beats in time-order during the post-hoc event walk,
+   * rather than the caller flushing them all at end-of-turn.
+   */
+  readonly sink?: ActorStreamingSink;
+}
+
+/**
+ * Invoke the coding-agent backend in response to Herta's `@板砖` trigger.
+ *
+ * Concurrency model (post-hotfix-2): event projection and beat firing
+ * run on a CONCURRENT drain task that processes events as they arrive
+ * on the bus, NOT after `runBrief` completes. This gives real-time UX:
+ * each `→ 差分协处理器 ...` system block surfaces the moment its event
+ * fires, and beats interleave with their triggering events instead of
+ * bunching at the end.
+ *
+ * The drain task and `runBrief` run in the same single-threaded JS
+ * event loop. `runBrief` does I/O (LLM calls, file reads) — between
+ * its awaits, control yields to the event loop and the drain task
+ * picks up any queued events. The drain task awaits `fireBeat` (an
+ * async streamCompletion call) — while it does, `runBrief` may
+ * continue queueing more events. Because both operate on a shared
+ * `current: TerminalRecord` via `let`-reassignment (not array mutation),
+ * the final value reflects all appends in chronological order.
+ *
+ * Filters the input record to user-only messages for the backend's
+ * `userMessages` parameter (matches the existing `run_coding_task`
+ * contract; SPEC §7.2 full TerminalRecord pass-through is deferred).
+ *
+ * SPEC v0.2 §5.6, §7.
+ */
+export async function invokeBanzhuanBridge(
+  record: TerminalRecord,
+  /** Reserved — for future extension (e.g. surfacing prior backend reports
+   *  as task context). Pass `[]` for the MVP path. */
+  _priorReports: readonly unknown[],
+  deps: BanzhuanBridgeDeps,
+): Promise<TerminalRecord> {
+  // Defense-in-depth double-run guard (audit L1, 2026-07-09): nothing
+  // STRUCTURAL prevents two bridge runs sharing one bus — the runtime's
+  // `briefInFlight` is per-instance while `runtimeFactory()` mints a fresh
+  // instance per dispatch, so the only real protections are the session
+  // single-turn invariant and the one-bridge-per-turn cap. Both live in
+  // CALLERS; a future entry point that bypasses them (the D2/D3 session
+  // paths were retrofitted with exactly that guard for this reason) would
+  // interleave two drains' projections and cross-fire their beats. Latch
+  // per bus and fail loud — an interleaved record is a corruption, not a
+  // degradation, so this must never be converged like an ordinary failure.
+  if (BUS_IN_FLIGHT.has(deps.bus)) {
+    throw new Error(
+      "invokeBanzhuanBridge: a backend run is already draining this bus " +
+        "(single-turn invariant violated — refusing to interleave two runs)",
+    );
+  }
+  BUS_IN_FLIGHT.add(deps.bus);
+  try {
+    return await invokeBanzhuanBridgeInner(record, deps);
+  } finally {
+    BUS_IN_FLIGHT.delete(deps.bus);
+  }
+}
+
+/** Buses with a bridge run currently draining them. WeakSet: a bus that
+ *  outlives its session is not pinned by the guard. */
+const BUS_IN_FLIGHT = new WeakSet<EventBus<AgentEvent>>();
+
+async function invokeBanzhuanBridgeInner(
+  record: TerminalRecord,
+  deps: BanzhuanBridgeDeps,
+): Promise<TerminalRecord> {
+  const eventQueue: AgentEvent[] = [];
+  let processedIdx = 0;
+  let runBriefDone = false;
+  let current: TerminalRecord = record;
+  // Tracks whether the drain projected ANY backend work block (a `→ 系统` /
+  // `→ 差分协处理器` block). Used to pick the terminal block: a true no-op
+  // delegation (no projected work) gets the 无产出 marker; real work gets the
+  // 完成/受阻/失败/部分完成 done-marker. Beats don't count — a no-op backend
+  // fires none (beats trigger on patch.preview / verification.finished / tool
+  // failures, none of which occur in a no-op), but using a dedicated flag
+  // makes the no-op test unambiguous regardless.
+  let projectedAny = false;
+  // Remember the most-recent run_command output so the done-marker roll-up
+  // can include it (the report's evidence[] only has short summaries). Both
+  // lanes are captured together — the canonical string and its structured
+  // mirror must describe the same command, or the localized detail pane would
+  // quote a different run than Herta's prompt does.
+  let lastCommandTail: string | undefined;
+  let lastCommandEvidence: readonly EvidenceSection[] | undefined;
+  // First-todo-layout latch + progress-row dedup + background-row state (all
+  // reset per backend turn.started): see the PROCESS-phase comments at their
+  // use sites.
+  let todoLayoutProjected = false;
+  let lastTodoSignature: string | null = null;
+  const bgLastState = new Map<string, string>();
+
+  const unsubscribe = deps.bus.onAny((event: AgentEvent) => {
+    eventQueue.push(event);
+  });
+
+  const signal = deps.signal ?? new AbortController().signal;
+  const policy = deps.beatPolicy;
+  const fire = deps.fireBeat;
+  const beatsEnabled = policy !== undefined && fire !== undefined;
+
+  /**
+   * Drains queued events: projects each to a SystemBlock (live flush),
+   * fires beats per the BeatPolicy. Runs concurrently with `runBrief`;
+   * exits once `runBriefDone === true`, the queue is empty, and no beats
+   * are still held for firing.
+   *
+   * Beat deferral across the permission prompt (spec §"Fix 1"):
+   *
+   *   For a mutating tool the backend emits, in order, `patch.preview` →
+   *   `permission.requested` → (BLOCKS on the resolver's `[y/a/N]`) →
+   *   `permission.resolved` → `tool.call.started` ("Writing"). A
+   *   `patch.preview` fires a beat, and `fire` is a multi-second streaming
+   *   `provider.streamCompletion` call that writes Herta tokens straight to
+   *   stdout. If that beat streamed inline it would race the resolver's
+   *   prompt + keystroke read, scrambling the user's typed answer.
+   *
+   *   So beats are deferred: a trigger seen during PROCESS is collected into
+   *   `staged` (classification + dedup only — `policy.shouldStage`), promoted
+   *   to `ready` at cycle end, and only PRIOR-cycle `ready` beats fire — at
+   *   the TOP of a later cycle (before that cycle's new events project),
+   *   gated on no permission prompt being pending AND on the beat throttle
+   *   (`policy.readyToFire()`, measured against the last actual fire). The
+   *   gate checks both the already-processed `permissionPending` flag AND any
+   *   `permission.requested` still sitting unprocessed in the queue: because
+   *   `patch.preview` is published one tick before `permission.requested`, a
+   *   flag-only guard would lose the race (the trailing request not yet
+   *   processed when the held beat is considered). With the queue peek, a
+   *   queued-but-unprocessed request still holds the beat; it fires only once
+   *   `permission.resolved` has cleared the flag and no further request is
+   *   pending — i.e. after the resulting "Writing" block.
+   *
+   * Yield primitive: between cycles the drain awaits `setTimeout(0)` (timers
+   * phase), NOT `setImmediate` (check phase). In production this choice is not
+   * a correctness dependency: `patch.preview` and `permission.requested` arrive
+   * in the same synchronous burst (the edit-file/write-new-file rule publishes
+   * the preview inside the awaited permission evaluate, then the turn loop
+   * synchronously emits the request before its real `await decision.decision`),
+   * so no macrotask yield can interleave between them and the queue-peek gate is
+   * race-proof regardless of yield primitive. The `setTimeout(0)` choice matters
+   * for the TEST harness, whose publishes are `await tick()`-separated (one
+   * setTimeout apart): `setImmediate` consistently preempts a due `setTimeout(0)`
+   * on a warm loop, so a `setImmediate` yield would lap the backend and re-enter
+   * to fire a held beat before the trailing `permission.requested` was published.
+   * Yielding on the timers phase keeps the drain in step with those publishes so
+   * the queue peek can observe the pending request. This polling is cheap
+   * (cooperative, not busy-loop) and runs at most once per loop turn when idle.
+   */
+  let permissionPending = false;
+  let ready: TriggerSpec[] = [];
+  let staged: TriggerSpec[] = [];
+  // Set on the runBrief-threw path BEFORE the final drain settle: the run is
+  // dead, so events still queued must project (screen truth) but must not
+  // stage or fire beats — a beat streaming over a failed run's teardown is
+  // exactly the "held beat over whatever renders next" hazard, just inside
+  // the bridge instead of after it.
+  let beatsSuppressed = false;
+
+  // A permission prompt is "pending" if we've processed a `permission.requested`
+  // without its `permission.resolved` yet, OR a `permission.requested` is still
+  // queued ahead of us (published a tick after its `patch.preview`, not yet
+  // processed). Either way, no beat should stream while the resolver waits.
+  // The queue scan is bounded and cheap: it starts at `processedIdx` (not 0),
+  // the queue holds at most one turn's events, and in the common held-beat state
+  // the queue is already fully drained so the scan iterates over nothing.
+  const permissionPromptPending = (): boolean => {
+    if (permissionPending) return true;
+    for (let i = processedIdx; i < eventQueue.length; i += 1) {
+      const e = eventQueue[i];
+      if (e?.layer === "backend" && e.type === "permission.requested") {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const drainTask = (async (): Promise<void> => {
+    while (
+      !runBriefDone ||
+      processedIdx < eventQueue.length ||
+      ready.length > 0
+    ) {
+      // PHASE 1 — FIRE prior-cycle `ready` beats, before this cycle's new
+      // events project, so each beat lands immediately after its own
+      // triggering system block and before the next one. FIRE is intentionally
+      // placed before PROCESS (not the other way round); flipping them would
+      // break beat/block interleave ordering — a held beat would land before
+      // its triggering system block, scrambling the [system, herta, system,
+      // herta] sequence. Gated on no permission prompt pending (flag OR
+      // queued-but-unprocessed request). While `fire` awaits its
+      // streamCompletion more events may queue; they are picked up by PHASE 2
+      // below and the next cycle.
+      if (beatsEnabled && !beatsSuppressed) {
+        // `readyToFire()` gates each fire attempt (M3, 2026-07-04): the
+        // throttle window is measured against the previous ACTUAL fire,
+        // here at the fire site — not at event arrival in PROCESS. A
+        // trigger inside the window stays in `ready` and this cycle's
+        // fire loop exits; PHASE 4 keeps the drain cycling while beats
+        // are held, so it fires once the window opens (or is dropped by
+        // the termination guard if the run ends first).
+        while (
+          ready.length > 0 &&
+          !permissionPromptPending() &&
+          policy.readyToFire()
+        ) {
+          const trigger = ready.shift();
+          if (trigger === undefined) break;
+          let beat: Awaited<ReturnType<typeof fire>> = null;
+          try {
+            beat = await fire(current, trigger, signal);
+          } catch {
+            // A failed beat (provider error, interrupt mid-beat) is DROPPED,
+            // never fatal. Pre-fix this rejection escaped through drainTask —
+            // whose first handler attaches only after runBrief settles — and
+            // killed the process as an unhandled rejection, or (when runBrief
+            // won the race) threw away a SUCCESSFUL backend run's turn.
+            beat = null;
+            if (signal.aborted) {
+              // The turn is dead — no further beats can meaningfully fire.
+              ready = [];
+              break;
+            }
+          }
+          if (beat !== null) {
+            current = [...current, beat];
+            deps.sink?.flushBlocks(current);
+            policy.markFired(trigger.signature, policy.now());
+          }
+        }
+      }
+
+      // PHASE 2 — PROCESS: project blocks inline, track permission state,
+      // and stage (do not fire) any beat triggers.
+      while (processedIdx < eventQueue.length) {
+        const event = eventQueue[processedIdx];
+        processedIdx += 1;
+        if (event === undefined) continue;
+
+        if (event.type === "turn.started" && event.layer === "backend") {
+          if (beatsEnabled) {
+            policy.reset();
+            ready = [];
+            staged = [];
+          }
+          todoLayoutProjected = false;
+          lastTodoSignature = null;
+          bgLastState.clear();
+        }
+
+        if (event.layer === "backend") {
+          if (event.type === "permission.requested") permissionPending = true;
+          else if (event.type === "permission.resolved") {
+            permissionPending = false;
+          }
+        }
+
+        // Todo projection (ADR 0025 §2 rendering + 2026-07-23 progress rows):
+        // the FIRST todo_write of the dispatch projects as ONE full layout
+        // block so user and Herta share the plan; every LATER update projects
+        // as a compact "todo k/n: <current>" progress row so the record (and
+        // the GUI's live activity line) show which step 板砖 is on. A rewrite
+        // that moves neither the counts nor the in-flight item is
+        // suppressed — projecting every near-identical list would spam the
+        // record (see todoProgressSignature for what that costs). The
+        // unfinished tail still rides the done-marker (↳ 待办).
+        if (
+          event.type === "plan.updated" &&
+          event.layer === "backend" &&
+          event.todos.length > 0
+        ) {
+          const signature = todoProgressSignature(event.todos);
+          if (!todoLayoutProjected) {
+            todoLayoutProjected = true;
+            lastTodoSignature = signature;
+            const todoBlock = sanitizeSystemBlock(
+              buildTodoLayoutBlock(event.todos),
+            );
+            projectedAny = true;
+            current = [...current, todoBlock];
+            deps.sink?.flushBlocks(current);
+          } else if (signature !== lastTodoSignature) {
+            lastTodoSignature = signature;
+            const progressBlock = sanitizeSystemBlock(
+              buildTodoProgressBlock(event.todos),
+            );
+            projectedAny = true;
+            current = [...current, progressBlock];
+            deps.sink?.flushBlocks(current);
+          }
+        }
+
+        let projected = projectBackendEvent(event);
+        // Consecutive-state suppression for background rows: command_output
+        // polls with no new output would otherwise stack identical
+        // "background bg-1: running" lines. Rows carrying evidenceDetail
+        // (fresh output for Herta's prompt) always project; state CHANGES
+        // (running→exited/stopped) always project.
+        if (projected !== null && projected.digest?.kind === "bg") {
+          const d = projected.digest;
+          if (
+            d.state === "running" &&
+            bgLastState.get(d.id) === "running" &&
+            projected.evidenceDetail === undefined
+          ) {
+            projected = null;
+          } else {
+            bgLastState.set(d.id, d.state);
+          }
+        }
+        if (projected !== null) {
+          projectedAny = true;
+          current = [...current, projected];
+          if (
+            projected.label === "差分协处理器" &&
+            projected.evidenceDetail !== undefined
+          ) {
+            lastCommandTail = projected.evidenceDetail;
+            lastCommandEvidence = projected.evidence;
+          }
+          deps.sink?.flushBlocks(current);
+        }
+
+        if (beatsEnabled && !beatsSuppressed) {
+          const trigger = policy.shouldStage(event);
+          if (
+            trigger !== null &&
+            !staged.some((t) => t.signature === trigger.signature) &&
+            !ready.some((t) => t.signature === trigger.signature)
+          ) {
+            staged.push(trigger);
+          }
+        }
+      }
+
+      // PHASE 3 — PROMOTE staged → ready (eligible to fire next cycle).
+      if (staged.length > 0) {
+        ready.push(...staged);
+        staged = [];
+      }
+
+      // Termination guard: once the backend has exited and the queue is fully
+      // drained, no further events will arrive to clear a pending-permission
+      // gate. If beats are still held behind it (the turn was aborted or the
+      // resolver rejected mid-prompt, so permission.resolved never came),
+      // they can never fire — and looping would spin forever on setTimeout(0)
+      // (and `await drainTask` is skipped when runBrief throws, orphaning this
+      // loop). Drop the stuck beats and exit. Note: on the NORMAL deferral
+      // path permissionPending is already false by the time the queue drains
+      // (permission.resolved was processed), so this never discards a beat
+      // that is legitimately waiting to fire after approval.
+      //
+      // The same drop applies to THROTTLE-held beats (M3): with the run
+      // finished, waiting out the window would delay the whole turn — the
+      // done-marker and Herta's synthesis speech — by up to minInterBurstMs
+      // for the sake of a flavor line whose content her synthesis is about
+      // to cover anyway. Beats are in-turn reactions; once the run is over
+      // their moment has passed. Dropping (not waiting) also guarantees
+      // termination under pinned test clocks, where the window would never
+      // elapse.
+      if (
+        runBriefDone &&
+        processedIdx >= eventQueue.length &&
+        ready.length > 0 &&
+        (permissionPending || (beatsEnabled && !policy.readyToFire()))
+      ) {
+        ready = [];
+        break;
+      }
+
+      // PHASE 4 — YIELD if there's more to do (more backend events coming,
+      // queued events to process, or held beats waiting to fire). See the
+      // doc comment above on why this is `setTimeout(0)`, not `setImmediate`.
+      if (!runBriefDone || ready.length > 0) {
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 0);
+        });
+      }
+    }
+  })();
+
+  // Defensive: mark the drain handled so an unexpected drain rejection while
+  // runBrief is still pending can never crash the process as an unhandled
+  // rejection. The real outcome still surfaces at `await drainTask` below.
+  drainTask.catch(() => undefined);
+
+  let report: AgentExecutionReport | undefined;
+  try {
+    const extracted = extractUserMessages(record);
+    const boundary = findLastDispatchBoundary(record);
+    const recentDialogue = extractRecentDialogue(record, boundary);
+    const workingHistory = extractWorkingHistory(record, boundary);
+    const runtime = deps.runtimeFactory();
+    const taskId = `task-${randomUUID()}`;
+    report = await runtime.runBrief(
+      { taskId },
+      {
+        signal,
+        userMessages: extracted.messages,
+        omittedUserMessages: extracted.omitted,
+        recentDialogue,
+        workingHistory,
+        lang: deps.lang,
+      },
+    );
+  } catch (err) {
+    // runBrief threw — an INFRA failure (workspace mkdir, the double-brief
+    // guard, an internal bug), NOT an ordinary tool/provider failure: those
+    // are converted to `turn.failed` inside the turn loop and runBrief
+    // returns a `failed` report. Pre-fix this path rethrew without returning
+    // `current`, so every block the drain had already rendered via the sink
+    // existed on screen but in neither the caller's record nor disk (D7
+    // divergence), and the GUI activity group froze with no terminal state.
+    //
+    // Converge instead of diverging: suppress beats, settle the drain (so
+    // remaining queued events still project — screen truth — and the loop
+    // can never fire a held beat over whatever renders next), append the
+    // same failure marker shape an ordinary failed run gets, and RETURN the
+    // record. Herta's next iteration reacts to the 失败 marker exactly like
+    // any other failed dispatch; a turn.failed bus event gives the GUI its
+    // device-card failed state (parity with in-loop failures, which emit it
+    // from the turn loop itself).
+    beatsSuppressed = true;
+    ready = [];
+    staged = [];
+    runBriefDone = true;
+    await drainTask.catch(() => undefined);
+    // Unsubscribe BEFORE publishing turn.failed so the settled queue never
+    // receives it (idempotent — the finally below re-runs it harmlessly).
+    unsubscribe();
+    const error: AgentError =
+      typeof (err as AgentError)?.kind === "string" &&
+      typeof (err as AgentError)?.message === "string"
+        ? (err as AgentError)
+        : {
+            kind: "internal",
+            message: err instanceof Error ? err.message : String(err),
+          };
+    deps.bus.publish({ type: "turn.failed", layer: "backend", error });
+    const marker = sanitizeSystemBlock(buildBridgeFailureMarker(err));
+    current = [...current, marker];
+    deps.sink?.flushBlocks(current);
+    return current;
+  } finally {
+    runBriefDone = true;
+    unsubscribe();
+  }
+
+  // Wait for the drain to finish processing any final queued events.
+  await drainTask;
+
+  // Append a terminal block so the next iteration's prompt has a concrete
+  // signal to react to (the bridge previously discarded the report). When the
+  // backend produced work blocks, emit the 完成/受阻/失败/部分完成 done-marker.
+  // When it produced nothing (a true no-op delegation), emit the 无产出 marker
+  // instead — a single trailing block that preserves the 2026-05-23
+  // duplicate-speech fix (compact-record.ts keys on body.startsWith("无产出")).
+  // If `runBrief` threw, the catch above already appended the failure marker
+  // and returned; `report` is always defined here — the guard is defensive.
+  if (report !== undefined) {
+    // Publish the VERDICT as an explicit event (audit 2026-07-24, 1.1). The
+    // `agent.report` variant was declared but never emitted, so every
+    // consumer had to re-derive "did it go well" from lifecycle events —
+    // and `turn.finished` only means the loop ended without throwing, which
+    // is equally true of a user-denied (blocked) or all-failed (partial)
+    // run. That is how denying a write still flashed the device card green.
+    deps.bus.publish({ type: "agent.report", layer: "backend", report });
+    // sanitizeSystemBlock: the done-marker roll-up interpolates report
+    // strings (changed-file paths, residual risks) — backend-derived text,
+    // same trust class as projected bodies.
+    // The terminal block is chosen by the REPORT'S VERDICT, not by whether
+    // anything happened to project (audit 2026-07-24, 1.5). `projectedAny` is
+    // a side-effect of the projection rules, and several endings leave it
+    // false for reasons that are emphatically NOT "nothing was asked": a
+    // user interrupt during the first inference; a run whose only action was
+    // a permission-denied non-preview command (permission events deliberately
+    // project null); a provider failure before the first tool call. Those all
+    // rendered 无产出 — "板砖 didn't do anything" — right after the user
+    // pressed Stop or denied the command. Worse, it was self-erasing:
+    // compaction digests it to （板砖无产出）and workingHistory drops
+    // noop-markers entirely, so the next dispatch carried no trace.
+    //
+    // 无产出 now requires the run to have ended NORMALLY and produced
+    // nothing. "Normally" is the complement of the three endings that carry
+    // their own explanation — interrupted / blocked / failed. (A genuine
+    // no-op reports `partial`, not `completed`: with no tool evidence there
+    // is nothing to claim success from — which is exactly why the status
+    // must be tested for the ABSENCE of a stated ending rather than for
+    // success.)
+    const endedNormally =
+      report.status === "completed" || report.status === "partial";
+    const trulyNoop =
+      endedNormally &&
+      !projectedAny &&
+      report.changedFiles.length === 0 &&
+      report.tests.length === 0;
+    const marker = sanitizeSystemBlock(
+      trulyNoop
+        ? buildNoopMarker()
+        : buildDoneMarker(report, lastCommandTail, lastCommandEvidence),
+    );
+    current = [...current, marker];
+    deps.sink?.flushBlocks(current);
+  }
+
+  return current;
+}
+
+/** Caps for the user-message replay (ADR 0025 slice 2). Before these, the
+ *  backend received EVERY user block in the session — the one unbounded
+ *  context-growth vector on the input side (workingHistory and
+ *  recentDialogue were already tightly capped). The newest message is the
+ *  task and is always kept whole regardless of the char cap. */
+const USER_HISTORY_MAX_MESSAGES = 24;
+const USER_HISTORY_MAX_CHARS = 16_000;
+
+export interface ExtractedUserMessages {
+  readonly messages: ReadonlyArray<{ text: string }>;
+  /** How many older user messages the caps elided (0 = complete replay). */
+  readonly omitted: number;
+}
+
+function extractUserMessages(record: TerminalRecord): ExtractedUserMessages {
+  const all: { text: string }[] = [];
+  for (const block of record) {
+    if (block.kind === "user") {
+      all.push({ text: block.text });
+    }
+  }
+  // Keep from the newest backwards until either cap trips. The newest
+  // message always survives whole — it IS the task.
+  const kept: { text: string }[] = [];
+  let chars = 0;
+  for (let i = all.length - 1; i >= 0; i -= 1) {
+    const m = all[i];
+    if (m === undefined) continue;
+    if (kept.length > 0) {
+      if (kept.length >= USER_HISTORY_MAX_MESSAGES) break;
+      if (chars + m.text.length > USER_HISTORY_MAX_CHARS) break;
+    }
+    kept.push(m);
+    chars += m.text.length;
+  }
+  kept.reverse();
+  return { messages: kept, omitted: all.length - kept.length };
+}

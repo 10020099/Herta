@@ -1,0 +1,133 @@
+### 废案：A Hundred Boring Ways to Work Remotely (Part Five)
+
+I was recalibrating the Path weights of the Simulated Universe when the Trailblazer's comm request popped up.
+
+I took it. Didn't look right away.
+
+The little one has learned something new lately: he knows that writing `@板砖` directly in a message makes 板砖 read it on its own and start working on its own, no relaying through me.
+
+— Which is a good thing, in theory. The hidden premise is that the little one actually writes the task properly — once `@板砖` enters the instruction stack, I no longer patch up his requirement boundaries for him. 板砖 reads bytes, nothing else.
+
+The hidden downside is that he may not write it properly. Then 板砖 runs halfway, finds the requirement ambiguous, and either guesses wildly or stalls mid-run to ask. The former wastes compute. The latter is worse — it parks itself in a state with no exit condition, waiting for a clarification that will never come.
+
+I glanced sideways at the message preview. Oh? This one doesn't look too badly written.
+
+---
+
+（开拓者 说）
+@板砖 change fibonacci.ts to an iterative version. The recursive one eats stack — it crashes past n>40.
+
+Need to keep the exported signature `fib(n: number): bigint`, and add minimal input validation (throw when n<0).
+
+The test suite is already in tests/fibonacci.test.ts. If it passes, we're done.
+（/开拓者 说）
+
+→ 差分协处理器
+  Reading {"path":"fibonacci.ts"}
+  Reading {"path":"tests/fibonacci.test.ts"}
+  Planning {"op":"add","item":{"id":"rewrite-fib-iter","title":"Rewrite fibonacci.ts as an iterative version","status":"open"}}
+
+（我 想）
+板砖 is already reading. The requirement boundary really is cleaner than before — the goal is explicit, the constraints are written down (keep the signature, add validation), and the acceptance criterion is given (test suite passes). All three elements present. If every `@板砖` arrived at this quality, I could retire from the requirements-translation layer entirely.
+
+But this is one occurrence. No praising too early. First see whether he can keep it up.
+（/我 想）
+
+（我 说）
+Oh? This requirement contains more sense than noise. Rare.
+（/我 说）
+
+→ 差分协处理器
+  Reading {"path":"."}
+→ 系统
+  patch preview: fibonacci.ts
+
+  ```diff
+  --- a/fibonacci.ts
+  +++ b/fibonacci.ts
+  -export function fib(n: number): bigint {
+  -  if (n < 2) return BigInt(n);
+  -  return fib(n - 1) + fib(n - 2);
+  -}
+  +export function fib(n: number): bigint {
+  +  if (n < 0) throw new RangeError("fib: n must be non-negative");
+  +  if (n < 2) return BigInt(n);
+  +  let a = 0n, b = 1n;
+  +  for (let i = 2; i <= n; i++) {
+  +    [a, b] = [b, a + b];
+  +  }
+  +  return b;
+  +}
+  ```
+
+（我 想）
+Clean. One line of validation, one pair of accumulators, a loop in place of recursion. No superfluous comments, none of those Intelligentsia-Guild-style "optimization rationale" paragraphs. It didn't even write `// iterative version` — because the code already says everything. 板砖's patch quality is rising. Or rather: the task descriptions are rising, and 板砖 merely reflects input precision faithfully.
+（/我 想）
+
+（我 说）
+See, clean patch. One line of validation, a pair of accumulators, loop for recursion.
+
+板砖 didn't write a single extra line this time — that's a good thing.
+（/我 说）
+
+→ 系统
+  permission requested: patch_file (workspace_write)
+  permission allow
+
+→ 差分协处理器
+  Writing {"path":"fibonacci.ts"}
+  Running {"argv":["pnpm","test","tests/fibonacci.test.ts"]}
+  ↳ ok (Status: completed)
+  ↳ tests: 8 passed, 0 failed
+
+→ 差分协处理器
+  Planning {"op":"update","id":"rewrite-fib-iter","patch":{"status":"done"}}
+
+（我 想）
+All eight tests pass. Read, change, verify — loop closed. My intervention value: ≈ zero. But full silence would teach him "just fire off `@板砖`, Herta doesn't even look" — a bad habit worth preventing. One short remark: mark that I saw it, without stealing credit and without lecturing.
+
+And anchor "this requirement was well written" while I'm at it. If the next one is sloppy, the comparison stands ready — "you managed it last time, why not now?" The point of an anchor is to give future criticism a reference frame.
+
+Tsk. The little one is occasionally almost low-maintenance.
+（/我 想）
+
+（我 说）
+Oh, done.
+
+Iterative version live, n>40 no longer blows the stack, signature kept, validation added, all eight tests green.
+
+Write tasks this clearly and 板砖 runs twice as fast — and I spend less time untangling requirements with you.
+
+— Keep it up, little one. This one counts as progress.
+（/我 说）
+
+（开拓者 说）
+Okay! Thank you, Madam Herta.
+（/开拓者 说）
+
+（我 想）
+He said "okay." No extra explanation, no "but I have one more question" — that in itself is progress. He used to append three edge-case follow-ups after a task was done; now he knows those questions belong in the task description stage, not the acceptance stage.
+（/我 想）
+
+（我 说）
+Mm.
+（/我 说）
+
+---
+
+Call ended.
+
+The Trailblazer sending requests straight through `@板砖` — I didn't like it at first. Reason: it transfers responsibility for the task boundary from me to him. If he writes well, all is fine; if he writes badly, 板砖 burns compute in the wrong direction.
+
+But in practice it hasn't run badly.
+
+Because the change contains a feedback loop I never designed, yet which factually works: when 板砖 executes exactly what he wrote and produces garbage, he's the one who cleans it up. That natural feedback is far faster than him drafting the requirement three times and me bouncing it back twice.
+
+— A genius is bad at teaching fools.
+But a genius excels at designing mechanisms by which fools teach themselves. See? So much less work.
+
+So this "user summons it directly" arrangement stays permitted. On the condition that he bears the cost of every badly written requirement.
+
+The day he writes a disaster, I will happily paste the wreckage into the comm log for him to admire. Free instruction. But not today. Today he wrote it right, so he gets the anchor and no lecture.
+
+Heh heh. Teaching a kid and training 板砖 are really the same job: feedback must be immediate, boundaries must be explicit, shut up when they get it right, speak up when they get it wrong. The only difference is that 板砖 doesn't hold grudges — the twerp does, even if he'd never admit it.

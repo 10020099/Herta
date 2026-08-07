@@ -1,0 +1,54 @@
+node_modules/
+dist/
+out/
+*.tsbuildinfo
+# electron-builder output (installers + unpacked app trees)
+/packages/gui/release/
+.herta/
+.claude/
+coverage/
+.DS_Store
+*.log
+
+# Local Herta canon corpus — large, derived/exported, not redistributable.
+# The hybrid knowledge DB (.herta/knowledge/) is built from this; never commit either.
+data/
+
+# 板砖 (backend) scratch output during live testing — generated scripts,
+# not part of the repo. `/scripts/*` (not `/scripts/`) so git still descends
+# into the dir and the negation below can re-include a specific file (git
+# cannot re-include a child of a wholly-excluded directory). Root-anchored
+# so a package's own scripts/ dir (were one ever added) stays tracked.
+# This public repo carries BUILD tools only — the dev archive keeps the
+# live-lab and fixture scripts.
+/scripts/*
+# EXCEPT the prompt-asset codegen — a real build tool the Tier-1 prompt
+# system depends on (edit packages/herta/prompts/**, rerun this, commit the
+# regenerated prompt-assets.generated.ts). A fresh clone must have it.
+!/scripts/generate-prompt-assets.mjs
+# AND the voice transcoder — wav masters → the shipped .opus clips (the
+# 2026-07-16 opus cutover ships only what this regenerates).
+!/scripts/transcode-voice.mjs
+
+# Secrets — never commit
+*-api-key.txt
+*.pem
+.env
+.env.*
+!.env.example
+
+# Code-signing material (2026-08-06). A signing key committed to a public repo
+# cannot be un-published — the remedy is revoking the certificate and burning
+# one of the five Developer ID slots Apple allows. Generate this material
+# outside the repo as well; this is the second line of defence, not the first.
+*.p12
+*.pfx
+*.key
+*.cer
+*.crt
+*.p8
+*.mobileprovision
+*.provisionprofile
+*.base64
+*.keystore
+*.jks

@@ -1,0 +1,1830 @@
+/**
+ * SessionImpl — real Session composing the v0.2 runtime.
+ *
+ * Wires the same components that packages/cli/src/app/main.ts assembles,
+ * but without TTY sinks (no NarrativeRenderer, no Input, no CliAskResolver).
+ * Turns are driven through a V2ActorDriver, giving the desktop session the
+ * same mood-routing + supervisor wiring as the CLI. An all-empty meta-think
+ * corpus and empty supervisor reference degrade to single-phase actor mode.
+ *
+ * v0.3 Slice 2 Task 5 — uses SessionEventProjector for all subscription channels.
+ */
+import { randomUUID } from "node:crypto";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { readdir } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import {
+  type AgentEvent,
+  type ApprovalOverlayState,
+  BackendContextBuilder,
+  CodingAgentRuntime,
+  defaultWorkspaceFor,
+  dreamDirFor,
+  InMemoryEventBus,
+  InMemoryToolRegistry,
+  isAbortError,
+  type LastTurnEnd,
+  narrativeDirFor,
+  ProjectCommandRuleStore,
+  type ProviderAdapter,
+  RulePermissionEngine,
+  readSessionTitle,
+  readSessionTopics,
+  ruleDisplay,
+  SessionApprovalCache,
+  type SessionTopic,
+  type TerminalRecord,
+  type TerminalRecordBlock,
+  type V2RecordPersister,
+  wireTaskScopedApprovalCache,
+  writeSessionTitle,
+} from "@herta/core";
+import {
+  buildRecapRuntime,
+  buildStaticHertaPrefix,
+  generateSessionTitle,
+  loadActorHints,
+  loadMetaThinkCorpus,
+  type MetaThinkCorpus,
+  materializeSeedFeian,
+  type OpeningChoice,
+  type PromptLang,
+  pickOpening,
+  readRecapCache,
+  type StaticHertaPrefix,
+  spanMatchedBaseMs,
+  supervisorReferenceFor,
+  V2ActorDriver,
+} from "@herta/herta";
+import {
+  readManifest,
+  resolveDreamConfig,
+  selectPromptExclusions,
+} from "@herta/knowledge";
+import { FileMemoryManager } from "@herta/memory";
+import {
+  type ApiKey,
+  deepseekCompletionProvider,
+  deepseekProvider,
+} from "@herta/providers";
+import {
+  createMvpTools,
+  registerEditFileRule,
+  registerRunCommandRule,
+  registerWriteNewFileRule,
+} from "@herta/tools";
+import {
+  BusActorStreamingSink,
+  SLOW_MS_PER_CHAR,
+} from "./bus-streaming-sink.js";
+import { OverlayAskResolver } from "./overlay-ask-resolver.js";
+import { recordTail } from "./record-window.js";
+import { SessionEventProjector } from "./session-event-projector.js";
+import {
+  appendTopic,
+  pruneTopics,
+  synthesizeInitialTopic,
+  topicAnchorText,
+} from "./session-topics.js";
+import type {
+  ApprovalResult,
+  AppServerConfig,
+  OverlayEvent,
+  RecordEvent,
+  ResolveApprovalOpts,
+  RewindResult,
+  Session,
+  SessionAgentEvent,
+  SpeechControlEvent,
+  TitleEvent,
+  TurnLifecycleEvent,
+  VoiceCueEvent,
+  WorkspaceEvent,
+  WorkspaceSetResult,
+} from "./types.js";
+import { loadClipStems, pickClipStem } from "./voice/clip-list.js";
+import { readOpusDurationMs } from "./voice/opus-duration.js";
+import {
+  loadParticleCatalog,
+  matchLeadingParticle,
+  pickParticleClip,
+} from "./voice/particle-catalog.js";
+import { pickVetoReaction } from "./voice/veto-reaction.js";
+
+/**
+ * True when a withdrawn span includes a backend (板砖) done-marker that reports
+ * changed files — used to warn that those filesystem edits are NOT reverted by a
+ * record-only rewind. The done-marker's `body` carries an "N files" segment and
+ * its `evidenceDetail` an "改动文件" list only when `changedFiles > 0`
+ * (see `buildDoneMarker` in `@herta/herta`'s backend-bridge).
+ */
+export function spanEditedFiles(blocks: TerminalRecord): boolean {
+  return blocks.some(
+    (b) =>
+      b.kind === "system" &&
+      b.label === "差分协处理器" &&
+      (b.evidenceDetail?.includes("改动文件") === true ||
+        /\b\d+ files?\b/.test(b.body)),
+  );
+}
+
+// ── Dynamic title tuning ─────────────────────────────────────────────────────
+
+/** Re-title a long session every this many user turns since the last title. */
+const RETITLE_EVERY_N_TURNS = 6;
+/** How many trailing user→Herta exchanges feed a (re)title. At the first turn
+ *  this IS the first exchange, so the initial title is unchanged. */
+const TITLE_WINDOW_EXCHANGES = 2;
+/** Cap on consecutive per-turn attempts to produce an initial title (while the
+ *  session is still untitled). Bounds the retry on a failing/empty-output title
+ *  model to a few turns; the periodic trigger still retries later. */
+const MAX_INITIAL_TITLE_ATTEMPTS = 3;
+
+/**
+ * The `turn.failed` error payload. Carries the provider's HTTP status when
+ * the failure has one (ProviderError.status — the official DeepSeek error
+ * codes: 401 bad key, 402 insufficient balance, 429 rate limit, 500/503
+ * server; 2026-07-12), so the renderer can say what actually went wrong
+ * instead of the generic connection-lost line. Duck-typed: any Error
+ * carrying a numeric `status` qualifies, so provider wrappers keep working.
+ */
+export function turnErrorPayload(err: unknown): {
+  code: string;
+  message: string;
+  status?: number;
+  providerCode?: string;
+} {
+  if (err instanceof Error) {
+    const status = (err as { status?: unknown }).status;
+    // `code` stays `err.name` — the renderer keys "AbortError" off it to tell
+    // a user interrupt from a failure. The provider's OWN code rides
+    // alongside so a certificate/proxy failure (audit S3), which has no HTTP
+    // status, can still get its own message instead of "connection lost".
+    const providerCode = (err as { code?: unknown }).code;
+    return {
+      code: err.name,
+      message: err.message,
+      ...(typeof status === "number" ? { status } : {}),
+      ...(typeof providerCode === "string" ? { providerCode } : {}),
+    };
+  }
+  return { code: "unknown", message: String(err) };
+}
+
+/**
+ * Build the title-model input from the RECENT window — the last
+ * `windowExchanges` user messages plus the Herta speech from the first of those
+ * onward. Returns null when there is no user turn (nothing to title).
+ * `startIndex` is the record index of the window's first user block — a title
+ * change anchors its TOPIC entry there (session-topics.ts): the new title
+ * describes the conversation from that message on. Exported for unit testing.
+ */
+export function buildRecentTitleInput(
+  record: TerminalRecord,
+  windowExchanges: number,
+): { userText: string; hertaText: string; startIndex: number } | null {
+  const userIdxs: number[] = [];
+  record.forEach((b, i) => {
+    if (b.kind === "user") userIdxs.push(i);
+  });
+  if (userIdxs.length === 0) return null;
+  // Take the last min(N, windowExchanges) user blocks from the tail.
+  const take = Math.min(userIdxs.length, windowExchanges);
+  const start = userIdxs[userIdxs.length - take] ?? 0;
+  const slice = record.slice(start);
+  const userText = slice
+    .filter((b) => b.kind === "user")
+    .map((b) => (b.kind === "user" ? b.text : ""))
+    .join("\n")
+    .trim();
+  const hertaText = slice
+    .filter((b) => b.kind === "herta" && b.surface === "speech")
+    .map((b) => (b.kind === "herta" ? b.text : ""))
+    .join("\n")
+    .trim();
+  return userText === "" ? null : { userText, hertaText, startIndex: start };
+}
+
+// ── Test-only seam ──────────────────────────────────────────────────────────
+
+/**
+ * Test-only override seam. NOT exported from the package barrel.
+ * Production code always omits this; tests pass stubs via `SessionImpl.create`
+ * directly (bypassing `createSessionHost`).
+ */
+export interface SessionInternalDeps {
+  /** Inject stub providers instead of constructing real DeepSeek providers. */
+  readonly providerOverrides?: {
+    readonly actor?: import("@herta/core").CompletionProviderAdapter;
+    readonly backend?: import("@herta/core").ProviderAdapter;
+    readonly router?: ProviderAdapter;
+    readonly supervisor?: ProviderAdapter;
+    readonly title?: ProviderAdapter;
+  };
+  /** Skip the async buildStaticHertaPrefix disk scan. */
+  readonly staticPrefixOverride?: StaticHertaPrefix;
+  /** Replace the compiled meta-think corpus (M-prompts-1: always fully
+   *  populated in production). An all-empty corpus disables mood routing
+   *  (single-phase actor mode) — stub-session tests rely on that. */
+  readonly metaThinkOverride?: MetaThinkCorpus;
+  /** Replace the config-derived supervisor toggle. Empty string disables
+   *  the supervisor (stub tests); production defaults ON via
+   *  `config.supervisor?.enabled`. */
+  readonly supervisorReferenceOverride?: string;
+  /** Inject a deterministic opening instead of the real `pickOpening`
+   *  (which now draws from the COMPILED corpus and thus always finds
+   *  candidates — M-prompts-1). `null` means "no opening" explicitly;
+   *  stub-session tests need it because an unpicked corpus no longer
+   *  exists. New-session-only — ignored when the caller passes a
+   *  non-empty `initialRecord` (resumed sessions already carry block 0). */
+  readonly openingOverride?: OpeningChoice | null;
+  /** D3: override the opening-stream lead beat (ms held before the seed starts
+   *  streaming, so the in-flight hint shows). Defaults to `OPENING_LEAD_MS`;
+   *  tests pass 0 to skip the wall-clock wait. */
+  readonly openingLeadMs?: number;
+  /** Inject the opening clip's duration (ms) instead of reading the clip from
+   *  disk (clip-matched cadence tests). Skips `readOpusDurationMs`. */
+  readonly openingDurationMs?: number | null;
+  /** Random source for picking a particle clip variant. Defaults to
+   *  `Math.random`; tests inject a deterministic source. */
+  readonly particleRandom?: () => number;
+  /** Random source for the veto-reaction roll (case selection + clip pick).
+   *  Defaults to `Math.random`; tests inject a deterministic source. */
+  readonly vetoRandom?: () => number;
+  /** Random source for the easter-egg 50% roll + clip pick. Defaults to
+   *  `Math.random`; tests inject a deterministic source. */
+  readonly easterEggRandom?: () => number;
+  /** Clock (ms) for the easter-egg per-session hourly throttle. Defaults to
+   *  `Date.now`; tests inject a controllable clock. */
+  readonly easterEggNow?: () => number;
+}
+
+/** Easter-egg voice throttle: ≤1 play per session per hour. */
+const EASTER_EGG_COOLDOWN_MS = 60 * 60 * 1000;
+
+/**
+ * Filenames of dreamed 废案 to withhold from a reopening session's prefix
+ * (design 2026-07-07): those whose source episodes still sit verbatim in the
+ * loaded record. Fail-open — any error returns undefined (no exclusions),
+ * which is exactly the pre-filter behavior.
+ *
+ * Exported for direct testing only (like `SessionInternalDeps`, not part of
+ * the package barrel).
+ */
+export function ownDreamExclusions(opts: {
+  workspaceRoot: string;
+  sessionId: string;
+  record: TerminalRecord;
+  dream: AppServerConfig["dream"];
+  /** Interaction language — selects the per-language dream manifest so the
+   *  reopen own-dream filter reads THIS session's language's corpus. */
+  lang: "zh" | "en";
+}): ReadonlySet<string> | undefined {
+  try {
+    // Mirror the recap runtime's cache validation: a cached boundary must
+    // index a user block inside this record, else the runtime treats the
+    // session as uncompacted — the prefix filter must see the same view.
+    const cached =
+      readRecapCache(opts.workspaceRoot, opts.sessionId)?.boundaryIndex ?? 0;
+    const recapBoundaryIndex =
+      cached > 0 &&
+      cached < opts.record.length &&
+      opts.record[cached]?.kind === "user"
+        ? cached
+        : 0;
+    const excluded = selectPromptExclusions({
+      manifest: readManifest(dreamDirFor(opts.workspaceRoot, opts.lang)),
+      sessionId: opts.sessionId,
+      record: opts.record,
+      recapBoundaryIndex,
+      config: resolveDreamConfig(opts.dream),
+    });
+    return excluded.size > 0 ? excluded : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// ── SessionImpl ─────────────────────────────────────────────────────────────
+
+export class SessionImpl implements Session {
+  readonly sessionId: string;
+  readonly workspaceRoot: string;
+
+  // The EFFECTIVE backend (板砖) workspace lives in a single mutable holder
+  // shared with the runtimeFactory closure (created in `create`) so a future
+  // setWorkspace can mutate the value the factory reads on its next dispatch.
+  // Distinct from workspaceRoot (the immutable record-store anchor).
+  private readonly wsHolder: { current: string };
+  private wsIsDefault: boolean;
+
+  // The block persister — owned by the driver for turn blocks, but held here
+  // too so setWorkspace/resetWorkspace can append a structured workspace_set
+  // line that survives resume.
+  private readonly persister: V2RecordPersister;
+
+  private _record: TerminalRecord;
+  private _overlay: ApprovalOverlayState | null = null;
+
+  // Generalized event projector — fan-out to all subscribers with bounded
+  // queues and dropped-event sentinels (Task 5). Bus subscription is wired
+  // via constructor opts so agent events pass through automatically.
+  private readonly projector: SessionEventProjector;
+
+  // Overlay resolver — installed in create() and held here so
+  // resolveApproval() can call resolveExternal().
+  private readonly overlayResolver: OverlayAskResolver;
+
+  // Project command allow rules (ADR 0030) — held for the Settings
+  // management surface (list/remove); the resolver consults it directly.
+  private readonly commandRules: ProjectCommandRuleStore;
+
+  // The narrative-completion actor driver — owns the growing TerminalRecord,
+  // mood routing, the supervisor, and (via its persister) block persistence.
+  // submitText delegates to driver.runTurn and broadcasts the driver's new
+  // blocks; the driver appends them to disk itself, so submitText must NOT
+  // re-persist (no double-append).
+  private readonly driver: V2ActorDriver;
+
+  // The actor streaming sink — held so rewindLastTurn can reset its
+  // canonical-diff cursor (emittedCount) to the truncated record length, so the
+  // next turn's flushBlocks emits from the new tail rather than the stale count.
+  private readonly sink: BusActorStreamingSink;
+
+  /** How this session's last turn ended per the loaded file, or undefined
+   *  when it recorded no ending (a true mid-stream crash). Never cleared
+   *  in-process — every turn overwrites it on ITS ending, and the mid-turn
+   *  window is covered by the `currentTurn` gate in
+   *  regenerateLastReplyIfOrphaned. Gates resume-recovery (audit
+   *  2026-07-24, 1.6). */
+  private lastTurnEnd: LastTurnEnd | undefined;
+
+  // Easter-egg voice (SPEC 2026-06-23): clip stems played when the user lifts
+  // the 板砖 device card. Held on the instance (not a factory closure) because
+  // `maybePlayEasterEgg` is called per gesture via IPC and owns the throttle.
+  private readonly easterEggClips: readonly string[];
+  private readonly easterEggRandom: () => number;
+  private readonly easterEggNow: () => number;
+  // Wall-clock (ms) of the last easter-egg play, or null. Per-session: a new
+  // session starts eligible. Enforces ≤1 play per hour.
+  private lastEasterEggAt: number | null = null;
+
+  // D3 (streaming opening): a NEW session's opening seed, deferred from the
+  // in-memory record so playOpening can stream it in like a reply. null for
+  // resumed sessions and new sessions with no opening. Cleared (one-shot) once
+  // playOpening commits it.
+  private pendingOpening: TerminalRecordBlock | null;
+
+  // Voice clipId for the pending opening (its filename stem, e.g.
+  // "004-late-night-audit"), or null when there's no opening / no voice. Emitted
+  // as a `voice` cue when playOpening streams the seed so the renderer autoplays
+  // `<voiceRoot>/openings/<clipId>.opus`.
+  private readonly openingClipId: string | null;
+
+  // D3: the opening-stream lead beat (ms held before the seed streams, so the
+  // in-flight hint shows). undefined → the driver's OPENING_LEAD_MS default;
+  // tests pass 0 to skip the wall-clock wait.
+  private readonly openingLeadMs: number | undefined;
+
+  // Per-char base cadence (ms) for the opening reveal, matched to the voice
+  // clip's duration so the text spans ≈ the audio (SPEC 2026-06-23). undefined
+  // → the sink's read-along default (no clip, or duration unreadable).
+  private readonly openingBaseMs: number | undefined;
+
+  // Live DeepSeek key getter (the host's mutable holder). submitText reads it to
+  // detect the no-key case; the providers were built with the same getter.
+  private readonly deepSeekKey: () => string;
+
+  // Per-turn abort tracking. Set at the start of submitText; cleared in
+  // finally. interrupt() aborts this controller; close() calls interrupt()
+  // before tearing down the projector.
+  private currentTurn: {
+    readonly turnId: string;
+    readonly abortController: AbortController;
+    /** Resolves when the turn has fully unwound (its finally ran); never
+     *  rejects. close() awaits this so teardown — and deleteSession's rmSync
+     *  right after it — can never race a still-unwinding turn's appends
+     *  (audit 2026-07-10, finding 14). */
+    readonly settled: Promise<void>;
+  } | null = null;
+
+  // Title generation. _title holds the current generated/loaded title. The title
+  // re-generates as the conversation continues: on a re-opened titled session's
+  // first new turn (reEntryRetitlePending) and periodically on long sessions
+  // (every RETITLE_EVERY_N_TURNS user turns, tracked by turnsSinceTitle).
+  // titleGenInFlight makes generation single-flight. The flash chat provider, the
+  // transcript dir (sidecar), and an abort source are held here. titlePromise is
+  // a test seam.
+  private _title: string | null;
+  /** Topic history (title changes anchored at their window's first user
+   *  block) — the rail's jump targets. Loaded from the sidecar; appended by
+   *  generateAndEmitTitle; pruned by rewind. */
+  private _topics: readonly SessionTopic[];
+  private reEntryRetitlePending: boolean;
+  private turnsSinceTitle = 0;
+  private titleGenInFlight = false;
+  /** Bumped by every rewind. An in-flight title generation captures the
+   *  epoch at start and drops its result on a mismatch: the window it
+   *  titled was (partly) withdrawn while the model was thinking, and a late
+   *  landing re-set a title for erased content and appended a ghost topic
+   *  whose post-rewind `bornAtLength` even pruneTopics couldn't kill
+   *  (review 2026-07-31). */
+  private titleEpoch = 0;
+  // Consecutive title-gen attempts since the last SUCCESS — bounds the
+  // initial-title retry (while untitled) on a failing title model.
+  private titleAttempts = 0;
+  // Interaction language (slice 4) — held for per-turn language-parameterized
+  // calls (the session-title prompt; the driver got its own copy at
+  // construction). PUBLIC (implements Session.lang): the GUI surfaces it so the
+  // renderer can localize the 板砖→Brick display to the conversation's language.
+  public readonly lang: PromptLang;
+
+  private readonly transcriptDir: string;
+  private readonly titleProvider: ProviderAdapter;
+  private readonly titleAbort = new AbortController();
+  private titlePromise: Promise<void> | null = null;
+
+  private constructor(opts: {
+    sessionId: string;
+    workspaceRoot: string;
+    wsHolder: { current: string };
+    isDefaultWorkspace: boolean;
+    persister: V2RecordPersister;
+    driver: V2ActorDriver;
+    sink: BusActorStreamingSink;
+    projector: SessionEventProjector;
+    overlayResolver: OverlayAskResolver;
+    commandRules: ProjectCommandRuleStore;
+    transcriptDir: string;
+    titleProvider: ProviderAdapter;
+    initialTitle: string | null;
+    initialTopics: readonly SessionTopic[];
+    pendingOpening: TerminalRecordBlock | null;
+    openingClipId: string | null;
+    openingLeadMs: number | undefined;
+    openingBaseMs: number | undefined;
+    easterEggClips: readonly string[];
+    easterEggRandom: () => number;
+    easterEggNow: () => number;
+    deepSeekKey: () => string;
+    lang: PromptLang;
+    lastTurnEnd?: LastTurnEnd;
+  }) {
+    this.lastTurnEnd = opts.lastTurnEnd;
+    this.sessionId = opts.sessionId;
+    this.workspaceRoot = opts.workspaceRoot;
+    this.wsHolder = opts.wsHolder;
+    this.wsIsDefault = opts.isDefaultWorkspace;
+    this.persister = opts.persister;
+    this.driver = opts.driver;
+    this.sink = opts.sink;
+    // Initial snapshot reflects the driver's record (empty for now; Task 5
+    // seeds an opening block before the session is handed to the caller).
+    this._record = opts.driver.getRecord();
+    this.projector = opts.projector;
+    this.overlayResolver = opts.overlayResolver;
+    this.commandRules = opts.commandRules;
+    this.transcriptDir = opts.transcriptDir;
+    this.titleProvider = opts.titleProvider;
+    this._title = opts.initialTitle;
+    this._topics = opts.initialTopics;
+    // A reopened session that already has a title re-titles on its first new
+    // turn (so continuing an old session refreshes the now-stale title).
+    this.reEntryRetitlePending = opts.initialTitle !== null;
+    this.pendingOpening = opts.pendingOpening;
+    this.openingClipId = opts.openingClipId;
+    this.openingLeadMs = opts.openingLeadMs;
+    this.openingBaseMs = opts.openingBaseMs;
+    this.deepSeekKey = opts.deepSeekKey;
+    this.easterEggClips = opts.easterEggClips;
+    this.easterEggRandom = opts.easterEggRandom;
+    this.easterEggNow = opts.easterEggNow;
+    this.lang = opts.lang;
+  }
+
+  /**
+   * GUI easter egg (SPEC 2026-06-23): called per successful 板砖-card lift. Rolls
+   * a 50% chance, throttled to ≤1 play per session per hour, and emits an
+   * `easter_egg` voice cue. No-op without clips or within the cooldown.
+   */
+  maybePlayEasterEgg(): void {
+    if (this.easterEggClips.length === 0) return;
+    const now = this.easterEggNow();
+    if (
+      this.lastEasterEggAt !== null &&
+      now - this.lastEasterEggAt < EASTER_EGG_COOLDOWN_MS
+    ) {
+      return; // within the per-session hourly cooldown
+    }
+    if (this.easterEggRandom() >= 0.5) return; // 50% gate (cooldown not consumed)
+    const clipId = pickClipStem(this.easterEggClips, this.easterEggRandom);
+    if (clipId === null) return;
+    this.lastEasterEggAt = now;
+    this.projector.emitVoice({ kind: "cue", category: "easter_egg", clipId });
+  }
+
+  // ── Session interface ──────────────────────────────────────────────────────
+
+  get backendWorkspace(): string {
+    return this.wsHolder.current;
+  }
+
+  get backendWorkspaceIsDefault(): boolean {
+    return this.wsIsDefault;
+  }
+
+  get record(): TerminalRecord {
+    return this._record;
+  }
+
+  get overlay(): ApprovalOverlayState | null {
+    return this._overlay;
+  }
+
+  get title(): string | null {
+    return this._title;
+  }
+
+  get topics(): readonly SessionTopic[] {
+    return this._topics;
+  }
+
+  get turnInFlight(): boolean {
+    return this.currentTurn !== null;
+  }
+
+  async submitText(
+    text: string,
+  ): Promise<{ readonly turnId: string } | { readonly needsKey: true }> {
+    // No DeepSeek key yet (first run, or it was cleared): don't run the turn —
+    // signal the renderer to prompt for one. The opening (no LLM call) already
+    // streamed fine; once a key is set, the kept message is re-sent.
+    if (this.deepSeekKey().trim() === "") {
+      return { needsKey: true };
+    }
+    // Single-turn invariant: only one turn — user submit, opening stream (D3),
+    // or resume regenerate (D2) — runs at a time. The renderer locks the
+    // composer during a turn, but enforce it here too: D2/D3 added main-process
+    // turn entry points fired on open/create that the renderer lock does NOT
+    // gate, so a duplicate IPC / renderer-reload race could otherwise run two
+    // turns concurrently on the single-threaded driver and corrupt the shared
+    // record + persist cursor.
+    if (this.currentTurn !== null) {
+      throw new Error("a turn is already in progress");
+    }
+    const turnId = randomUUID();
+    const abortController = new AbortController();
+    let settleTurn: () => void = () => {};
+    const settled = new Promise<void>((resolve) => {
+      settleTurn = resolve;
+    });
+    this.currentTurn = { turnId, abortController, settled };
+    this.projector.emitTurnLifecycle({ kind: "started", turnId });
+
+    try {
+      // The actor sink (BusActorStreamingSink) streams every appended block to
+      // record subscribers in canonical order DURING the turn via flushBlocks
+      // (called at each append site in the actor turn + @板砖 bridge). So
+      // submitText no longer emits records post-turn — it only drives turn
+      // lifecycle and refreshes the synchronous .record snapshot. The driver
+      // persists each new block to JSONL inside runTurn; nothing to re-persist
+      // here. See docs/superpowers/specs/2026-06-01-gui-record-stream-ordering-design.md.
+      await this.driver.runTurn(text, abortController.signal);
+      this._record = this.driver.getRecord();
+      this.recordTurnEnd("completed");
+      this.projector.emitTurnLifecycle({ kind: "finished", turnId });
+      // Refresh the session title as the conversation evolves (initial title,
+      // re-entry, or periodic on a long session). Fire-and-forget — the user
+      // already sees Herta's reply; the title fills/updates after.
+      this.maybeUpdateTitle();
+    } catch (err) {
+      this.reconcileRecordAfterFailure();
+      // Durably record HOW this turn ended, so reopening can tell a deliberate
+      // stop from a crash (audit 2026-07-24, 1.6). An interrupt and a provider
+      // failure both leave a trailing user block; only a crash leaves no
+      // ending at all.
+      this.recordTurnEnd(isAbortError(err) ? "interrupted" : "failed");
+      this.projector.emitTurnLifecycle({
+        kind: "failed",
+        turnId,
+        error: turnErrorPayload(err),
+      });
+      throw err;
+    } finally {
+      settleTurn();
+      // Clear the per-turn state only if this turn still owns it.
+      // (A rapid second call to submitText would replace currentTurn, but
+      // that is disallowed by the single-turn-at-a-time invariant.)
+      if (this.currentTurn?.turnId === turnId) {
+        this.currentTurn = null;
+      }
+    }
+
+    return { turnId };
+  }
+
+  /**
+   * D2 (resume recovery): regenerate the reply for an orphaned trailing user
+   * block (a reply lost to a mid-stream app-close). Runs as a normal turn so
+   * the composer locks via turn status, the reply streams, and it persists —
+   * but does NOT append a new user block (the orphaned one stays in place, and
+   * the GUI sink's seeded cursor keeps it from being re-streamed/re-persisted).
+   * No-op when the session does not end on a user block.
+   *
+   * Fire-and-forget (the open handler calls it `void`): a failure emits a
+   * `failed` lifecycle and is swallowed rather than rethrown — the orphan stays
+   * on disk and regenerates again on the next resume.
+   */
+  /**
+   * Persist how a turn ended and remember it in-process. Best-effort: a
+   * failure here must never fail an otherwise-good turn — the cost of a
+   * missing marker is one spurious regenerate on the next open, which is the
+   * pre-fix behaviour, not a regression.
+   */
+  private recordTurnEnd(outcome: "completed" | "interrupted" | "failed"): void {
+    const entry = {
+      outcome,
+      atBlockCount: this.driver.getRecord().length,
+    } as const;
+    this.lastTurnEnd = entry;
+    try {
+      this.persister.appendTurnEnd?.(outcome, new Date().toISOString());
+    } catch {
+      // Disk trouble: the in-memory value still guards this process.
+    }
+  }
+
+  async regenerateLastReplyIfOrphaned(): Promise<void> {
+    const last = this.driver.getRecord().at(-1);
+    if (last === undefined || last.kind !== "user") return;
+    // A trailing user block is NOT proof of a crash (audit 2026-07-24, 1.6).
+    // An interrupted turn — and a provider-failed one — leaves a byte-identical
+    // file: the user block is flushed at the actor loop's head and persisted
+    // before the abort throws. Reading the shape alone meant that opening a
+    // session silently RE-RAN a turn the user had deliberately killed: an
+    // unrequested API call, and, when the text carried `@板砖`, a coding
+    // dispatch that mutates the repo. Regenerate ONLY when the turn left no
+    // recorded ending at all — a true mid-stream app-close.
+    if (this.lastTurnEnd !== undefined) return;
+    // Single-turn invariant (see submitText): a re-entrant CMD.open must not
+    // start a second regenerate while one is in flight.
+    if (this.currentTurn !== null) return;
+    const turnId = randomUUID();
+    const abortController = new AbortController();
+    let settleTurn: () => void = () => {};
+    const settled = new Promise<void>((resolve) => {
+      settleTurn = resolve;
+    });
+    this.currentTurn = { turnId, abortController, settled };
+    this.projector.emitTurnLifecycle({ kind: "started", turnId });
+    try {
+      await this.driver.regenerateLastReply(abortController.signal);
+      this._record = this.driver.getRecord();
+      this.projector.emitTurnLifecycle({ kind: "finished", turnId });
+    } catch (err) {
+      this.projector.emitTurnLifecycle({
+        kind: "failed",
+        turnId,
+        error: turnErrorPayload(err),
+      });
+      // The SAME reconciliation submitText does, not the old unconditional
+      // reseed (audit 2026-08-05, S9). regenerateLastReply POPS the orphan
+      // user block and `runTurn` re-appends it only in the actor's LOCAL
+      // record; on a non-abort provider throw the driver adopts the partial
+      // record only for ActorTurnAbortedError, so `this.record` sits at N-1
+      // while disk and the screen hold N. Seeding the cursor to N-1 left that
+      // split standing, which cost two things:
+      //   - the orphan message the user is looking at was permanently absent
+      //     from Herta's context (a D7 divergence), and
+      //   - `rewindLastUserTurn` derives its index from the DRIVER record and
+      //     truncates positionally, so the next rewind silently deleted an
+      //     EXTRA user message — one not reported in `withdrawn` and not
+      //     returned as `userText`, i.e. unrecoverable.
+      // Reachable via a crash-left orphan plus a non-retryable HTTP failure
+      // (a 402, say).
+      this.reconcileRecordAfterFailure();
+      // Deliberately NOT calling recordTurnEnd here: leaving `lastTurnEnd`
+      // undefined is what makes the orphan retry on the next open, which is
+      // the documented intent of this recovery path.
+      //
+      // Intentionally not rethrown — background recovery must not crash the
+      // open handler; the orphan persists and retries on the next resume.
+    } finally {
+      settleTurn();
+      if (this.currentTurn?.turnId === turnId) this.currentTurn = null;
+    }
+  }
+
+  /**
+   * D3 (streaming opening): stream a NEW session's deferred opening seed in via
+   * the actor sink so it arrives like a reply (read-along pace) rather than
+   * appearing instantly. Runs as a turn (lifecycle started/finished) so the
+   * composer locks while it streams — no user turn can race the seed commit. The
+   * seed is already on disk (persisted at create); this streams + commits it to
+   * the in-memory record and settles the render surface. No-op (one-shot) when
+   * there is no deferred seed: resumed sessions, or new sessions with no opening.
+   *
+   * Fire-and-forget (the create handler calls it `void`): a failure emits a
+   * `failed` lifecycle and is swallowed — the seed stays on disk and shows as
+   * instant history on the next resume.
+   */
+  async playOpening(): Promise<void> {
+    const block = this.pendingOpening;
+    if (block === null) return;
+    // Single-turn invariant (see submitText): don't stream the opening over an
+    // in-flight turn. In practice currentTurn is null here (playOpening fires on
+    // create before any turn), so this is a defensive backstop.
+    if (this.currentTurn !== null) return;
+    this.pendingOpening = null; // one-shot
+    const turnId = randomUUID();
+    const abortController = new AbortController();
+    let settleTurn: () => void = () => {};
+    const settled = new Promise<void>((resolve) => {
+      settleTurn = resolve;
+    });
+    this.currentTurn = { turnId, abortController, settled };
+    this.projector.emitTurnLifecycle({ kind: "started", turnId });
+    try {
+      // Interrupt-as-SKIP (audit 2026-07-10; supersedes the deliberate
+      // non-interruptibility): the composer shows a STOP button during the
+      // opening, and interrupt() reported ok while doing nothing — a dead
+      // affordance. The turn's abort signal now threads into
+      // driver.playOpening, where a stop click cuts the lead beat and
+      // flushes the remaining seed text in ONE delta (fast-forward, never
+      // truncate — the seed still commits verbatim and stays durable).
+      //
+      // The voice cue fires via onStreamStart — AFTER the lead beat, the instant
+      // the text begins streaming — so the opening's voice and its text reveal
+      // land together. No clipId → no cue (opening without a voice file);
+      // a skip BEFORE stream start also suppresses the cue.
+      await this.driver.playOpening(
+        block,
+        this.openingLeadMs,
+        () => {
+          if (this.openingClipId !== null) {
+            this.projector.emitVoice({
+              kind: "cue",
+              category: "openings",
+              clipId: this.openingClipId,
+            });
+          }
+        },
+        this.openingBaseMs,
+        abortController.signal,
+      );
+      this._record = this.driver.getRecord();
+      this.projector.emitTurnLifecycle({ kind: "finished", turnId });
+    } catch (err) {
+      this.projector.emitTurnLifecycle({
+        kind: "failed",
+        turnId,
+        error: turnErrorPayload(err),
+      });
+      // Intentionally not rethrown — fire-and-forget; the seed is durable on
+      // disk and shows as instant history on the next resume.
+    } finally {
+      settleTurn();
+      if (this.currentTurn?.turnId === turnId) this.currentTurn = null;
+    }
+  }
+
+  async interrupt(opts?: {
+    readonly turnId?: string;
+  }): Promise<{ readonly ok: boolean }> {
+    if (this.currentTurn === null) return { ok: false };
+    if (opts?.turnId !== undefined && opts.turnId !== this.currentTurn.turnId) {
+      return { ok: false };
+    }
+    this.currentTurn.abortController.abort(
+      new DOMException("Interrupted by session.interrupt()", "AbortError"),
+    );
+    return { ok: true };
+  }
+
+  /**
+   * Rewind the latest 开拓者 turn (record-only, idle-only). Withdraws the last
+   * user block and everything after it from the in-memory record + the persisted
+   * JSONL (via the driver), resets the sink's canonical-diff cursor so the next
+   * turn streams from the new tail, clears a now-stale title if the session
+   * emptied, broadcasts a `reset` RecordEvent so subscribers adopt the shorter
+   * record, and returns the withdrawn user text (+ whether the span edited files,
+   * which are NOT reverted). See the 2026-06-21-rewind-last-turn spec.
+   */
+  async rewindLastTurn(): Promise<RewindResult> {
+    // D-Idle-only: never rewind across an in-flight turn (mirrors submitText's
+    // single-turn invariant). The button is also hidden client-side while busy,
+    // but enforce it here so an IPC race can't truncate mid-stream.
+    if (this.currentTurn !== null) {
+      return { ok: false, reason: "turn_in_progress" };
+    }
+    const result = this.driver.rewindLastUserTurn();
+    if (result === null) {
+      return { ok: false, reason: "no_user_turn" };
+    }
+    // Title generation fires at turn end and runs while the session is idle
+    // — exactly when this method is allowed — so an in-flight generation may
+    // be titling the window this rewind is about to withdraw. Fence it out
+    // (see titleEpoch); the guard on currentTurn above cannot catch it.
+    this.titleEpoch += 1;
+    this._record = this.driver.getRecord();
+    // Reset the sink's canonical-diff cursor to the new (shorter) length: the
+    // record just shrank, so the next turn's flushBlocks must emit from there,
+    // not from the pre-rewind count (which would skip the next turn's blocks).
+    // Passing the truncated record re-seeds the sink's resync mirror too.
+    this.sink.seedEmittedCount(this._record.length, this._record);
+    // If no user turn remains, the generated title described a now-withdrawn
+    // exchange — clear it so the next turn regenerates from scratch. A surviving
+    // prior turn keeps its title (re-titling continues on the next turn).
+    if (!this._record.some((b) => b.kind === "user")) {
+      this._title = null;
+      this.reEntryRetitlePending = false;
+      this.turnsSinceTitle = 0;
+      this.titleAttempts = 0;
+    }
+    // Topic anchors beyond the truncation no longer exist — prune them (and
+    // persist the pruned history so a resume doesn't resurrect dead jump
+    // targets; skipped when the title itself was cleared above — the next
+    // title write starts the sidecar fresh).
+    const prunedTopics = pruneTopics(this._topics, this._record.length);
+    if (prunedTopics !== this._topics) {
+      this._topics = prunedTopics;
+      if (this._title !== null) {
+        writeSessionTitle(
+          this.transcriptDir,
+          this.sessionId,
+          this._title,
+          this._topics,
+        );
+      }
+    }
+    // Broadcast the truncated record so every subscriber replaces its mirror
+    // — windowed like every full-record payload (long sessions, 2026-07-12) —
+    // and the pruned topic history with it. The topics ride along because this
+    // is the only event that shrinks the record, and the renderer cannot work
+    // the pruning out for itself: a topic anchored in surviving history but
+    // BORN in the withdrawn turn looks alive from there (user 2026-07-30).
+    const tail = recordTail(this._record);
+    this.projector.emitRecord({
+      kind: "reset",
+      record: tail.record,
+      start: tail.start,
+      topics: this._topics,
+    });
+    return {
+      ok: true,
+      userText: result.userText,
+      editedFiles: spanEditedFiles(result.withdrawn),
+    };
+  }
+
+  /**
+   * Renderer-requested record heal after a record-channel overflow drop
+   * (defense in depth — chat-scale streams never fill the 1000-deep queue).
+   * Delegates to the sink, which re-emits its live mirror as a `reset`
+   * through the record stream: same channel as block events, so FIFO
+   * ordering makes the heal race-free even mid-turn (an out-of-band
+   * snapshot could duplicate still-queued blocks, and `_record` is stale
+   * mid-turn). Synchronous and side-effect-free beyond the one event.
+   */
+  resyncRecord(): void {
+    this.sink.resyncRecord();
+  }
+
+  /**
+   * Re-align the THREE copies of the record after a failed turn: the DRIVER's
+   * in-memory record, the SINK's flushed mirror (what streamed + what is on
+   * disk), and `this._record` (what the snapshot serves).
+   *
+   * On a PLAIN provider throw the driver keeps its pre-turn record — only
+   * aborts adopt the partial one — while the sink's cursor sits at the failed
+   * turn's high-water mark. Left split, the next turn's user block lands BELOW
+   * the cursor: never streamed, never persisted, visually vanishing when
+   * `finished` clears the optimistic echo, while disk keeps the failed turn's
+   * text in its place (audit 2026-07-10, finding 10).
+   *
+   * Worse, `rewindLastTurn` derives its index from the DRIVER's record but
+   * truncates the DISK file, so a stale split aims it a whole turn too early —
+   * clicking rewind on a failed message withdrew the PREVIOUS exchange and
+   * destroyed the failed message with it (audit 2026-07-24, H1).
+   *
+   * Adopt UP, not down: the flushed record is what the user sees and what disk
+   * holds, so it is the authority. Adopting it also restores D7 — otherwise
+   * Herta's next prompt could not see the message the user is still looking
+   * at. (Resetting the renderer DOWN would hide a message disk keeps, so it
+   * would reappear on the next open.)
+   *
+   * EXTRACTED 2026-08-06 (audit S9): this reconciliation lived inline in
+   * `submitText` while `regenerateLastReplyIfOrphaned` still did the original
+   * unconditional `seedEmittedCount`. Both run a full turn through the same
+   * driver/sink pair and both can fail the same ways, so the divergence was
+   * only ever an oversight — see the call site there for what it cost.
+   */
+  private reconcileRecordAfterFailure(): void {
+    const driverRecord = this.driver.getRecord();
+    const flushed = this.sink.flushedRecord();
+    if (flushed !== null && flushed.length > driverRecord.length) {
+      // Cursor and mirror already sit at `flushed.length`, so the invariant
+      // holds without a reseed and the next turn's block appends cleanly.
+      this.driver.loadRecord(flushed);
+      this._record = flushed;
+    } else if (flushed !== null && flushed.length < driverRecord.length) {
+      // The DRIVER is ahead — the mirror image of the case above, and the one
+      // the length-comparison `else` used to swallow (audit 2026-07-24, 1.7).
+      // Reachable when an interrupt lands BEFORE the turn's first flush: the
+      // router/recap phase runs ~1s at the head of every turn,
+      // `classifyIntent` swallows the abort, and the loop head then throws a
+      // record-carrying abort BEFORE `flushBlocks` — so the driver adopts a
+      // record longer than anything ever streamed. Seeding the cursor to that
+      // length declared blocks emitted that never were: the user's message was
+      // never written to JSONL, no later flush could persist it, and the
+      // renderer dropped its optimistic echo on `failed` with no notice
+      // (interrupts set turnFailed:false). The typed message vanished from the
+      // screen AND from disk while living on in memory.
+      //
+      // Flush the missing tail instead: it streams and persists the blocks for
+      // real, which is what the cursor was about to claim had happened.
+      this.sink.flushBlocks(driverRecord);
+      this._record = driverRecord;
+    } else {
+      // Equal lengths, or the mirror is untrustworthy (`flushedRecord()`
+      // refuses to answer when its invariant is broken — a correct
+      // conservatism we must not read as "nothing was flushed"). Keep the
+      // original cursor reseed (audit 2026-07-10, finding 10) so the next
+      // turn's user block cannot land below a stale high-water mark.
+      this.sink.seedEmittedCount(driverRecord.length, driverRecord);
+      this._record = driverRecord;
+    }
+  }
+
+  /** Display forms of the project command allow rules (ADR 0030) for the
+   *  CURRENT effective workspace — the Settings management list. */
+  async listCommandRules(): Promise<readonly string[]> {
+    return this.commandRules.list().map(ruleDisplay);
+  }
+
+  /** Removes one rule by its display form. False when nothing matched. */
+  async removeCommandRule(display: string): Promise<boolean> {
+    return this.commandRules.remove(display);
+  }
+
+  async resolveApproval(opts: ResolveApprovalOpts): Promise<ApprovalResult> {
+    return this.overlayResolver.resolveExternal({
+      requestId: opts.requestId,
+      decision: opts.decision,
+      persistence: opts.persistence,
+    });
+  }
+
+  /**
+   * Set the effective backend (板砖) workspace. Mutates the shared wsHolder
+   * (so the runtimeFactory picks it up on its next dispatch), persists a
+   * `workspace_set` line, and broadcasts a WorkspaceEvent. TRUSTS its caller —
+   * validation happens at the GUI/CLI boundary in later tasks.
+   *
+   * Idle-only (audit 2026-07-10, finding 13): `driver.appendSystemNote`'s
+   * contract is "only called between turns" — mid-turn it drops the note and
+   * can rewind the sink cursor (duplicate JSONL lines + duplicate bubbles).
+   * Mirrors rewindLastTurn's guard; the DeviceCard menu is clickable mid-turn,
+   * so enforce it here rather than trusting the renderer.
+   */
+  async setWorkspace(workspace: string): Promise<WorkspaceSetResult> {
+    if (this.currentTurn !== null) {
+      return { ok: false, reason: "turn_in_progress" };
+    }
+    this.wsHolder.current = workspace;
+    this.wsIsDefault = false;
+    this.persister.appendWorkspaceSet(workspace, new Date().toISOString());
+    this.projector.emitWorkspace({
+      kind: "workspace",
+      workspace,
+      isDefault: false,
+    });
+    // Out-of-turn → 系统 note so the workspace change is visible, persisted,
+    // and resumable in the canonical TerminalRecord.
+    this.driver.appendSystemNote("系统", `workspace → ${workspace}`);
+    this._record = this.driver.getRecord();
+    return { ok: true };
+  }
+
+  /**
+   * Restore the managed-sandbox default backend workspace
+   * (`~/.herta/workspaces/<sessionId>`). Persists it as a `workspace_set`
+   * line and broadcasts a WorkspaceEvent flagged `isDefault: true`.
+   * Idle-only, same guard and rationale as setWorkspace (finding 13).
+   */
+  async resetWorkspace(): Promise<WorkspaceSetResult> {
+    if (this.currentTurn !== null) {
+      return { ok: false, reason: "turn_in_progress" };
+    }
+    const def = defaultWorkspaceFor(homedir(), this.sessionId);
+    this.wsHolder.current = def;
+    this.wsIsDefault = true;
+    this.persister.appendWorkspaceSet(def, new Date().toISOString());
+    this.projector.emitWorkspace({
+      kind: "workspace",
+      workspace: def,
+      isDefault: true,
+    });
+    // Out-of-turn → 系统 note (mirrors setWorkspace) so the reset is visible,
+    // persisted, and resumable in the canonical TerminalRecord.
+    this.driver.appendSystemNote("系统", `workspace → ${def}`);
+    this._record = this.driver.getRecord();
+    return { ok: true };
+  }
+
+  subscribeRecord(): AsyncIterable<RecordEvent> {
+    return this.projector.subscribeRecord();
+  }
+
+  subscribeOverlay(): AsyncIterable<OverlayEvent> {
+    return this.projector.subscribeOverlay();
+  }
+
+  subscribeAgentEvents(): AsyncIterable<SessionAgentEvent> {
+    return this.projector.subscribeAgentEvents();
+  }
+
+  subscribeTurnLifecycle(): AsyncIterable<TurnLifecycleEvent> {
+    return this.projector.subscribeTurnLifecycle();
+  }
+
+  subscribeSpeech(): AsyncIterable<SpeechControlEvent> {
+    return this.projector.subscribeSpeech();
+  }
+
+  subscribeTitle(): AsyncIterable<TitleEvent> {
+    return this.projector.subscribeTitle();
+  }
+
+  subscribeWorkspace(): AsyncIterable<WorkspaceEvent> {
+    return this.projector.subscribeWorkspace();
+  }
+
+  subscribeVoice(): AsyncIterable<VoiceCueEvent> {
+    return this.projector.subscribeVoice();
+  }
+
+  /**
+   * Decide whether this just-finished user turn should (re)generate the title,
+   * and if so kick it off (fire-and-forget). Triggers: no title yet (new session
+   * or a prior failed attempt), a re-opened titled session's first new turn, or
+   * every RETITLE_EVERY_N_TURNS turns on a long session. Single-flight: while a
+   * generation runs, later turns keep counting and retry next turn.
+   */
+  private maybeUpdateTitle(): void {
+    this.turnsSinceTitle += 1;
+    const shouldRetitle =
+      (this._title === null &&
+        this.titleAttempts < MAX_INITIAL_TITLE_ATTEMPTS) ||
+      this.reEntryRetitlePending ||
+      this.turnsSinceTitle >= RETITLE_EVERY_N_TURNS;
+    if (!shouldRetitle || this.titleGenInFlight) return;
+    this.reEntryRetitlePending = false;
+    this.turnsSinceTitle = 0;
+    this.titlePromise = this.generateAndEmitTitle();
+  }
+
+  /**
+   * Generate a title from the recent window (last TITLE_WINDOW_EXCHANGES
+   * exchanges — at the first turn that IS the first exchange), persist it, and
+   * emit a title event. Best-effort: any failure (model error, empty output,
+   * disk error) leaves the title unchanged and never throws. Single-flight via
+   * titleGenInFlight. Kept off the critical path — invoked fire-and-forget.
+   */
+  private async generateAndEmitTitle(): Promise<void> {
+    this.titleGenInFlight = true;
+    this.titleAttempts += 1;
+    const epoch = this.titleEpoch;
+    try {
+      const input = buildRecentTitleInput(
+        this.driver.getRecord(),
+        TITLE_WINDOW_EXCHANGES,
+      );
+      if (input === null) return;
+      const title = await generateSessionTitle(
+        this.titleProvider,
+        { ...input, lang: this.lang },
+        this.titleAbort.signal,
+      );
+      if (title === null) return;
+      // A rewind landed while the model was thinking: `input` describes a
+      // window that no longer exists, and every index below is stale. Drop
+      // the whole result — no title, no topic, no persist, no emit.
+      if (epoch !== this.titleEpoch) return;
+      // Topic history (2026-07-12): a CHANGED title marks a topic boundary,
+      // anchored at the title window's first user block (the message the new
+      // title describes the conversation from). A re-derived same title
+      // appends nothing — the conversation stayed on topic.
+      const recordNow = this.driver.getRecord();
+      const anchorBlock = recordNow[input.startIndex];
+      const appended = appendTopic(this._topics, {
+        title,
+        anchorIndex: input.startIndex,
+        anchorText: topicAnchorText(
+          anchorBlock?.kind === "user" ? anchorBlock.text : input.userText,
+        ),
+        at: new Date().toISOString(),
+        // How much conversation this topic needed to exist. A rewind below it
+        // withdrew the turn that produced this title, so the topic goes with
+        // it — which the anchor cannot express, since the anchor is the title
+        // WINDOW's start and may predate this turn by hours (pruneTopics).
+        bornAtLength: recordNow.length,
+      });
+      if (appended !== null) this._topics = appended;
+      writeSessionTitle(
+        this.transcriptDir,
+        this.sessionId,
+        title,
+        this._topics,
+      );
+      this._title = title;
+      this.titleAttempts = 0; // success → refresh the initial-title budget
+      const newTopic =
+        appended !== null ? this._topics[this._topics.length - 1] : undefined;
+      this.projector.emitTitle({
+        kind: "title",
+        sessionId: this.sessionId,
+        title,
+        ...(newTopic !== undefined ? { topic: newTopic } : {}),
+      });
+    } catch {
+      // best-effort: a title failure never affects the session
+    } finally {
+      this.titleGenInFlight = false;
+    }
+  }
+
+  /**
+   * Test seam: resolves once the in-flight title generation settles (no-op
+   * when none ran). Production never awaits this — title generation is
+   * fire-and-forget so it cannot delay a turn.
+   */
+  async whenTitleSettled(): Promise<void> {
+    if (this.titlePromise !== null) await this.titlePromise;
+  }
+
+  async close(): Promise<void> {
+    // Capture BEFORE interrupt: the turn's finally clears currentTurn.
+    const inFlight = this.currentTurn?.settled ?? null;
+    // Cancel any in-flight turn first. interrupt() is a no-op when
+    // currentTurn is null, so this is always safe to call.
+    await this.interrupt();
+    // Abort any in-flight title generation so a slow flash call can't outlive
+    // the session.
+    this.titleAbort.abort();
+
+    // Await the interrupted turn's REAL settlement (audit 2026-07-10,
+    // finding 14): one setImmediate was not enough — a still-unwinding turn
+    // (the bridge's done-marker append, the driver's persist) could land
+    // appends after teardown, and deleteSession's rmSync then raced them:
+    // a post-delete append recreated `<id>.jsonl` with no header, an
+    // unlistable zombie that half-undid the delete. Bounded so a
+    // pathologically hung turn can never wedge app quit (the before-quit
+    // session-flush hold awaits close()).
+    if (inFlight !== null) {
+      let timer: NodeJS.Timeout | undefined;
+      const cap = new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, 5_000);
+      });
+      try {
+        await Promise.race([inFlight, cap]);
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+    }
+
+    // Give the turn loop one event-loop tick to observe the AbortSignal and
+    // emit turn.failed before we close the projector (which would close all
+    // subscriber queues, potentially losing the failed event).
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    this.projector.close();
+    // V2RecordPersister has no explicit close — it appends synchronously.
+  }
+
+  // ── Async factory ─────────────────────────────────────────────────────────
+
+  /**
+   * Asynchronously construct a `SessionImpl`. Performs disk reads (static
+   * prefix, meta-think corpus, supervisor reference) and returns a fully
+   * wired session.
+   *
+   * The `deps` seam is test-only — production code passes `undefined`.
+   * Tests construct `SessionImpl.create(...)` directly (bypassing
+   * `createSessionHost`) to inject stub providers.
+   */
+  static async create(opts: {
+    sessionId: string;
+    workspaceRoot: string;
+    /** The EFFECTIVE backend (板砖) workspace — the cwd the coding backend
+     *  uses. Distinct from workspaceRoot (the record-store anchor). */
+    effectiveWorkspace: string;
+    /** Whether `effectiveWorkspace` is the managed-sandbox default (true)
+     *  vs. an explicit caller override (false). */
+    isDefaultWorkspace: boolean;
+    config: AppServerConfig;
+    persister: V2RecordPersister;
+    initialRecord?: TerminalRecord;
+    /** How the loaded session's last turn ended, when the file recorded it.
+     *  Absent = the turn left no ending, i.e. a true mid-stream crash — the
+     *  only case resume-recovery may regenerate (audit 2026-07-24, 1.6). */
+    lastTurnEnd?: LastTurnEnd;
+    deps?: SessionInternalDeps;
+    /** Live DeepSeek key getter (from the host's mutable holder) so a key set
+     *  in Settings / onboarding takes effect on the next turn. Falls back to the
+     *  static config key when omitted (tests). */
+    deepSeekKey?: () => string;
+    /** Interaction language (slice 4): threaded into every language-
+     *  parameterized constructor below (static prefix, seeds, opening,
+     *  meta-think, hints, recap, title) and into the V2ActorDriver. The
+     *  caller resolves it per session activation. Default "zh" —
+     *  byte-identical to pre-slice-4 behavior. */
+    lang?: PromptLang;
+  }): Promise<SessionImpl> {
+    const { sessionId, workspaceRoot, config, persister } = opts;
+    const lang: PromptLang = opts.lang ?? "zh";
+    const initialRecord = opts.initialRecord ?? [];
+    const deps = opts.deps ?? {};
+
+    // The effective backend workspace lives in ONE mutable holder shared
+    // between the runtimeFactory closure (read fresh per dispatch) and the
+    // SessionImpl instance, so a future setWorkspace mutates both at once.
+    const wsHolder = { current: opts.effectiveWorkspace };
+
+    // 0b. Fresh-workspace bootstrap: materialize the compiled seed 废案 into
+    //     the live narrative dir so the static prefix below finds a starting
+    //     memory corpus. No-op the moment ANY 废案 exists (never resurrects
+    //     cap-evicted seeds). Skipped when the prefix is overridden (tests).
+    if (deps.staticPrefixOverride === undefined) {
+      await materializeSeedFeian(workspaceRoot, lang);
+    }
+
+    // 0c. Reopen own-dream filter: 废案 distilled from THIS session's
+    //     episodes stay out of the prefix while their source content is
+    //     still verbatim in the reopened record — otherwise Herta re-reads
+    //     the ongoing conversation as a memory from another life. Only a
+    //     reopen can hit this (a fresh session has no record to overlap).
+    const excludeFewShotFiles =
+      deps.staticPrefixOverride === undefined && initialRecord.length > 0
+        ? ownDreamExclusions({
+            workspaceRoot,
+            sessionId,
+            record: initialRecord,
+            dream: config.dream,
+            lang,
+          })
+        : undefined;
+
+    // 1. Static Herta prefix (bio/env compiled in; 废案 from the live dir).
+    const staticPrefix: StaticHertaPrefix =
+      deps.staticPrefixOverride ??
+      (await buildStaticHertaPrefix({
+        workspaceRoot,
+        lang,
+        readFile: async (relPath) => {
+          const { readFile } = await import("node:fs/promises");
+          return readFile(join(workspaceRoot, relPath), "utf-8");
+        },
+        readNarrativeDir: async () => {
+          try {
+            return await readdir(narrativeDirFor(workspaceRoot, lang));
+          } catch (err) {
+            const code = (err as { code?: string }).code;
+            if (code === "ENOENT") return [];
+            throw err;
+          }
+        },
+        ...(excludeFewShotFiles !== undefined ? { excludeFewShotFiles } : {}),
+      }));
+
+    // 2. Memory manager.
+    const memory = new FileMemoryManager({ workspaceRoot });
+
+    // 3. Providers.
+    // Live key: prefer the host-provided getter (updated when the user sets the
+    // key in Settings / onboarding) so a new key takes effect on the next turn
+    // without a restart; fall back to the static config key (tests).
+    const deepSeekKey: () => string =
+      opts.deepSeekKey ?? (() => config.providers.deepseekApiKey);
+    const apiKey: ApiKey = deepSeekKey;
+    // Dev-only chaos/staging lever (see types.ts providers.baseUrl) — spread
+    // into every turn-path provider construction below so a chaos proxy sees
+    // the actor, backend, and router/supervisor/title traffic alike.
+    const baseUrl =
+      config.providers.baseUrl !== undefined
+        ? { baseUrl: config.providers.baseUrl }
+        : {};
+    const actorProvider =
+      deps.providerOverrides?.actor ??
+      deepseekCompletionProvider({ apiKey, ...baseUrl });
+    const backendProvider =
+      deps.providerOverrides?.backend ??
+      deepseekProvider({
+        apiKey,
+        model: config.providers.backendModel,
+        // Default "high". Settings → Coprocessor can set low/high/max —
+        // note deepseek-v4-pro maps a sent "low" to "high" server-side
+        // until its announced early-August-2026 update (flash honors it).
+        thinking:
+          config.thinking === "off" ? false : (config.thinking ?? "high"),
+        ...baseUrl,
+      });
+
+    // 4. Permission engine.
+    // OverlayAskResolver surfaces pending permission requests through the
+    // session's overlay snapshot and emits OverlayEvents via the projector.
+    // The deps callbacks close over a mutable `sessionHolder` object that is
+    // filled in after SessionImpl construction — this is safe because
+    // present() is only ever called during a live turn, which can only happen
+    // after create() returns the SessionImpl to the caller.
+    const sessionHolder: { session: SessionImpl | null } = { session: null };
+    const approvalCache = new SessionApprovalCache();
+    // Project-scoped command allow rules (ADR 0030) — persisted under the
+    // EFFECTIVE workspace's .herta/permissions.json. Reads the holder so a
+    // mid-session setWorkspace re-anchors the rules with the workspace.
+    const commandRules = new ProjectCommandRuleStore(() => wsHolder.current);
+    const overlayResolver = new OverlayAskResolver({
+      cache: approvalCache,
+      rules: commandRules,
+      setPendingOverlay(overlay) {
+        // biome-ignore lint/style/noNonNullAssertion: set before any turn runs
+        sessionHolder.session!._overlay = overlay;
+        // biome-ignore lint/style/noNonNullAssertion: set before any turn runs
+        sessionHolder.session!.projector.emitOverlay({
+          kind: "pending",
+          overlay,
+        });
+      },
+      clearOverlay(requestId) {
+        // biome-ignore lint/style/noNonNullAssertion: set before any turn runs
+        sessionHolder.session!._overlay = null;
+        // biome-ignore lint/style/noNonNullAssertion: set before any turn runs
+        sessionHolder.session!.projector.emitOverlay({
+          kind: "resolved",
+          requestId,
+        });
+      },
+    });
+    const permissions = new RulePermissionEngine({ ask: overlayResolver });
+
+    // 5. Tool registry (backend MVP set).
+    const backendTools = new InMemoryToolRegistry();
+    for (const t of createMvpTools()) backendTools.register(t);
+
+    // 6. Backend context builder.
+    const backendBuilder = new BackendContextBuilder({ tools: backendTools });
+
+    // 7. Shared event bus.
+    const bus = new InMemoryEventBus<AgentEvent>();
+    // Task-scope approval lifetime (ADR 0026): the remember cache clears when
+    // each backend brief ends, so 总是同意 never outlives the task.
+    wireTaskScopedApprovalCache(bus, approvalCache);
+
+    // 7a. Event projector — subscribes to the bus so agent events fan-out
+    //     to all SessionAgentEvent consumers automatically.
+    //     Bus → wire-stream classification: the agent stream is a raw
+    //     passthrough for all events. Record-stream projection is NOT done
+    //     here — committed record blocks reach subscribers via
+    //     BusActorStreamingSink.flushBlocks in canonical order (2026-06-01;
+    //     see docs/superpowers/specs/2026-06-01-gui-record-stream-ordering-design.md).
+    //     TurnLifecycleEvents are emitted directly by Session.submitText, NOT
+    //     mapped from bus turn.* events — that path would double-emit (backend
+    //     loop publishes turn.* on the bus and submitText also emits lifecycle).
+    const projector = new SessionEventProjector({ bus, queueCapacity: 1000 });
+
+    // 8. Permission rules (attach to the shared engine).
+    registerEditFileRule(permissions, { bus });
+    registerWriteNewFileRule(permissions, { bus });
+    registerRunCommandRule(permissions);
+
+    // 9. CodingAgentRuntime factory (per-invocation, per ADR 0007).
+    const runtimeFactory = (): CodingAgentRuntime =>
+      new CodingAgentRuntime({
+        sessionId: randomUUID(),
+        provider: backendProvider,
+        tools: backendTools,
+        permissions,
+        backendBuilder,
+        bus,
+        clock: () => new Date(),
+        // Read fresh from the shared holder so a mid-session setWorkspace
+        // (next task) is picked up on the next dispatch.
+        workspaceRoot: wsHolder.current,
+        memory,
+      });
+
+    // 10. Mood-routing + supervisor providers. The router classifies the
+    //     conversation into one of seven moods once per turn; the supervisor
+    //     gates phase-2 speech. This gives the desktop session the same
+    //     wiring as the CLI's main.ts.
+    //     Router runs thinking "low" (owner decision 2026-08-03; the
+    //     2026-07-31 DeepSeek update gave flash a real "low" tier): a 7-way
+    //     mood pick needs thinking MODE, not depth. The supervisor no longer
+    //     shares the router's adapter — it is a precision gate (misses
+    //     buried-rule shapes ~1/3 even at high, trigger-gate 2026-07-29), so
+    //     it keeps its own "high" flash adapter, and the recap summarizer
+    //     below rides that one too.
+    const routerProvider =
+      deps.providerOverrides?.router ??
+      deepseekProvider({
+        apiKey,
+        model: "deepseek-v4-flash",
+        thinking: "low",
+        ...baseUrl,
+      });
+    // Test seam preserved: with only a `router` override present, the
+    // supervisor (and recap, which takes this adapter) still receive that
+    // stub — stub-session tests rely on one stub covering all three roles.
+    const supervisorProvider =
+      deps.providerOverrides?.supervisor ??
+      deps.providerOverrides?.router ??
+      deepseekProvider({
+        apiKey,
+        model: "deepseek-v4-flash",
+        thinking: "high",
+        ...baseUrl,
+      });
+    // Title provider — a fast flash chat call at thinking "low" (owner
+    // decision 2026-08-03; omitting `thinking` meant the server's DEFAULT
+    // effort, which is "high" — titles were silently paying full reasoning).
+    // NOTE: deepseek-v4-flash is a reasoning model; it streams a reasoning
+    // chain BEFORE the answer, so maxTokens must cover the reasoning PLUS
+    // the (short) title — a tight cap silently starves the answer and yields
+    // an empty title. 1024 stays: generous for low effort, and the model
+    // stops naturally after the title.
+    const titleProvider =
+      deps.providerOverrides?.title ??
+      deepseekProvider({
+        apiKey,
+        model: "deepseek-v4-flash",
+        thinking: "low",
+        maxTokens: 1024,
+        temperature: 0.3,
+        ...baseUrl,
+      });
+    let existingTitle =
+      readSessionTitle(config.transcriptDir, sessionId) ?? null;
+    // Topic history (2026-07-12): persisted alongside the title. Sessions
+    // titled BEFORE the history existed get their first entry synthesized
+    // from the existing title, anchored at the record's first user block
+    // (in-memory; it persists with the next real title write).
+    let existingTopics: readonly SessionTopic[] = readSessionTopics(
+      config.transcriptDir,
+      sessionId,
+    );
+    // The sidecar can outlive the record it described (review 2026-07-31):
+    // rewind-to-empty deliberately skips the sidecar rewrite ("the next
+    // title write starts it fresh" — which never comes if the app closes
+    // first), and a crash can land between the JSONL truncation and the
+    // sidecar write. Without this, resume resurrected the withdrawn title
+    // and dead rail ticks — and the next real title write re-persisted them
+    // for good. Judge the sidecar against the record actually loaded.
+    const loadedRecord = opts.initialRecord ?? [];
+    if (!loadedRecord.some((b) => b.kind === "user")) {
+      // No surviving user turn: whatever the sidecar describes is gone.
+      existingTitle = null;
+      existingTopics = [];
+    } else {
+      existingTopics = pruneTopics(existingTopics, loadedRecord.length);
+    }
+    // Runs AFTER the prune on purpose: a title whose every topic was pruned
+    // re-anchors at the record's first surviving user block, same as a
+    // pre-history sidecar.
+    const synthesized = synthesizeInitialTopic(
+      existingTitle,
+      existingTopics,
+      loadedRecord,
+    );
+    if (synthesized !== null) existingTopics = [synthesized];
+    // Compiled prompt assets (M-prompts-1): hints and the meta-think corpus
+    // resolve from the bundle, and the supervisor toggle is config-driven
+    // (default ON) instead of a workspace file's existence.
+    const metaThinkCorpus = deps.metaThinkOverride ?? loadMetaThinkCorpus(lang);
+    const actorHints = loadActorHints(lang);
+    const supervisorReference =
+      deps.supervisorReferenceOverride ??
+      supervisorReferenceFor(config.supervisor?.enabled ?? true);
+
+    const sink = new BusActorStreamingSink(
+      bus,
+      (ev) => projector.emitSpeech(ev),
+      (ev) => projector.emitRecord(ev),
+      // random + now keep their wall-clock defaults; `lang` selects the reveal
+      // cadence (EN reveals speech by word, zh by code point).
+      undefined,
+      undefined,
+      lang,
+    );
+
+    // 10a. Opening seed (new sessions only). Resumed/opened sessions already
+    //      carry block 0 in their loaded record, so the opening pickup is
+    //      skipped for them. The preamble (when present) folds into the
+    //      static prefix BEFORE the driver is constructed (the driver takes
+    //      staticPrefix at construction time); the seed line becomes record
+    //      block 0, loaded into the driver and persisted below. Mirrors the
+    //      CLI's main.ts. Missing openings dir → pickOpening returns
+    //      undefined → no seed (graceful).
+    // Voice-clip root, shared by every voice feature below (openings /
+    // particles / veto / easter egg). Config-driven since 2026-07-06 so a
+    // PACKAGED app can point it at its bundled resources copy; the fallback
+    // is the dev layout under the workspace. Every read stays best-effort —
+    // a missing dir just means voice never fires.
+    const voiceAssetsDir =
+      config.voiceAssetsDir ?? join(workspaceRoot, "data", "voice");
+    let effectiveStaticPrefix = staticPrefix;
+    let seedBlock: TerminalRecordBlock | null = null;
+    // The opening's voice clipId = its filename stem (the .opus shares the stem),
+    // captured for the `voice` cue emitted when playOpening streams the seed.
+    let openingClipId: string | null = null;
+    // Matched per-char cadence so the seed reveal spans ≈ the clip's audio
+    // (SPEC 2026-06-23). undefined when there's no clip / the clip is unreadable.
+    let openingBaseMs: number | undefined;
+    if (initialRecord.length === 0) {
+      // Openings come from the compiled corpus (M-prompts-1); the paired
+      // voice clip still resolves by filename stem under the workspace's
+      // data/voice/openings/. An explicit `null` override means NO opening.
+      const opening =
+        deps.openingOverride !== undefined
+          ? (deps.openingOverride ?? undefined)
+          : pickOpening({ lang });
+      if (opening !== undefined) {
+        effectiveStaticPrefix = { ...staticPrefix, opening: opening.preamble };
+        // The voice pairing comes from the picker (slice 4): zh openings
+        // carry their filename stem; EN openings carry NO clip (no EN clips
+        // in v1) — never derive a clip id from `sourceFile` here, or an EN
+        // seed would pair with a CN clip.
+        openingClipId = opening.voiceClipId ?? null;
+        // Match the text-stream cadence to the voice clip's duration. The clip
+        // lives at <voiceAssetsDir>/openings/<clipId>.opus (mirrors the GUI's
+        // voice-path resolution; Ogg/Opus since the 2026-07-16 cutover).
+        // Best-effort: an unreadable / absent clip — or no clip at all (EN
+        // opening) — leaves openingBaseMs undefined → the sink's read-along
+        // default.
+        const durationMs =
+          deps.openingDurationMs ??
+          (openingClipId !== null
+            ? await readOpusDurationMs(
+                join(voiceAssetsDir, "openings", `${openingClipId}.opus`),
+              )
+            : null);
+        // `durationMs` is number | null (the `??` collapses the seam's undefined).
+        if (durationMs !== null) {
+          openingBaseMs = spanMatchedBaseMs({
+            text: opening.seedText,
+            targetMs: durationMs,
+            fallbackMs: SLOW_MS_PER_CHAR,
+          });
+        }
+        seedBlock = {
+          kind: "herta",
+          surface: "speech",
+          text: opening.seedText,
+          // Stamp at construction so the opening line carries its timestamp in
+          // the onReset snapshot too (the persister won't double-stamp). New
+          // sessions then show the seed's time live, not only after reload.
+          at: new Date().toISOString(),
+        };
+      }
+    }
+
+    // 10b. Prompt-dump callback (HERTA_DUMP_PROMPTS). Mirrors the CLI's
+    //      main.ts: when the env var is truthy, each turn's literal LLM
+    //      prompts are written to
+    //      <transcriptDir>/<sessionId>.prompts/turn-NNN-<label>.txt for
+    //      debugging parity with the CLI. Off by default; a dump failure
+    //      must never break a turn (swallow all errors).
+    let onPrompt:
+      | ((
+          label:
+            | "primary"
+            | "primary-out"
+            | "beat"
+            | "beat-out"
+            | "phase2"
+            | "phase2-out"
+            | "state"
+            | "state-out"
+            | "supervisor"
+            | "supervisor-out"
+            | "supervisor-retry"
+            | "supervisor-retry-out",
+          prompt: string,
+        ) => void)
+      | undefined;
+    if (process.env.HERTA_DUMP_PROMPTS) {
+      const promptsDir = join(config.transcriptDir, `${sessionId}.prompts`);
+      try {
+        mkdirSync(promptsDir, { recursive: true });
+        let promptCounter = 0;
+        onPrompt = (label, prompt): void => {
+          try {
+            promptCounter += 1;
+            const filename = `turn-${String(promptCounter).padStart(3, "0")}-${label}.txt`;
+            writeFileSync(join(promptsDir, filename), prompt, "utf-8");
+          } catch {
+            // swallow — a prompt-dump failure must never break a turn
+          }
+        };
+      } catch {
+        // mkdir failed — leave onPrompt undefined (dumping disabled)
+      }
+    }
+
+    // 10c. Recap runtime — automatic long-session compaction (spec
+    //      2026-06-19, ADR 0009). Enabled. NOTE: the default thresholds engage
+    //      only at ~800K tokens (1M window × bufferFraction 0.2), so on normal
+    //      sessions this stays effectively inert — it won't fire until the
+    //      budgets are tuned down to realistic session sizes (a separate,
+    //      validation-gated change; see session-recap.ts §"STARTING POINTS").
+    //      The manual /compact path bypasses `enabled`. Built via the shared
+    //      @herta/herta factory so this and the CLI's main.ts bootstrap can't
+    //      drift on config or the guide path (the factory reads 黑塔's
+    //      HertaGuide.txt from the narrative dir with a safe fallback to "").
+    const recap = await buildRecapRuntime({
+      // The supervisor's "high" adapter, NOT the low-effort router: recap
+      // distills voice anchors and rolls (ADR 0009) — precision work.
+      routerProvider: supervisorProvider,
+      workspaceRoot,
+      sessionId,
+      enabled: true,
+      lang,
+    });
+
+    // 11. V2ActorDriver — owns the growing TerminalRecord, mood routing,
+    //     the supervisor, and (via the persister) block persistence. An
+    //     all-empty corpus + empty supervisor reference degrade to
+    //     single-phase actor mode. The per-turn AbortSignal is threaded by
+    //     submitText into driver.runTurn so interrupt() can cancel.
+    // Particle voice catalog (SPEC 2026-06-23): leading-interjection tokens +
+    // their variant clips, read once. Best-effort — a missing dir yields an
+    // empty catalog so particles simply never fire. Loaded for every session
+    // (particles fire on normal turns, not just new sessions).
+    const particleCatalog = await loadParticleCatalog(
+      join(voiceAssetsDir, "particle"),
+    );
+    const particleRandom = deps.particleRandom ?? Math.random;
+    // Veto voice clips (SPEC 2026-06-23): full "catching-herself" lines played
+    // when the supervisor rejects the candidate speech. Best-effort — missing
+    // dir → empty → never fires.
+    const vetoClips = await loadClipStems(join(voiceAssetsDir, "veto"));
+    const vetoRandom = deps.vetoRandom ?? Math.random;
+    // Track the last veto clip so two consecutive rejections never play the same
+    // wav — across retries within a turn AND across turns. Session-scoped via
+    // this closure (the onSupervisorVeto callback below is built once per
+    // session). Resets only when a new session is created.
+    let lastVetoClip: string | null = null;
+    // Same idea for the sigh case (its `<category>/<clipId>` key): two
+    // consecutive sigh rolls never repeat the same wav when an alternative
+    // exists. Session-scoped, like lastVetoClip.
+    let lastSighClip: string | null = null;
+    // The particle token cued at this turn's first speech (null = the speech
+    // didn't lead with one). Feeds the veto reaction's sigh-eligibility check.
+    // onPrimarySpeechStart fires on EVERY non-empty speech turn and both actor
+    // fire sites precede the supervisor check, so this is always fresh by the
+    // time a veto can fire — it self-resets each turn with no boundary hook.
+    let particleTokenThisTurn: string | null = null;
+    // No EN voice in v1 (ADR 0013 §5): every voice cue — opening, particle,
+    // veto, easter-egg — is suppressed for a non-zh interaction session (no
+    // EN wavs exist, and the clips that DO exist are all Chinese). The opening
+    // is gated by an absent voiceClipId; the remaining three are gated on this
+    // flag (adversarial review 2026-07-15 found veto + easter-egg firing
+    // Chinese audio in EN sessions).
+    const voiceCuesEnabled = lang === "zh";
+    // Easter-egg voice clips (SPEC 2026-06-23): played on a successful 板砖-card
+    // lift. Best-effort — missing dir → empty → never fires. Empty for non-zh.
+    const easterEggClips = voiceCuesEnabled
+      ? await loadClipStems(join(voiceAssetsDir, "easter_egg"))
+      : [];
+    const easterEggRandom = deps.easterEggRandom ?? Math.random;
+    const easterEggNow = deps.easterEggNow ?? Date.now;
+
+    const driver = new V2ActorDriver({
+      provider: actorProvider,
+      model: config.providers.actorModel,
+      staticPrefix: effectiveStaticPrefix,
+      bus,
+      runtimeFactory,
+      persister,
+      sink,
+      onPrompt,
+      // Particle voice: the actor fires this at the FIRST speech of each turn
+      // (not retries/beats/regenerate). Match the leading particle and cue a
+      // random variant on the same voice channel the opening uses.
+      onPrimarySpeechStart: (text: string) => {
+        if (!voiceCuesEnabled) return; // no EN voice in v1 (ADR 0013 §5)
+        const token = matchLeadingParticle(text, particleCatalog);
+        particleTokenThisTurn = token;
+        if (token === null) return;
+        const clip = pickParticleClip(particleCatalog, token, particleRandom);
+        if (clip !== null) {
+          projector.emitVoice({
+            kind: "cue",
+            category: clip.category,
+            clipId: clip.clipId,
+          });
+        }
+      },
+      // Veto voice, diversified (user 2026-07-11): the rejection moment rolls
+      // one of three reactions instead of always a full "catching-herself"
+      // line — a veto/ clip (with the same consecutive repeat avoidance), a
+      // short sigh from particle/唉 · particle/哎 (only when this turn's
+      // speech didn't already cue a sigh-family particle), or silence (the
+      // retract morph alone carries the beat). See pickVetoReaction.
+      onSupervisorVeto: () => {
+        if (!voiceCuesEnabled) return; // no EN voice in v1 (ADR 0013 §5)
+        const reaction = pickVetoReaction({
+          vetoClips,
+          lastVetoClip,
+          lastSighClip,
+          particleCatalog,
+          particleTokenThisTurn,
+          random: vetoRandom,
+        });
+        if (reaction.kind === "silence") return;
+        if (reaction.fromVetoFolder) lastVetoClip = reaction.clipId;
+        else lastSighClip = `${reaction.category}/${reaction.clipId}`;
+        projector.emitVoice({
+          kind: "cue",
+          category: reaction.category,
+          clipId: reaction.clipId,
+        });
+      },
+      routerProvider,
+      metaThinkCorpus,
+      hints: actorHints,
+      supervisorProvider,
+      supervisorReference,
+      recap,
+      lang,
+    });
+
+    // Resume path: load the prior record into the driver. loadRecord does
+    // NOT replay through the persister — the blocks are already on disk in
+    // the (forResume) source file. New blocks the next turn writes append
+    // to that same file.
+    //
+    // New-session path: when an opening was picked, inject its seed line as
+    // TerminalRecord block 0 (loaded into the driver) AND persist it to the
+    // new session's JSONL so it survives across resumes. The preamble is
+    // already folded into effectiveStaticPrefix above; it does NOT enter
+    // TerminalRecord (per Slice 8 §3 decision B). Mirrors the CLI's main.ts.
+    if (initialRecord.length > 0) {
+      driver.loadRecord(initialRecord); // resume — already on disk
+    } else if (seedBlock !== null) {
+      // D3 (streaming opening): persist the seed at create so a mid-stream close
+      // never loses it (on resume it loads as block 0 = instant history), but
+      // DEFER it from the in-memory record so the onReset snapshot is empty and
+      // the renderer streams it in via playOpening (like a reply) instead of
+      // showing it instantly. SessionImpl.playOpening — fired by the create
+      // handler after the renderer subscribes — streams + commits it.
+      persister.appendBlock(seedBlock);
+    }
+
+    // Seed the sink's canonical-diff cursor past any blocks already present
+    // at session start (loaded record on resume, opening seed on a new
+    // session) — those reached the GUI via the onReset snapshot, not the
+    // stream. The first turn's flushBlocks then emits only its new blocks.
+    // The record itself seeds the sink's resync mirror (record-drop heal).
+    const seedRecord = driver.getRecord();
+    sink.seedEmittedCount(seedRecord.length, seedRecord);
+
+    const session = new SessionImpl({
+      sessionId,
+      workspaceRoot,
+      wsHolder,
+      isDefaultWorkspace: opts.isDefaultWorkspace,
+      ...(opts.lastTurnEnd !== undefined
+        ? { lastTurnEnd: opts.lastTurnEnd }
+        : {}),
+      persister,
+      driver,
+      sink,
+      projector,
+      overlayResolver,
+      commandRules,
+      transcriptDir: config.transcriptDir,
+      titleProvider,
+      initialTitle: existingTitle,
+      initialTopics: existingTopics,
+      // D3: the deferred opening seed (new sessions with an opening). null for
+      // resumed sessions (seedBlock is only set when initialRecord is empty) and
+      // new sessions without an opening — playOpening then no-ops.
+      pendingOpening: seedBlock,
+      // The opening's voice clipId (null when there's no opening) — emitted as a
+      // `voice` cue when playOpening streams the seed.
+      openingClipId,
+      // D3: opening-stream lead beat; undefined → the driver's OPENING_LEAD_MS.
+      openingLeadMs: deps.openingLeadMs,
+      // Wav-matched seed cadence; undefined → the sink's read-along default.
+      openingBaseMs,
+      easterEggClips,
+      easterEggRandom,
+      easterEggNow,
+      deepSeekKey,
+      lang,
+    });
+    sessionHolder.session = session;
+    return session;
+  }
+}

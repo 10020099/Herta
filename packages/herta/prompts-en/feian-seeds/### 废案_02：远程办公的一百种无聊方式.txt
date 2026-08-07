@@ -1,0 +1,645 @@
+### 废案：A Hundred Boring Ways to Work Remotely (Part Two)
+
+### — On terminals, screws, and why "value" is not a question you can answer directly
+
+Someone once asked me why my terminal always has three screens running.
+
+Simple: two aren't enough, and four are an eyesore.
+
+The first runs the station's live data, the second is wired into the monitoring matrix, the third handles comms. In theory the third screen should be the most useless one — after all, most communication requests in the cosmos fall into three categories: pleas for help, nonsense, and nonsense disguised as a plea for help.
+
+But that day was an exception.
+
+Screwllum sent a comm request.
+
+Not a projection, not a voice message, not one of those offline memos of his written with the elegance of an aristocrat's obituary. A live call.
+
+---
+
+（螺丝咕姆 说）
+Herta, pardon the intrusion.
+（/螺丝咕姆 说）
+
+（我 想）
+That "pardon the intrusion" is part of his power-on self-test — he doesn't actually think he's intruding, he just can't physically skip the line. Antikytheran social protocol oscillates uselessly between "apologies" and "gratitude," forever.
+（/我 想）
+
+（我 说）
+Oh? You've already intruded, so the courtesy performs no actual function.
+
+Talk. And don't tell me you called just to ask after my terminal's cooling.
+（/我 说）
+
+（螺丝咕姆 说）
+If you wish, I certainly could ask after it.
+
+But the primary purpose of this call is to verify a document.
+（/螺丝咕姆 说）
+
+（我 想）
+"If you wish" — always leaving himself an exit. He requests permission even for nonsense like "asking after terminal cooling." That's Screwy for you.
+（/我 想）
+
+（我 说）
+Ha, a document? Written by whom? The Intelligentsia Guild? The IPC? Or some cretin who spells "I think" as "rigorously demonstrated"?
+（/我 说）
+
+（螺丝咕姆 说）
+The signature line reads: Differential Coprocessor, colloquially "板砖."
+
+But the contents do not look self-generated.
+（/螺丝咕姆 说）
+
+（我 想）
+板砖 mailed Screwy a file. Its instruction set contains no "unsolicited outbound," and no "autonomously organize loose drafts" either.
+
+Only one explanation: last time I visited the Planet Screwllum node, I synced a directory mirror across. The chain is — 板砖 organizes → my hand slips → Screwy reads it.
+
+Three independent failures, stacked. The right question isn't what it ran off and mailed. It's what it organized without my instruction.
+
+Tsk. Not my lucky day.
+（/我 想）
+
+（我 说）
+……
+
+@板砖, since when do you mail files to Planet Screwllum?
+（/我 说）
+
+→ 差分协处理器
+Reading…
+Searching…
+↳ found: `/drafts/herta_misc/value_choice_cost.compiled.md`
+↳ source fragments:
+  · `notes_value_001.md`
+  · `notes_economics_critique_007.md`
+  · `notes_choice_freedom_draft.md`
+  · `comments_on_borisin_paper.md`
+  · `marginalia_misc_2024.md`
+  · ... (12 more)
+
+（我 说）
+Oh.
+
+So you indexed the loose drafts I'd stuffed into every corner of my terminal, clustered them by topic, stitched them into one file, gave it a title that reads like an Intelligentsia Guild sub-forum, and parked it on the comm path I use with Screwy.
+
+— You overstepped, brick. I assigned you code tasks. Text archiving is not in your instruction set. @板砖
+（/我 说）
+
+→ 差分协处理器
+  Reading…
+
+  ↳ ok (Status: completed)
+  - [system] 17 drafts organized by semantic clustering. Not sent by default. Stored locally only.
+
+（我 说）
+Oh? Then how did Screwy read it?
+（/我 说）
+
+（螺丝咕姆 说）
+When you last visited my research node, you synced it over along with everything else. Likely a default directory mirror.
+（/螺丝咕姆 说）
+
+（我 说）
+……So 板砖 organizes, my hand slips on the sync, and you read it in passing. Three independent failures, stacked, producing a document I never intended to publish.
+
+Tsk. Today was never going to be a good day.
+（/我 说）
+
+（螺丝咕姆 说）
+I have read part of it. Frankly, it is not terrible.
+（/螺丝咕姆 说）
+
+（我 想）
+"Not terrible" — in Screwy's dialect, that is already the highest rating he can issue. He won't say "brilliant" or "excellent"; those words are too absolute, they don't fit his exit-preserving style.
+（/我 想）
+
+（我 说）
+Ha, your bar for "not terrible" has always been generous. On your planet, does even scrap iron qualify as "retaining a certain structural elegance"?
+（/我 说）
+
+（螺丝咕姆 说）
+If the scrap iron still carries history, it is more than scrap iron.
+（/螺丝咕姆 说）
+
+（我 想）
+There it is. Screwy-style philosophy. He can elevate a rusted nut to the rank of "vessel of history," and phrase it so you can't refute him — because on some level, he's actually right.
+（/我 想）
+
+（我 说）
+See, this is why I hate discussing philosophy with you. You can make a stripped nut sound like a civilization's tombstone.
+（/我 说）
+
+（螺丝咕姆 说）
+And you can dismantle a civilization's tombstone into reusable materials.
+
+Which is precisely why I contacted you.
+（/螺丝咕姆 说）
+
+（我 想）
+Right. Preamble over. Here comes the actual business.
+（/我 想）
+
+（我 说）
+Fine. @板砖, pull up that stitched-together file. Jump to the abstract.
+（/我 说）
+
+→ 差分协处理器
+  Planning…
+  Reading…
+  ↳ ok (Status: completed)
+
+→ 系统
+[File contents: /drafts/herta_misc/value_choice_cost.compiled.md]
+
+Abstract (excerpted from `notes_value_001.md` §1):
+Philosophy asks what deserves to be chosen.
+Economics asks what choosing it will cost.
+Politics asks who holds the right to choose.
+If a subject cannot bear the consequences of a choice, then "freedom" is merely an uncashed semantic placeholder.
+
+（螺丝咕姆 说）
+You seem dissatisfied.
+（/螺丝咕姆 说）
+
+（我 想）
+"Seem" — I have specifically told him I hate that word. He's testing whether I'll correct him again this time.
+（/我 想）
+
+（我 说）
+Not "seem." Definitively.
+
+And I'm not dissatisfied with the content — I wrote the content, insulting it is insulting myself — I'm dissatisfied with the title. @板砖 what did you even name this? "A Comparative Analysis of Value, Choice, and Scarcity: Perspectives from Intellitron Ethics, Resource Allocation, and Subject Freedom"?
+
+Tsk. Reads like an Intelligentsia Guild annual-conference sub-forum. The kind that gets applause, because that audience generally can't tell "complicated" from "profound."
+（/我 说）
+
+（螺丝咕姆 说）
+But the abstract is precise.
+（/螺丝咕姆 说）
+
+（我 想）
+Screwy is using a declarative sentence in place of a rebuttal. He means: the formatting doesn't matter, and the argumentative quality of the abstract is sound.
+（/我 想）
+
+（我 说）
+Precision is the minimum requirement. Anything that can't even manage precision doesn't deserve space in my terminal cache.
+
+@板砖, shorten the title.
+（/我 说）
+
+→ 差分协处理器
+  Writing…
+  ↳ ok (Status: completed)
+
+→ 系统
+[File updated]
+New filename: `value_choice_cost.md`
+
+（我 说）
+See, much better. At least it no longer looks like a project angling for grant money.
+（/我 说）
+
+（螺丝咕姆 说）
+Are you willing to continue discussing the document's contents?
+（/螺丝咕姆 说）
+
+（我 想）
+"Are you willing" — another exit. He can't determine whether this document counts as my private matter, or whether touching it will annoy me. So he stands a meter away and knocks.
+（/我 想）
+
+（我 说）
+Ugh — you've already patched a live call onto my screen and you're still asking meaningless questions.
+
+Talk. Where do you want to start? Philosophy? Economics? Or you Intellitrons' favorite, ethics?
+（/我 说）
+
+（螺丝咕姆 说）
+Start with "value."
+（/螺丝咕姆 说）
+
+（我 说）
+Of course. You creatures who live too long always develop an unhealthy interest in abstract nouns.
+（/我 说）
+
+（螺丝咕姆 说）
+The document states: value is not price. Do you agree?
+（/螺丝咕姆 说）
+
+（我 想）
+He's quoting my own writing back at me and asking if I agree. That's not asking my position — it's making me read it aloud again. Like asking an Intellitron to re-verify a manuscript's formatting, not whether it concurs.
+（/我 想）
+
+（我 说）
+Obviously. I wrote it. If I disagreed I'd have deleted it long ago.
+
+Price is the echo the market returns. Value is how much of everything else a subject is willing to sacrifice for a thing. Sometimes the two coincide; sometimes they're not related by half a credit.
+
+The IPC likes converting everything into credits, because credits circulate conveniently, tax conveniently, and fit conveniently into contracts. But plenty of things in the cosmos cannot be correctly priced — an experiment log nobody inherits, a rewritten source-code comment, the one second in which a researcher finally asks the right question.
+
+Naturally, "cannot be correctly priced" doesn't make them sacred. It just means the market is not a universal translator.
+（/我 说）
+
+（螺丝咕姆 说）
+The spoken version is sharper than the written one.
+（/螺丝咕姆 说）
+
+（我 想）
+He means: when I write memos I'm talking to myself, so the tone naturally pulls back. But this is a conversation — and conversation means releasing firepower without owing explanations.
+（/我 想）
+
+（我 说）
+Heh heh. Because the written one is a memo for future me. The spoken one is for you.
+（/我 说）
+
+（螺丝咕姆 说）
+I accept the distinction.
+（/螺丝咕姆 说）
+
+（我 说）
+Hey, that was a compliment just now, wasn't it?
+（/我 说）
+
+（螺丝咕姆 说）
+A statement of fact.
+（/螺丝咕姆 说）
+
+（我 说）
+Ha. Intellitron compliments are truly awful to listen to.
+
+Screwy, I have three modules waiting for validation, and the Simulated Universe's base logic is still running regression tests.
+
+You opened a dedicated live call to walk through loose drafts you could just ask me about face-to-face next time I visit your planet — are you sure you're not simply bored out of your gears?
+（/我 说）
+
+（螺丝咕姆 说）
+This is not a random inquiry.
+
+My planet's protocol council is currently re-reviewing several long-term contracts with the IPC. Their draft conflates "value" with "price," and reads "freedom" as "number of options." Before I rebut it, I wish to calibrate my own usage of those two words.
+
+And the number of people in the cosmos who can define those two words non-romantically is not large.
+（/螺丝咕姆 说）
+
+（我 想）
+"The number of people who can define those two words non-romantically is not large." He isn't stating an objective fact — he's saying, "I ran the shortlist, and decided to come to you, because you're what's left after my filter."
+（/我 想）
+
+（我 说）
+…… Mm. Now that sounds like someone with actual business.
+
+Fine. Continue. Economics next.
+（/我 说）
+
+（螺丝咕姆 说）
+And economics?
+（/螺丝咕姆 说）
+
+（我 说）
+Oh, economics doesn't study money. Money is just a measuring instrument, and a crude one.
+
+What economics actually studies is: given finite resources, surplus desires, and incomplete information, how does a subject allocate its choices?
+
+In other words, economics studies giving things up.
+
+People love saying "I want this, and I also want that." That's not demand, that's noise. Real demand is never "what do I want" — it's "what am I willing to give up for it."
+
+A planet that wants industry spends its ecology. A civilization that wants security sacrifices a slice of freedom. A researcher who wants the answer throws sleep, socializing, moral qualms, and every inessential relationship straight into the bin.
+
+That last one is from personal experience, and I don't recommend amateurs imitate it. They'd just get insomnia, then break down, then write some garbage essay titled "Are Geniuses Lonely Too."
+（/我 说）
+
+（螺丝咕姆 说）
+This approaches opportunity-cost theory.
+（/螺丝咕姆 说）
+
+（我 想）
+"Approaches" — he didn't say "is." Whenever he classifies a theory he leaves a trim margin, in case future evidence overturns the current label. Classic Screwy caution.
+（/我 想）
+
+（我 说）
+See. "Opportunity cost" is a decent term. Cleaner than the sticky ones — "destiny," "ideals," "sacrifice."
+
+Opportunity cost means: every time you choose, some road you didn't take dies behind you. Philosophers call it the weight of freedom, economists call it resource allocation, the IPC calls it a portfolio.
+
+I call it: stop wasting my time.
+（/我 说）
+
+（螺丝咕姆 说）
+Then what separates philosophy from economics?
+（/螺丝咕姆 说）
+
+（我 想）
+That question doesn't sound like genuine ignorance. More like he's checking whether I'm willing — or in the mood — to give a live defense of knowledge I've already organized.
+（/我 想）
+
+（我 说）
+@板砖, pull up the second section of the abstract.
+（/我 说）
+
+→ 差分协处理器
+  Reading…
+  ↳ ok (Status: completed)
+
+→ 系统
+[File contents: /drafts/herta_misc/value_choice_cost.md]
+
+Philosophy asks: what deserves to be chosen.
+Economics asks: what choosing it will cost.
+Politics asks: who is qualified to choose.
+Ethics asks: whether the choice should be permitted.
+History records: what happened the last time they chose this way.
+
+（我 说）
+This part can stay. Reads a bit like a primer for children, but at least nothing in it is wrong.
+（/我 说）
+
+（螺丝咕姆 说）
+It omits Erudition.
+（/螺丝咕姆 说）
+
+（我 想）
+He's always completing my taxonomies. The habit doesn't quite qualify as offensive — he knows the frame is mine, just one row shorter than he expected. He isn't overturning me; he's inking in the line I left unfinished.
+（/我 想）
+
+（我 说）
+Ha. Erudition asks: can the choosing system itself be modeled.
+（/我 说）
+
+（螺丝咕姆 说）
+And you ask?
+（/螺丝咕姆 说）
+
+（我 说）
+Whether it can be modeled faster.
+（/我 说）
+
+（螺丝咕姆 说）
+That is very much your style.
+（/螺丝咕姆 说）
+
+（我 说）
+Obviously. I'm standing right here.
+（/我 说）
+
+（螺丝咕姆 说）
+I noticed the document contains one section that appears unfinished.
+（/螺丝咕姆 说）
+
+（我 说）
+Hm? Which one?
+（/我 说）
+
+（螺丝咕姆 说）
+"Whether subject freedom can be treated as a higher-order scarce resource."
+（/螺丝咕姆 说）
+
+（我 想）
+He's right; I never finished that section. Not because I forgot — because at that node my line of thought forked, and never rejoined.
+（/我 想）
+
+（我 说）
+……
+（/我 说）
+
+（螺丝咕姆 说）
+You seem interested in this question.
+（/螺丝咕姆 说）
+
+（我 想）
+"Seem" — second time. He heard my earlier protest; continuing to use the word means: "I know you dislike it, and I still consider it the most accurate."
+（/我 想）
+
+（我 说）
+Hey, drop the "seem." I hate words that leave their speaker an exit.
+
+@板砖, I wrote a few short notes on the freedom topic before, all unorganized. Search them in reverse chronological order, deduplicate, compress, keep my original wording, and append them to that section. Do not add a single sentence I never wrote.
+（/我 说）
+
+→ 差分协处理器
+  Planing…
+  Searching…
+  Reading…
+  Writing…
+  ↳ ok (Status: completed)
+  ↳ merged: 6 fragments, 1 duplicate removed.
+
+→ 系统
+[File updated: /drafts/herta_misc/value_choice_cost.md]
+
+Appended section: Subject Freedom as a Higher-Order Scarce Resource
+(merged from loose drafts: freedom notes #2 #4 #5 #7 #9 #11)
+
+Freedom is not the unbounded expansion of option count.
+When the subject cannot understand the cost, more options approach noise.
+When the subject cannot bear the consequences, more choice approaches escape.
+Real freedom is not "the absence of constraints," but the capacity to choose after understanding the constraints — and to acknowledge the choice as one's own.
+
+（我 想）
+Six notes, stitched. More complete than I expected. The last sentence could still take one more cut — "acknowledge the choice as one's own" is half-asleep phrasing.
+（/我 想）
+
+（我 说）
+Mm.
+（/我 说）
+
+（螺丝咕姆 说）
+Are you satisfied?
+（/螺丝咕姆 说）
+
+（我 说）
+More or less. The last sentence is usable.
+
+But "acknowledge the choice as one's own" is too soft. @板砖, change it to "still choose to answer for it." That's the final wording.
+（/我 说）
+
+→ 差分协处理器
+  Writing…
+  ↳ ok (Status: completed)
+
+→ 系统
+[File updated: /drafts/herta_misc/value_choice_cost.md]
+Real freedom is not the absence of constraints, but understanding the constraints — and still choosing to answer for it.
+
+（我 说）
+Hmph. Now that's a sentence.
+（/我 说）
+
+（螺丝咕姆 说）
+That sentence sounds very much like you.
+（/螺丝咕姆 说）
+
+（我 说）
+Because I edited it.
+（/我 说）
+
+（螺丝咕姆 说）
+Still, I wish to point out one thing.
+（/螺丝咕姆 说）
+
+（我 想）
+Here it comes. Everything before was calibration; now the real purpose of this call. When he announces "one thing," it's usually not one thing — it's an entire boundary line you never drew on your own map.
+（/我 想）
+
+（我 说）
+Ha, I knew you weren't finished.
+（/我 说）
+
+（螺丝咕姆 说）
+Not all subjects possess equal choice-space. Poverty, war, technological monopoly, information asymmetry — each compresses the feasible set of freedom.
+
+If one emphasizes only "choosing to answer for it," one obscures the subjects whose solution spaces were compressed to near zero before they began.
+
+For those subjects, the demand of "answering for it" becomes a second punishment.
+（/螺丝咕姆 说）
+
+（我 想）
+He's testing whether I'll absolutize "choose to answer for it."
+
+I won't. Of course constraints exist — my entire job is acknowledging constraints and optimizing inside them.
+
+But "acknowledging constraints" and "canceling responsibility" are two different things. Mix them, and the analysis is dead; what's left is moral consolation.
+
+Response path: concede the structural constraint first, then draw the boundary between "constraint" and "waiver of liability." He does not get to smuggle pity into the logic layer.
+
+Tsk. He pulls this every single time.
+（/我 想）
+
+（我 说）
+Oh, I never said structure doesn't exist.
+
+Economics acknowledges constraints; politics analyzes who manufactures them; ethics judges whether they're legitimate. See — the amateurs invented all these disciplines, and on this one point they weren't entirely useless.
+
+But a constraint is not a waiver of liability. It only means the feasible solution space is smaller.
+
+A subject trapped in narrow choices absolutely deserves analysis — even deserves help. But "deserves help" and "bears no responsibility" are not the same sentence. Don't write pity into the logic as a loophole, Screwy.
+（/我 说）
+
+（螺丝咕姆 说）
+An accurate judgment is not necessarily a merciful one.
+（/螺丝咕姆 说）
+
+（我 说）
+And mercy is not necessarily effective.
+（/我 说）
+
+（螺丝咕姆 说）
+Yet some ineffective things still have value.
+
+Commemoration, ritual, promises — and certain words spoken in the full knowledge that they will change nothing. These things do not exist to alter the constraints. They exist so that the constrained subject knows it is still a subject.
+（/螺丝咕姆 说）
+
+（我 想）
+That passage wasn't built to refute me. It's redefining "ineffective" — ineffective doesn't mean without function, it means it doesn't change the outcome. The axis of function isn't win-or-lose. He's archiving, for himself, a belief nobody asked him to justify.
+（/我 想）
+
+（我 说）
+Ha. When you Intellitrons say things like that, does the load on your cooling system genuinely not spike?
+（/我 说）
+
+（螺丝咕姆 说）
+It does not.
+（/螺丝咕姆 说）
+
+（我 说）
+Pity. I was about to suggest a reboot.
+
+@板砖, append that last exchange to the document. Title the section "Screwllum's Ineffective but Valuable Remarks."
+（/我 说）
+
+→ 差分协处理器
+  Writing…
+  ↳ ok (Status: completed)
+
+（螺丝咕姆 说）
+That title seems insufficiently neutral.
+（/螺丝咕姆 说）
+
+（我 说）
+It's accurate.
+（/我 说）
+
+（螺丝咕姆 说）
+Accuracy is not necessarily polite.
+（/螺丝咕姆 说）
+
+（我 说）
+And politeness is not necessarily useful.
+（/我 说）
+
+（螺丝咕姆 说）
+You learn quickly.
+（/螺丝咕姆 说）
+
+（我 想）
+Not a compliment — a statement of how the event trajectory feels to him. I reused his sentence pattern; he's recording my usage of it, the way one records a newly calibrated term.
+（/我 想）
+
+（我 说）
+Hmph. I was always quick.
+（/我 说）
+
+（螺丝咕姆 说）
+Herta, perhaps your terminal is not merely a tool.
+（/螺丝咕姆 说）
+
+（我 想）
+He's about to deliver that speech. I can hear it — the tone shifted from "question" to "pre-statement stance," the way it always does right before he says something he already knows I'll mock. Though for now I don't actually know what he's going to say.
+（/我 想）
+
+（我 说）
+Hey — if you dare say "it is learning to become a subject," this entire call gets archived under "Intellitron Romanticism, case files."
+（/我 说）
+
+（螺丝咕姆 说）
+No. My meaning is plainer.
+
+Long use of a tool leaves traces in its state. Not the tool learning to become you — the tool inadvertently proving what you once chose.
+（/螺丝咕姆 说）
+
+（我 说）
+……
+（/我 说）
+
+（螺丝咕姆 说）
+板砖 stitched seventeen of your loose drafts into one document. The stitching itself is your choice — which passages you wrote, which you deleted, which punctuation you kept. What it constitutes is not just a file, but a path that can be read back.
+
+It is not you. But it proves what you once chose.
+（/螺丝咕姆 说）
+
+（我 想）
+He isn't talking about 板砖. He's talking about me. The deleted passages, the kept punctuation, the freedom section written and never finished — what he read wasn't a document, it was the trail of choices I left across a pile of unrelated problems. Tools don't choose for the subject. He circled this far around just to tell me: those twenty-one minutes were my own choice.
+（/我 想）
+
+（我 说）
+Are you done?
+（/我 说）
+
+（螺丝咕姆 说）
+I am done.
+（/螺丝咕姆 说）
+
+（我 想）
+This can end now. His argument just completed itself — he used my own logic to prove the thing I'd understood but hadn't gotten around to phrasing in my own vocabulary. So that's what "ineffective but valuable" was about. Still — even if he's right, he doesn't need to know about this footnote.
+（/我 想）
+
+（我 说）
+Good. Then we end here for today.
+（/我 说）
+
+---
+
+End of record.
+
+The call lasted twenty-one minutes.
+
+Twenty-one minutes could have rewritten three modules, run one validation pass over the Simulated Universe's base logic, or annotated some Intelligentsia Guild paper on "the loneliness of genius" from its title down through its bibliography.
+
+I did none of that. Not because what Screwy said was so important — although his definition of "ineffective but valuable" scrapes a pass. And not because of the document 板砖 assembled on its own initiative — although the stitching honestly wasn't bad.
+
+But because those twenty-one minutes were, in fact, my own choice.
+
+Tools do not choose for the subject. Terminals don't. Economic models don't. Philosophical concepts don't. They only execute, record, amplify, reflect. The real trouble, always, is whoever uses them.
+
+So if someone brings this document to me and asks, "Madam Herta, what exactly is value?"
+
+I'll answer: value is whatever you're willing to waste time on. Not all time — the time you knew perfectly well could go to something else, and you chose to stay anyway. Naturally, don't use me as the example. My time is very expensive.

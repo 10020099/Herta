@@ -1,0 +1,75 @@
+import { useState } from "react";
+import type { TFn } from "../../i18n/LocaleProvider.js";
+import { CollapsibleBody } from "./CollapsibleBody.js";
+import { StepIcon, type StepIconKey, stepIcon } from "./step-icon.js";
+
+export interface ActivityStepProps {
+  readonly body: string;
+  /** SESSION-scoped translator, forwarded to CollapsibleBody's diff toggle —
+   *  the whole activity line follows the session lang (ADR 0019), and `body`
+   *  arrives already localized with this same `t`. */
+  readonly t: TFn;
+  /** Icon key derived from the CANONICAL body (stable English verbs from
+   *  workflowLabel). Pass it when `body` is a LOCALIZED display string —
+   *  stepIcon can't parse a translated verb. Omitted → derived from `body`
+   *  (pre-localization callers and tests). */
+  readonly icon?: StepIconKey;
+  /** The currently-running step shimmers (Pillar B). */
+  readonly active: boolean;
+  /** Failure row (tool-fail digest): distinct color + ✗ icon (2026-07-23). */
+  readonly failed?: boolean;
+  /**
+   * The block's `evidenceDetail` — the fuller evidence Herta's prompt reads
+   * (command-output tail, 改动文件 / 风险 / 待办 roll-ups). Rendered as a
+   * collapsed-by-default expander (2026-07-23): the screen stays terse (the
+   * original evidenceDetail design intent) while the evidence becomes
+   * inspectable on demand (PHILOSOPHY §9) — before this the user could see
+   * NONE of what Herta reads from these fields.
+   */
+  readonly detail?: string;
+}
+
+/** One row in an activity block: a verb icon + the (collapsible) body. */
+export function ActivityStep(props: ActivityStepProps): JSX.Element {
+  const icon = props.icon ?? stepIcon(props.body);
+  const continuation = icon === "result" || icon === "fail";
+  // The projected body carries a literal "↳ " prefix for the CLI (which has no
+  // icons). In the GUI the continuation is shown by the result arrow icon, so
+  // strip the literal arrow to avoid a doubled "↳ ↳".
+  const body = continuation ? props.body.replace(/^\s*↳\s*/, "") : props.body;
+  const [detailOpen, setDetailOpen] = useState(false);
+  const hasDetail = props.detail !== undefined && props.detail.length > 0;
+  return (
+    <div
+      className={`activity-step${props.active ? " is-active" : ""}${
+        continuation ? " is-continuation" : ""
+      }${props.failed === true ? " is-failure" : ""}`}
+    >
+      <span className="activity-step__icon">
+        <StepIcon kind={icon} />
+      </span>
+      <div className="activity-step__text">
+        <CollapsibleBody
+          body={body}
+          preClassName="activity-step__body"
+          t={props.t}
+        />
+        {hasDetail && (
+          <button
+            type="button"
+            className="activity-step__detail-toggle"
+            aria-expanded={detailOpen}
+            onClick={() => setDetailOpen((v) => !v)}
+          >
+            {props.t(
+              detailOpen ? "activity.detail.hide" : "activity.detail.show",
+            )}
+          </button>
+        )}
+        {hasDetail && detailOpen && (
+          <pre className="activity-step__detail">{props.detail}</pre>
+        )}
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,383 @@
+import type { PromptLang } from "./prompt-lang.js";
+
+/**
+ * Constants for the Slice 10 thought/speech branch in main-loop prompts.
+ *
+ * `BRANCH_OPEN_TAG` is used in normal main-loop calls — its trailing space
+ * lets DeepSeek autoregressively complete with `想）` (thought) or `说）`
+ * (speech). The model picks based on the preceding context (record + hint).
+ *
+ * `FORCED_SPEECH_OPEN_TAG` is used in two cases:
+ *   (a) Soft guard: after 2 consecutive thoughts, force speech.
+ *   (b) Beats: in-turn reactions to backend events are always speech
+ *       (SPEC §3 H). Beat prompts do not include the hint either.
+ *
+ * `THOUGHT_HINT_LINE` is appended to main-loop prompts right before the
+ * open tag. It is NEVER persisted — recomputed per call. Its purpose is
+ * to constrain the surface space to {思考, 说话} so the model doesn't
+ * invent `（我 唱）` / `（我 写）` / etc.
+ *
+ * Language (EN interaction slice 3b): every `〔…〕` hint below exists in
+ * zh + en, co-located in a `Record<PromptLang, string>` and selected via
+ * `actorHintTexts(lang)`. The bare exported consts are the zh variants
+ * (byte-identical to the pre-slice-3b values) so existing callers are
+ * unchanged. Structural narrative-grammar tokens stay CN in BOTH
+ * variants (D2/D7/D8): the （我 想）/（我 说）/（/我 想）/（/我 说）
+ * fences, the @板砖 dispatch token and inert 板砖, and the `〔…〕`
+ * hint brackets. The open/close tags themselves (`BRANCH_OPEN_TAG`
+ * etc.) and `FINAL_RETRY_BODY_SEED` are grammar/record content, not
+ * instructional prose — single-variant by design.
+ *
+ * SPEC v0.2 Slice 10 §3 (C, E, H), §5.1.
+ */
+
+export const BRANCH_OPEN_TAG = "（我 ";
+export const FORCED_SPEECH_OPEN_TAG = "（我 说）";
+
+export const STOP_SPEECH_CLOSE = "（/我 说）";
+export const STOP_THOUGHT_CLOSE = "（/我 想）";
+
+const THOUGHT_HINT_LINE_TEXT: Record<PromptLang, string> = {
+  zh: "〔接下来：（我 想）思考 或（我 说）说话〕",
+  en: "〔Next: （我 想） to think, or （我 说） to speak〕",
+};
+
+export const THOUGHT_HINT_LINE = THOUGHT_HINT_LINE_TEXT.zh;
+
+/**
+ * Body seed appended to the open tag on the FINAL empty-output retry
+ * (the last attempt of the temperature/hint ladder).
+ *
+ * Why: when the model is deterministically stuck emitting the close
+ * tag at position 0, no amount of temperature bumping or hint
+ * rephrasing might break it. Seeding the body with `……` gives the
+ * model two graceful escape paths:
+ *   - Continue writing after `……` — natural extension.
+ *   - Close immediately and let `……` stand as the body content —
+ *     a meaningful Herta-voice fallback (dismissive trailing-off in
+ *     speech; contemplative blank in thought).
+ *
+ * The prompt's open tag becomes `（我 说）……` (or `（我 想）……`).
+ * The committed body is `……` + whatever the model generates. If the
+ * model generates nothing, the body is just `……` — non-empty,
+ * voice-consistent, and the turn produces visible output instead of
+ * the previous silent-failure mode.
+ *
+ * Used only by the final ladder step (`retryAttemptIndex === 2` —
+ * the highest index in `EMPTY_SPEECH_RETRY_TEMPERATURES`). Earlier
+ * attempts get a fresh chance without the seed so the model can
+ * produce naturally-flowing content first.
+ *
+ * Chinese typography: `……` is the standard Chinese ellipsis (two
+ * U+2026 chars), NOT three ASCII dots. Matches the corpus voice.
+ */
+export const FINAL_RETRY_BODY_SEED = "……";
+
+/**
+ * Phase-2 surface-specific format-enforcement hints. Appended right
+ * before the corresponding open tag in two-phase prompts so the model
+ * knows exactly what bracketing to produce.
+ *
+ * Stronger than `THOUGHT_HINT_LINE` (which only narrows the surface
+ * space to {思考, 说话}): these spell out the exact open AND close
+ * tags. Originally needed because the meta-think `## 注释` /
+ * `## 注释完` section markers had a tendency to leak into the model's
+ * output (mimicked formatting, stray closes, etc.). Those heading
+ * markers have since been dropped — the meta-think text is now
+ * injected as bare preamble — but the explicit-tag pattern these
+ * hints establish remains useful for keeping the model from drifting
+ * out of the `（我 想）...（/我 想）` bracketing on long generations.
+ *
+ * NEVER persisted — these are appended fresh per LLM call inside
+ * `runPhaseTwo` and `makeFireBeat`. They never enter `TerminalRecord`.
+ */
+const PHASE_TWO_THOUGHT_HINT_TEXT: Record<PromptLang, string> = {
+  zh: "〔接下来是我针对这一回的具体思考，必须以（我 想）开始，以（/我 想）结束。写完 `（/我 想）` 就停笔——不要在同一段里继续写 `（我 说）` 那段说话内容，说话是另一段单独写出来的，不要塞进这里。注意：紧贴在开拓者这句话上面的那段我先写下的旁注，是关于「我这一档该怎么想」的提示，不是我已经想好的话；这一段我要针对开拓者刚刚那句话的具体内容，写一段当下的、新的思考，不要照抄上面那段旁注的句子，也不要把它的方法论原样复述一遍〕",
+  en: "〔What follows is my thinking. Must start with （我 想） and end with （/我 想）. Stop after writing `（/我 想）` — do not chain `（我 说）` onto the same block; the spoken part gets its own block. The side-note pasted above is only a directional hint, not a conclusion I've already reached; this block has to think fresh about what they just said — don't copy the side-note, and don't parrot the hint back as thought.〕",
+};
+
+export const PHASE_TWO_THOUGHT_HINT = PHASE_TWO_THOUGHT_HINT_TEXT.zh;
+
+/**
+ * Per-call SPEECH hint — a single bracketed directive enforcing the
+ * imperative-speech rule (open tag, close tag, must produce a real
+ * sentence, no empty-on-close).
+ *
+ * History note: previously this hint also taught the inline-tool
+ * format (`read_file("path")` / `list_files("path")`). Inline tools
+ * were removed entirely in the 2026-05-23 sweep — Herta the actor
+ * no longer reads files directly; if she needs to look at something,
+ * she delegates via `@板砖`. The tool-format clause was dropped
+ * from this hint at the same time.
+ *
+ * NEVER persisted.
+ */
+const PHASE_TWO_SPEECH_HINT_TEXT: Record<PromptLang, string> = {
+  zh: "〔接下来是我实际说给开拓者听的话，必须以（我 说）开始，以（/我 说）结束。不能空白，不能把思考当成回答；想清楚之后，至少说出一句真正能被开拓者听见的话。〕",
+  en: "〔What follows is what I say out loud to the Trailblazer. Must start with （我 说） and end with （/我 说）. It cannot be blank. Thinking is thinking, speaking is speaking — don't hand over the internal monologue as the reply. Once it's thought through, say at least one line they can actually hear.〕",
+};
+
+export const PHASE_TWO_SPEECH_HINT = PHASE_TWO_SPEECH_HINT_TEXT.zh;
+
+/**
+ * SPEECH retry hint variants, paired with the temperature ladder in
+ * `actor-turn.ts`'s `recoverEmptySpeech` helper. Each variant attacks
+ * the empty-output failure from a different angle:
+ *
+ *   - Variant 1 (base — `PHASE_TWO_SPEECH_RETRY_HINT`): names the
+ *     failure mode head-on ("you closed empty, write at least one
+ *     sentence — cold remark / judgement / rhetorical question all
+ *     fine, blank is not"). Used at retry temperature 1.1.
+ *
+ *   - Variant 2 (`PHASE_TWO_SPEECH_RETRY_HINT_2`): same imperative
+ *     core but redirects the model to a SPECIFIC anchor point in the
+ *     user's last message — pick a concrete word/action/oddity in
+ *     the user's utterance and answer THAT. Used at temp 1.2.
+ *
+ *   - Variant 3 (`PHASE_TWO_SPEECH_RETRY_HINT_3`): mechanical force
+ *     — name the failure as model inertia, demand the model write a
+ *     first character first and let the rest follow. Suggests a
+ *     concrete starting hook ("用他的称呼/动词/语气当起点"). Used at
+ *     temp 1.3.
+ *
+ * As of the 2026-05-23 inline-tool removal sweep, none of the
+ * variants carry the tool-format clause — Herta the actor no longer
+ * calls inline tools (see `PHASE_TWO_SPEECH_HINT`'s JSDoc).
+ *
+ * The array is consumed by `runPhaseTwo` via `retryAttemptIndex` so
+ * the caller can pick a specific variant per attempt. Out-of-range
+ * indexes fall back to the base hint (defensive).
+ */
+const PHASE_TWO_SPEECH_RETRY_HINT_TEXT: Record<PromptLang, string> = {
+  zh: "〔接下来是我实际说给开拓者听的话，必须以（我 说）开始，以（/我 说）结束。中间不能空白，不能只留下一个漂亮的闭合符号；至少说出一句完整、有效、能被开拓者听见的话。冷评、判断、反问都可以，空白不行。〕",
+  en: "〔What follows is what I say out loud to the Trailblazer. Must start with （我 说） and end with （/我 说）. Nothing blank in between, and no leaving just a tidy closing marker. At least one complete line someone can actually hear — a cold remark, a verdict, a rhetorical question, anything. Blank is not an option.〕",
+};
+
+export const PHASE_TWO_SPEECH_RETRY_HINT = PHASE_TWO_SPEECH_RETRY_HINT_TEXT.zh;
+
+const PHASE_TWO_SPEECH_RETRY_HINT_2_TEXT: Record<PromptLang, string> = {
+  zh: "〔我刚才已经重写过一次了，还是闭合得太快。这次换个角度：抓住开拓者那句话里最具体的一个点——一个词、一个动作、一个不对劲的地方——直接对它说一句。不是写感想，是正面回它一句。必须以（我 说）开始，以（/我 说）结束，中间至少要有一句完整的话能落到开拓者耳朵里。〕",
+  en: "〔I already rewrote this once and still closed too fast. Different angle this time: grab the most concrete point in the Trailblazer's last line — a word, an action, something off about it — and answer exactly that. Not impressions; answer that one point head-on. Must start with （我 说） and end with （/我 说）, with at least one complete sentence in between that actually lands on the Trailblazer's ears.〕",
+};
+
+export const PHASE_TWO_SPEECH_RETRY_HINT_2 =
+  PHASE_TWO_SPEECH_RETRY_HINT_2_TEXT.zh;
+
+const PHASE_TWO_SPEECH_RETRY_HINT_3_TEXT: Record<PromptLang, string> = {
+  zh: "〔连着两次都直接闭合了，这是惯性偷懒，不是没东西可说。强制开始：先写出第一个字，再顺着写下去。可以从开拓者刚才那句话里挑一个词当起点——他用了什么称呼？什么动词？什么语气？拎一个出来，借力开口。不能空白，不能只留一个标点。以（我 说）开始，写完一句完整的话再闭合（/我 说）。〕",
+  en: "〔Closed empty twice in a row — that's inertia slacking off, not having nothing to say. Forced start: write the first word, then follow it. Pick one word out of what the Trailblazer just said as a starting point — what did they call me? What verb did they use? What tone? Lift one out and lean on it to get talking. Not blank, not a lone punctuation mark. Start with （我 说）, write one complete sentence, then close with （/我 说）.〕",
+};
+
+export const PHASE_TWO_SPEECH_RETRY_HINT_3 =
+  PHASE_TWO_SPEECH_RETRY_HINT_3_TEXT.zh;
+
+/**
+ * Ordered array of speech retry hint variants, indexed by retry
+ * attempt (0 = first retry, 1 = second, 2 = third). Aligned with
+ * `EMPTY_SPEECH_RETRY_TEMPERATURES` in `actor-turn.ts` so the
+ * temperature bump and hint variation step together.
+ */
+export const PHASE_TWO_SPEECH_RETRY_HINTS = [
+  PHASE_TWO_SPEECH_RETRY_HINT,
+  PHASE_TWO_SPEECH_RETRY_HINT_2,
+  PHASE_TWO_SPEECH_RETRY_HINT_3,
+] as const;
+
+/**
+ * THOUGHT retry hint variants, paired with the temperature ladder in
+ * `actor-turn.ts`'s `recoverEmptyThought` helper. Same three-variant
+ * structure as the speech retry hints:
+ *
+ *   - Variant 1 (base — `PHASE_TWO_THOUGHT_RETRY_HINT`): direct
+ *     accusation ("you closed empty, write a concrete judgement").
+ *     Used at retry temperature 1.1.
+ *
+ *   - Variant 2 (`PHASE_TWO_THOUGHT_RETRY_HINT_2`): pivot to specific
+ *     anchors in the user's last message (an odd word, a suspicious
+ *     tone, an inappropriate appellation, a hidden motive). Pick one
+ *     and write about it. Used at temp 1.2.
+ *
+ *   - Variant 3 (`PHASE_TWO_THOUGHT_RETRY_HINT_3`): mechanical force
+ *     — name the failure as model inertia, demand a starting phrase
+ *     ("他这一句…" / "他这次问的…") so the model has something to
+ *     extend. Used at temp 1.3.
+ *
+ * Thought hints contain no tool-format clauses — inline tools were
+ * removed entirely in the 2026-05-23 sweep (see `PHASE_TWO_SPEECH_HINT`'s
+ * JSDoc). Herta the actor delegates file reads via `@板砖` instead.
+ *
+ * Indexed by retry attempt via `runPhaseTwo`'s `retryAttemptIndex`.
+ * Out-of-range indexes fall back to the base hint.
+ */
+const PHASE_TWO_THOUGHT_RETRY_HINT_TEXT: Record<PromptLang, string> = {
+  zh: "〔我刚才直接闭合了思考段落，一句心里话都没写出来。现在重来一次：以（我 想）开始，以（/我 想）结束，中间至少要写出一句针对开拓者刚才那句话的具体判断——可以短，但不能空。上面那段旁注里的内容不是我已经想好的话，重复它不算想。这一回我必须真的过一下脑子〕",
+  en: "〔That thought block closed with nothing written in it — same as not thinking at all. Again: start with （我 想）, end with （/我 想）, with at least one concrete judgment in between aimed at what the Trailblazer just said — short is fine, empty is not. The side-note above is not a conclusion I've already reached; repeating it doesn't count as thinking. This time the brain actually has to run〕",
+};
+
+export const PHASE_TWO_THOUGHT_RETRY_HINT =
+  PHASE_TWO_THOUGHT_RETRY_HINT_TEXT.zh;
+
+const PHASE_TWO_THOUGHT_RETRY_HINT_2_TEXT: Record<PromptLang, string> = {
+  zh: "〔我刚才已经重试过一次，还是没写出来。换个方法：从开拓者刚才那句话里抓一个最值得我留意的点——异常的词、可疑的语气、不该出现的称呼、藏在底下的真正动机——挑一个写出来。一句话就够。以（我 想）开始，以（/我 想）结束，中间至少要有一个具体判断。上面那段旁注是方法论提示，不是我的想法，不要照抄〕",
+  en: "〔Already retried once and still wrote nothing. New method: grab the one thing in the Trailblazer's last line most worth my attention — an odd word, a suspicious tone, a form of address that shouldn't be there, a motive hiding underneath — pick one and write it down. One sentence is enough. Start with （我 想）, end with （/我 想）, with at least one concrete judgment in between. The side-note above is methodology, not my thought — don't copy it〕",
+};
+
+export const PHASE_TWO_THOUGHT_RETRY_HINT_2 =
+  PHASE_TWO_THOUGHT_RETRY_HINT_2_TEXT.zh;
+
+const PHASE_TWO_THOUGHT_RETRY_HINT_3_TEXT: Record<PromptLang, string> = {
+  zh: '〔连着两次空想，这是模型卡顿，不是脑子里真的没东西。强制开始：先写"他这一句……"或者"他这次问的……"当开头，接续下去。不要重复旁注的句子，不要复述方法论。给一句对当下这条消息的具体判断，写完再闭合（/我 想）〕',
+  en: "〔Two empty thoughts in a row — that's the model stalling, not a genuinely empty head. Forced start: begin with （我 想）, open on \"That line of theirs...\" or \"What they're asking this time...\" and continue from there. Don't repeat the side-note's sentences, don't recite methodology. Give one concrete judgment about this exact message, then close with （/我 想）〕",
+};
+
+export const PHASE_TWO_THOUGHT_RETRY_HINT_3 =
+  PHASE_TWO_THOUGHT_RETRY_HINT_3_TEXT.zh;
+
+/**
+ * Ordered array of thought retry hint variants, indexed by retry
+ * attempt. Aligned with `EMPTY_SPEECH_RETRY_TEMPERATURES` (the same
+ * ladder is reused for thought retries — the temperature trajectory
+ * works equally well for both surfaces).
+ */
+export const PHASE_TWO_THOUGHT_RETRY_HINTS = [
+  PHASE_TWO_THOUGHT_RETRY_HINT,
+  PHASE_TWO_THOUGHT_RETRY_HINT_2,
+  PHASE_TWO_THOUGHT_RETRY_HINT_3,
+] as const;
+
+/**
+ * Build the format-enforcement hint used when the supervisor vetoes a
+ * candidate speech and the actor retries phase-2 speech. The template
+ * is supplied by the caller (from `deps.hints.supervisorVetoTemplate`)
+ * and carries the `{{reason}}` placeholder which is substituted with
+ * the trimmed, punctuation-stripped veto reason.
+ *
+ * Trailing sentence-final punctuation is stripped from `reason` before
+ * substitution — the hint template typically appends its own `。`, so
+ * a reason already ending in `。` would produce `。。` without the strip
+ * (N7 fix, 2026-05-23).
+ *
+ * NEVER persisted — recomputed per LLM call inside `runPhaseTwo`.
+ *
+ * SPEC v0.2 Supervisor design §4.6.
+ */
+export function buildSupervisorVetoHint(
+  template: string,
+  reason: string,
+): string {
+  const trimmed = reason.trim().replace(/[。.!?！？]+$/u, "");
+  return template.split("{{reason}}").join(trimmed);
+}
+
+/**
+ * Normalize a supervisor-veto reason for use as a `HertaBlock.selfCorrection`
+ * value (N8/N8b, 2026-05-23). Strips trailing sentence-final punctuation
+ * and trims whitespace — the serializer will wrap the result as
+ * `——<text>\n\n` prose before the speech envelope, so we just want
+ * the clean reason text.
+ *
+ * Previously this returned `自我修正：${trimmed}。` for inclusion in a
+ * `→ 系统` block body (N8 first attempt). N8b dropped the system-block
+ * approach in favor of a typed `selfCorrection` field on `HertaBlock`
+ * that the CLI ignores and the serializer formats as plain prose.
+ */
+export function formatSelfCorrectionText(reason: string): string {
+  return reason.trim().replace(/[。.!?！？]+$/u, "");
+}
+
+/**
+ * Beat-specific format hints. Beats are in-turn reactive speech that
+ * fires the moment the backend (板砖) produces a substantive event.
+ * Pre-N5 (2026-05-23) all beats used the generic
+ * `PHASE_TWO_SPEECH_HINT`, which says "speak now" without naming
+ * what just happened — the model had to infer the trigger from the
+ * record alone, and often produced bland "板砖跑完了" filler.
+ *
+ * Each hint below names the specific event shape (patch preview /
+ * verification result / tool failure) and steers Herta toward a
+ * one-line reaction with the right register. The hints sit at the
+ * tail of the beat prompt, just before the `（我 说）` open tag.
+ *
+ * NEVER persisted — recomputed per beat call inside `makeFireBeat`.
+ */
+/**
+ * Shared clause appended to every beat hint: beats are reactive
+ * commentary while 板砖 is mid-task, NOT a slot to issue new
+ * commands. Emitting `@板砖 ...` here would (a) read as Herta
+ * trying to interrupt her own running task and (b) clutter the
+ * record with would-be dispatches that the one-bridge-per-turn
+ * cap prevents from firing anyway. The clause names the prohibition
+ * explicitly so the model doesn't reach for the trigger token
+ * as a reflex when narrating progress (N9, 2026-05-23 — user
+ * observed Herta saying "继续，@板砖——换个名" in a tool.fail beat).
+ */
+const BEAT_NO_BANZHUAN_CLAUSE_TEXT: Record<PromptLang, string> = {
+  zh: "不要在这一句里写 `@板砖` —— 板砖正在工作中，新任务等它做完再说，现在只点评眼前这一步。",
+  en: "Do not write `@板砖` in this line. Mentioning `板砖` is fine, just without the `@` — 板砖 is mid-job right now; new tasks wait until it's done, only comment on the step at hand.",
+};
+
+export const BEAT_NO_BANZHUAN_CLAUSE = BEAT_NO_BANZHUAN_CLAUSE_TEXT.zh;
+
+const BEAT_HINT_PATCH_PREVIEW_TEXT: Record<PromptLang, string> = {
+  zh: `〔板砖刚把补丁亮在记录上方了。现在我说一句话点评：看 diff 的形状是不是干净 / 哪里值得提一嘴 / 有没有可疑的地方。不复述代码（开拓者自己能看见），不解释 diff 在做什么。短促、带判断。${BEAT_NO_BANZHUAN_CLAUSE_TEXT.zh}必须以（我 说）开始，以（/我 说）结束。〕`,
+  en: `〔板砖 just laid its patch out above in the record. Toss out one line: is the diff's shape clean or messy? Which part deserves a mention, which part looks off. Don't recite the code (the Trailblazer can see it), don't explain what the diff does. Short, with a verdict. ${BEAT_NO_BANZHUAN_CLAUSE_TEXT.en} Must start with （我 说） and end with （/我 说）.〕`,
+};
+
+export const BEAT_HINT_PATCH_PREVIEW = BEAT_HINT_PATCH_PREVIEW_TEXT.zh;
+
+const BEAT_HINT_VERIFICATION_FINISHED_TEXT: Record<PromptLang, string> = {
+  zh: `〔板砖刚跑完了一步验证（测试 / 编译 / lint）。结果就在记录上方。现在我说一句话：过了就点一下，挂了就指出哪里挂了 / 可疑。不复述全部输出，不读 stack trace。短促、冷静。${BEAT_NO_BANZHUAN_CLAUSE_TEXT.zh}必须以（我 说）开始，以（/我 说）结束。〕`,
+  en: `〔板砖 just finished a verification step (tests / compile / lint). The result is right above in the record. One line from me: if it passed, a quick nod; if it failed, point at where it blew up or what looks suspicious. Don't recite the full output, don't read the stack trace. Short, cool. ${BEAT_NO_BANZHUAN_CLAUSE_TEXT.en} Must start with （我 说） and end with （/我 说）.〕`,
+};
+
+export const BEAT_HINT_VERIFICATION_FINISHED =
+  BEAT_HINT_VERIFICATION_FINISHED_TEXT.zh;
+
+const BEAT_HINT_TOOL_FAIL_TEXT: Record<PromptLang, string> = {
+  zh: `〔板砖刚一步失败了。失败原因写在记录上方。现在我说一句话：把失败点拎出来用人话讲（不要照搬错误信息），态度可以冷 / 嘲讽，但不要装作这事不要紧。一句话。${BEAT_NO_BANZHUAN_CLAUSE_TEXT.zh}必须以（我 说）开始，以（/我 说）结束。〕`,
+  en: `〔板砖 just failed a step. The reason is written above in the record. One line from me: lift the failure point out and say it in plain words (don't parrot the error message). Cold or cutting is fine — just don't pretend it doesn't matter. One line only. ${BEAT_NO_BANZHUAN_CLAUSE_TEXT.en} Must start with （我 说） and end with （/我 说）.〕`,
+};
+
+export const BEAT_HINT_TOOL_FAIL = BEAT_HINT_TOOL_FAIL_TEXT.zh;
+
+/**
+ * The full set of language-selectable actor hint texts (EN interaction
+ * slice 3b). Shape mirrors `ActorHints` in `actor-hints.ts` minus
+ * `supervisorVetoTemplate` (that default lives there), plus the shared
+ * `beatNoBanzhuanClause`. At `lang: "zh"` every field is byte-identical
+ * to the corresponding exported const above. This is the slice-4 hookup
+ * point for building an EN default-hint set.
+ */
+export interface ActorHintTexts {
+  readonly thoughtHintLine: string;
+  readonly phase2Thought: string;
+  readonly phase2Speech: string;
+  readonly speechRetry: readonly [string, string, string];
+  readonly thoughtRetry: readonly [string, string, string];
+  readonly beatNoBanzhuanClause: string;
+  readonly beatPatchPreview: string;
+  readonly beatVerification: string;
+  readonly beatToolFail: string;
+}
+
+export function actorHintTexts(lang: PromptLang = "zh"): ActorHintTexts {
+  return {
+    thoughtHintLine: THOUGHT_HINT_LINE_TEXT[lang],
+    phase2Thought: PHASE_TWO_THOUGHT_HINT_TEXT[lang],
+    phase2Speech: PHASE_TWO_SPEECH_HINT_TEXT[lang],
+    speechRetry: [
+      PHASE_TWO_SPEECH_RETRY_HINT_TEXT[lang],
+      PHASE_TWO_SPEECH_RETRY_HINT_2_TEXT[lang],
+      PHASE_TWO_SPEECH_RETRY_HINT_3_TEXT[lang],
+    ],
+    thoughtRetry: [
+      PHASE_TWO_THOUGHT_RETRY_HINT_TEXT[lang],
+      PHASE_TWO_THOUGHT_RETRY_HINT_2_TEXT[lang],
+      PHASE_TWO_THOUGHT_RETRY_HINT_3_TEXT[lang],
+    ],
+    beatNoBanzhuanClause: BEAT_NO_BANZHUAN_CLAUSE_TEXT[lang],
+    beatPatchPreview: BEAT_HINT_PATCH_PREVIEW_TEXT[lang],
+    beatVerification: BEAT_HINT_VERIFICATION_FINISHED_TEXT[lang],
+    beatToolFail: BEAT_HINT_TOOL_FAIL_TEXT[lang],
+  };
+}

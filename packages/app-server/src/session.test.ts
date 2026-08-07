@@ -1,0 +1,1419 @@
+/**
+ * Session lifecycle + subscribeRecord tests (Task 4, v0.3 Slice 2).
+ */
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
+import type { TerminalRecord } from "@herta/core";
+import type { OpeningChoice } from "@herta/herta";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { SessionImpl, spanEditedFiles } from "./session.js";
+import { createSessionHost } from "./session-host.js";
+import {
+  stubChatProvider,
+  stubCompletionProvider,
+} from "./testing/stub-providers.js";
+import type {
+  AppServerConfig,
+  RecordEvent,
+  SessionAgentEvent,
+  VoiceCueEvent,
+} from "./types.js";
+
+/**
+ * A MetaThinkCorpus with every mood-state key present but mapped to the
+ * empty string. corpusHasContent() returns false for this, which disables
+ * mood routing in V2ActorDriver (single-phase fallback) — exactly what the
+ * deterministic stub turn needs. The seven keys mirror MOOD_STATES; an
+ * all-empty `{}` would not satisfy `Record<MoodState, string>` under strict
+ * mode.
+ */
+function emptyMetaThinkCorpus(): import("@herta/herta").MetaThinkCorpus {
+  const blank = {
+    默认: "",
+    被烦版: "",
+    教学版: "",
+    被戳穿版: "",
+    任务部署版: "",
+    板砖代答版: "",
+    被顶嘴版: "",
+    倾听版: "",
+  };
+  return { preThink: { ...blank }, preSpeak: { ...blank } };
+}
+
+function mkConfig(): AppServerConfig {
+  const root = mkdtempSync(join(tmpdir(), "herta-app-server-session-test-"));
+  return {
+    workspaceRoot: root,
+    transcriptDir: join(root, ".herta", "transcript", "v2"),
+    projectMemoryDir: join(root, ".herta", "memory"),
+    userMemoryDir: join(root, ".herta", "user-memory"),
+    capsulesDir: join(root, ".herta", "capsules"),
+    narrativeDir: join(root, ".herta", "narrative"),
+    providers: {
+      deepseekApiKey: "sk-test",
+      actorModel: "deepseek-v4-base",
+      backendModel: "deepseek-v4-chat",
+      routerModel: "deepseek-v4-flash",
+    },
+  };
+}
+
+// ── Lifecycle tests (no submitText — no real provider needed) ─────────────
+
+describe("Session — createSession + basic record state", () => {
+  it("createSession returns a Session with empty record and null overlay", async () => {
+    const host = createSessionHost(mkConfig());
+    // createSession calls SessionImpl.create which makes real disk calls
+    // (buildStaticHertaPrefix etc.) but NOT any network calls until submitText.
+    const session = await host.createSession({});
+    expect(session.record).toEqual([]);
+    expect(session.overlay).toBeNull();
+    expect(typeof session.sessionId).toBe("string");
+    expect(session.sessionId.length).toBeGreaterThan(0);
+    await host.closeActiveSession();
+  });
+
+  it("createSession writes a session_meta header to the JSONL on disk", async () => {
+    const cfg = mkConfig();
+    const host = createSessionHost(cfg);
+    const session = await host.createSession({});
+    const sessionFile = join(cfg.transcriptDir, `${session.sessionId}.jsonl`);
+    expect(existsSync(sessionFile)).toBe(true);
+    const firstLine = readFileSync(sessionFile, "utf8").split("\n")[0] ?? "";
+    const header = JSON.parse(firstLine) as { _kind: string };
+    expect(header._kind).toBe("session_meta");
+    await host.closeActiveSession();
+  });
+
+  it("creating a second session closes the prior active session", async () => {
+    const host = createSessionHost(mkConfig());
+    const first = await host.createSession({});
+    const second = await host.createSession({});
+    expect(host.activeSession).toBe(second);
+    expect(first.sessionId).not.toBe(second.sessionId);
+    await host.closeActiveSession();
+  });
+
+  it("a new host session defaults the backend workspace to the managed sandbox", async () => {
+    const cfg = mkConfig();
+    const host = createSessionHost(cfg);
+    const s = await host.createSession({});
+    expect(s.backendWorkspaceIsDefault).toBe(true);
+    expect(s.backendWorkspace).toBe(
+      join(homedir(), ".herta", "workspaces", s.sessionId),
+    );
+    await s.close();
+  });
+
+  it("createSession({ backendWorkspace }) overrides the default (not default)", async () => {
+    const cfg = mkConfig();
+    const host = createSessionHost(cfg);
+    const s = await host.createSession({ backendWorkspace: cfg.transcriptDir });
+    expect(s.backendWorkspace).toBe(cfg.transcriptDir);
+    expect(s.backendWorkspaceIsDefault).toBe(false);
+    await s.close();
+  });
+});
+
+// ── Interaction language (slice 4) ─────────────────────────────────────────
+
+describe("Session — interaction language threading (slice 4)", () => {
+  /** Parse the persisted seed (herta) block from a new session's JSONL —
+   *  written at create, BEFORE playOpening, so no streaming is needed. */
+  function persistedSeedText(cfg: AppServerConfig, sessionId: string): string {
+    const raw = readFileSync(
+      join(cfg.transcriptDir, `${sessionId}.jsonl`),
+      "utf8",
+    );
+    const seed = raw
+      .split("\n")
+      .filter((l) => l.trim() !== "")
+      .map(
+        (l) =>
+          JSON.parse(l) as { _kind?: string; kind?: string; text?: string },
+      )
+      .find((l) => l._kind === undefined && l.kind === "herta");
+    return seed?.text ?? "";
+  }
+
+  it("createSession({ lang: 'en' }) seeds an opening from the EN bundle", async () => {
+    const cfg = mkConfig();
+    const host = createSessionHost(cfg);
+    const session = await host.createSession({ lang: "en" });
+    // Every EN seed contains latin words; no zh seed does (verified over the
+    // full compiled corpus) — a robust bundle discriminator.
+    expect(persistedSeedText(cfg, session.sessionId)).toMatch(/[A-Za-z]{3,}/);
+    await host.closeActiveSession();
+  });
+
+  it("createSession defaults to zh (byte-identical pre-slice-4 corpus)", async () => {
+    const cfg = mkConfig();
+    const host = createSessionHost(cfg);
+    const session = await host.createSession({});
+    const seed = persistedSeedText(cfg, session.sessionId);
+    expect(seed.length).toBeGreaterThan(0);
+    expect(seed).not.toMatch(/[A-Za-z]{3,}/);
+    await host.closeActiveSession();
+  });
+
+  it("an EN session's opening emits NO voice cue (no EN wavs in v1)", async () => {
+    const cfg = mkConfig();
+    // Real pickOpening (no openingOverride) with lang "en": the picker
+    // returns no voiceClipId, so the session must never pair a CN wav.
+    const session = await SessionImpl.create({
+      sessionId: "en-voice-test",
+      workspaceRoot: cfg.workspaceRoot,
+      effectiveWorkspace: cfg.workspaceRoot,
+      isDefaultWorkspace: false,
+      config: cfg,
+      lang: "en",
+      persister: (await import("@herta/core")).V2RecordPersister.forNewSession({
+        sessionId: "en-voice-test",
+        workspaceRoot: cfg.workspaceRoot,
+        startedAt: new Date(),
+        transcriptDir: cfg.transcriptDir,
+      }),
+      deps: {
+        providerOverrides: {
+          actor: stubCompletionProvider([]),
+          router: stubChatProvider([]),
+          title: stubChatProvider([]),
+        },
+        staticPrefixOverride: { bio: "[test-bio]", env: "", fewShots: [] },
+        metaThinkOverride: emptyMetaThinkCorpus(),
+        supervisorReferenceOverride: "",
+        openingLeadMs: 0,
+        // openingOverride deliberately OMITTED → the real EN pick runs.
+      },
+    });
+    const cues: VoiceCueEvent[] = [];
+    const consumer = (async () => {
+      for await (const ev of session.subscribeVoice()) cues.push(ev);
+    })();
+    // EN seeds are long prose — fast-forward the char-by-char reveal instead
+    // of streaming it in real time (mirrors the cadence test).
+    vi.useFakeTimers();
+    const p = session.playOpening();
+    await vi.advanceTimersByTimeAsync(300_000);
+    await p;
+    vi.useRealTimers();
+    expect(session.record).toHaveLength(1); // the EN seed still streams in
+    await session.close();
+    await consumer;
+    expect(cues.filter((c) => c.kind === "cue")).toEqual([]);
+  });
+
+  it("threads lang into the session-title prompt (EN instructions)", async () => {
+    const cfg = mkConfig();
+    const captured: string[] = [];
+    const { session, cleanup } = await mkStubSession(
+      cfg,
+      undefined,
+      1,
+      undefined,
+      {
+        lang: "en",
+        titleProvider: {
+          streamChat(frame, _signal) {
+            captured.push("stableSystem" in frame ? frame.stableSystem : "");
+            return (async function* () {
+              yield { type: "text-delta" as const, text: "Session title" };
+              yield { type: "finish" as const, reason: "stop" as const };
+            })();
+          },
+        },
+      },
+    );
+    await session.submitText("hello");
+    await session.whenTitleSettled();
+    expect(captured).toHaveLength(1);
+    // EN instruction prose; the zh instruction contains no latin words.
+    expect(captured[0]).toMatch(/[A-Za-z]{3,}/);
+    await cleanup();
+  });
+});
+
+// ── subscribeRecord tests (use stubCompletionProvider to avoid network) ────
+
+/**
+ * Build a minimal SessionImpl for subscribeRecord tests using stub providers.
+ *
+ * The stub provider emits one speech block: "你好。（/我 说）".
+ * runActorCompletionTurn prepends the user block and appends the herta block,
+ * so two blocks total are added per submitText("hi") call.
+ */
+async function mkStubSession(
+  cfg: AppServerConfig,
+  // When provided, simulates a RESUMED session loaded with this record (the
+  // factory loads it instead of picking an opening seed). Used by D2 tests.
+  initialRecord?: TerminalRecord,
+  // How many turns the stubs can serve (one actor + one router script each).
+  // Defaults to 1; rewind-then-resubmit tests pass 2.
+  turns = 1,
+  // Opening-related dep overrides (wav-matched cadence tests): force a specific
+  // opening and/or inject its clip duration instead of reading a wav from disk.
+  openingDeps?: {
+    openingOverride?: OpeningChoice;
+    openingDurationMs?: number | null;
+  },
+  // Extra knobs for particle-voice tests: the speech the stub actor emits, and
+  // a deterministic random source for the particle variant pick.
+  extra?: {
+    actorSpeech?: string;
+    particleRandom?: () => number;
+    easterEggRandom?: () => number;
+    easterEggNow?: () => number;
+    // Live DeepSeek key getter (no-key onboarding tests). Defaults to the
+    // config's static key when omitted.
+    deepSeekKey?: () => string;
+    // Interaction language (slice 4 threading tests). Defaults to zh.
+    lang?: "zh" | "en";
+    // Title-provider override (slice 4: capture the title prompt's language).
+    titleProvider?: import("@herta/core").ProviderAdapter;
+  },
+): Promise<{
+  session: SessionImpl;
+  cleanup: () => Promise<void>;
+}> {
+  const { V2RecordPersister } = await import("@herta/core");
+  const { randomUUID } = await import("node:crypto");
+  const sessionId = randomUUID();
+
+  const persister = V2RecordPersister.forNewSession({
+    sessionId,
+    workspaceRoot: cfg.workspaceRoot,
+    startedAt: new Date(),
+    transcriptDir: cfg.transcriptDir,
+  });
+
+  // Stub actor: emits a single speech block per call.
+  // The actor protocol needs （我 说）...（/我 说）. We emit just the body
+  // after the open tag (actor-turn prepends the open tag in the prompt).
+  const actorStub = stubCompletionProvider(
+    Array.from({ length: turns }, () => ({
+      deltas: [extra?.actorSpeech ?? "你好。", "（/我 说）"],
+      stopReason: "stop" as const,
+    })),
+  );
+
+  // Stub router (chat-mode): the V2ActorDriver calls classifyIntent once per
+  // turn. With an empty meta-think corpus, mood routing is disabled so the
+  // resolved state is unused; the router just needs to return a benign,
+  // recognizable state name without throwing.
+  const stubRouter = stubChatProvider(
+    Array.from({ length: turns }, () => ({
+      events: [
+        { type: "text-delta", text: "默认" },
+        { type: "finish", reason: "stop" },
+      ],
+    })),
+  );
+
+  const session = await SessionImpl.create({
+    sessionId,
+    workspaceRoot: cfg.workspaceRoot,
+    effectiveWorkspace: cfg.workspaceRoot,
+    isDefaultWorkspace: false,
+    config: cfg,
+    persister,
+    ...(extra?.deepSeekKey !== undefined
+      ? { deepSeekKey: extra.deepSeekKey }
+      : {}),
+    ...(extra?.lang !== undefined ? { lang: extra.lang } : {}),
+    ...(initialRecord !== undefined ? { initialRecord } : {}),
+    deps: {
+      providerOverrides: {
+        actor: actorStub,
+        router: stubRouter,
+        // No network in tests: without a title override, a successful turn's
+        // fire-and-forget title generation makes a REAL DeepSeek call. The
+        // empty stub throws on call; title gen is best-effort → title null.
+        title: extra?.titleProvider ?? stubChatProvider([]),
+      },
+      staticPrefixOverride: { bio: "[test-bio]", env: "", fewShots: [] },
+      metaThinkOverride: emptyMetaThinkCorpus(),
+      supervisorReferenceOverride: "",
+      // D3: skip the opening-stream lead beat so playOpening tests don't each
+      // sleep ~1s of real time. The lead is verified separately at the driver
+      // level with fake timers.
+      openingLeadMs: 0,
+      // Default NO opening (M-prompts-1): pickOpening now draws from the
+      // COMPILED corpus, so an unseeded tmp workspace no longer implies
+      // "no opening" — stub tests must opt out explicitly. D3 opening
+      // tests pass a deterministic OpeningChoice instead.
+      openingOverride: openingDeps?.openingOverride ?? null,
+      ...(openingDeps?.openingDurationMs !== undefined
+        ? { openingDurationMs: openingDeps.openingDurationMs }
+        : {}),
+      ...(extra?.particleRandom !== undefined
+        ? { particleRandom: extra.particleRandom }
+        : {}),
+      ...(extra?.easterEggRandom !== undefined
+        ? { easterEggRandom: extra.easterEggRandom }
+        : {}),
+      ...(extra?.easterEggNow !== undefined
+        ? { easterEggNow: extra.easterEggNow }
+        : {}),
+    },
+  });
+
+  return {
+    session,
+    cleanup: () => session.close(),
+  };
+}
+
+/** Deterministic opening for the D3 streaming-opening tests — injected via
+ *  `openingOverride` (the corpus is compiled since M-prompts-1, so tests no
+ *  longer write opening files into the tmp workspace). */
+const TEST_OPENING: OpeningChoice = {
+  preamble: "黑塔的工作室，午后。",
+  seedText: "你来了。",
+  sourceFile: "001-neutral-test.txt",
+  band: "neutral",
+  // Slice 4: the session keys the voice cue on THIS field (never derives a
+  // stem from sourceFile) — a zh opening carries its filename stem.
+  voiceClipId: "001-neutral-test",
+};
+
+/** Write a particle catalog with 嗯/{01,02}.opus so loadParticleCatalog finds it. */
+function writeTestParticle(cfg: AppServerConfig): void {
+  const dir = join(cfg.workspaceRoot, "data", "voice", "particle", "嗯");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "01.opus"), "x");
+  writeFileSync(join(dir, "02.opus"), "x");
+}
+
+/** Write one easter-egg clip so loadClipStems finds it (stem returned below). */
+const EASTER_EGG_STEM = "你动它干什么";
+function writeTestEasterEgg(cfg: AppServerConfig): void {
+  const dir = join(cfg.workspaceRoot, "data", "voice", "easter_egg");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${EASTER_EGG_STEM}.opus`), "x");
+}
+
+describe("Session — D3 streaming opening (new sessions)", () => {
+  it("defers the opening seed from the snapshot and streams it in via playOpening", async () => {
+    const cfg = mkConfig();
+    const { session, cleanup } = await mkStubSession(cfg, undefined, 1, {
+      openingOverride: TEST_OPENING,
+    });
+    // D3: the seed is deferred — the onReset snapshot is EMPTY so the renderer
+    // streams it in rather than showing it instantly.
+    expect(session.record).toEqual([]);
+
+    // Subscribe BEFORE playOpening so we observe the seed settle on the record
+    // stream (the renderer resolves its streaming bubble to this block).
+    const blocks: Extract<RecordEvent, { kind: "block" }>["block"][] = [];
+    const consumer = (async () => {
+      for await (const ev of session.subscribeRecord()) {
+        if (ev.kind === "block") {
+          blocks.push(ev.block);
+          break; // exactly one: the seed settle
+        }
+      }
+    })();
+    await session.playOpening();
+    await consumer;
+
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({
+      kind: "herta",
+      surface: "speech",
+      text: "你来了。",
+    });
+    // Committed as block 0 so subsequent turns carry the opening in context.
+    expect(session.record).toHaveLength(1);
+    expect(session.record[0]).toMatchObject({
+      kind: "herta",
+      text: "你来了。",
+    });
+    await cleanup();
+  });
+
+  it("does not re-stream the opening seed on the first turn (after playOpening commits it)", async () => {
+    const cfg = mkConfig();
+    const { session, cleanup } = await mkStubSession(cfg, undefined, 1, {
+      openingOverride: TEST_OPENING,
+    });
+    await session.playOpening();
+    expect(session.record).toHaveLength(1); // seed committed as block 0
+
+    const blocks: Extract<RecordEvent, { kind: "block" }>["block"][] = [];
+    const consumer = (async () => {
+      for await (const ev of session.subscribeRecord()) {
+        if (ev.kind === "block") {
+          blocks.push(ev.block);
+          if (blocks.length >= 2) break; // user + herta from this turn
+        }
+      }
+    })();
+    await session.submitText("hi");
+    await consumer;
+
+    // The first turn streams ONLY its new blocks (user + herta); the seed at
+    // block 0 is never re-streamed (the sink's cursor is past it).
+    expect(blocks.map((b) => ({ ...b, at: undefined }))).toEqual(
+      session.record.slice(1),
+    );
+    expect(
+      blocks.some((b) => b.kind === "herta" && b.text === "你来了。"),
+    ).toBe(false);
+    expect(blocks.every((b) => typeof b.at === "string")).toBe(true);
+    await cleanup();
+  });
+
+  it("persists the seed at create (durable) and playOpening does not re-persist it", async () => {
+    const cfg = mkConfig();
+    const { session, cleanup } = await mkStubSession(cfg, undefined, 1, {
+      openingOverride: TEST_OPENING,
+    });
+    const sessionFile = join(cfg.transcriptDir, `${session.sessionId}.jsonl`);
+    const seedLines = (raw: string): number =>
+      raw.split("\n").filter((l) => l.includes("你来了。")).length;
+
+    // On disk at create — BEFORE it streams — so a mid-stream close never loses
+    // it (on resume it loads as block 0 = instant history).
+    expect(seedLines(readFileSync(sessionFile, "utf8"))).toBe(1);
+    await session.playOpening();
+    // Still exactly one: playOpening settles without re-writing (commitOpeningSeed
+    // skips the persist hook).
+    expect(seedLines(readFileSync(sessionFile, "utf8"))).toBe(1);
+    await cleanup();
+  });
+
+  it("playOpening is a no-op for a resumed session (no deferred seed)", async () => {
+    const cfg = mkConfig();
+    const { session, cleanup } = await mkStubSession(cfg, [
+      { kind: "herta", surface: "speech", text: "历史开场白" },
+      { kind: "user", text: "在吗" },
+      { kind: "herta", surface: "speech", text: "在。" },
+    ]);
+    const before = session.record;
+    await session.playOpening();
+    // Unchanged — resumed sessions carry their opening in the loaded record.
+    expect(session.record).toEqual(before);
+    await cleanup();
+  });
+
+  it("playOpening emits a voice cue for the opening's clip", async () => {
+    const cfg = mkConfig();
+    const { session, cleanup } = await mkStubSession(cfg, undefined, 1, {
+      openingOverride: TEST_OPENING, // sourceFile 001-neutral-test.txt
+    });
+    const cues: VoiceCueEvent[] = [];
+    const consumer = (async () => {
+      for await (const ev of session.subscribeVoice()) {
+        cues.push(ev);
+        if (ev.kind === "cue") break;
+      }
+    })();
+    await session.playOpening();
+    await consumer;
+    // clipId = the opening's voiceClipId (slice 4 — no longer derived from
+    // sourceFile); category routes it to openings/<id>.opus.
+    expect(cues).toContainEqual({
+      kind: "cue",
+      category: "openings",
+      clipId: "001-neutral-test",
+    });
+    await cleanup();
+  });
+
+  it("playOpening emits NO voice cue when the opening carries no voiceClipId (slice 4)", async () => {
+    const cfg = mkConfig();
+    // An EN-style opening: text but NO voice pairing (no EN wavs in v1).
+    const { session, cleanup } = await mkStubSession(cfg, undefined, 1, {
+      openingOverride: {
+        preamble: "Herta's workshop, afternoon.",
+        seedText: "You're here.",
+        sourceFile: "001-neutral-test.txt",
+        band: "neutral",
+      },
+    });
+    const cues: VoiceCueEvent[] = [];
+    const consumer = (async () => {
+      for await (const ev of session.subscribeVoice()) cues.push(ev);
+    })();
+    await session.playOpening();
+    expect(session.record).toHaveLength(1); // the seed still streams + commits
+    await cleanup();
+    await consumer;
+    expect(cues.filter((c) => c.kind === "cue")).toEqual([]);
+  });
+
+  it("playOpening emits no voice cue when there is no opening", async () => {
+    const cfg = mkConfig(); // helper defaults openingOverride: null → no opening
+    const { session, cleanup } = await mkStubSession(cfg);
+    const cues: VoiceCueEvent[] = [];
+    const consumer = (async () => {
+      for await (const ev of session.subscribeVoice()) cues.push(ev);
+    })();
+    await session.playOpening(); // no-op (no deferred seed)
+    // Give the (empty) stream a tick; then tear down to end the consumer.
+    await cleanup();
+    await consumer;
+    expect(cues.filter((c) => c.kind === "cue")).toEqual([]);
+  });
+
+  it("matches the opening reveal cadence to the clip's duration", async () => {
+    const cfg = mkConfig();
+    // 3-char seed (no punctuation) over a 1500ms clip → base 500ms/char.
+    const { session, cleanup } = await mkStubSession(cfg, undefined, 1, {
+      openingOverride: {
+        preamble: "黑塔的工作室。",
+        seedText: "你来了",
+        sourceFile: join(
+          cfg.workspaceRoot,
+          ".herta/narrative/openings/001-test.txt",
+        ),
+        band: "neutral",
+      },
+      openingDurationMs: 1500,
+    });
+    const deltas: string[] = [];
+    const consumer = (async () => {
+      for await (const e of session.subscribeAgentEvents()) {
+        if (e.kind === "agent" && e.event.type === "assistant.delta") {
+          deltas.push(e.event.text);
+        }
+      }
+    })();
+
+    vi.useFakeTimers();
+    const p = session.playOpening();
+    // At 100ms a default 80ms cadence would already have emitted the first
+    // char; the wav-matched 500ms base means nothing has streamed yet.
+    await vi.advanceTimersByTimeAsync(100);
+    expect(deltas.join("")).toBe("");
+    // First char lands at the matched base (~500ms).
+    await vi.advanceTimersByTimeAsync(400);
+    expect(deltas.join("")).toBe("你");
+    // Drain the rest and settle.
+    await vi.advanceTimersByTimeAsync(2000);
+    await p;
+    expect(deltas.join("")).toBe("你来了");
+    vi.useRealTimers();
+    await cleanup();
+    await consumer;
+  });
+
+  it("plays a particle cue when the turn's first speech begins with a particle", async () => {
+    const cfg = mkConfig(); // no opening → no opening cue to interfere
+    writeTestParticle(cfg); // 嗯/{01,02}.opus
+    const { session, cleanup } = await mkStubSession(
+      cfg,
+      undefined,
+      1,
+      undefined,
+      {
+        actorSpeech: "嗯，你来了。",
+        particleRandom: () => 0, // → "01"
+      },
+    );
+    const cues: VoiceCueEvent[] = [];
+    const consumer = (async () => {
+      for await (const ev of session.subscribeVoice()) {
+        cues.push(ev);
+        if (ev.kind === "cue") break;
+      }
+    })();
+    await session.submitText("hi");
+    await consumer;
+    expect(cues).toContainEqual({
+      kind: "cue",
+      category: "particle/嗯",
+      clipId: "01",
+    });
+    await cleanup();
+  });
+
+  it("plays no particle cue when the particle is not at the start of the speech", async () => {
+    const cfg = mkConfig();
+    writeTestParticle(cfg);
+    const { session, cleanup } = await mkStubSession(
+      cfg,
+      undefined,
+      1,
+      undefined,
+      {
+        actorSpeech: "你来了，嗯。", // particle mid-line → no match
+        particleRandom: () => 0,
+      },
+    );
+    const cues: VoiceCueEvent[] = [];
+    const consumer = (async () => {
+      for await (const ev of session.subscribeVoice()) cues.push(ev);
+    })();
+    await session.submitText("hi");
+    await cleanup();
+    await consumer;
+    expect(cues.filter((c) => c.kind === "cue")).toEqual([]);
+  });
+
+  it("maybePlayEasterEgg plays a cue on a low roll outside the cooldown", async () => {
+    const cfg = mkConfig();
+    writeTestEasterEgg(cfg);
+    const { session, cleanup } = await mkStubSession(
+      cfg,
+      undefined,
+      1,
+      undefined,
+      { easterEggRandom: () => 0.4, easterEggNow: () => 5_000_000 }, // <0.5 → plays
+    );
+    const cues: VoiceCueEvent[] = [];
+    const consumer = (async () => {
+      for await (const ev of session.subscribeVoice()) cues.push(ev);
+    })();
+    session.maybePlayEasterEgg();
+    await cleanup();
+    await consumer;
+    expect(cues).toContainEqual({
+      kind: "cue",
+      category: "easter_egg",
+      clipId: EASTER_EGG_STEM,
+    });
+  });
+
+  it("maybePlayEasterEgg does not play on a high roll", async () => {
+    const cfg = mkConfig();
+    writeTestEasterEgg(cfg);
+    const { session, cleanup } = await mkStubSession(
+      cfg,
+      undefined,
+      1,
+      undefined,
+      { easterEggRandom: () => 0.6, easterEggNow: () => 5_000_000 }, // ≥0.5 → skip
+    );
+    const cues: VoiceCueEvent[] = [];
+    const consumer = (async () => {
+      for await (const ev of session.subscribeVoice()) cues.push(ev);
+    })();
+    session.maybePlayEasterEgg();
+    await cleanup();
+    await consumer;
+    expect(cues.filter((c) => c.kind === "cue")).toEqual([]);
+  });
+
+  it("maybePlayEasterEgg throttles to at most one play per hour", async () => {
+    const cfg = mkConfig();
+    writeTestEasterEgg(cfg);
+    let now = 5_000_000;
+    const { session, cleanup } = await mkStubSession(
+      cfg,
+      undefined,
+      1,
+      undefined,
+      { easterEggRandom: () => 0.4, easterEggNow: () => now }, // always passes 50%
+    );
+    const cues: VoiceCueEvent[] = [];
+    const consumer = (async () => {
+      for await (const ev of session.subscribeVoice()) cues.push(ev);
+    })();
+    session.maybePlayEasterEgg(); // plays
+    now += 30 * 60 * 1000; // +30min — within cooldown
+    session.maybePlayEasterEgg(); // skipped
+    now += 31 * 60 * 1000; // +61min total — cooldown elapsed
+    session.maybePlayEasterEgg(); // plays again
+    await cleanup();
+    await consumer;
+    expect(cues.filter((c) => c.kind === "cue")).toHaveLength(2);
+  });
+
+  it("maybePlayEasterEgg does nothing when there are no easter-egg clips", async () => {
+    const cfg = mkConfig(); // no writeTestEasterEgg
+    const { session, cleanup } = await mkStubSession(
+      cfg,
+      undefined,
+      1,
+      undefined,
+      { easterEggRandom: () => 0, easterEggNow: () => 5_000_000 },
+    );
+    const cues: VoiceCueEvent[] = [];
+    const consumer = (async () => {
+      for await (const ev of session.subscribeVoice()) cues.push(ev);
+    })();
+    session.maybePlayEasterEgg();
+    await cleanup();
+    await consumer;
+    expect(cues.filter((c) => c.kind === "cue")).toEqual([]);
+  });
+
+  it("an EN session plays NO easter-egg cue even with a clip on disk (no EN voice v1)", async () => {
+    // Adversarial review 2026-07-15: the easter-egg clips (all Chinese wavs)
+    // were loaded regardless of interaction language, so an EN session played
+    // Chinese audio on a 板砖-card lift. create() now skips the clip load for
+    // non-zh, so maybePlayEasterEgg no-ops even on a guaranteed-play roll.
+    const cfg = mkConfig();
+    writeTestEasterEgg(cfg); // a (Chinese) easter-egg wav sits on disk
+    const { session, cleanup } = await mkStubSession(
+      cfg,
+      undefined,
+      1,
+      undefined,
+      {
+        lang: "en",
+        easterEggRandom: () => 0, // would always pass the 50% gate
+        easterEggNow: () => 5_000_000,
+      },
+    );
+    const cues: VoiceCueEvent[] = [];
+    const consumer = (async () => {
+      for await (const ev of session.subscribeVoice()) cues.push(ev);
+    })();
+    session.maybePlayEasterEgg();
+    await cleanup();
+    await consumer;
+    expect(cues.filter((c) => c.kind === "cue")).toEqual([]);
+  });
+
+  it("rejects a second turn while one is in flight (single-turn invariant)", async () => {
+    const cfg = mkConfig();
+    const { session, cleanup } = await mkStubSession(cfg);
+    // First turn starts and sets currentTurn synchronously (before its first
+    // await), so a concurrent submit must reject rather than run a second turn
+    // on the single-threaded driver. Guards playOpening/regenerate too — all
+    // three share the currentTurn check (the renderer lock does not gate the
+    // main-process open/create entry points).
+    const first = session.submitText("hi");
+    await expect(session.submitText("again")).rejects.toThrow(
+      "a turn is already in progress",
+    );
+    await first;
+    await cleanup();
+  });
+});
+
+describe("Session — D2 resume regenerate (orphaned reply recovery)", () => {
+  it("regenerates and streams the reply for a session ending on an orphaned user message", async () => {
+    const cfg = mkConfig();
+    // A resumed session whose reply was lost mid-stream: loaded record ends with
+    // a user message and no following Herta block.
+    const { session, cleanup } = await mkStubSession(cfg, [
+      { kind: "herta", surface: "speech", text: "你来了。" },
+      { kind: "user", text: "在吗" },
+    ]);
+    expect(session.record).toHaveLength(2); // pre-regenerate: seed + orphan
+
+    const blocks: Extract<RecordEvent, { kind: "block" }>["block"][] = [];
+    const recordConsumer = (async () => {
+      for await (const ev of session.subscribeRecord()) {
+        if (ev.kind === "block") {
+          blocks.push(ev.block);
+          break; // exactly one new block: the regenerated reply
+        }
+      }
+    })();
+    const lifecycle: string[] = [];
+    const lifeConsumer = (async () => {
+      for await (const ev of session.subscribeTurnLifecycle()) {
+        lifecycle.push(ev.kind);
+        if (ev.kind === "finished" || ev.kind === "failed") break;
+      }
+    })();
+
+    await session.regenerateLastReplyIfOrphaned();
+    await recordConsumer;
+    await lifeConsumer;
+
+    // Only the regenerated reply streamed — the already-shown seed + user block
+    // are NOT re-streamed (the sink's seeded cursor skips them).
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({
+      kind: "herta",
+      surface: "speech",
+      text: "你好。",
+    });
+    // It ran as a turn (locks the composer via lifecycle): started → finished.
+    expect(lifecycle).toEqual(["started", "finished"]);
+    // Final record: seed + the intact user block + the regenerated reply.
+    expect(session.record).toHaveLength(3);
+    expect(session.record[1]).toEqual({ kind: "user", text: "在吗" });
+    expect(session.record[2]).toMatchObject({ kind: "herta", text: "你好。" });
+    await cleanup();
+  });
+
+  it("is a no-op when the resumed session ends on a Herta reply", async () => {
+    const cfg = mkConfig();
+    const { session, cleanup } = await mkStubSession(cfg, [
+      { kind: "user", text: "在吗" },
+      { kind: "herta", surface: "speech", text: "在。" },
+    ]);
+    await session.regenerateLastReplyIfOrphaned();
+    // No turn ran, no new block.
+    expect(session.record).toHaveLength(2);
+    expect(session.record[1]).toMatchObject({ kind: "herta", text: "在。" });
+    await cleanup();
+  });
+});
+
+describe("Session — subscribeRecord (single-subscriber)", () => {
+  it("runs a turn through V2ActorDriver and broadcasts the new blocks", async () => {
+    const cfg = mkConfig();
+    const { session, cleanup } = await mkStubSession(cfg);
+    const events: unknown[] = [];
+    const consumer = (async () => {
+      for await (const ev of session.subscribeRecord()) {
+        events.push(ev);
+        if (events.length >= 2) break; // user + herta speech block
+      }
+    })();
+    await session.submitText("hi");
+    await consumer;
+    expect(events.length).toBeGreaterThanOrEqual(1);
+    expect(events[0]).toMatchObject({ kind: "block" });
+    await cleanup();
+  });
+
+  it("emits block events for each block appended by submitText", async () => {
+    const cfg = mkConfig();
+    const { session, cleanup } = await mkStubSession(cfg);
+
+    const events: unknown[] = [];
+    const consumer = (async () => {
+      for await (const ev of session.subscribeRecord()) {
+        events.push(ev);
+        // user block + herta speech block = 2 blocks
+        if (events.length >= 2) break;
+      }
+    })();
+
+    await session.submitText("hi");
+    await consumer;
+
+    expect(events.length).toBeGreaterThanOrEqual(1);
+    expect(events[0]).toMatchObject({ kind: "block" });
+    await cleanup();
+  });
+
+  it("persists every committed block to the JSONL by the time submitText resolves", async () => {
+    // With the canonical-diff sink (2026-06-01), blocks are broadcast live
+    // DURING the turn via BusActorStreamingSink.flushBlocks, and persisted
+    // AFTER runActorCompletionTurn returns (inside the driver's runTurn loop).
+    // The old "persist-before-broadcast" ordering no longer holds at the
+    // per-block level, but the per-TURN invariant does: by the time
+    // submitText resolves, all blocks are on disk. This test verifies that
+    // contract: after submitText returns, the JSONL has header + all blocks.
+    const cfg = mkConfig();
+    const { session, cleanup } = await mkStubSession(cfg);
+
+    const sessionFile = join(cfg.transcriptDir, `${session.sessionId}.jsonl`);
+
+    const consumer = (async () => {
+      for await (const ev of session.subscribeRecord()) {
+        if (ev.kind === "block") break;
+      }
+    })();
+
+    await session.submitText("hi");
+    await consumer;
+
+    // After submitText resolves, all blocks must be on disk.
+    const jsonl = readFileSync(sessionFile, "utf8");
+    const lines = jsonl.split("\n").filter((l) => l.length > 0);
+    // Header line + at least the user block + the herta speech block.
+    expect(lines.length).toBeGreaterThanOrEqual(3);
+    await cleanup();
+  });
+});
+
+// ── setWorkspace / resetWorkspace tests ───────────────────────────────────────
+
+describe("Session — setWorkspace / resetWorkspace", () => {
+  it("setWorkspace updates the effective workspace and emits a workspace event", async () => {
+    const cfg = mkConfig();
+    const { session, cleanup } = await mkStubSession(cfg);
+    const got = (async () => {
+      for await (const ev of session.subscribeWorkspace()) {
+        if (ev.kind === "workspace") return ev;
+      }
+      return null;
+    })();
+    await session.setWorkspace(cfg.transcriptDir);
+    const ev = await got;
+    expect(ev?.kind).toBe("workspace");
+    if (ev?.kind === "workspace") {
+      expect(ev.workspace).toBe(cfg.transcriptDir);
+      expect(ev.isDefault).toBe(false);
+    }
+    expect(session.backendWorkspace).toBe(cfg.transcriptDir);
+    await cleanup();
+  });
+
+  it("resetWorkspace restores the managed default + flags isDefault", async () => {
+    const cfg = mkConfig();
+    const { session, cleanup } = await mkStubSession(cfg);
+    await session.setWorkspace(cfg.transcriptDir);
+    await session.resetWorkspace();
+    expect(session.backendWorkspaceIsDefault).toBe(true);
+    await cleanup();
+  });
+
+  it("setWorkspace records a → 系统 note in the record", async () => {
+    const cfg = mkConfig();
+    const { session, cleanup } = await mkStubSession(cfg);
+    const got = (async () => {
+      for await (const ev of session.subscribeRecord()) {
+        if (
+          ev.kind === "block" &&
+          ev.block.kind === "system" &&
+          ev.block.body.includes("workspace →")
+        ) {
+          return ev.block;
+        }
+      }
+      return null;
+    })();
+    await session.setWorkspace(cfg.transcriptDir);
+    const block = await got;
+    expect(block).not.toBeNull();
+    expect(block?.kind).toBe("system");
+    if (block?.kind === "system") {
+      expect(block.label).toBe("系统");
+      expect(block.body).toContain("workspace →");
+      expect(block.body).toContain(cfg.transcriptDir);
+    }
+    // The note is also on the synchronous snapshot.
+    expect(
+      session.record.some(
+        (b) => b.kind === "system" && b.body.includes("workspace →"),
+      ),
+    ).toBe(true);
+    await cleanup();
+  });
+
+  it("resetWorkspace records a → 系统 note in the record", async () => {
+    const cfg = mkConfig();
+    const { session, cleanup } = await mkStubSession(cfg);
+    await session.setWorkspace(cfg.transcriptDir);
+    await session.resetWorkspace();
+    const notes = session.record.filter(
+      (b) => b.kind === "system" && b.body.includes("workspace →"),
+    );
+    // One for the set, one for the reset.
+    expect(notes.length).toBe(2);
+    expect(notes[notes.length - 1]).toMatchObject({
+      kind: "system",
+      label: "系统",
+    });
+    await cleanup();
+  });
+});
+
+// ── noop-marker live-stream test ──────────────────────────────────────────────
+
+/**
+ * Build a SessionImpl for a NO-OP `@板砖` turn.
+ *
+ * Actor (completion) provider — two scripted calls:
+ *   Call 1: Herta's first speech contains @板砖, triggering the bridge.
+ *           The prompt ends with "（我", so the model completes "说）<body>…".
+ *   Call 2: After the bridge completes, Herta emits a closing speech.
+ *
+ * Backend (chat) provider — one scripted turn that emits TEXT ONLY (no tool
+ * calls). With no tool/patch work the bridge projects zero `→ 系统` /
+ * `→ 差分协处理器` blocks (`projectedAny` stays false), so it appends the
+ * `无产出` terminal block with `role: "noop-marker"` instead of a done-marker.
+ *
+ * The injection seam: `deps.providerOverrides.backend` flows into the real
+ * `CodingAgentRuntime` the session's `runtimeFactory` constructs, so stubbing
+ * the backend chat provider with a no-tool-call response is enough to drive a
+ * true no-op delegation without any custom runtime wiring.
+ */
+async function mkNoopBanzhuanSession(cfg: AppServerConfig): Promise<{
+  session: SessionImpl;
+  cleanup: () => Promise<void>;
+}> {
+  const { V2RecordPersister } = await import("@herta/core");
+  const { randomUUID } = await import("node:crypto");
+  const sessionId = randomUUID();
+
+  const persister = V2RecordPersister.forNewSession({
+    sessionId,
+    workspaceRoot: cfg.workspaceRoot,
+    startedAt: new Date(),
+    transcriptDir: cfg.transcriptDir,
+  });
+
+  const actorStub = stubCompletionProvider([
+    {
+      // Call 1: Herta delegates to 板砖.
+      deltas: ["说）@板砖 看看公开资料就行。（/我 说）"],
+      stopReason: "stop",
+    },
+    {
+      // Call 2: Main-loop closing speech after the bridge completes.
+      deltas: ["说）行，没什么要动的。（/我 说）"],
+      stopReason: "stop",
+    },
+  ]);
+
+  // Backend: a single text-only turn — no tool calls → no projected work.
+  const backendStub = stubChatProvider([
+    {
+      events: [
+        { type: "text-delta", text: "Nothing to do here." },
+        { type: "finish", reason: "stop" },
+      ],
+    },
+  ]);
+
+  // Empty meta-think corpus + empty supervisor reference → single-phase actor.
+  const stubRouter = stubChatProvider([
+    {
+      events: [
+        { type: "text-delta", text: "默认" },
+        { type: "finish", reason: "stop" },
+      ],
+    },
+  ]);
+
+  const session = await SessionImpl.create({
+    sessionId,
+    workspaceRoot: cfg.workspaceRoot,
+    effectiveWorkspace: cfg.workspaceRoot,
+    isDefaultWorkspace: false,
+    config: cfg,
+    persister,
+    deps: {
+      providerOverrides: {
+        actor: actorStub,
+        backend: backendStub,
+        router: stubRouter,
+        // No network in tests — see mkStubSession's title note.
+        title: stubChatProvider([]),
+      },
+      staticPrefixOverride: { bio: "[test-bio]", env: "", fewShots: [] },
+      metaThinkOverride: emptyMetaThinkCorpus(),
+      supervisorReferenceOverride: "",
+      openingOverride: null,
+    },
+  });
+
+  return {
+    session,
+    cleanup: () => session.close(),
+  };
+}
+
+describe("Session — noop-marker reaches the live record stream", () => {
+  it("emits a role:'noop-marker' block on subscribeRecord for a no-op @板砖 turn", async () => {
+    const cfg = mkConfig();
+    const { session, cleanup } = await mkNoopBanzhuanSession(cfg);
+
+    // The noop-marker is synthesized off-bus by the bridge (it rides the
+    // actor turn's return value). It reaches record subscribers via the
+    // bridge's flushBlocks(current) call after appending the marker — the
+    // single canonical-diff path through BusActorStreamingSink. This test
+    // fails if the marker stops reaching the live stream.
+    const blocks: RecordEvent[] = [];
+    const consumer = (async () => {
+      for await (const ev of session.subscribeRecord()) {
+        blocks.push(ev);
+        // user + herta(@板砖) + noop-marker + herta(closing) = 4 blocks.
+        if (blocks.length >= 4) break;
+      }
+    })();
+
+    await session.submitText("看看公开资料");
+    await consumer;
+
+    const noopMarkers = blocks.filter(
+      (e): e is Extract<RecordEvent, { kind: "block" }> =>
+        e.kind === "block" &&
+        e.block.kind === "system" &&
+        (e.block as { role?: string }).role === "noop-marker",
+    );
+    expect(noopMarkers).toHaveLength(1);
+    const marker = noopMarkers[0]?.block as {
+      label: string;
+      body: string;
+      role: string;
+    };
+    expect(marker.label).toBe("差分协处理器");
+    expect(marker.role).toBe("noop-marker");
+    expect(marker.body.startsWith("无产出")).toBe(true);
+
+    await cleanup();
+  }, 15_000);
+});
+
+// ── Actor streaming delta tests ───────────────────────────────────────────────
+
+describe("Session — actor assistant.delta reaches the agent stream", () => {
+  it("publishes actor-layer assistant.delta events on subscribeAgentEvents during submitText", async () => {
+    const cfg = mkConfig();
+    const { session, cleanup } = await mkStubSession(cfg);
+
+    const seen: SessionAgentEvent[] = [];
+    const consumer = (async () => {
+      for await (const ev of session.subscribeAgentEvents()) {
+        seen.push(ev);
+      }
+    })();
+
+    await session.submitText("hi");
+    await cleanup(); // closes the projector → ends the agent stream → consumer resolves
+    await consumer;
+
+    const actorDeltas = seen.filter(
+      (
+        e,
+      ): e is {
+        kind: "agent";
+        event: { type: "assistant.delta"; layer: "actor"; text: string };
+      } =>
+        e.kind === "agent" &&
+        e.event.type === "assistant.delta" &&
+        (e.event as { layer?: string }).layer === "actor",
+    );
+    expect(actorDeltas.length).toBeGreaterThanOrEqual(1);
+    expect(actorDeltas.map((e) => e.event.text).join("")).toContain("你好");
+  });
+});
+
+// ── Prompt dump (HERTA_DUMP_PROMPTS) ──────────────────────────────────────────
+
+describe("Session — prompt dump (HERTA_DUMP_PROMPTS)", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+  it("writes turn prompt files to <sessionId>.prompts when HERTA_DUMP_PROMPTS is set", async () => {
+    vi.stubEnv("HERTA_DUMP_PROMPTS", "1");
+    const cfg = mkConfig();
+    const { session, cleanup } = await mkStubSession(cfg);
+    await session.submitText("hi");
+    const promptsDir = join(cfg.transcriptDir, `${session.sessionId}.prompts`);
+    expect(existsSync(promptsDir)).toBe(true);
+    const files = readdirSync(promptsDir);
+    expect(files.length).toBeGreaterThanOrEqual(1);
+    expect(files.some((f) => /^turn-\d{3}-.*\.txt$/.test(f))).toBe(true);
+    await cleanup();
+  });
+
+  it("does NOT create a prompts dir when HERTA_DUMP_PROMPTS is unset", async () => {
+    vi.stubEnv("HERTA_DUMP_PROMPTS", undefined);
+    const cfg = mkConfig();
+    const { session, cleanup } = await mkStubSession(cfg);
+    await session.submitText("hi");
+    const promptsDir = join(cfg.transcriptDir, `${session.sessionId}.prompts`);
+    expect(existsSync(promptsDir)).toBe(false);
+    await cleanup();
+  });
+});
+
+describe("Session — rewindLastTurn", () => {
+  it("withdraws the last user turn, returns the user text, empties the record", async () => {
+    const cfg = mkConfig();
+    const { session, cleanup } = await mkStubSession(cfg);
+    await session.submitText("在吗");
+    expect(session.record).toHaveLength(2); // user + herta speech
+    const result = await session.rewindLastTurn();
+    expect(result).toEqual({ ok: true, userText: "在吗", editedFiles: false });
+    expect(session.record).toEqual([]);
+    await cleanup();
+  });
+
+  it("returns no_user_turn when there is nothing to rewind", async () => {
+    const cfg = mkConfig();
+    const { session, cleanup } = await mkStubSession(cfg);
+    const result = await session.rewindLastTurn();
+    expect(result).toEqual({ ok: false, reason: "no_user_turn" });
+    await cleanup();
+  });
+
+  it("truncates the persisted JSONL back to the header", async () => {
+    const cfg = mkConfig();
+    const { session, cleanup } = await mkStubSession(cfg);
+    await session.submitText("在吗");
+    const sessionFile = join(cfg.transcriptDir, `${session.sessionId}.jsonl`);
+    // Count BLOCK lines, not raw lines: meta lines (`workspace_set`,
+    // `turn_end`) legitimately sit between blocks and must not make this
+    // assertion brittle — it is about what the rewind withdraws.
+    const blockCount = (): number =>
+      readFileSync(sessionFile, "utf8")
+        .split("\n")
+        .filter((l) => l.length > 0)
+        .filter(
+          (l) => (JSON.parse(l) as { _kind?: string })._kind === undefined,
+        ).length;
+    expect(blockCount()).toBe(2); // user + herta
+    await session.rewindLastTurn();
+    expect(blockCount()).toBe(0); // header only remains
+    await cleanup();
+  });
+
+  it("emits a reset RecordEvent carrying the truncated record", async () => {
+    const cfg = mkConfig();
+    const { session, cleanup } = await mkStubSession(cfg);
+    await session.submitText("在吗");
+    const seen: RecordEvent[] = [];
+    const consumer = (async () => {
+      for await (const ev of session.subscribeRecord()) {
+        seen.push(ev);
+        if (ev.kind === "reset") break;
+      }
+    })();
+    await session.rewindLastTurn();
+    await consumer;
+    const reset = seen.find((e) => e.kind === "reset");
+    expect(reset?.kind).toBe("reset");
+    if (reset?.kind === "reset") expect(reset.record).toEqual([]);
+    await cleanup();
+  });
+
+  it("keeps a prior turn intact when rewinding a later one (multi-turn)", async () => {
+    const cfg = mkConfig();
+    const { session, cleanup } = await mkStubSession(cfg, [
+      { kind: "user", text: "u1" },
+      { kind: "herta", surface: "speech", text: "h1" },
+      { kind: "user", text: "u2" },
+      { kind: "herta", surface: "speech", text: "h2" },
+    ]);
+    const result = await session.rewindLastTurn();
+    expect(result).toEqual({ ok: true, userText: "u2", editedFiles: false });
+    expect(session.record).toEqual([
+      { kind: "user", text: "u1" },
+      { kind: "herta", surface: "speech", text: "h1" },
+    ]);
+    await cleanup();
+  });
+
+  it("rewind then a NEW turn persists cleanly (sink cursor reset; no off-by-one / dup)", async () => {
+    const cfg = mkConfig();
+    const { session, cleanup } = await mkStubSession(cfg, undefined, 2);
+    await session.submitText("first");
+    await session.rewindLastTurn();
+    await session.submitText("second");
+    // In-memory record is exactly the second turn (first turn fully withdrawn).
+    expect(
+      session.record.map((b) => ({
+        kind: b.kind,
+        text: "text" in b ? b.text : "",
+      })),
+    ).toEqual([
+      { kind: "user", text: "second" },
+      { kind: "herta", text: "你好。" },
+    ]);
+    // The JSONL holds exactly header + the second turn's two blocks — the first
+    // turn's lines were truncated and never re-appended (cursor reset correctly).
+    const sessionFile = join(cfg.transcriptDir, `${session.sessionId}.jsonl`);
+    const blocks = readFileSync(sessionFile, "utf8")
+      .split("\n")
+      .filter((l) => l.length > 0)
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+      .filter((o) => o._kind === undefined);
+    expect(blocks.map((b) => b.text)).toEqual(["second", "你好。"]);
+    await cleanup();
+  });
+
+  it("flags editedFiles when the withdrawn span has a 板砖 file-edit done-marker", async () => {
+    const cfg = mkConfig();
+    const { session, cleanup } = await mkStubSession(cfg, [
+      { kind: "user", text: "改一下登录" },
+      { kind: "herta", surface: "speech", text: "@板砖 改" },
+      {
+        kind: "system",
+        label: "差分协处理器",
+        body: "完成 · 2 files · tests 1/1",
+        role: "done-marker",
+        evidenceDetail: "↳ 改动文件: auth.ts, login.ts",
+      },
+    ]);
+    const result = await session.rewindLastTurn();
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.userText).toBe("改一下登录");
+      expect(result.editedFiles).toBe(true);
+    }
+    await cleanup();
+  });
+});
+
+describe("spanEditedFiles", () => {
+  it("true for a 差分协处理器 done-marker reporting changed files (evidence)", () => {
+    expect(
+      spanEditedFiles([
+        { kind: "user", text: "x" },
+        {
+          kind: "system",
+          label: "差分协处理器",
+          body: "完成 · 1 file · tests 1/1",
+          role: "done-marker",
+          evidenceDetail: "↳ 改动文件: a.ts",
+        },
+      ]),
+    ).toBe(true);
+  });
+
+  it("false for a no-op backend marker (no file count)", () => {
+    expect(
+      spanEditedFiles([
+        {
+          kind: "system",
+          label: "差分协处理器",
+          body: "无产出 — 这次没有触发任何文件、目录或命令操作。",
+          role: "noop-marker",
+        },
+      ]),
+    ).toBe(false);
+  });
+
+  it("false for a plain reply with no backend blocks", () => {
+    expect(
+      spanEditedFiles([
+        { kind: "user", text: "在吗" },
+        { kind: "herta", surface: "speech", text: "在。" },
+      ]),
+    ).toBe(false);
+  });
+});
+
+describe("Session — no-key onboarding (live DeepSeek key)", () => {
+  it("returns needsKey and runs no turn when the live key is empty", async () => {
+    const cfg = mkConfig();
+    const { session, cleanup } = await mkStubSession(
+      cfg,
+      undefined,
+      1,
+      undefined,
+      { deepSeekKey: () => "" },
+    );
+    const before = session.record;
+    const result = await session.submitText("hi");
+    expect(result).toEqual({ needsKey: true });
+    // The pre-check returns before any record mutation — no user/herta block.
+    expect(session.record).toEqual(before);
+    await cleanup();
+  });
+
+  it("consults the live key per submit (empty → set runs the turn)", async () => {
+    const cfg = mkConfig();
+    let key = "";
+    const { session, cleanup } = await mkStubSession(
+      cfg,
+      undefined,
+      1,
+      undefined,
+      { deepSeekKey: () => key },
+    );
+    // First send with no key: deferred onboarding, no turn.
+    expect(await session.submitText("hi")).toEqual({ needsKey: true });
+
+    // Key set live (no restart, no re-create): the next send runs the turn.
+    key = "sk-live";
+    const second = await session.submitText("hi");
+    expect(second).toHaveProperty("turnId");
+    expect(session.record.some((b) => b.kind === "herta")).toBe(true);
+    await cleanup();
+  });
+});

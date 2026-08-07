@@ -1,0 +1,66 @@
+name: notary-status
+# Ask APPLE what happened to this account's notarization submissions, without
+# paying for a build. The mac-build run only ever sees its own side of the
+# pipe: `notarytool --wait` prints nothing while it waits, and when the job
+# times out, the wait dies with it and leaves no verdict anywhere (run
+# 31072114695 — 74 silent minutes). Apple keeps the answer server-side:
+# `notarytool history` shows every submission this key ever made and its
+# status (In Progress / Accepted / Invalid), which is the difference between
+# "wait longer", "retry", and "fix the app" — three different next moves this
+# 2-minute job tells apart.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  status:
+    runs-on: macos-latest
+    timeout-minutes: 8
+    steps:
+      - name: stage the notarization key
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          if [ -z "$APPLE_API_KEY_P8" ]; then
+            echo "::error::APPLE_API_KEY_P8 secret is empty"
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/asc" && chmod 700 "$RUNNER_TEMP/asc"
+          printf '%s' "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/asc/AuthKey.p8"
+          chmod 600 "$RUNNER_TEMP/asc/AuthKey.p8"
+
+      - name: submission history
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          xcrun notarytool history \
+            --key "$RUNNER_TEMP/asc/AuthKey.p8" \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER"
+
+      # Apple's own reason for the newest submission — the per-file log names
+      # the exact binary and rule on an Invalid, which nothing on our side can.
+      - name: newest submission log
+        continue-on-error: true
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          ID=$(xcrun notarytool history \
+            --key "$RUNNER_TEMP/asc/AuthKey.p8" \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER" \
+            --output-format json | jq -r '.history[0].id // empty')
+          if [ -z "$ID" ]; then
+            echo "::notice::no submissions on record — the upload never reached Apple"
+            exit 0
+          fi
+          echo "newest submission: $ID"
+          xcrun notarytool log "$ID" \
+            --key "$RUNNER_TEMP/asc/AuthKey.p8" \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER" || echo "(no log yet — still in progress)"
+
+      - name: shred the key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/asc" || true

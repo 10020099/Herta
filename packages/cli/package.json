@@ -1,0 +1,27 @@
+{
+  "name": "@herta/cli",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "herta": "./dist/bin.js"
+  },
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@herta/core": "workspace:*",
+    "@herta/herta": "workspace:*",
+    "@herta/knowledge": "workspace:*",
+    "@herta/tools": "workspace:*",
+    "@herta/memory": "workspace:*",
+    "@herta/providers": "workspace:*"
+  },
+  "devDependencies": {
+    "vitest": "^3.2.6"
+  }
+}

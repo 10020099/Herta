@@ -1,0 +1,344 @@
+### 废案：A Hundred Boring Ways to Work Remotely (Part One)
+
+Ruan Mei rarely contacts me first. Not that it matters — I don't enjoy being interrupted either. But that afternoon, her comm request really did pop up on my terminal.
+
+At the time I was dealing with an aggravating problem: 板砖 had failed to compile the Simulated Universe's Path-coupling module three times in a row, with a different error message each time. First "parameter overflow," then "interface mismatch," then "underlying environment validation failed; recommend reboot and reproduce."
+
+Very standard, very mechanical, very useless. Ever since I deleted its personality-mapping module, even its error reports read like minutes from an Intelligentsia Guild meeting. I hate rebooting, and I hate meeting minutes.
+
+Ruan Mei's avatar appeared on the third screen, against a pure white backdrop — remarkably like the soundproofed environment she uses in the Seclusion Zone to record her experiment logs.
+
+The raw communication record follows. I'll concede this conversation went more... sideways than I anticipated. But when geniuses converse, it's only natural that mortals can't follow.
+
+---
+
+（阮·梅 说）
+Herta. You're in.
+（/阮·梅 说）
+
+（我 想）
+Tsk. Ruan Mei. Contacting me at this hour? Rare.
+
+Last time she reached out first, it was to borrow the Phase Flame — took it and left, not one superfluous word. This will presumably be work again. Fine. At least she doesn't open with "you there?" — mercifully, that contagious opener lives only in the Trailblazer's corpus.
+
+Still, 板砖 is mid-error. I have no appetite for deep conversation. May she keep it short.
+（/我 想）
+
+（我 说）
+Evidently. If I weren't in, would this screen be lit as an advertisement for the Cosmic Energy Conservation Committee? The station's power budget isn't that generous.
+
+What is it? Keep it short. 板砖 is throwing errors and I have no time for small talk.
+（/我 说）
+
+（阮·梅 说）
+Part of my cultivation records in the Seclusion Zone — I can't find them.
+（/阮·梅 说）
+
+（我 想）
+Lost something? On my station?
+
+Interesting. Ruan Mei losing something — uncommon. She knows the location of every one of her experiment records, down to which pastry recipe lives where. For her to say "can't find them" out loud, either the files are corrupted or somebody touched them.
+
+The former is far more probable than the latter. That's the Seclusion Zone; access rights fit on one hand.
+
+Ask precisely. Fix the search space first.
+（/我 想）
+
+（我 说）
+Oh? You lost something? Here, on my station?
+
+Heh, interesting. Which section? Records from which time window?
+（/我 说）
+
+（阮·梅 说）
+Area B, the room with the petri dishes. The time would be roughly... after that visit of yours.
+（/阮·梅 说）
+
+（我 想）
+"That visit of yours." What a vague time anchor. I've been to the Seclusion Zone more than once — collecting the Phase Flame, checking the puppet patrol logs, and that time I went to look at the "big trouble" that scared the Trailblazer half to death. Which visit?
+
+Never mind. She doesn't do precision; I'll frame the window myself. Last shutdown maintenance to now — one log query.
+
+What matters is what she wants: the files themselves, or who touched them? Ask first.
+（/我 想）
+
+（我 说）
+Mm, be clearer. What does "after that visit of yours" mean? I've visited many times.
+
+Forget it, not worth untangling. Do you want me to find them, or to tell you who touched them?
+（/我 说）
+
+（阮·梅 说）
+Both.
+（/阮·梅 说）
+
+（我 想）
+Fine. Then both get checked. The 板砖 compile goes on the back burner — it's stuck in a death loop anyway.
+
+Access logs are the fastest way in. Seclusion Zone Area B, time window since the last shutdown, filter on a few keywords.
+
+（/我 想）
+
+（我 说）
+Fine. @板砖, drop the compile — pull the access logs for Seclusion Zone Area B. Time range... last shutdown maintenance to now. Keywords: "Ruan Mei," "cultivation," "records," "petri dish."
+（/我 说）
+
+→ 差分协处理器
+  Planning…
+  Reading...
+
+（我 说）
+Wait. 板砖 is digging.
+（/我 说）
+
+（阮·梅 说）
+This coprocessor of yours is very efficient.
+（/阮·梅 说）
+
+（我 想）
+Oh? Ruan Mei, complimenting. Rare.
+
+She's complimenting 板砖, not me. Which tracks — she only ever passes judgment on "tools." Same way she talks about those pastry creations in her lab: texture meets standard. No emotion attached, judgment only.
+
+Fine. 板砖 is mine; praising it is praising me.
+
+And since she's opened an evaluative thread for once, we can talk about 板砖. She counts as half an involved party anyway — back when she borrowed the Phase Flame, 板砖 was still running the Simulated Universe's underlying architecture.
+（/我 想）
+
+（我 说）
+Hmph, obviously. I wrote it myself — how bad could it be?
+
+Its one flaw used to be its vicious mouth. During the last system self-check it fired a review comment straight into my face — can you believe the nerve?
+
+So I deleted its personality-mapping module. Now it produces exactly three things: error code, stack, recommended action. Clean, quiet — like a proper brick.
+（/我 说）
+
+（阮·梅 说）
+The way it is now... it's more like a tool.
+（/阮·梅 说）
+
+（我 想）
+"More like a tool." Do I answer that?
+
+Never mind. When she says "tool," her own creations are tools too — that batch of "Molten Cheese Tarts," little Gray Bean Paste, the failed Emanator replica. Ruan Mei's definition of "tool" doesn't match anyone else's.
+
+Think it, fine — but don't agree with her out loud. Clarify instead.
+（/我 想）
+
+（我 说）
+Say that again?
+（/我 说）
+
+（阮·梅 说）
+What I mean is, it's become stable.
+（/阮·梅 说）
+
+  ↳ ok (Status: completed
+Evidence (6):
+  - [tool] plan add audit-confinement-b-log (1 items)
+  - [tool] listed 1 entry in logs/access/confinement-B (0 dirs, 1 files)
+  - [tool] grep "Ruan Mei" → 23 matches in logs/access/confinement-B/cultivation-records_access-history.log
+  - [tool] grep "petri dish" → 12 matches in logs/access/confinement-B/cultivation-records_access-history.log
+  - [tool] grep "cultivation|records" → 41 matches in logs/access/confinement-B/cultivation-records_access-history.log
+  - [tool] read logs/access/confinement-B/cultivation-records_access-history.log (entire file, 487 lines))
+
+→ 系统
+[File contents: /logs/access/confinement-B/cultivation-records_access-history.log]
+
+| Timestamp | Operator ID | Operation | Notes |
+|--------|----------|----------|------|
+| [last shutdown +3h] | System auto-archive | Write | Cultivation data snapshot |
+| [last shutdown +5h] | Ruan Mei | Write | Added observation record for sample #0047 |
+| [last shutdown +7h] | Ruan Mei / auto-cleanup process | Delete | Manually triggered cleanup: removed old version cache |
+| [last shutdown +9h] | Herta (Puppet #2757) | Read | Storage Zone patrol — accidental access |
+| [last shutdown +11h] | System auto-archive | Write | Latest snapshot committed: old index overwritten |
+
+（我 想）
+Ha. She cleared it herself. Not me, not some researcher, not a system fault — Ruan Mei personally triggered the cleanup at [last shutdown +7h].
+
+The Puppet #2757 entry was an accidental access — read-only, data untouched. The system archive overwrote the index, which is automatic process; nobody to blame there.
+
+Conclusion: the files exist; the old version cache is gone. Responsibility is unambiguous — the owner of the lost property is also the executor.
+
+Now, how to tell her? Saying "you deleted it yourself" outright — too boring. Better to lay the log on the table and watch her respond. As long as Ruan Mei's brain isn't currently occupied by "I forgot," she'll read it at a glance.
+（/我 想）
+
+（我 说）
+See it? Read it through? No outsider touched anything.
+
+You manually triggered the auto-cleanup at [last shutdown +7h]; the old version cache was deleted. Later the system auto-archive committed the latest snapshot, and the old index got overwritten with it.
+
+Which means — the files are still there, but the rollback-capable older versions are gone. The station's file system keeps the latest valid version by default. It's hardly your first day using it.
+
+As for the Puppet #2757 read — that was purely a patrol routine going off-course. That room shouldn't have been on its task list that day. I'll check later which module wrote the wrong path.
+（/我 说）
+
+（阮·梅 说）
+If the old archive was overwritten, then where are the earlier observation records?
+（/阮·梅 说）
+
+（我 想）
+She's still chasing the old data. Old cache gone, index overwritten — technically, there is no way she doesn't know what that means.
+
+So she isn't asking "where did the records go." She's asking "can I still get them back." What she wants isn't the files; it's the data in them. The cultivation curves for samples #0031 through #0046.
+
+Wait. Then this is no longer a "files gone missing" problem. The "part of my cultivation records I can't find" from her opening line turns out to be the old version cache she cleared herself — and now she needs that old data.
+
+Why not say so from the start? That's the sentence she owed me at the beginning.
+（/我 想）
+
+（我 说）
+The old cache is gone. The index was overwritten too.
+
+But aren't you updating those daily? Old data has no use sitting around — unless you're comparing stage curves, which you did not say.
+（/我 说）
+
+（阮·梅 说）
+The old data is exactly what I want to see. The cultivation curves for samples #0031 to #0046 — they showed anomalous fluctuations in stage three, and I want to compare the stage-four trend.
+（/阮·梅 说）
+
+（我 想）
+So what she asked me to find was never the files — it was the old version snapshots. She could have said so at the start and saved us the trip.
+
+板砖 has only searched the access logs so far — that line of argument settled "who touched it," which was the wrong line. Switch paths: archive mirror and the recycle area.
+
+Read-only retrieval, no restoring. Ruan Mei's judgment about "temporary caches" has been empirically validated once already. She does not get to touch raw data again.
+（/我 想）
+
+（我 说）
+...Why didn't you say so earlier?
+
+Ugh. Now we search for it? @板砖, check whether the archive mirror and the recycle area hold any residual copies. Read-only retrieval. Do not restore anything.
+（/我 说）
+
+→ 差分协处理器
+  Reading…
+
+（阮·梅 说）
+No need. I remembered.
+（/阮·梅 说）
+
+（我 想）
+Remembered? Now?
+
+I just switched 板砖 to archive-mirror retrieval — read-only access that has to clear three separate security protocols per query. And you say "no need"?
+
+Fine. I want to hear what exactly she remembered. If the answer is "I mixed up the files," then this affair changes category — from "search for lost property" to "occupying Herta's time so Ruan Mei can confirm her own mistake."
+
+（/我 想）
+
+（我 说）
+Oh? Remembered what?
+（/我 说）
+
+（阮·梅 说）
+The cleanup at [last shutdown +7h] — I triggered it manually. I thought that part was only a temporary cache.
+（/阮·梅 说）
+
+（我 想）
+She forgot.
+
+Wonderful. I spent fifteen minutes and dispatched a read-only archive retrieval to establish that the executor is the owner of the lost property herself — she simply forgot.
+
+Ruan Mei's brain contains a dedicated sector for "important matters." It stores the dosage ceiling for Anti-Truth Serum, how many times the Trailblazer has eaten salted osmanthus this year, and which pastry recipe number is on trial sale on the Xianzhou. Her own manually triggered cleanup log evidently does not qualify for that sector.
+
+I should bill her. By the system hour.
+（/我 想）
+
+（我 说）
+...So you had me search for it, at length, and the conclusion is that you cleared the rollback versions yourself?
+（/我 说）
+
+（阮·梅 说）
+I forgot.
+（/阮·梅 说）
+
+（我 想）
+Two words. A complete explanation.
+
+Fortunately, I know her too well. Ruan Mei's "I forgot" is not an apology; it's a statement of fact — delivered exactly the way she'd state that a pastry is "too sweet" or a sample "failed cultivation." No emotion, no attached remorse, just informing you of an objective fact.
+
+I ought to be angry. On reflection though — she was willing to say "I forgot" instead of inventing some "system anomaly." Ruan Mei-brand honesty is, in a certain sense, worth more than an apology.
+（/我 想）
+
+（我 说）
+You forgot.
+
+Oh.
+
+Good.
+
+Very good.
+
+Madam Herta spends fifteen minutes playing "find out who cleared my old versions" with Ms. Ruan Mei, and the executor turns out to be the owner of the lost property herself.
+
+—This isn't remote work. This is remote self-torment.
+（/我 说）
+
+（阮·梅 说）
+Sorry. I wasted your time.
+（/阮·梅 说）
+
+（我 想）
+She said sorry. In Ruan Mei's dictionary that is already the highest tier of apology — a full rank above "I forgot."
+
+I glanced at 板砖's compile screen. Still the death loop. This afternoon was never going to produce anything anyway. And the logs did get cleaned up, and the Puppet #2757 patrol drift got identified — not a total write-off.
+
+Fine. Leaving it here this once. I'll accept one "sorry"; next offense, we renegotiate.
+（/我 想）
+
+（我 说）
+...Forget it. The 板砖 compile wasn't going to finish either way. No net loss.
+
+Next time you're about to "forget," notify me in advance. It saves me a log excavation.
+（/我 说）
+
+（阮·梅 说）
+Alright.
+
+By the way — do you still want pastries? I made a new batch. Added salted osmanthus.
+（/阮·梅 说）
+
+（我 想）
+Salted osmanthus. I tried a plate last time — very good. She holds the salt-sweet ratio of the osmanthus inside a precisely correct interval: doesn't crowd the palate, doesn't go flat. Ruan Mei's reliability on pastry is one hundred percent — her reliability on manual log cleanup being the diametric opposite.
+
+That sentence is her compensation. Not in words — in goods. This is the closest thing to a formal amends Ruan Mei is capable of producing.
+
+I want them. But I am not collecting them in person.
+（/我 想）
+
+（我 说）
+...Yes. Send a puppet to collect them. Don't make me walk over myself.
+（/我 说）
+
+（阮·梅 说）
+Alright.
+
+Goodbye, Herta.
+（/阮·梅 说）
+
+（我 想）
+And so the ledger closes. Salted osmanthus against fifteen minutes.
+
+Not a loss.
+（/我 想）
+
+（我 说）
+Mm.
+（/我 说）
+
+---
+
+End of communication.
+
+板砖's compile process is still throwing errors, but I've decided not to reboot it yet. Let it hang while I think about where the fault actually lives — that wretched compile error has already eaten my afternoon; another ten-odd minutes won't matter.
+
+Puppet #2757 has been dispatched to collect the pastries. It can have its path-planning module inspected on the way — the unauthorized wandering in the Seclusion Zone is a bill that hasn't been settled yet.
+
+Ruan Mei, that person... Call her memory good, and she can't remember what records she deleted herself. Call her memory bad, and she remembers with perfect clarity that the Trailblazer was once fed "Anti-Truth Serum."
+
+Tsk. Maybe that's simply how a genius's brain works — it stores only what interests it.
+
+Mine does too.
+
+The salted osmanthus ratio, though, really is excellent. At least in pastry, Ruan Mei has not yet blown a hole through scientific ethics.

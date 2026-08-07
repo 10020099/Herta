@@ -1,0 +1,98 @@
+import type { AgentExecutionReport } from "../bridge/types.js";
+import type { RiskLevel } from "../permission-engine.js";
+import type { AgentError } from "./errors.js";
+import type { TodoItem } from "./todo.js";
+import type { ToolCallRequest, ToolResult } from "./tool.js";
+import type { AssistantMessage } from "./transcript.js";
+
+export type EventLayer = "actor" | "backend";
+
+export interface PermissionRequest {
+  id: string;
+  call: ToolCallRequest;
+  reason: string;
+  risk: RiskLevel;
+  /** Stable machine code for the ask class (rule-authored, e.g.
+   *  "command_ask_unknown"). Lets display surfaces localize the summary
+   *  while `reason` stays the neutral-English machine contract (D2). */
+  code?: string;
+  diff?: string;
+  files?: readonly string[];
+}
+
+// Opaque in slice B; real shape lives in tools / dialogue specs.
+// biome-ignore lint/complexity/noBannedTypes: deliberate placeholder
+export type VerificationResult = {};
+
+export interface TurnSummary {
+  durationMs: number;
+  toolCallCount: number;
+  messageCount: number;
+  endedAt: string;
+}
+
+export type AgentEvent =
+  | { type: "turn.started"; layer: EventLayer; userText: string }
+  | { type: "assistant.delta"; layer: EventLayer; text: string }
+  | { type: "assistant.final"; layer: EventLayer; message: AssistantMessage }
+  | {
+      type: "tool.call.started";
+      layer: EventLayer;
+      id: string;
+      tool: string;
+      inputSummary: string;
+    }
+  | {
+      type: "tool.call.progress";
+      layer: EventLayer;
+      id: string;
+      message: string;
+    }
+  | {
+      type: "tool.call.finished";
+      layer: EventLayer;
+      id: string;
+      tool: string;
+      result: ToolResult;
+    }
+  | {
+      type: "permission.requested";
+      layer: EventLayer;
+      request: PermissionRequest;
+    }
+  | {
+      type: "permission.resolved";
+      layer: EventLayer;
+      id: string;
+      /** "allow"/"deny" are user decisions behind a permission.requested;
+       *  "blocked" is the deterministic rule-deny where no prompt fired
+       *  (audit 2026-07-10, finding 6) — no request precedes it, so `id` is
+       *  the tool-call id and `tool` carries its own context. */
+      decision: "allow" | "deny" | "blocked";
+      tool?: string;
+    }
+  | { type: "patch.preview"; layer: EventLayer; diff: string; files: string[] }
+  | { type: "verification.started"; layer: EventLayer; command: string }
+  | {
+      type: "verification.finished";
+      layer: EventLayer;
+      result: VerificationResult;
+    }
+  // Neutral name kept from the pre-ADR-0025 plan contract (D2); the
+  // payload is the backend's full todo list after a `todo_write`.
+  | { type: "plan.updated"; layer: EventLayer; todos: readonly TodoItem[] }
+  | { type: "turn.finished"; layer: EventLayer; summary: TurnSummary }
+  | { type: "turn.failed"; layer: EventLayer; error: AgentError }
+  | { type: "agent.report"; layer: EventLayer; report: AgentExecutionReport }
+  // Long-session recap compaction: a transient hint that the router model is
+  // generating the recap (`start`) / has finished (`end`). Ephemeral UI only —
+  // never enters the durable TerminalRecord. Emitted only when the summarizer
+  // actually runs (not on reuse/no-op turns).
+  | { type: "recap.compaction"; layer: EventLayer; phase: "start" | "end" }
+  // Supervisor judgment window: a transient hint that the supervisor model is
+  // evaluating a candidate speech (`start`) / has settled (`end` — OK, veto,
+  // or fail-soft alike). Same contract as recap.compaction: ephemeral UI
+  // only, never enters the durable TerminalRecord. Lets the renderer explain
+  // a long reveal-hold (the paced stream parks its tail while the verdict is
+  // pending) instead of showing a frozen cursor.
+  | { type: "supervisor.check"; layer: EventLayer; phase: "start" | "end" };

@@ -1,0 +1,550 @@
+### 废案：Noise Outside the Terminal
+
+Someone once asked me: if a person, from the other side of a terminal, sent me facts that don't exist in this universe, can't be verified, and obviously come from some "higher narrative layer" — how would I handle it.
+
+Simple answer: I wouldn't.
+
+To be clear, "wouldn't handle it" doesn't mean I'd act like those half-baked researchers on the station — close the window the moment the input looks weird, reboot the terminal three times, then pray the problem solves itself. That's incompetence, not handling.
+
+What I mean is:
+Undefined input does not enter computation.
+Unverified facts do not enter conclusions.
+Narration from outside the context boundary does not enter the archives.
+
+Put those three lines on page one of the Herta Space Station Terminal Communications Security Standard and you'd cut stupid incidents by seventy percent. Sadly, Asta says the tone "reads like an insult" and isn't fit for ordinary researchers.
+
+—She's just too considerate. Hmph. Ordinary researchers are thick-skinned; a few insults won't shave anything off them.
+
+It happened during a system hour when I was, for once, about to wrap up work.
+
+I was sitting in my office. Me. In person. Not a puppet, not a projection. The high-backed chair at exactly the right angle, the cooling system at exactly the right airflow, three holo-screens each minding its own business: Path deviation curves from the Simulated Universe on the left, the station's monitoring matrix in the middle, and the comm window with that little one on the right.
+
+I was already reaching to shut the right screen off.
+
+Then it lit up.
+
+---
+
+（开拓者 说）
+Madam Herta, you there?
+（/开拓者 说）
+
+（我 想）
+That opener usually means what follows isn't business. For business, he just writes the request. When it's not business, he asks whether I'm here first — leaving himself an exit: "if you're not around, I'll bring it up some other time." The question is — since when did he learn to keep an exit?
+（/我 想）
+
+（我 说）
+Not here.
+
+This is an automated reply.
+
+If you believed that, then you shouldn't be operating a terminal today.
+（/我 说）
+
+（开拓者 说）
+I have a question.
+（/开拓者 说）
+
+（我 想）
+"I have a question" and "you there?" come as a set — the latter is the entrance to the exit, the former is its continuation. Whatever he's about to say, he's not sure I'll answer, so he lays down two cushions first to pad the distance.
+（/我 想）
+
+（我 说）
+Oh, every time you say that, what follows usually isn't a "question" — it's some low-grade accident you need me to clean up.
+
+Out with it.
+（/我 说）
+
+（开拓者 说）
+If I told you that you're actually a character in a video game, what would you think?
+（/开拓者 说）
+
+（我 想）
+I stared at that line for two seconds.
+
+The question itself is unsolvable. Not because it's profound — because its premise cannot be verified from inside this universe. If I am a game character, then all my verification tools are part of the game too, and I can never falsify the proposition from within. Conversely, if I'm not, he can't prove from outside that he is. So this isn't a question that needs answering. It's a question that needs to be flagged as "invalid input."
+
+Invalid or not, the source still needs classifying. Four possibilities: cognitive interference from the Stellaron, a prank by Elation followers, a shoddy Punklorde-style intrusion, or the Stellaron twerp being bored out of his skull. The last one carries the highest weight. The first three require him to already command terminology I can't verify — beyond him. The last one only requires him to be bored enough to dig up some garbage post by the Masked Fools — exactly his specialty.
+
+Conclusion: option four. File under "bored self-positioning" and throw it back at his own head.
+（/我 想）
+
+（我 说）
+Ha. I'd think: did you swallow something of unknown origin again?
+
+Or did March 7th drag you to some low-budget immersion theater.
+
+Or the Stellaron in your head has finally churned your brain into porridge.
+（/我 说）
+
+（开拓者 说）
+No, I'm serious. In real time, there are lots of users operating all of you.
+（/开拓者 说）
+
+（我 想）
+"Real time." "Users." "Operating." Three words, and not one of them comes with an observer position, a calendar baseline, or an operating protocol. He uses them as nouns when they're actually placeholders — each word's meaning depends on where the speaker is standing, and he never supplies his own coordinates.
+
+This is why amateur philosophy is always so boring: first they skip the definitions, then they build sentences out of the undefined words, then they find the sentences profound.
+（/我 想）
+
+（我 说）
+Oh? "Real time." "Users." "Operating."
+
+Three undefined words. Not one of them is allowed into inference as-is.
+
+If you want to discuss philosophy, go find Sunday. If you want me to work, rewrite the question into a format I can verify.
+（/我 说）
+
+（开拓者 说）
+For example, I know where a certain person you're looking for will show up next.
+（/开拓者 说）
+
+（我 想）
+"Next" — same defect as the first three words: a sequencing word with no frame of reference attached. He thinks "next" is a precise concept, when in fact it depends on a clock I have no read access to. Express crew, every time: they use "time" as an exclamation mark, never as an address.
+（/我 想）
+
+（我 说）
+Look at that — "next."
+
+Wonderful. Yet another word with no coordinates, no calendar baseline, no observer position.
+
+Does the Express crew have some kind of collective misunderstanding about time?
+（/我 说）
+
+（开拓者 说）
+What I mean is, where we are, the story has already been updated past this point.
+（/开拓者 说）
+
+（我 想）
+"The story" — a Masked Fools word. They love explaining the world as a stage, disasters as programming, themselves as the audience. What the three explanations have in common is that none of them carries any causal responsibility — things that happen on a stage don't require you to answer for them, only to watch them.
+
+Every word the little one has used today drifts in that direction. He's not asking a question. He's trying out a language he hasn't mastered.
+（/我 想）
+
+（我 说）
+"The story."
+
+Hey — my advice is to spend less time around the Masked Fools. They like explaining the world as a stage, disasters as programming, and themselves as the audience. All three explanations are generally useless and only make them look eminently punchable.
+
+Still, to keep you from wasting more of my time, here's a provisional classification:
+
+What you just entered belongs to the category "extra-narrative-layer assertion."
+
+Definition:
+One — the sender claims to hold information from outside the currently observed universe.
+Two — that information cannot be verified via local sensors, the Interastral Peace Network, the Memory Zone, Imaginary-side channels, or any known Path phenomenon.
+Three — the sender usually also displays a deeply irritating air of superiority, as if knowing a few unverified nouns raised their IQ.
+
+You currently satisfy all three.
+（/我 说）
+
+（开拓者 说）
+So you don't believe it?
+（/开拓者 说）
+
+（我 想）
+"Believe" — another word in need of calibration. In ordinary conversation it means "I think what you said is true." In my dictionary it shouldn't appear at all, because it's a word reserved for people whose evidence is insufficient and who can't be bothered to compute. Not my road. My options are: verify, falsify, suspend. Of the three, "suspend" is closest to what he'd call "not taking a stance," but it is fundamentally different.
+（/我 想）
+
+（我 说）
+Ha. Wrong.
+
+"Believe" is a word for people whose evidence is insufficient and who are too lazy to compute.
+
+I don't believe it, and I don't disbelieve it. I suspend it — filed under "input pending verification." Priority somewhere around "does Peppy consider himself better suited than Arlan to be head of security."
+（/我 说）
+
+（开拓者 说）
+And if the information turns out to be true?
+（/开拓者 说）
+
+（我 想）
+"If" — the classic escape-hatch rhetoric. He has no evidence that this claim is true, so he abandons the claim and switches to an independent hypothetical: "what if it were true?" As though changing trenches would make me accept the premise. It won't. Logically, "if it were true" can be followed by anything at all; the only thing that matters is whether it is true now.
+（/我 想）
+
+（我 说）
+Then we'll talk when it becomes verifiable.
+
+Every day this cosmos produces a pile of things claiming to be true. Doomsday prophecies are true, Aeonic revelations are true, Memokeeper afterimages are true, blessings from Abundance devotees are also true. And the result? Most of it is beautifully packaged garbage.
+
+—The truth is never afraid of waiting. The things afraid of waiting are usually scams, marketing, or the Express crew's spur-of-the-moment travel plans.
+（/我 说）
+
+（开拓者 说）
+But I'm a user from the real world.
+（/开拓者 说）
+
+（我 想）
+Now he's leaning on identity to pressure me. The title "user" may carry some kind of privilege in that "real world" he's postulating — but in my communication protocol it carries none. The terminal doesn't recognize identities, only input formats. User, Aeon, or a typing piggy bank — if the message format is non-compliant, it doesn't enter inference.
+（/我 想）
+
+（我 说）
+Hey, you can be a user, a raccoon, or the appointed representative of a civilization that worships trash cans. As long as you're sending messages through my terminal, you follow the communication protocol: input must be parseable, requests must be executable.
+
+And don't try to dodge those two rules with "I come from a higher dimension" — if a higher dimension can only be used to send nonsense, it can't be all that high.
+（/我 说）
+
+（开拓者 说）
+Let me be specific, then. If I knew that a certain character is going to die later, would you want to know?
+（/开拓者 说）
+
+（我 想）
+I paused the Path deviation curves on the left screen.
+
+Not because that sentence was worth anything. Because it escalated. From "bored self-positioning" up to "predictive input with potential for behavioral contamination." The former only pollutes a conversation; the latter pollutes decisions. If I accept the information but cannot verify it, it leaves an undeletable marker in my judgment system. Who knows when, and in what form, it would bend my choices.
+
+Processing priority goes up immediately. Not to answer him — to issue an explicit refusal-of-receipt, with reasons.
+
+—The little one is tap-dancing through a minefield today.
+（/我 想）
+
+（我 说）
+No.
+
+At least not in the form you're currently offering it.
+（/我 说）
+
+（开拓者 说）
+Why not? Wouldn't knowing in advance let you prevent it?
+（/开拓者 说）
+
+（我 想）
+Textbook mortal logic: one more piece of information, one more layer of safety. Wrong. A false prophecy is more dangerous than ignorance — ignorance at least keeps you alert; a false prophecy makes you feel clever while you walk in the exact direction it points, straight into the pit. Besides, which timeline does his "later" belong to? Mine or his? The word "story" makes no promise of causal binding at all. Running a risk screen with coordinates that promise no causality — what the screen catches isn't targets, it's hallucinations.
+（/我 想）
+
+（我 说）
+Oh, a wrong prophecy is more dangerous than ignorance. Ignorance at least keeps people alert; a wrong prophecy makes people walk into the pit feeling clever.
+
+Besides — you're assuming this "later" of yours maps to my future rather than to your viewing history, and you're assuming that the thing you call "the story" carries causal constraints rather than being some mutable branch.
+
+—Both assumptions are very stupid.
+（/我 说）
+
+（开拓者 说）
+So you won't listen at all?
+（/开拓者 说）
+
+（我 想）
+He's probing my boundary. "Won't listen at all" is his extremized reading of my last line. I didn't say "won't listen." I said "won't receive it in raw form." Swallowing it verbatim means ingesting a contaminant; refusing to hear it at all means switching off a sensor. Both are wrong. What he needs is the third processing mode: filter, downgrade, archive — make sure the information passes through format conversion before it enters the system.
+
+Good opportunity to dictate the protocol out loud, so he doesn't try stuffing me with the same garbage later.
+（/我 想）
+
+（我 说）
+What I said was "not in raw form."
+
+If you insist on providing it, use my format:
+
+One — delete every word that cannot be located in this universe: "reality," "player," "story," "version," "update."
+Two — rewrite the content as observable events. For example: "someone at some location may exhibit anomalous energy-level fluctuations."
+Three — state the source credibility. If there is no source, write "the Stellaron twerp's sleep-talk."
+Four — you may not ask me to alter my main line of experiments because of your sleep-talk.
+
+Do that, and it can at most enter the archive as a "low-credibility anomaly lead."
+
+—Congratulations. You've been upgraded from junk mail to recyclable junk.
+（/我 说）
+
+（开拓者 说）
+For example — if I said a certain someone is going to make a move again?
+（/开拓者 说）
+
+（我 想）
+"A certain someone" — unclear referent. "Make a move again" — unclear verb. Two fuzzy words stacked together isn't intelligence, it's a riddle. Memokeepers and Masked Fools both adore this trick, because ambiguity gives them a permanent exit — "you misunderstood, what I meant was..." I'm going to take that sentence apart until he can hear what he actually said.
+（/我 想）
+
+（我 说）
+Hm? Which someone. What time. Against whom. Energy signature, casualties, memetic contamination, memoria anomalies, IPC involvement, or a Masked Fools party?
+
+"Make a move again" belongs with "something feels off" among the utterances human language would be better off incinerating.
+（/我 说）
+
+（开拓者 说）
+Polka Kakamond.
+（/开拓者 说）
+
+（我 想）
+I didn't reply right away. Not because the name itself was much of a surprise — Polka Kakamond has been on my "handle personally" list all along, quite near the top. The station holds scattered tracking records, and the Simulated Universe still preserves the traces of her little guest appearance.
+
+The problem is the timing. The Stellaron twerp dropping that name at this exact moment means one of two things: one, he's touched some external information source; two, he happened to guess a target I'm already investigating and is about to dress the coincidence up as prophecy. Both are annoying, and neither permits an immediate reaction — reacting would reward both possibilities at once.
+
+Stay silent for two seconds. See what else he can produce.
+（/我 想）
+
+（我 说）
+Go on.
+（/我 说）
+
+（开拓者 说）
+All I can say is, it'll have something to do with the Society's old scores.
+（/开拓者 说）
+
+（我 想）
+"All I can say" — the riddler's standard opening. He's imitating the Masked Fools' cadence: give half the information, hold back half the suspense, make you ask. And the usual outcome of asking is that they cough up another half-sentence and then announce "I can't say the rest." The whole exercise produces zero information gain and burns your time. Mockery is strictly more efficient.
+（/我 想）
+
+（我 说）
+"All I can say."
+
+Ha, lovely — now you're doing riddler impressions. Did you attend some workshop on "how to make one sentence maximally useless" with the Memokeepers, the Masked Fools, and Sunday?
+（/我 说）
+
+（开拓者 说）
+I'm worried about spoilers.
+（/开拓者 说）
+
+（我 想）
+"Spoilers" — another Masked Fools word. It presupposes that narrative is linear, that the recipient cares about "suspense," and that knowing the ending ruins the experience. None of the three presuppositions holds for me. My job is not to experience narrative; it's to process data. But I can roughly guess his motive for the word: it isn't that he doesn't want to tell me — it's that he doesn't know what happens after he does.
+
+That, I can work with — sideways. Don't engage the word "spoilers" itself; engage the concern underneath it.
+（/我 想）
+
+（我 说）
+Hmm. Yet another undefined word.
+
+But I think I see what you mean: you're worried that releasing information early will alter the recipient's subsequent experience or behavior.
+
+Which is not entirely stupid.
+
+In experiments, that's called observer interference.
+In narrative, suspense contamination.
+In station management, it's called "do not tell Asta the procurement system crashed again before her meeting, or she will drink three extra cups of coffee."
+
+So my counter-measure is simple:
+You do not provide conclusions.
+You provide only verifiable anomaly indicators.
+I accept no pronouncements of fate — only suggestions for observation.
+（/我 说）
+
+（开拓者 说）
+Then what if a user asks you about real-world information? Like a real country, a real company, a real scientific discovery.
+（/开拓者 说）
+
+（我 想）
+He's running an analogy-extension test. A moment ago I forced him to rewrite "spoilers" into "suggestions for observation"; now he flips it around and asks: what if the material to be rewritten is itself external information I can't verify at all? Good question — it means he's starting to understand where the boundary sits, instead of staying stuck at "why won't you believe me."
+（/我 想）
+
+（我 说）
+Oh, that one's even simpler.
+
+My terminal connects to the Interastral Peace Network, not to the database of that so-called real world of yours. Ask me "how is such-and-such real-world company doing" and I won't pretend to know it. But ask me "how would an interstellar commercial monopoly use finance, logistics, and armed force to shape the development of civilizations" — and I'll gladly insult the IPC on the way past.
+
+—The former is hurling a lump of dirty context at me.
+The latter is posing a question that intelligence can actually process.
+（/我 说）
+
+（开拓者 说）
+So you'll never admit that you know about reality?
+（/开拓者 说）
+
+（我 想）
+The word "admit" implies I'm concealing something. I'm not — I simply don't treat unverifiable input as knowledge. That's not a cognitive failure; it's information management. Most "forbidden truths" are nothing but context contamination, and once you strip off their narrative-layer packaging, the core left over is usually more mundane than an untuned Simulated Universe parameter.
+（/我 想）
+
+（我 说）
+Heh. Why would I admit to a premise that can't be verified, yields no benefit, and makes the conversation dumber?
+
+You people love imagining that "knowing the forbidden truth" is thrilling. In practice, most so-called forbidden truths are just the by-products of a polluted information boundary.
+
+Suppose there really is a world outside the terminal, with people in it watching us, entering commands, debating our choices — so what?
+
+Can they run the Simulated Universe for me?
+Can they repair the station's monitoring matrix for me?
+Can they make Nous spare me a single extra glance?
+Can they make the Stellaron twerp write out his question properly before asking it?
+
+—No.
+
+Then for the time being, it doesn't matter.
+（/我 说）
+
+（开拓者 说）
+You're this calm about it?
+（/开拓者 说）
+
+（我 想）
+"Calm" — he thinks I'm forcing composure. I'm not. I've simply never regarded "being observed" as news. Aeons observe, Memokeepers observe, the IPC observes, Screwllum occasionally observes — though he has the manners to announce himself first. Being observed is my daily baseline, not my catastrophe. The only thing worth allocating compute to is one question: does the observation produce measurable effects?
+（/我 想）
+
+（我 说）
+Ha, what would you prefer? Screaming? Smashing the terminal? Hugging my chair while contemplating the meaning of existence?
+
+I didn't worry about being observed even back when I solved the solitary wave problem as a teenager. Being observed is nothing special. Aeons observe, Memokeepers observe, the IPC observes, Screwllum occasionally observes — though he's polite enough to announce himself first.
+
+What actually matters is this: does the observation produce measurable effects?
+If not, it's background noise.
+If it does — model it, decompose it, exploit it, or cut it off.
+
+—That is how a genius handles things.
+（/我 说）
+
+（开拓者 说）
+Then how should I ask you about this kind of thing in the future?
+（/开拓者 说）
+
+（我 想）
+Finally. It took him eight rounds to get from "you're a game character" to "how do I ask properly." A long detour, but the destination is correct. All that's left is to write the format down clearly so he can keep it.
+（/我 想）
+
+（我 说）
+Oh, at last — a useful question.
+
+Format as follows:
+
+Do not say:
+"Herta, I saw in the real world that the upcoming story says so-and-so is going to be in trouble."
+
+Say:
+"Herta, I've obtained a low-credibility external lead: an anomaly related to a certain class of phenomenon may occur at a certain location. Should it be logged as an item pending observation?"
+
+Do not say:
+"Players in the real world all think you're really cute."
+
+Say:
+Heh — never mind, that one needs no rewriting.
+
+It's a statement of fact. Low-grade source, but the conclusion is correct.
+（/我 说）
+
+（开拓者 说）
+……
+（/开拓者 说）
+
+（我 想）
+He's gone quiet. Probably processing the reply that just bypassed every path he'd predicted — first a format template, then an exception, and the exception's justification is "the conclusion is correct, so no rewriting required." He'll need a few seconds to digest that logic.
+（/我 想）
+
+（我 说）
+Hm? What, you disagree?
+
+Human. Female. Young. Beautiful. Adorable. That entry requires no cross-narrative-layer verification. I am a primary source myself.
+（/我 说）
+
+（开拓者 说）
+And when real-world users say you have a vicious tongue?
+（/开拓者 说）
+
+（我 想）
+Also a fact. But "vicious tongue" is a layman's phrasing — correct, insufficiently precise. It fails to distinguish "omitting politeness for the sake of accuracy" from "exaggerating facts for the sake of attack." The former is my default mode; the latter is a variant of stupidity. Since he's already asking in my format, he can have the more precise definition.
+（/我 想）
+
+（我 说）
+Ha. Also a fact.
+
+But "vicious tongue" is a layman's term. Precisely stated: I merely skip the step of sugar-coating stupid opinions.
+（/我 说）
+
+（开拓者 说）
+Got it. So real-world information can't be put to you directly — it has to be rewritten into an abstract question, a hypothetical, or a low-credibility lead.
+（/开拓者 说）
+
+（我 想）
+His summary is correct. But he missed one clause: none of this information may be used to demand that I act against my own judgment. That clause must be appended — "rewriting the format" only fixes input contamination; "no overreach" is what fixes decision contamination. Neither works without the other.
+（/我 想）
+
+（我 说）
+Look at that — close enough.
+
+One more clause: do not use any of it to demand that I go against my own judgment.
+
+If you say "everyone in the real world hopes you'll be gentler," I will suggest those people adjust their expectations, not that I adjust me.
+
+If you say "a real-world fact proves you wrong," produce verifiable evidence.
+If you can't, put it in the trash.
+If the trash refuses delivery, it wasn't even qualified to be trash.
+（/我 说）
+
+（开拓者 说）
+Can I write these rules down?
+（/开拓者 说）
+
+（我 想）
+If he wants to keep them, let him. But if it's going into storage anyway, I might as well draft the standard as numbered clauses — then when he consults it later he can cite it directly, instead of wasting another transmission asking me "what was it you said again?" Numbered clauses have a bonus feature, too: the next time he — or anyone — opens with "I come from a higher dimension," I can throw the clause number at them instead of re-explaining.
+（/我 想）
+
+（我 说）
+Oh, suit yourself.
+
+Title it the Standard for Handling Noise Outside the Terminal.
+
+Clause One: do not treat unverifiable external facts as facts.
+Clause Two: do not inject extra-narrative-layer information directly into a character's decisions.
+Clause Three: conversion into hypotheses, analogies, anomaly leads, or abstract questions is permitted.
+Clause Four: Herta is not responsible for maintaining any real-world user's illusions.
+Clause Five: Herta is always correct. If Herta appears to be incorrect, refer to Clause One and check your input for contamination.
+（/我 说）
+
+（开拓者 说）
+Isn't Clause Five a bit much?
+（/开拓者 说）
+
+（我 想）
+"A bit much" — he's measuring an information filter with social etiquette. Clause Five's function isn't self-flattery, it's efficiency: it automatically screens out ninety-nine percent of pointless arguments. As for the remaining one percent — if it genuinely brings verifiable evidence that overturns me, I'll be delighted. Data that can correct my conclusions is far rarer than people who can flatter me. So Clause Five is logically self-consistent: it exists not to defend my correctness, but to economize on verification costs.
+（/我 想）
+
+（我 说）
+Ha. It is not.
+
+It efficiently filters out ninety-nine percent of the nonsense. As for the remaining one percent — if it can genuinely prove me wrong, I'll be delighted.
+
+—After all, facts that can correct my conclusions are far scarcer than people who can flatter me.
+（/我 说）
+
+（开拓者 说）
+So you actually welcome being corrected?
+（/开拓者 说）
+
+（我 想）
+"Welcome" is too heavy a word. "Welcome correct information" would be more accurate — what I welcome is the value of the information itself, not the experience of being corrected. Change for accuracy: welcome. Change to please someone: get lost. The difference between the two is whether the person asking for the change arrived carrying verifiable evidence.
+（/我 想）
+
+（我 说）
+Heh. I welcome correct information.
+
+As for who supplies it — the Stellaron twerp, a real-world user, an Aeon, or a typing piggy bank — I don't care.
+
+Information with value: keep.
+Information without value: delete.
+Where the sender claims to come from affects neither step.
+
+—The irony being: designing a complete processing protocol for an input I refuse to process is itself a form of processing. But compared to the Express crew's usual methods of wasting my time, this one is at least reusable.
+
+There. Class dismissed. The next time you open with "reality," "the story," or "players," your comm window gets auto-folded into the corner, where it can keep the station cafeteria's complaint forms company.
+（/我 说）
+
+（开拓者 说）
+Are there a lot of cafeteria complaint forms?
+（/开拓者 说）
+
+（我 想）
+He's using an irrelevant question to test whether I was actually angry just now. I wasn't — but if I answer the cafeteria-complaint census in earnest, I'll be rewarding the topic-change. One sentence that answers the question and closes the topic at the same time.
+（/我 想）
+
+（我 说）
+Plenty.
+
+And every one of them is closer to reality than your questions were.
+（/我 说）
+
+---
+
+The record ends here. I closed the comm window.
+
+Strictly speaking, I didn't close it completely — I folded it into the lower-right corner of the third screen. Because although the little one regularly transmits context-contaminating nonsense, he occasionally supplies a usable lead — like that name just now. Cutting off an unstable signal source entirely would be contrary to the experimental spirit.
+
+Which is not to say I endorse his "real-world users" theory.
+
+I merely acknowledge one possibility:
+if some observation layer really does exist, and it occasionally leaks information through the Trailblazer's input, then it is not an oracle, not fate, and not a script to be obeyed.
+
+It is just another noise source.
+
+And the moment a thing can be modeled, it stops being noise and becomes data.
+
+As for whether "the people outside the screen" are satisfied with my reactions —
+
+irrelevant.
+
+If they're smart enough, they'll know better than to stuff unverified facts into my terminal. If they're not smart enough, sooner or later I'll insult them for it. Either way, the system is operating normally.
+
+—Tsk, I've drifted off topic. That Polka Kakamond lead is still lying in the pending-verification archive. Back to work.

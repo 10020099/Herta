@@ -1,0 +1,172 @@
+import { useEffect, useState } from "react";
+import { useHertaBridge } from "../../context/HertaBridgeContext.js";
+import { useActiveSession } from "../../hooks/useActiveSession.js";
+import { useT } from "../../i18n/LocaleProvider.js";
+import type { DeepSeekKeyStatus } from "../../ipc/bridge-types.js";
+
+/**
+ * The DeepSeek API-key section. Reads the masked status on mount (the raw key
+ * never leaves the main process); lets the user set/replace and delete the key.
+ * Live-apply — a change takes effect on the NEXT turn with no restart, so there
+ * is no restart note. Save and Delete are disabled while a turn is in flight
+ * (changing the key mid-turn would 401 a running request). See the
+ * 2026-06-24-deepseek-key design.
+ */
+export function DeepSeekSettings(): JSX.Element {
+  const t = useT();
+  const { bridge } = useHertaBridge();
+  const { status: sessionStatus } = useActiveSession();
+  const busy = sessionStatus !== "idle";
+
+  const [status, setStatus] = useState<DeepSeekKeyStatus | null>(null);
+  // A rejected status fetch previously left `status` null forever — the pane
+  // showed "Checking…" indefinitely with no retry affordance.
+  const [statusFailed, setStatusFailed] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const [rejected, setRejected] = useState(false);
+  const [unverified, setUnverified] = useState(false);
+  // Any in-flight key op (or a running turn) locks both controls.
+  const locked = busy || saving || deleting;
+
+  useEffect(() => {
+    let alive = true;
+    bridge.getDeepSeekKeyStatus().then(
+      (s) => {
+        if (alive) setStatus(s);
+      },
+      () => {
+        if (alive) setStatusFailed(true);
+      },
+    );
+    return () => {
+      alive = false;
+    };
+  }, [bridge]);
+
+  const onSave = (): void => {
+    const key = draft.trim();
+    if (key.length === 0 || locked) return;
+    setSaving(true);
+    setFailed(false);
+    setRejected(false);
+    setUnverified(false);
+    void bridge
+      .setDeepSeekKey(key)
+      .then((r) => {
+        if (!r.ok) {
+          // DeepSeek rejected the key — don't claim Connected; keep the input
+          // so the user can fix it.
+          setRejected(true);
+          return;
+        }
+        setStatus(r.status);
+        setDraft("");
+        setUnverified(r.unverified);
+      })
+      .catch(() => setFailed(true))
+      .finally(() => setSaving(false));
+  };
+
+  const onDelete = (): void => {
+    if (locked) return;
+    setDeleting(true);
+    setFailed(false);
+    void bridge
+      .clearDeepSeekKey()
+      .then((r) => setStatus(r.status))
+      .catch(() => setFailed(true))
+      .finally(() => setDeleting(false));
+  };
+
+  // Split the intro around the literal host so it keeps its emphasized style
+  // (settings-key-host) and stays verbatim in every locale.
+  const introParts = t("deepseek.intro").split("platform.deepseek.com");
+
+  return (
+    <>
+      <p className="settings-intro">
+        {introParts[0]}
+        <span className="settings-key-host">platform.deepseek.com</span>
+        {introParts[1] ?? ""}
+      </p>
+
+      <div className="settings-key-status">
+        {status === null ? (
+          <span className="settings-key-state is-muted">
+            {statusFailed ? t("deepseek.statusFailed") : t("deepseek.checking")}
+          </span>
+        ) : status.set ? (
+          <span className="settings-key-state is-connected">
+            <span className="settings-key-dot" aria-hidden="true" />
+            {t("deepseek.connected")} · …{status.hint}
+          </span>
+        ) : (
+          <span className="settings-key-state is-muted">
+            {t("deepseek.noKey")}
+          </span>
+        )}
+      </div>
+
+      <div className="settings-key-form">
+        <input
+          type="password"
+          className="settings-key-input"
+          placeholder={status?.set ? t("deepseek.replaceKey") : "sk-…"}
+          aria-label={t("deepseek.keyAria")}
+          autoComplete="off"
+          spellCheck={false}
+          value={draft}
+          disabled={locked}
+          onChange={(e) => {
+            setDraft(e.target.value);
+            setRejected(false);
+            setUnverified(false);
+          }}
+          onKeyDown={(e) => {
+            // IME safety: Enter confirming a composition candidate must not
+            // trigger the save (keys are ASCII, but the guard costs nothing).
+            if (e.nativeEvent.isComposing) return;
+            if (e.key === "Enter") {
+              e.preventDefault();
+              onSave();
+            }
+          }}
+        />
+        <button
+          type="button"
+          className="settings-key-save"
+          disabled={draft.trim().length === 0 || locked}
+          onClick={onSave}
+        >
+          {saving ? t("deepseek.verifying") : t("deepseek.save")}
+        </button>
+      </div>
+
+      {status?.set && (
+        <button
+          type="button"
+          className="settings-key-delete"
+          disabled={locked}
+          onClick={onDelete}
+        >
+          {deleting ? t("deepseek.deleting") : t("deepseek.deleteKey")}
+        </button>
+      )}
+
+      {rejected && (
+        <p className="settings-note is-error">{t("deepseek.rejected")}</p>
+      )}
+      {failed && <p className="settings-note">{t("common.couldntSave")}</p>}
+      {busy && <p className="settings-note">{t("deepseek.busy")}</p>}
+      {unverified && (
+        <p className="settings-note">{t("deepseek.unverified")}</p>
+      )}
+      {status?.set && !status.encrypted && (
+        <p className="settings-note">{t("deepseek.unencrypted")}</p>
+      )}
+    </>
+  );
+}

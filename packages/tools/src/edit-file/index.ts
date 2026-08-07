@@ -1,0 +1,273 @@
+import { createHash, randomUUID } from "node:crypto";
+import type { Stats } from "node:fs";
+import { readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import type {
+  HertaTool,
+  ToolCallRequest,
+  ToolContext,
+  ToolResult,
+  ToolSchema,
+} from "@herta/core";
+import { formatInputIssues } from "../input-issues.js";
+import { resolveSafePath } from "../path-safety.js";
+import {
+  applyHunks,
+  computeUnifiedDiff,
+  parsePatch,
+  validateHunks,
+} from "./engine.js";
+import { editFileInputSchema, editFileJsonSchema } from "./schema.js";
+
+export type { EditFileRuleDeps } from "./rule.js";
+export { makeEditFileRule, registerEditFileRule } from "./rule.js";
+export type { EditFileInput } from "./schema.js";
+
+const MAX_FILE_BYTES = 10 * 1024 * 1024;
+const SNIFF_BYTES = 4096;
+
+export interface EditFileData {
+  relPath: string;
+  hunkCount: number;
+  bytesWritten: number;
+  oldSha256: string;
+  newSha256: string;
+  diff: string;
+}
+
+export function editFileTool(): HertaTool {
+  return {
+    name: "edit_file",
+    schema(): ToolSchema {
+      return {
+        name: "edit_file",
+        description:
+          "Apply anchor-based search/replace hunks to an existing UTF-8 text file. Each hunk's `search` must match exactly once. Requires a prior read_file on the same path; the file's bytes must be byte-identical to that read.",
+        inputSchema: editFileJsonSchema,
+      };
+    },
+    async run(
+      call: ToolCallRequest,
+      ctx: ToolContext,
+    ): Promise<ToolResult<EditFileData>> {
+      const parsed = editFileInputSchema.safeParse(call.input);
+      if (!parsed.success) {
+        return errResult(
+          "invalid_input",
+          formatInputIssues(parsed.error),
+          "usage: {path, hunks: [{search, replace}, …]}",
+          "invalid input",
+        );
+      }
+      const { path, hunks } = parsed.data;
+
+      const safe = await resolveSafePath(ctx.workspaceRoot, path);
+      if (!safe.ok) {
+        return errResult(
+          safe.code,
+          safe.message,
+          undefined,
+          `denied: ${safe.message}`,
+        );
+      }
+
+      let info: Stats;
+      try {
+        info = await stat(safe.resolved);
+      } catch (err: unknown) {
+        const code = (err as { code?: string }).code;
+        if (code === "ENOENT") {
+          return errResult(
+            "not_found",
+            `not found: ${safe.relative}`,
+            "use write_new_file for new files",
+            `not found: ${safe.relative}`,
+          );
+        }
+        return errResult(
+          "read_failed",
+          (err as Error).message ?? "stat failed",
+          undefined,
+          "stat failed",
+        );
+      }
+      if (!info.isFile()) {
+        return errResult(
+          "invalid_input",
+          `not a file: ${safe.relative}`,
+          undefined,
+          `not a file: ${safe.relative}`,
+        );
+      }
+      if (info.size > MAX_FILE_BYTES) {
+        return errResult(
+          "file_too_large",
+          `${info.size} bytes > cap ${MAX_FILE_BYTES}`,
+          "split file or refactor first",
+          `too large: ${safe.relative}`,
+        );
+      }
+
+      let buf: Buffer;
+      try {
+        buf = await readFile(safe.resolved);
+      } catch (err: unknown) {
+        return errResult(
+          "read_failed",
+          (err as Error).message ?? "read failed",
+          undefined,
+          "read failed",
+        );
+      }
+      const sniff = buf.subarray(0, Math.min(SNIFF_BYTES, buf.length));
+      if (sniff.includes(0)) {
+        return errResult(
+          "binary_file",
+          "NUL byte detected in first 4KB",
+          "edit_file is utf-8 only",
+          `binary: ${safe.relative}`,
+        );
+      }
+
+      const oldSha256 = createHash("sha256").update(buf).digest("hex");
+      const entry = ctx.reads.get(safe.resolved);
+      if (!entry) {
+        return errResult(
+          "read_required",
+          `call read_file on ${safe.relative} before patching`,
+          "call read_file on the path before patching",
+          `read required: ${safe.relative}`,
+        );
+      }
+      if (entry.sha256 !== oldSha256) {
+        return errResult(
+          "stale_read",
+          `${safe.relative} changed since last read; re-read and rebuild hunks`,
+          "re-read the file and rebuild your hunks",
+          `stale: ${safe.relative}`,
+        );
+      }
+
+      const parsedHunks = parsePatch(hunks);
+      if (!parsedHunks.ok) {
+        return errResult(
+          parsedHunks.code,
+          parsedHunks.message,
+          "each hunk needs non-empty search and replace",
+          parsedHunks.message,
+        );
+      }
+      const before = buf.toString("utf-8");
+      const validated = validateHunks(before, parsedHunks.hunks);
+      if (!validated.ok) {
+        return errResult(
+          validated.code,
+          validated.message,
+          suggestionFor(validated.code),
+          validated.message,
+        );
+      }
+
+      const after = applyHunks(before, parsedHunks.hunks);
+      const afterBuf = Buffer.from(after, "utf-8");
+      const diff = computeUnifiedDiff(before, after, safe.relative);
+
+      const tmp = join(
+        dirname(safe.resolved),
+        `.${basenameOf(safe.resolved)}.herta-tmp-${randomUUID()}`,
+      );
+      try {
+        await writeFile(tmp, afterBuf, { flag: "wx" });
+      } catch (err: unknown) {
+        const code = (err as { code?: string }).code;
+        return errResult(
+          "write_failed",
+          (err as Error).message ?? "temp write failed",
+          undefined,
+          "write failed",
+          code === "EBUSY" || code === "EAGAIN",
+        );
+      }
+      try {
+        await rename(tmp, safe.resolved);
+      } catch (err: unknown) {
+        try {
+          await unlink(tmp);
+        } catch {
+          // best-effort
+        }
+        const code = (err as { code?: string }).code;
+        return errResult(
+          "write_failed",
+          (err as Error).message ?? "rename failed",
+          undefined,
+          "rename failed",
+          code === "EBUSY" || code === "EAGAIN",
+        );
+      }
+
+      const newBuf = await readFile(safe.resolved);
+      const newSha256 = createHash("sha256").update(newBuf).digest("hex");
+      ctx.reads.record(safe.resolved, newSha256);
+
+      const data: EditFileData = {
+        relPath: safe.relative,
+        hunkCount: parsedHunks.hunks.length,
+        bytesWritten: afterBuf.byteLength,
+        oldSha256,
+        newSha256,
+        diff,
+      };
+      const addCount = countLines(diff, "+");
+      const delCount = countLines(diff, "-");
+      return {
+        ok: true,
+        data,
+        summary: `patched ${safe.relative} (${data.hunkCount} hunks, +${addCount}/-${delCount} lines)`,
+      };
+    },
+  };
+}
+
+function errResult(
+  code: string,
+  message: string,
+  suggestion: string | undefined,
+  summary: string,
+  retryable = false,
+): ToolResult<EditFileData> {
+  return {
+    ok: false,
+    error: { code, message, retryable },
+    suggestion,
+    summary,
+  };
+}
+
+function basenameOf(p: string): string {
+  const i = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
+  return i < 0 ? p : p.slice(i + 1);
+}
+
+function suggestionFor(code: string): string {
+  if (code === "hunk_not_found")
+    return "the search text isn't in the current file — re-read and adjust";
+  if (code === "hunk_ambiguous")
+    return "include more surrounding context to make the match unique";
+  if (code === "hunk_overlap")
+    return "split into separate calls or revise hunks";
+  return "fix tool input";
+}
+
+function countLines(diff: string, prefix: "+" | "-"): number {
+  let count = 0;
+  for (const line of diff.split("\n")) {
+    if (
+      line.startsWith(prefix) &&
+      !line.startsWith(`${prefix}${prefix}${prefix}`)
+    ) {
+      count += 1;
+    }
+  }
+  return count;
+}

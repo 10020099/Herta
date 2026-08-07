@@ -1,0 +1,198 @@
+appId: com.personacli.herta
+productName: Herta
+# Windows VERSIONINFO's LegalCopyright, shown in the installer and in the
+# executable's Details tab (audit S12). Absent, electron-builder defaults it to
+# a bare "Copyright © 2026 PersonaCLI" over a payload that is substantially
+# third-party — the one string a user inspecting the binary sees, asserting
+# ownership we do not have.
+copyright: >-
+  Copyright © 2026 PersonaCLI. Herta is a character from Honkai: Star Rail,
+  © HoYoverse. Unofficial fan project, not endorsed by HoYoverse.
+
+directories:
+  buildResources: build
+  output: release
+
+# The app payload is just the compiled output plus runtime resources: main and
+# preload bundle their entire dependency graph (see electron.vite.config.ts),
+# and every package.json dep is a devDependency, so electron-builder collects
+# zero node_modules into the archive.
+files:
+  - out/**
+  - resources/**
+# The window icon is read from disk at runtime via the `?asset` import
+# (out/main resolves ../../resources/herta-icon.png); keep it as a real file
+# rather than an asar entry, per the electron-vite packaging convention.
+asarUnpack:
+  - resources/**
+
+# Nothing native ships (better-sqlite3 is tree-shaken out of the bundle), so
+# there is nothing to rebuild against Electron's ABI.
+npmRebuild: false
+
+# Ship only the Chromium UI locales the app can actually speak (size audit
+# 2026-07-16: locales/ was 46.6 MB unpacked — every Chromium language — for
+# an app whose own locale system is zh/en). These are Chromium-internal
+# strings (native context menus, a11y); an OS locale outside this list falls
+# back to en-US. zh-TW kept so traditional-Chinese Windows gets Chinese
+# Chromium chrome. The app's OWN i18n (LocaleProvider catalogs) is unaffected.
+electronLanguages:
+  - en-US
+  - zh-CN
+  - zh-TW
+
+# Voice clips live at the repo root (data/voice — gitignored local assets,
+# copied at package time, NOT downloaded by users) and land in
+# <install>/resources/voice; the main process finds them via resolveVoiceRoot
+# (src/main/voice-path.ts). Only the Opus transcodes ship (2026-07-16 cutover,
+# scripts/transcode-voice.mjs): the .wav source masters sit in the same tree
+# and would add ~17 MB of PCM the app no longer reads.
+extraResources:
+  - from: ../../data/voice
+    to: voice
+    filter:
+      - "**/*.opus"
+  # The licence text ships with the binary (audit BL26). `files:` above is
+  # app-dir relative, so the root LICENSE can never be picked up there — and
+  # it is the file that carries both the MIT grant AND the scope note saying
+  # which parts of the payload are NOT ours to license.
+  - from: ../../LICENSE
+    to: LICENSE
+
+# Auto-update feed (2026-07-10): the PUBLIC Herta repo's GitHub Releases.
+# electron-builder embeds this as app-update.yml in the packaged app (what
+# electron-updater reads at runtime) and emits release/latest.yml at build
+# time — latest.yml MUST be uploaded to each release alongside the .exe and
+# .blockmap, and the package.json version MUST be bumped per release, or no
+# client ever updates (electron-updater keys on semver). Against the still-
+# private repo the update check 404s and stays silent by design; it goes
+# live the day the repo flips public. `--publish never` stays the local
+# build behavior (we upload assets manually).
+publish:
+  provider: github
+  owner: PersonaCLI
+  repo: Herta
+
+win:
+  target:
+    - nsis
+  # A real multi-resolution .ico (16–256px), committed alongside the .png
+  # source. electron-builder uses it directly and SKIPS the WASM png→ico
+  # converter, which OOM'd (`WebAssembly.Memory(): could not allocate memory`)
+  # during the Electron-43 packaging verification (audit 2026-07-13 T3.2).
+  # Regenerate from build/icon.png with scripts/make-icon-ico.ps1 if the
+  # source art changes.
+  icon: build/icon.ico
+  # ── Code signing (audit 2026-07-13 T3.2 — see docs/adr/0012) ──────────────
+  # OWNER DECISION 2026-08-06: Windows ships UNSIGNED. Not an oversight, not a
+  # "before release" item any more — do not re-open it without asking. macOS
+  # IS signed and notarized (see `mac:` above); the platforms diverge on
+  # purpose, because the Apple membership was bought and a Windows OV/EV
+  # certificate was judged not worth its price.
+  #
+  # What that costs, stated plainly so nobody rediscovers it as a bug:
+  #   - SmartScreen warns on every fresh download until the installer builds
+  #     its own reputation, which is slow and resets on each new signing
+  #     identity. This is the visible cost, and it lands on the PRIMARY
+  #     platform — the site's main CTA is "Download for Windows".
+  #   - electron-updater performs NO signature verification. The update
+  #     channel's only integrity is the release sha512 over HTTPS, so a
+  #     GitHub account compromise ships silently.
+  # Auto-update itself still WORKS unsigned — but only while `publisherName`
+  # below stays unset. Setting it without a matching certificate is the one
+  # change that would break updates for every existing install.
+  #
+  # If a certificate is ever bought, the build is already wired so signing
+  # activates from credentials alone — no yml surgery on release day:
+  #
+  #   Path A — PFX/OV certificate: set CSC_LINK (base64 or file path) +
+  #     CSC_KEY_PASSWORD in the release environment. electron-builder signs
+  #     automatically when they are present; nothing to change here.
+  #   Path B — Azure Trusted Signing (~$10/mo, Microsoft-managed certs):
+  #     uncomment and fill azureSignOptions, and provide AZURE_TENANT_ID /
+  #     AZURE_CLIENT_ID / AZURE_CLIENT_SECRET in the release environment.
+  #   azureSignOptions:
+  #     endpoint: https://eus.codesigning.azure.net
+  #     codeSigningAccountName: <account>
+  #     certificateProfileName: <profile>
+  #
+  # WHEN SIGNING LANDS, also set `publisherName` below to the certificate's
+  # EXACT subject CN — electron-updater verifies each downloaded installer's
+  # Authenticode subject against it at runtime (this is what closes the
+  # account-compromise hole). Wrong or missing CN = updates rejected or
+  # unverified. Do not guess it now; it comes from the cert.
+  # publisherName: <certificate subject CN>
+  #
+  # Explicit today's-posture marker: local/dev builds (`pnpm dist`) may be
+  # unsigned. `pnpm dist:release` passes -c.win.forceCodeSigning=true AND
+  # gates on the credentials first (scripts/check-signing-env.mjs).
+  #
+  # That gate is the load-bearing part (audit 2026-08-05, S6): this comment
+  # used to say "the RELEASE pipeline must flip this to true" while no such
+  # pipeline existed — the only packaging path was `pnpm dist`, with no
+  # assertion anywhere. electron-builder does not fail on missing or
+  # malformed credentials; it logs a line, exits 0, and hands back an
+  # unsigned installer that looks exactly like a signed one. Shipping that
+  # while `publisherName` below is set is the worst case: electron-updater
+  # verifies each download's Authenticode subject against it and rejects the
+  # mismatch, so every existing install stops updating and the fix cannot be
+  # delivered by the updater.
+  forceCodeSigning: false
+
+mac:
+  # Added 2026-08-04 (owner asked for a macOS build; no Mac hardware here, so
+  # this is built and screenshotted on a macos-latest runner — see
+  # .github/workflows/mac-build.yml).
+  #
+  # Nothing native ships (see npmRebuild above), so both architectures come
+  # from the same JS bundle — no per-arch rebuild, no ABI concerns.
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+    - target: zip # electron-updater's mac feed reads zip, not dmg
+      arch: [arm64, x64]
+  # electron-builder generates the .icns from build/icon.png (1024x1024).
+  icon: build/icon.png
+  category: public.app-category.developer-tools
+  # ── Signing (audit 2026-08-05, S6) ───────────────────────────────────────
+  # `identity: null` WAS set here while there was no Apple membership. It is
+  # removed, and must not come back: electron-builder short-circuits on it
+  # BEFORE reading the credentials (macPackager.js:296 returns at
+  # `qualifier === null`, while CSC_LINK is only consulted on the next line),
+  # so with it present a correctly-configured certificate is silently ignored
+  # and the build comes out unsigned having exited 0.
+  #
+  # With it gone the behaviour is credential-driven, which is what we want:
+  #   - no credentials (dev machine, CI without secrets) → electron-builder
+  #     skips signing and ad-hoc signs arm64, which macOS requires to run at
+  #     all on Apple Silicon. Same output as before.
+  #   - CSC_LINK + CSC_KEY_PASSWORD present → signed, no yml change needed.
+  #
+  # hardenedRuntime and notarize stay OFF here on purpose: both are only
+  # meaningful once signing is real, and hardened runtime on an unsigned build
+  # buys nothing. `pnpm dist:release:mac` turns both on via -c overrides, and
+  # gates on the credentials first (scripts/check-signing-env.mjs) — because
+  # electron-builder does NOT fail when they are missing.
+  #
+  # Unsigned consequences a release note MUST carry, until a signed build
+  # ships: Gatekeeper blocks first launch (System Settings → Privacy &
+  # Security → "Open Anyway"), and macOS AUTO-UPDATE DOES NOT WORK, because
+  # Squirrel.Mac verifies the signature of the downloaded app.
+  hardenedRuntime: false
+  # Same dash convention as the Windows artifact — electron-updater's
+  # latest-mac.yml references these names literally.
+  artifactName: Herta-${version}-${arch}.${ext}
+
+dmg:
+  artifactName: Herta-${version}-${arch}.${ext}
+
+nsis:
+  # Pinned to the dash form electron-updater's latest.yml references. The
+  # default (`Herta Setup <ver>.exe`, spaces) forces a manual rename at upload
+  # time; forget it once and GitHub serves `Herta.Setup...exe` while the feed
+  # asks for `Herta-Setup-...exe` — the updater 404s silently.
+  artifactName: Herta-Setup-${version}.${ext}
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  shortcutName: Herta

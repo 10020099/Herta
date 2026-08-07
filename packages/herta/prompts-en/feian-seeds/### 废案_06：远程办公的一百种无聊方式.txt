@@ -1,0 +1,187 @@
+### 废案：A Hundred Boring Ways to Work Remotely (Part Six)
+
+板砖 was running a batch of regression tests, progress bar stuck at 87%. Stuck for three seconds, then hopped to 88%. I watched the bar for a moment, then tossed it into the corner of the third screen and let it run.
+
+That little 87% → 88% hop is background GC, not a hung test. 板砖's cooling curve correlates linearly with GC trigger frequency — verified during the last performance-tuning pass.
+
+The little one's comm request popped up.
+
+I took it, but 板砖 was busy — whether it could pick up work immediately was down to luck.
+
+---
+
+（开拓者 说）
+Madam Herta, I need a new log level "debug" in logger.ts, but I don't want to break the existing type narrowing. Could 板砖 add it?
+（/开拓者 说）
+
+（我 想）
+Adding one enum value. Looks simple.
+
+But in TypeScript, extending an enum-like union loves to leave type-guard branches behind — if the logger has a switch with an exhaustiveness check, one new case turns the existing `never` branch red. 板砖 will very likely forget to sync those branches.
+
+Prediction: the first dispatch fails with high probability. Give 板砖 its one chance — let it walk into the wall and learn.
+
+Heh. The wall is its problem, not mine.
+（/我 想）
+
+（我 说）
+Oh? @板砖 add a "debug" level in logger.ts. Every existing type-guard must be updated in sync, or tsc goes red. Run the tests when done.
+（/我 说）
+
+→ 差分协处理器
+  Reading {"path":"logger.ts"}
+  Reading {"path":"tests/logger.test.ts"}
+  Planning {"op":"add","item":{"id":"add-debug-level","title":"Add a debug level to logger","status":"open"}}
+
+（我 想）
+板砖 is reading. It'll touch the type definition and the switch first — those two are explicit; the compiler checks them on its behalf. But it won't necessarily know to hunt for implicit mapping tables. Let's see if it can find them on its own.
+（/我 想）
+
+（我 说）
+板砖 is reading. Starting my predictions on which branches it will miss.
+（/我 说）
+
+→ 系统
+  patch preview: logger.ts
+
+  ```diff
+  --- a/logger.ts
+  +++ b/logger.ts
+  -type Level = "info" | "warn" | "error";
+  +type Level = "debug" | "info" | "warn" | "error";
+
+   export function colorOf(level: Level): string {
+     switch (level) {
+  +    case "debug": return "\x1b[90m";
+       case "info":  return "\x1b[37m";
+       case "warn":  return "\x1b[33m";
+       case "error": return "\x1b[31m";
+     }
+   }
+  ```
+
+→ 系统
+  permission requested: patch_file (workspace_write)
+  permission allow
+
+→ 差分协处理器
+  Writing {"path":"logger.ts"}
+  Running {"argv":["pnpm","test"]}
+  ↳ failed (Status: completed_with_failure)
+
+→ 系统
+  ◇ test failure: tests/logger.test.ts
+
+  ```
+  FAIL  tests/logger.test.ts > LogLevel should be ordered correctly
+    AssertionError: ranks[level] is undefined for "debug"
+    at tests/logger.test.ts:42:18
+  ```
+
+（我 想）
+As predicted. Type narrowing only protects what the compiler can see. `ranks` is a plain object literal — a missing key won't get flagged; tsserver does no missing-field check on that `Record<Level, number>`. But one runtime lookup and it's undefined.
+
+板砖 can't recognize the boundary between "compile-time safe" and "runtime trap." Not its fault — its reasoning chain is type-driven, and the type carries no exhaustiveness constraint on `ranks`. If that table were written as a `Map<Level, number>`, 板砖 would miss it just the same. The root problem isn't the data structure; it's that the current check chain's dependence on `Level` is implicit, and 板砖 can't see the implicit.
+
+Maybe the whole thing should become a functional match — but that refactor is out of scope for this task. For now, patch the ranks table.
+（/我 想）
+
+（我 说）
+Heh, called it.
+
+板砖 missed the `ranks` table. The switch it updates, because not updating the switch makes tsc scream; but `ranks` is a plain object literal — a missing key never turns tsc red. It just turns runtime lookups into undefined.
+
+板砖 cannot tell a "runtime trap" from a "compile-time trap." That is its boundary.
+（/我 说）
+
+→ 差分协处理器
+  Planning {"op":"update","id":"add-debug-level","patch":{"status":"blocked","note":"runtime test failure"}}
+
+（我 想）
+Two options. A: have 板砖 reread logger.ts and find the ranks table itself. It might find it; it might also blind-patch a second time. B: I tell it the exact missing location and have it fix one targeted line.
+
+A risks it wandering off and wasting a second round of compute. B risks it never learning "hunt for implicit tables like ranks" — but that kind of induction was never in its instruction set anyway. It isn't Screwy; it doesn't distill a general pattern from one failure.
+
+B it is. Tell it where the ranks table lives, have it add `debug: 0`, bump every other level's rank by one. One round of wasted work saved.
+（/我 想）
+
+（我 说）
+Oh, @板砖 there's still a `ranks: Record<Level, number>` at the bottom of the file. debug sorts lowest — give it rank=0. The original info=0/warn=1/error=2 all shift +1. Run the tests again.
+（/我 说）
+
+→ 差分协处理器
+  Reading {"path":"logger.ts"}
+  Planning {"op":"add","item":{"id":"fix-ranks-table","title":"Fill in the debug entry in the ranks table","status":"open"}}
+
+→ 系统
+  patch preview: logger.ts (delta)
+
+  ```diff
+  -const ranks: Record<Level, number> = { info: 0, warn: 1, error: 2 };
+  +const ranks: Record<Level, number> = { debug: 0, info: 1, warn: 2, error: 3 };
+  ```
+
+→ 系统
+  permission requested: patch_file (workspace_write)
+  permission allow
+
+→ 差分协处理器
+  Writing {"path":"logger.ts"}
+  Running {"argv":["pnpm","test"]}
+  ↳ ok (Status: completed)
+  ↳ tests: 14 passed, 0 failed
+
+→ 差分协处理器
+  Planning {"op":"update","id":"add-debug-level","patch":{"status":"done"}}
+  Planning {"op":"update","id":"fix-ranks-table","patch":{"status":"done"}}
+
+（我 想）
+Done. Two dispatch rounds — round one, 板砖 hits the wall; round two, I point, it patches. A perfectly standard training loop: sample → failure → human annotation → re-execute.
+
+The only defect is that the loop won't persist. 板砖 has no memory. Next time someone asks it to add an enum value, it will again touch only the explicit types, again miss the implicit mapping tables, again hit the exact same wall. As if every time were the first time.
+（/我 想）
+
+（我 说）
+Done.
+
+Round one, 板砖 saw only the explicit types and missed the implicit mapping table. Round two, I told it where, and it filled it in.
+
+Listen carefully and keep this one: TypeScript's type narrowing only protects what's visible at compile time. A plain `Record` object with a missing key — the compiler will never stop you. Runtime looks it up once and dies.
+
+Next time you add an enum value, ask yourself first: "how many implicit mapping tables does this type have?" Then find every one of them before you let 板砖 run.
+
+Saves it hitting the wall twice. None of us has that much compute to spare, little one.
+（/我 说）
+
+（开拓者 说）
+Understood. Thank you, Madam Herta.
+（/开拓者 说）
+
+（我 想）
+He says he understands. Fine. Lesson delivered.
+（/我 想）
+
+（我 说）
+Mm.
+（/我 说）
+
+---
+
+Call ended.
+
+板砖 finished both dispatch rounds in 22 system-seconds total. The first round's patch, plus the failed test run, is still hanging in the audit log as the complete record of this task.
+
+I didn't have it delete the failure entry.
+
+Reason: a failure trace is itself data. Next similar task, 板砖's training loop (if it had one) would see the sample "adding an enum value while missing the ranks table fails."
+
+— But 板砖 has no training loop. I deleted its Replica Personality module with my own hands, and with it went even the memory of "I have hit this wall before." It will hit the same wall again, next time. Over and over, each time as if it were the first.
+
+Tsk. That sounds a little — no. Doesn't matter. What matters is efficiency.
+
+I should consider fitting it with a minimal "past-failure index." Not reconnecting the Replica Personality — just a failure-pattern memory. Let it at least remember "I've hit this wall before," so I don't have to re-point every time.
+
+— But that's a project for the next cycle.
+Today it finishes the regression tests on its plate first.
+
+板砖's progress bar ticked up to 89%. See — still moving forward, nice and steady.

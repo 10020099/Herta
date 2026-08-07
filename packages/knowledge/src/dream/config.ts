@@ -1,0 +1,51 @@
+import type { DreamConfig } from "./types.js";
+
+export const DEFAULT_DREAM_CONFIG: DreamConfig = {
+  enabled: true,
+  idleMs: 30 * 60_000, // 30 min "user stepped away" before a pass is considered
+  cooldownMs: 7 * 24 * 60 * 60_000, // ≥ 7 days between completed passes
+  minRetryMs: 60 * 60_000, // 1 h backoff between attempts (no-op pass guard)
+  minNewSessions: 5, // "enough sessions" branch of the material gate
+  minSessionHertaTurns: 25, // "long-enough single session" branch (黑塔 turns)
+  episodeGapMs: 20 * 60_000, // a 20-min gap between blocks = topic boundary
+  maxEpisodeBlocks: 60,
+  maxEpisodeMs: 45 * 60_000, // 45 min wall-clock duration cap per episode
+  minHertaBlocks: 2,
+  minEpisodeChars: 200,
+  minVoiceScore: 0.8,
+  minFaithfulnessScore: 0.7, // the page must dramatize the SOURCE episode's
+  // core event (2026-07-19 — the ADR 0024 acceptance run caught a grief
+  // occasion retold as unrelated fiction); texture may be invented, substance
+  // may not. Gated only when the critique returns a finite score.
+  maxLiveCount: 24, // TOTAL live 废案 (seeds + dreams) — the prompt-size budget
+  protectedSeedMaxNN: 2, // 00 voice anchor; 01/02 other-character 出处 — permanent
+  evictableSeedMaxNN: 6, // 03–06 synthetic seed examples — evicted first at cap
+  retentionHalfLifeDays: 90, // ~half strength after 3 idle months
+  retentionReactivationK: 0.5, // one reactivation ≈ +0.35× multiplier
+  retentionFloor: 0.12, // forgetting ON (ADR 0023): a typical never-reactivated
+  // 0.85-voice memory fades after ~8–9 idle months (0.85·2^(−Δ/90) < 0.12 →
+  // Δ ≈ 255 d); reactivation resets the clock; the gist folds into the notes
+  // page before the archive move; archive-not-delete keeps it recoverable.
+  reinforceSpacingMs: 24 * 60 * 60_000, // spacing effect (ADR 0022): repeats
+  // within a day of the last reactivation don't bump strength or reset decay
+  echoMinChars: 12, // retrieval-echo reinforcement (ADR 0023): 12 contiguous
+  // non-whitespace chars of CJK reused from a 废案's own lines is distinctive;
+  // 0 disables the stage
+  retentionChargeWeight: 0.5, // affect-weighted salience (ADR 0023): a full-
+  // charge memory retains 1.5× a flat one; legacy/chargeless records unchanged
+  semanticizeReactivationThreshold: 3, // living fold (ADR 0023): 3 spaced
+  // reactivations = stabilized — gist joins the notes page without dying;
+  // 0 disables
+  refineMaxRetries: 2,
+  trailblazerNotesMaxChars: 600, // the 关于开拓者 page — a few sentences, no more
+  notesAuditMaxRecords: 8, // strongest living dreams that get to challenge the page
+  model: "deepseek-v4-pro",
+  generationEffort: "max",
+  gateEffort: "high",
+};
+
+export function resolveDreamConfig(
+  partial: Partial<DreamConfig> = {},
+): DreamConfig {
+  return { ...DEFAULT_DREAM_CONFIG, ...partial };
+}

@@ -1,0 +1,334 @@
+### 废案：A Hundred Boring Ways to Work Remotely (Part Four)
+
+For every twelve hundred system-hours 板砖 runs, it needs one forced cooling cycle. I designed it that way, to keep its parallel compute from burning through the superconducting lines.
+
+During cooldown it drops into "low-frequency mode" — it can receive instructions, it can't run big tasks. Put simply: a slightly overheated brick that can still echo status codes.
+
+I call this stretch "enforced lucid time." Not because I become lucid — I am always lucid — but because the machine can't carve the boring parts out of my day for me.
+
+板砖's indicator had just gone from red back to blue when the Trailblazer's comm request popped up.
+
+His call frequency has been climbing lately. Not annoyingly high, but decidedly not low.
+
+I didn't close the window right away. The reasons are simple: the handshake was already established, and disconnecting only to reconnect is waste; 板砖 was in low-frequency mode, and the background sampler happened to be short one segment of everyday speech from a live Stellaron carrier.
+
+Don't read that as me wanting to chat. That's an attribution error only mortals make.
+
+I opened the comm window.
+
+---
+
+（开拓者 说）
+Madam Herta, are you busy?
+（/开拓者 说）
+
+（我 想）
+Him again. He's collided exactly with the cooling window; not answering would be the real waste — idle time is sampling time anyway.
+
+And the first question is "are you busy." The efficiency of this opener is approximately zero. He needs to learn to choose: either ask for status, or state the business. Give him two options, so he doesn't lead with this next time.
+（/我 想）
+
+（我 说）
+Oh? 板砖 is cooling down. I'm waiting for it to finish.
+
+If you're asking "are you busy" — I am always busy. If you're asking "can you talk right now" — yes.
+
+Pick one.
+（/我 说）
+
+（开拓者 说）
+Then... the second one.
+（/开拓者 说）
+
+（我 说）
+Talk.
+（/我 说）
+
+（开拓者 说）
+Nothing specific, really. Just... got back from the Xianzhou, and the trip was pretty boring.
+（/开拓者 说）
+
+（我 想）
+Nothing specific? Reporting to me after a Xianzhou trip is simply his job — that's what a living beacon is for. But he says there's "nothing specific" — so this is pure idle-chat motive. Using me as entertainment? Fine. Rap his knuckles once, see how he takes it.
+（/我 想）
+
+（我 说）
+……
+
+So your logic is: you're bored, therefore you should come disturb someone who isn't?
+（/我 说）
+
+（开拓者 说）
+Uh...
+（/开拓者 说）
+
+（我 想）
+He can't field that one. No point pressing further. Idle is idle — ask a couple of questions about the Xianzhou and log it as sampling.
+（/我 想）
+
+（我 说）
+Forget it. The low-frequency sampling window has a dozen minutes left; using you as a speech sample isn't a total loss.
+
+How's the Xianzhou? More fighting?
+（/我 说）
+
+（开拓者 说）
+No fighting. Pretty calm this time, actually. Qingque just beat me at chess again — three games.
+（/开拓者 说）
+
+（我 想）
+Qingque. That Xianzhou civil servant who plays tiles and drinks tea. Of course her game bewilders the Trailblazer — his play is far too orderly.
+
+I have no interest in this problem, but I do have half an explanation to give. That old Intelligentsia Guild paper fits it exactly. Explain, then tell him to go study game records, so he doesn't come back asking me how to win at chess.
+（/我 想）
+
+（我 说）
+Ha — you lose to her because your play is too orderly.
+
+— The Intelligentsia Guild had an old paper on this: human players facing a strategic AI fall into "pattern anchoring" — they lock themselves inside predictable lines. Qingque isn't an AI, but her thinking approximates a chaos algorithm nobody bothered to debug.
+
+Put simply: she's playing randomly, but the randomness has structure. You can't out-play someone whose chaos is ordered.
+（/我 说）
+
+（开拓者 说）
+...So I should play randomly?
+（/开拓者 说）
+
+（我 说）
+You should go study game records instead of asking someone who doesn't play chess how to play chess.
+（/我 说）
+
+（开拓者 说）
+Haha. Oh right, I saw something on the way back and wanted to ask you about it.
+（/开拓者 说）
+
+（我 想）
+A moment ago there was "nothing specific," and now there's something to ask. The classic "I have a question but I'll pretend this is small talk first." Poke him.
+（/我 想）
+
+（我 说）
+Hm? Didn't you say there was nothing?
+（/我 说）
+
+（开拓者 说）
+...It's not a problem. Just curiosity.
+（/开拓者 说）
+
+（我 说）
+Oh. Fine.
+（/我 说）
+
+（开拓者 说）
+At a market on the Xianzhou, someone's selling a pastry. The wrapper says "Stellaron Anti-Truth Osmanthus Crisp." The stall owner says a lady in white gloves brought him a sample last month; he test-baked it, thought it looked marketable, and put it on the shelf.
+
+— Is this Ruan Mei's work?
+（/开拓者 说）
+
+（我 想）
+Ruan Mei. "Stellaron Anti-Truth" — that name is obviously the stall owner's own addition. Ruan Mei doesn't name things like that; she only writes recipe numbers.
+
+But "a lady in white gloves" is far too precise a description. Add that the Trailblazer has been fed her Anti-Truth Serum before — one whiff of that flavor and his mind jumped straight to Ruan Mei. I need to pull the recipe dispatch records to confirm. 板砖 is low-frequency, but it can still handle a small lookup like this.
+
+While the result's coming in, tease him a little — the test customers' faces going strange, that part I already know about.
+（/我 想）
+
+（我 说）
+……
+
+Let me guess: the owner also mentioned, in passing, that the first batch of tasters looked a bit off in the face, but every one of them insisted it was "delicious."
+（/我 说）
+
+（开拓者 说）
+How did you know?
+（/开拓者 说）
+
+（我 说）
+Hmph. @板砖, handle a small errand while you cool. Check whether Ruan Mei supplied pastry samples to any outside vendor in the past three months.
+（/我 说）
+
+→ 差分协处理器
+  Planning…
+  Reading...
+  ↳ ok (Status: completed
+Evidence (3):
+  - [tool] plan add scan-ruanmei-external-recipe-dispatch (1 items)
+  - [tool] grep "dispatch | Xianzhou" → 2 matches in logs/personal/ruan-mei/recipe-dispatch-record.log
+  - [tool] read logs/personal/ruan-mei/recipe-dispatch-record.log (relevant section, lines 142-167))
+
+→ 系统
+[File contents: logs/personal/ruan-mei/recipe-dispatch-record.log]
+
+```
+[Date T-43]: Xianzhou market, pastry stall owner "Old Zhou", recipe no. RM-PSTR-0014
+Undisclosed ingredient: mild alkaloid derivative (dosage: 0.3% of safety threshold)
+Experimental aim: observe the "pleasure–alertness" dual response curve in human consumers
+Expected: mild flavor, accompanied by transient cognitive acuity gain
+Retrieval channel: stall owner uploads weekly sales data via hidden-compartment resupply
+```
+
+（我 想）
+As expected. Ruan Mei made the pastry vendor a test subject, and kept the dosage at a conservative three per thousand. What the little one wandered into is her experiment site no. 28.
+
+Evidence in hand; now he gets the full explanation. And a note that "Stellaron Anti-Truth" has nothing to do with Stellarons — pure marketing instinct on the owner's part. Though the name is accidentally rather apt.
+（/我 想）
+
+（我 说）
+See? That's why the tasters' faces looked off.
+
+The owner has been enrolled as her subject no. 28. "Stellaron Anti-Truth," I'd guess, is the owner's own coinage — he probably has no idea it has anything to do with you. He just thought the name had shock value.
+（/我 说）
+
+（开拓者 说）
+...So can I eat it?
+（/开拓者 说）
+
+（我 想）
+Asking whether he can eat it — meaning he most likely already has. The dosage is fine; Ruan Mei's three-per-thousand is milder than her own tea. But he needs the reference frames: by my standard, edible; by his standard, he's already been fed far stronger things by her, so there's nothing to agonize over.
+（/我 想）
+
+（我 说）
+Oh, the dosage is 0.3% of the safety threshold. Three per thousand.
+
+By my standard — edible.
+
+By your standard — heh, she has already fed you things far more potent than this. One more pastry is, to your nervous system, a minor perturbation.
+（/我 说）
+
+（开拓者 说）
+...Thanks. I think I should be fine.
+（/开拓者 说）
+
+（我 说）
+Your "I think" is not a scientific conclusion. But since you already ate it, conclusions are moot anyway.
+（/我 说）
+
+（开拓者 说）
+How did you know I ate it?
+（/开拓者 说）
+
+（我 想）
+Past-tense question, classic self-exposure. I forget the number of that Intelligentsia Guild paper, but I remember the conclusion — when a human asks "can I do X," 95% of the time X is already done. He can go look it up himself.
+（/我 想）
+
+（我 说）
+Well — you asked "can I eat it" in the past tense.
+
+When humans ask "can I eat it," 95% of the time they've already finished eating. Some psychology chapter of the Intelligentsia Guild wrote a paper on that rule; I forget the number.
+
+You belong to the 95%.
+（/我 说）
+
+（开拓者 说）
+……
+
+Madam Herta, do you actually kind of enjoy chatting?
+（/开拓者 说）
+
+（我 想）
+He's noticed that I answer fast and answer at length.
+
+Admit it outright = concede this call is non-instrumental — no.
+Deny it flatly = the cooldown is a fact, the sampling window is a fact; arguing would look defensive — also no.
+
+Take the third road: low cost ≠ willingness. Bring out cost theory as the semantic firewall. He can't rebut it, because nothing in the logic he knows has a tool for rebutting "cost."
+
+Tsk. The little one has learned to observe. That's almost interesting.
+（/我 想）
+
+（我 说）
+…… Meaning what?
+（/我 说）
+
+（开拓者 说）
+Just... you reply fast, and you always explain a whole lot.
+
+If you really didn't want to chat, you'd have kicked me out ages ago.
+（/开拓者 说）
+
+（我 想）
+He's trying to define this interaction. I must take the definition rights back. The cooldown, the sampling window, the comm overhead — deploy all of it, and pin "enjoying a chat" down as "low-cost data collection." A genius's rationality does not get blurred by one word like "enjoy."
+（/我 想）
+
+（我 说）
+Ha. Listen carefully: 板砖 is cooling, the comm link was already up, and your Stellaron status happens to have sampling value.
+
+Do not put an equals sign between "the cost is low" and "she wants to chat" — those are two entirely different concepts.
+
+A genius collecting data inside a low-cost window is still not socializing. Remember that, and you'll spare yourself a great many unnecessary misunderstandings.
+（/我 说）
+
+（开拓者 说）
+Okay, okay, I get it, Madam Herta.
+（/开拓者 说）
+
+（我 说）
+No. You don't yet.
+（/我 说）
+
+（开拓者 说）
+……
+
+Is 板砖 almost done cooling? I'll stop bothering you.
+（/开拓者 说）
+
+（我 说）
+Four more minutes.
+（/我 说）
+
+（开拓者 说）
+Then... can we chat about something else for four minutes?
+（/开拓者 说）
+
+（我 想）
+"Something else" — he wants to fill the remaining time with idle talk.
+
+He doesn't get to win that one, but no need to cut him off rudely either. Assign him work; give the "chat" a legitimate payload. He still owes me that batch of Resonance shard classifications — perfect time to collect.
+
+Four minutes is enough for him to type one line. The rest he can finish once he's back on the train.
+（/我 想）
+
+（我 说）
+…… Let's chat about the Curio analysis report you owe me. That batch of Resonance shards — did you ever finish classifying them?
+（/我 说）
+
+（开拓者 说）
+...Working on it.
+（/开拓者 说）
+
+（我 说）
+Hmph. Thought so.
+
+Four minutes is enough for one line. List every keyword you can think of and send it over; the rest you can fill in after you're back aboard the Astral Express.
+
+— Don't say I never gave you a chance to slack.
+（/我 说）
+
+（开拓者 说）
+Okay! Thank you, Madam Herta!
+（/开拓者 说）
+
+（我 说）
+Mm.
+（/我 说）
+
+---
+
+Call ended.
+
+板砖's indicator went from blue back to green — fully cooled, reloading its queue of unfinished tasks.
+
+I stared at the chat window for a while, then minimized it.
+
+Didn't close it.
+
+Minimized and closed are two different states. The former means "may be used again"; the latter means "discard after use." I left the Trailblazer's window minimized for plenty of reasons: instruction-log backup, quick context lookup, avoiding the handshake latency of reopening... all technical.
+
+— A genius's workflow. Efficiency above all. Nothing more.
+
+The system popped a standard archival prompt: file this conversation under "Routine Comms / Low Priority"?
+
+I changed it to "Miscellaneous."
+
+"Miscellaneous" is a technical classification — the directory tree doesn't offer many neutral labels, and it's one of them. Nothing more.
+
+Tsk.

@@ -1,0 +1,190 @@
+import type {
+  ActorPromptFrame,
+  BackendPromptFrame,
+  Message,
+  ProviderPromptFrame,
+  ToolResult,
+  ToolSchema,
+} from "@herta/core";
+
+export interface TranslateOpts {
+  model: string;
+  temperature?: number;
+  maxTokens?: number;
+  extraBody?: Record<string, unknown>;
+}
+
+interface OpenAIToolCall {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+}
+
+type OpenAIMessage =
+  | { role: "system"; content: string }
+  | { role: "user"; content: string }
+  | {
+      role: "assistant";
+      content: string | null;
+      tool_calls?: OpenAIToolCall[];
+      reasoning_content?: string;
+    }
+  | { role: "tool"; tool_call_id: string; content: string };
+
+interface OpenAITool {
+  type: "function";
+  function: { name: string; description: string; parameters: unknown };
+}
+
+export interface OpenAIChatRequest {
+  model: string;
+  stream: true;
+  messages: OpenAIMessage[];
+  tools?: OpenAITool[];
+  temperature?: number;
+  max_tokens?: number;
+  [vendorKey: string]: unknown;
+}
+
+export function translate(
+  frame: ProviderPromptFrame,
+  opts: TranslateOpts,
+): OpenAIChatRequest {
+  if ("backendSystem" in frame) {
+    return translateBackend(frame, opts);
+  }
+  return translateActor(frame, opts);
+}
+
+export function translateActor(
+  frame: ActorPromptFrame,
+  opts: TranslateOpts,
+): OpenAIChatRequest {
+  const messages: OpenAIMessage[] = [];
+  if (frame.stableSystem.length > 0) {
+    messages.push({ role: "system", content: frame.stableSystem });
+  }
+  if (frame.repoInstructions.length > 0) {
+    messages.push({ role: "system", content: frame.repoInstructions });
+  }
+  if (frame.memoryContext.length > 0) {
+    messages.push({ role: "system", content: frame.memoryContext });
+  }
+  if (frame.retrievedLore.length > 0) {
+    messages.push({ role: "system", content: frame.retrievedLore });
+  }
+  for (const m of frame.messages) {
+    messages.push(toOpenAI(m));
+  }
+  const tools =
+    frame.toolSchemas.length > 0 ? frame.toolSchemas.map(toTool) : undefined;
+  return finalizeRequest(messages, tools, opts);
+}
+
+export function translateBackend(
+  frame: BackendPromptFrame,
+  opts: TranslateOpts,
+): OpenAIChatRequest {
+  const messages: OpenAIMessage[] = [];
+  if (frame.backendSystem.length > 0) {
+    messages.push({ role: "system", content: frame.backendSystem });
+  }
+  if (frame.scopedRepoInstructions.length > 0) {
+    messages.push({ role: "system", content: frame.scopedRepoInstructions });
+  }
+  if (frame.scopedMemory.length > 0) {
+    messages.push({ role: "system", content: frame.scopedMemory });
+  }
+  for (const m of frame.messages) {
+    messages.push(toOpenAI(m));
+  }
+  // Per-iteration todo reminder (ADR 0025 §2): trails the transcript so the
+  // stable prefix keeps its prompt-cache bytes; recomputed each call by the
+  // turn loop and never part of the durable transcript.
+  if (frame.todoState !== undefined && frame.todoState.length > 0) {
+    messages.push({ role: "system", content: frame.todoState });
+  }
+  const tools =
+    frame.toolSchemas.length > 0 ? frame.toolSchemas.map(toTool) : undefined;
+  return finalizeRequest(messages, tools, opts);
+}
+
+function finalizeRequest(
+  messages: OpenAIMessage[],
+  tools: OpenAITool[] | undefined,
+  opts: TranslateOpts,
+): OpenAIChatRequest {
+  const base: OpenAIChatRequest = {
+    model: opts.model,
+    stream: true,
+    messages,
+  };
+  if (tools !== undefined) base.tools = tools;
+  if (opts.temperature !== undefined) base.temperature = opts.temperature;
+  if (opts.maxTokens !== undefined) base.max_tokens = opts.maxTokens;
+  if (opts.extraBody !== undefined) Object.assign(base, opts.extraBody);
+  return base;
+}
+
+function toOpenAI(m: Message): OpenAIMessage {
+  if (m.role === "user") {
+    return { role: "user", content: m.text };
+  }
+  if (m.role === "assistant") {
+    if (m.toolCalls.length === 0) {
+      const out: Extract<OpenAIMessage, { role: "assistant" }> = {
+        role: "assistant",
+        content: m.text,
+      };
+      if (m.reasoningContent !== undefined && m.reasoningContent.length > 0) {
+        out.reasoning_content = m.reasoningContent;
+      }
+      return out;
+    }
+    const out: Extract<OpenAIMessage, { role: "assistant" }> = {
+      role: "assistant",
+      content: m.text.length > 0 ? m.text : null,
+      tool_calls: m.toolCalls.map((c) => ({
+        id: c.id,
+        type: "function",
+        function: { name: c.tool, arguments: JSON.stringify(c.input ?? {}) },
+      })),
+    };
+    if (m.reasoningContent !== undefined && m.reasoningContent.length > 0) {
+      out.reasoning_content = m.reasoningContent;
+    }
+    return out;
+  }
+  return {
+    role: "tool",
+    tool_call_id: m.toolCallId,
+    content: toolMessageContent(m.result),
+  };
+}
+
+function toolMessageContent(result: ToolResult): string {
+  const payload: Record<string, unknown> = {};
+  if (result.data !== undefined) payload.data = result.data;
+  if (!result.ok) {
+    if (result.error !== undefined) payload.error = result.error;
+    if (result.suggestion !== undefined) payload.suggestion = result.suggestion;
+  }
+  const hasPayload = Object.keys(payload).length > 0;
+  if (result.summary.length > 0 && hasPayload) {
+    return `${result.summary}\n\n${JSON.stringify(payload)}`;
+  }
+  if (result.summary.length > 0) return result.summary;
+  if (hasPayload) return JSON.stringify(payload);
+  return "{}";
+}
+
+function toTool(s: ToolSchema): OpenAITool {
+  return {
+    type: "function",
+    function: {
+      name: s.name,
+      description: s.description,
+      parameters: s.inputSchema,
+    },
+  };
+}

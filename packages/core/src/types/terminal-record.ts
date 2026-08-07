@@ -1,0 +1,365 @@
+import type { ExecutionStatus } from "../bridge/types.js";
+import type { TodoStatus } from "./todo.js";
+
+/**
+ * Canonical system-block labels emitted by the v0.2 harness into
+ * TerminalRecord. These are the ONLY two labels the harness may write.
+ *
+ * - "系统"          — environment, file, and permission facts
+ *                     (read/list results, write summaries, command status,
+ *                      permission outcomes, truncation notices, compaction)
+ * - "差分协处理器"  — coding-backend operational status
+ *                     (accepted / planning / done / failed; workflow-level
+ *                      tool start: reading / writing / running / verifying)
+ *
+ * The casual name "板砖" remains in narrative text only — Herta refers to
+ * 板砖 in her own blocks, and "@板砖" is the delegation trigger token. The
+ * harness must NEVER emit "→ 板砖" as a system label. See SPEC v0.2 §5.3 / D7.
+ */
+export type SystemBlockLabel = "系统" | "差分协处理器";
+
+export const SYSTEM_BLOCK_LABELS: readonly SystemBlockLabel[] = [
+  "系统",
+  "差分协处理器",
+] as const;
+
+export function isSystemBlockLabel(value: string): value is SystemBlockLabel {
+  return (SYSTEM_BLOCK_LABELS as readonly string[]).includes(value);
+}
+
+/**
+ * A user-authored block, fenced as （开拓者 说）...（/开拓者 说） when
+ * rendered into the narrative grammar. User text is data — the serializer
+ * (Slice 3) is responsible for escaping any delimiter-like content so
+ * users cannot forge Herta/system blocks by injection (SPEC §11.1).
+ */
+export interface UserBlock {
+  readonly kind: "user";
+  readonly text: string;
+  /** Wall-clock ISO time the block was emitted/persisted. Optional for
+   *  backward compat (pre-timestamp sessions lack it). Stamped at the output
+   *  boundaries (live sink emit + JSONL persist), never at construction — the
+   *  actor serializer ignores it (D7/D8: it never enters Herta's prompt). */
+  readonly at?: string;
+}
+
+/**
+ * A Herta-authored block, fenced as （我 说）...（/我 说）（speech）
+ * or （我 想）...（/我 想）（thought）. Includes both primary actor blocks
+ * and in-turn narrative beats inserted during @板砖 execution (SPEC §6.4).
+ *
+ * Surface discriminator (Slice 10):
+ *   - "speech":   user-visible, rendered to stdout, may contain @板砖
+ *                 dispatch triggers and inline tool envelopes.
+ *   - "thought":  internal monologue, persisted but NEVER rendered. May
+ *                 contain inline tool envelopes (planning reads). @板砖
+ *                 in a thought is plain text — no dispatch (SPEC §3 F).
+ *
+ * Backward compatibility: pre-Slice-10 JSONL entries lack the field; the
+ * v2-record-reader defaults missing `surface` to "speech" so old sessions
+ * resume cleanly.
+ *
+ * `selfCorrection` (N8/N8b, 2026-05-23): set on a speech block that
+ * was committed via the supervisor-veto retry path. Holds the
+ * supervisor's veto reason verbatim. INVISIBLE to the CLI renderer
+ * (the speech text alone reaches stdout), but the serializer
+ * prepends it as `——<text>\n\n` prose before the speech envelope
+ * so future-turn LLM prompts carry the lesson:
+ *
+ *   ——<correction>
+ *
+ *   （我 说）
+ *   <speech>
+ *   （/我 说）
+ *
+ * Without this anchor the model loses memory of "I was self-
+ * corrected on X" the moment the turn ends, and the same mistake
+ * (e.g. calling 瓦尔特 by 杨叔) repeats on every subsequent turn.
+ * Only valid on `surface: "speech"`.
+ */
+export interface HertaBlock {
+  readonly kind: "herta";
+  readonly surface: "speech" | "thought";
+  readonly text: string;
+  readonly selfCorrection?: string;
+  /** Wall-clock ISO time the block was emitted/persisted. See `UserBlock.at`. */
+  readonly at?: string;
+}
+
+/**
+ * Structured mirror of a done-marker's `body` roll-up, carried ALONGSIDE the
+ * canonical `body` so a localizing renderer (the GUI) can compose a fully
+ * translated summary without parsing the canonical Chinese string. The `body`
+ * remains the single canonical shared-record text (what Herta's prompt and the
+ * CLI renderer read, per D7); this field is display-only data for renderers
+ * that translate. Only the done-marker carries it — the noop-marker needs no
+ * counts, so it is recognised by `role: "noop-marker"` alone. Set ONLY by the
+ * bridge (buildDoneMarker); absent on bus-streamed blocks and on records
+ * persisted before this field existed (renderers fall back to `body`).
+ */
+export interface DoneMarkerSummary {
+  readonly kind: "done";
+  /** completed / blocked / failed / interrupted / partial — maps to
+   *  完成/受阻/失败/中断/部分完成. */
+  readonly state: ExecutionStatus;
+  /** Count of changed files (0 when the run touched none). */
+  readonly fileCount: number;
+  /** Present only when the run executed ≥1 test; mirrors the `tests P/F` roll-up. */
+  readonly tests?: { readonly passed: number; readonly failed: number };
+  /** Count of residual risks flagged by the backend (0 when none). */
+  readonly riskCount: number;
+  /** Set (only ever `true`) when the run TERMINATED ABNORMALLY — runBrief
+   *  itself threw rather than returning a report (the bridge-failure marker,
+   *  canonical body `失败 · 运行异常中止`). Neutral machine field (D2):
+   *  localizing renderers compose "run aborted" / 运行异常中止 from it
+   *  instead of fabricating a synthetic risk count. Absent on ordinary
+   *  completion markers. */
+  readonly aborted?: true;
+}
+
+/**
+ * One row of a todo digest's `items`. The status union is IMPORTED from the
+ * backend's `TodoItem` rather than restated here, so a future backend status
+ * cannot silently become a literal no renderer handles.
+ */
+export interface TodoDigestItem {
+  readonly content: string;
+  readonly status: TodoStatus;
+}
+
+/**
+ * Structured digest data carried alongside a bus-projected system block's
+ * rendered `body` (M-projection-3, 2026-07-04). Compaction
+ * (`digestSystemBlock` in @herta/herta) previously regex-parsed the RENDERED
+ * body strings back apart — a coupling that had already rotted twice
+ * (summarizeInput's human-form args broke the `{"path":…}` patterns, and the
+ * tests line moved label + format) with no error, only silently degraded
+ * summaries. The writer (projectBackendEvent) now records WHAT the block is
+ * as data; compaction renders digest lines from this and falls back to the
+ * legacy regexes only for records persisted before the field existed.
+ *
+ * Same stance as `markerSummary`: the canonical `body` stays the single
+ * shared-record text; this is derived data for downstream projections.
+ */
+export type SystemBlockDigest =
+  | {
+      /** A workflow step ("Reading foo.ts") — verb from workflowLabel,
+       *  arg from summarizeInput's human-facing argument. */
+      readonly kind: "op";
+      readonly verb:
+        | "Reading"
+        | "Writing"
+        | "Running"
+        | "Planning"
+        | "Inspecting"
+        | "Saving memory";
+      readonly arg: string;
+    }
+  | {
+      /** A recognized test run (run_command + detectTestRun). */
+      readonly kind: "tests";
+      readonly status: "passed" | "failed" | "skipped" | "not_run";
+      readonly summary: string;
+    }
+  | {
+      /** A failed tool call. */
+      readonly kind: "tool-fail";
+      readonly tool: string;
+      readonly code: string;
+      /** The failure message (2026-07-10): lets the GUI compose a LOCALIZED
+       *  failure row without dropping the message the canonical body carries.
+       *  Optional — absent on records persisted before it existed (renderers
+       *  fall back to the body verbatim). Same trust class as the body
+       *  (sanitized at projection). */
+      readonly message?: string;
+    }
+  | {
+      /** Contributes no digest line (patch previews — Writing covers them). */
+      readonly kind: "skip";
+    }
+  | {
+      /** A managed background command's lifecycle row (ADR 0025 slice 4;
+       *  structured 2026-07-23 so renderers localize instead of falling back
+       *  to the raw English chrome). */
+      readonly kind: "bg";
+      readonly id: string;
+      readonly state: "running" | "stopped" | "exited";
+      /** Present only for state "exited"; null = ended by signal/kill. */
+      readonly exitCode?: number | null;
+    }
+  | {
+      /** A todo-list projection (ADR 0025 §2): the dispatch's FIRST
+       *  todo_write projects as one full layout block so user and Herta
+       *  share the plan, every LATER update as a compact progress row; the
+       *  leftover tail rides the done-marker. */
+      readonly kind: "todo";
+      readonly total: number;
+      readonly completed: number;
+      /** The in_progress item's text (2026-07-23) — set on the compact
+       *  progress rows projected for LATER todo_write updates so renderers
+       *  can show which step 板砖 is on. Absent on the first todo-layout
+       *  block (its body's [~] mark carries the same information) and when
+       *  nothing is in progress. */
+      readonly current?: string;
+      /** The WHOLE list as it stood when this block was projected
+       *  (2026-07-26). `todo_write` is full-list replacement: 板砖 may
+       *  reword, reorder, add or drop items on any update, so a renderer
+       *  showing live plan state cannot reconstruct it by taking the first
+       *  layout block and folding later counts onto it — the first layout
+       *  is a snapshot of a list that no longer exists. The only honest
+       *  source is the list carried by the NEWEST todo block, so both block
+       *  kinds carry it. The counts above stay authoritative for the
+       *  canonical `body`'s phrasing; this is the same display-only class
+       *  as `markerSummary` and never reaches Herta's prompt.
+       *
+       *  Optional for backward compatibility: records persisted before this
+       *  field existed carry none, so renderers must keep their
+       *  `total`/`completed`/`current` fallback. Backend-authored text —
+       *  same trust class as `current`, sanitized at projection. */
+      readonly items?: readonly TodoDigestItem[];
+    }
+  | {
+      /** A `show_excerpt` presentation row (ADR 0027). The excerpt itself
+       *  lives in `evidenceDetail` — prompt-visible for the turn, dropped
+       *  when the block folds into the compaction summary — so the digest
+       *  carries only the CITATION, which is what a later turn needs to know
+       *  ("she was shown lines 120-140 of x.ts") without re-paying for the
+       *  content. */
+      readonly kind: "excerpt";
+      readonly path: string;
+      readonly from: number;
+      readonly to: number;
+    }
+  | {
+      /** No richer structure — digest to the text's first line, truncated. */
+      readonly kind: "text";
+      readonly text: string;
+      /** Structured mirror of a run_command exit row (2026-07-10): lets the
+       *  GUI compose a localized "↳ exit N · M lines" without parsing the
+       *  body. Both optional — absent on non-exit text digests and on records
+       *  persisted before they existed (fall back to the body/text). */
+      readonly exitCode?: number | null;
+      readonly lineCount?: number;
+    };
+
+/**
+ * One labelled section of a system block's `evidenceDetail`, carried ALONGSIDE
+ * the canonical string so a localizing renderer can compose a translated
+ * detail pane instead of printing harness-authored Chinese at an English
+ * reader (`↳ 输出:`, `↳ 摘录`, `↳ 改动文件:`).
+ *
+ * Same stance as `markerSummary` and `digest`, and the same reason: the detail
+ * string is assembled from these very values, so a renderer that needed them
+ * back would have to regex the rendered text apart — the coupling ADR 0018's
+ * display-localization pattern exists to avoid. `evidenceDetail` stays the
+ * single canonical text (it is what Herta's prompt reads, what compaction
+ * folds, and what the record persists); this is display-only data.
+ *
+ * The payload strings — command output, excerpt bodies, file paths, risk and
+ * todo text — are backend-derived and stay VERBATIM in every language. Only
+ * the section's label is a translation.
+ */
+export type EvidenceSection =
+  | {
+      /** A bounded command-output tail (`↳ 输出:`). */
+      readonly kind: "output";
+      readonly text: string;
+    }
+  | {
+      /** A show_excerpt body with its citation (`↳ 摘录 path:from-to`). */
+      readonly kind: "excerpt";
+      readonly path: string;
+      readonly from: number;
+      readonly to: number;
+      readonly text: string;
+    }
+  | {
+      /** The done-marker's changed-file list (`↳ 改动文件:`). */
+      readonly kind: "files";
+      readonly paths: readonly string[];
+    }
+  | {
+      /** The done-marker's residual risks (`↳ 风险:`). */
+      readonly kind: "risks";
+      readonly items: readonly string[];
+    }
+  | {
+      /** The done-marker's unfinished todos (`↳ 待办:`). */
+      readonly kind: "todos";
+      readonly items: readonly string[];
+    }
+  | {
+      /** The bridge-failure marker's raw error text (`↳ 错误:`). */
+      readonly kind: "error";
+      readonly message: string;
+    };
+
+/**
+ * A harness-authored block. The label is one of the two canonical
+ * SystemBlockLabel values; "板砖" is not a valid label and must never
+ * be constructed (enforced at runtime by the forged-label guard in
+ * @herta/herta's serializeTerminalRecord — the funnel every LLM-facing
+ * projection passes through — SPEC §5.3).
+ */
+export interface SystemBlock {
+  readonly kind: "system";
+  readonly label: SystemBlockLabel;
+  readonly body: string;
+  /**
+   * Fuller evidence (e.g. a bounded command-output tail, or the done-marker
+   * roll-up) for Herta's prompt ONLY. INVISIBLE to the CLI renderer — exactly
+   * like HertaBlock.selfCorrection. The prompt serializer (serialize.ts)
+   * appends it after the body; the CLI renderer (narrative-renderer.ts) reads
+   * only `body`. Keeps the screen terse while Herta gets the detail (D7:
+   * same record, different overlays). Full output also persists in .herta/logs/.
+   */
+  readonly evidenceDetail?: string;
+  /**
+   * Structured mirror of `evidenceDetail` for localizing renderers. See
+   * `EvidenceSection`. Set ONLY by the bridge, from the same values that
+   * compose the canonical string; absent on records persisted before it
+   * existed (renderers fall back to `evidenceDetail` verbatim). Display-only —
+   * invisible to Herta's prompt (serialize.ts reads body + evidenceDetail).
+   */
+  readonly evidence?: readonly EvidenceSection[];
+  /**
+   * Structural discriminator for a bridge-SYNTHESIZED terminal block (NOT a
+   * bus projection). "done-marker" on the run-terminal completion block;
+   * "noop-marker" on the 无产出 no-op block. Set ONLY by the bridge
+   * (buildDoneMarker / buildNoopMarker); projectBackendEvent never sets it.
+   * Used by compaction — done-marker gets the two-state pass-through
+   * lifecycle, noop-marker digests to （板砖无产出）. The marker reaches the
+   * live record stream like any other block: the bridge appends it to the
+   * record and calls sink.flushBlocks (the single canonical-diff projection,
+   * 2026-06-01), so no role-aware emit special-casing is needed. Bus-streamed
+   * system blocks have no role.
+   */
+  readonly role?: "done-marker" | "noop-marker";
+  /**
+   * Structured roll-up mirroring the done-marker `body` for localizing
+   * renderers. See `DoneMarkerSummary`. Set ONLY on done-marker blocks by the
+   * bridge; the canonical `body` stays authoritative. Display-only — invisible
+   * to Herta's prompt (serialize.ts reads body + evidenceDetail, never this).
+   */
+  readonly markerSummary?: DoneMarkerSummary;
+  /**
+   * Structured digest data for compaction. See `SystemBlockDigest`. Set by
+   * projectBackendEvent on bus-projected blocks; absent on bridge-built
+   * marker blocks (their `role` drives compaction) and on records persisted
+   * before this field existed (compaction falls back to legacy body
+   * parsing). Survives the JSONL round-trip like any other block field.
+   */
+  readonly digest?: SystemBlockDigest;
+  /** Wall-clock ISO time the block was emitted/persisted. See `UserBlock.at`. */
+  readonly at?: string;
+}
+
+export type TerminalRecordBlock = UserBlock | HertaBlock | SystemBlock;
+
+/**
+ * The durable canonical narrative record shared between user and Herta
+ * (SPEC §4.2). Both the user terminal renderer and the Herta completion
+ * actor consume TerminalRecord. Approval overlay state lives separately
+ * in ApprovalOverlayState and is never folded into this record.
+ */
+export type TerminalRecord = readonly TerminalRecordBlock[];

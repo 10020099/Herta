@@ -1,0 +1,146 @@
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { HertaBridgeProvider } from "../../context/HertaBridgeContext.js";
+import { renderWithLocale } from "../../i18n/test-util.js";
+import type { HertaBridge, Locale } from "../../ipc/bridge-types.js";
+import {
+  createMockHertaBridge,
+  type MockHertaBridge,
+} from "../../ipc/mock-bridge.js";
+import { BanzhuanSettings } from "./BanzhuanSettings.js";
+
+const captionName = (c: HTMLElement): string | null =>
+  c.querySelector(".settings-bz-caption-name")?.textContent ?? null;
+
+function renderPane(
+  mock: MockHertaBridge = createMockHertaBridge(),
+  locale?: Locale,
+): ReturnType<typeof renderWithLocale> {
+  return renderWithLocale(
+    <HertaBridgeProvider bridge={mock.bridge}>
+      <BanzhuanSettings />
+    </HertaBridgeProvider>,
+    locale !== undefined ? { locale } : {},
+  );
+}
+
+describe("BanzhuanSettings", () => {
+  describe("demo card + legend", () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    it("renders the explainer, the demo card, an idle caption, and a 5-state legend", () => {
+      const { container, getByText } = renderPane();
+      // The intro prose (en locale; compacted 2026-08-03 so the pane stays
+      // inside the settings card's stable height floor).
+      expect(getByText(/The Brick handles the coding/)).toBeTruthy();
+      expect(container.querySelector(".settings-bz-card")).toBeTruthy();
+      // Caption shows the single locale word for the current state.
+      expect(captionName(container)).toBe("Idle");
+      expect(
+        container.querySelectorAll(".settings-bz-legend-item").length,
+      ).toBe(5);
+    });
+
+    it("shows @板砖 as the code trigger under a zh UI", () => {
+      const { container } = renderPane(undefined, "zh");
+      expect(container.querySelector("code")?.textContent).toBe("@板砖");
+    });
+
+    it("shows @Brick as the code trigger under an en UI (no lone CJK token in an English panel)", () => {
+      // The token follows the UI locale like the surrounding prose — the pane can
+      // be open with no active session, so it must not depend on session lang.
+      const { container } = renderPane(undefined, "en");
+      expect(container.querySelector("code")?.textContent).toBe("@Brick");
+    });
+
+    it("advances the caption as the cycle runs, and hover pauses it", () => {
+      const { container } = renderPane();
+      act(() => vi.advanceTimersByTime(1600));
+      expect(captionName(container)).toBe("Working");
+      // Hover the card → the cycle holds.
+      const card = container.querySelector(".settings-bz-card") as HTMLElement;
+      fireEvent.mouseEnter(card);
+      act(() => vi.advanceTimersByTime(10_000));
+      expect(captionName(container)).toBe("Working");
+    });
+  });
+
+  describe("thinking-effort row", () => {
+    it("loads the persisted tier into the Select", async () => {
+      const mock = createMockHertaBridge({
+        getBackendConfigResult: { thinking: "low" },
+      });
+      renderPane(mock);
+      const trigger = screen.getByLabelText("Thinking effort");
+      await waitFor(() => expect(trigger.textContent).toContain("Low"));
+      expect(mock.calls.getBackendConfig).toBe(1);
+    });
+
+    it("a pick persists via the bridge, with no dynamic restart note (the description carries it)", async () => {
+      const mock = createMockHertaBridge();
+      const { queryByText } = renderPane(mock);
+      const trigger = screen.getByLabelText("Thinking effort");
+      await waitFor(() => expect(trigger.textContent).toContain("High"));
+
+      fireEvent.click(trigger);
+      fireEvent.click(screen.getByRole("option", { name: "Max" }));
+      expect(mock.calls.setBackendConfig).toEqual([{ thinking: "max" }]);
+      // No appearing note — it re-flowed the pane height (owner 2026-08-03);
+      // "Applies on the next launch" lives in the row description instead.
+      expect(queryByText("Restart to apply.")).toBeNull();
+      expect(queryByText(/next launch/)).toBeTruthy();
+    });
+
+    it("the row sits ABOVE the demo card so the Select menu opens into the demo's space", async () => {
+      const { container } = renderPane();
+      const row = container.querySelector(".settings-row");
+      const demo = container.querySelector(".settings-bz-demo");
+      expect(row).toBeTruthy();
+      expect(demo).toBeTruthy();
+      // DOM order pins the layout decision: menu is an in-flow absolute box
+      // (no portal), so at the pane's bottom edge it clipped against the card.
+      expect(
+        row!.compareDocumentPosition(demo!) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    });
+
+    it("a failed write snaps back and surfaces the error", async () => {
+      const mock = createMockHertaBridge({ failSetBackendConfig: true });
+      const { queryByText } = renderPane(mock);
+      const trigger = screen.getByLabelText("Thinking effort");
+      await waitFor(() => expect(trigger.textContent).toContain("High"));
+
+      fireEvent.click(trigger);
+      fireEvent.click(screen.getByRole("option", { name: "Low" }));
+      await waitFor(() =>
+        expect(queryByText("Couldn't save — try again.")).toBeTruthy(),
+      );
+      // Snapped back to the value on disk; no restart note for a failed write.
+      expect(trigger.textContent).toContain("High");
+      expect(queryByText("Restart to apply.")).toBeNull();
+    });
+
+    it("hides the row entirely when the bridge lacks the surface (fakes / website demo)", () => {
+      const mock = createMockHertaBridge();
+      const { setBackendConfig: _omit, ...rest } = mock.bridge;
+      renderWithLocale(
+        <HertaBridgeProvider bridge={rest as HertaBridge}>
+          <BanzhuanSettings />
+        </HertaBridgeProvider>,
+      );
+      expect(screen.queryByLabelText("Thinking effort")).toBeNull();
+    });
+  });
+
+  it("has NO command-rule section — rules moved to the device card's ⋯ menu (owner 2026-08-04)", async () => {
+    const { container } = renderPane(
+      createMockHertaBridge({ commandRules: ["node src/index.mjs:*"] }),
+    );
+    await waitFor(() =>
+      expect(screen.getByLabelText("Thinking effort")).toBeTruthy(),
+    );
+    expect(container.querySelector(".settings-bz-rules")).toBeNull();
+    expect(screen.queryByText("node src/index.mjs:*")).toBeNull();
+  });
+});

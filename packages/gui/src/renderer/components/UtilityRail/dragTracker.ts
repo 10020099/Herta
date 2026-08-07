@@ -1,0 +1,52 @@
+import type { CSSProperties } from "react";
+
+export interface DragTrackerInput {
+  /** Negative = upward drag in screen coordinates. */
+  readonly dragDeltaY: number;
+  /** Random outcome at drag start, in [0, 1). */
+  readonly chance: number;
+  /** Minimum |dragDeltaY| in px to even consider a lift. */
+  readonly threshold: number;
+  /** Probability (0..1) that a successful drag lifts the device. */
+  readonly liftProbability: number;
+  /** Cap on lift magnitude in px. */
+  readonly maxLiftPx: number;
+  /** prefers-reduced-motion preference. */
+  readonly reducedMotion: boolean;
+}
+
+export interface DragResult {
+  /** CSS transform string for the device layer, or null if no lift. */
+  readonly transform: string | null;
+  /** Inline style for the shadow layer (scale + opacity). */
+  readonly shadowStyle: CSSProperties | undefined;
+}
+
+/**
+ * Pure drag-to-lift computation. No side effects, no React. The
+ * React-side hook (useDragToLift) handles event wiring + roll-the-dice.
+ */
+export function computeDragResult(input: DragTrackerInput): DragResult {
+  // Reduced motion short-circuits everything.
+  if (input.reducedMotion) return { transform: null, shadowStyle: undefined };
+  // Direction gate: only upward drags lift.
+  if (input.dragDeltaY >= 0) return { transform: null, shadowStyle: undefined };
+  // Threshold gate: small jitter doesn't count.
+  if (Math.abs(input.dragDeltaY) < input.threshold) {
+    return { transform: null, shadowStyle: undefined };
+  }
+  // Chance gate: only the lucky drags lift.
+  if (input.chance >= input.liftProbability) {
+    return { transform: null, shadowStyle: undefined };
+  }
+  const liftPx = Math.min(Math.abs(input.dragDeltaY), input.maxLiftPx);
+  const shadowScale = 1 - liftPx * 0.01;
+  const shadowOpacity = 0.85 - liftPx * 0.02;
+  return {
+    transform: `translateY(-${liftPx}px)`,
+    shadowStyle: {
+      transform: `scale(${shadowScale.toFixed(3)})`,
+      opacity: shadowOpacity.toFixed(3),
+    },
+  };
+}

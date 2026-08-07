@@ -1,0 +1,1003 @@
+import type {
+  ApprovalOverlayState,
+  OverlayEvent,
+  RecordEvent,
+  SessionAgentEvent,
+  SessionDeletedEvent,
+  SessionTopic,
+  TerminalRecord,
+  TitleEvent,
+  TurnLifecycleEvent,
+  WorkspaceEvent,
+} from "@herta/app-server";
+import type {
+  HertaBridge,
+  NavBlockedEvent,
+  SessionError,
+  SessionNoSession,
+  SessionSnapshot,
+  SpeechControlEvent,
+} from "../ipc/bridge-types.js";
+
+export type SessionStatus = "idle" | "thinking" | "speaking";
+
+export interface SessionSnapshotView {
+  readonly sessionId: string | null;
+  /** The active session's interaction language (its birth language). Drives the
+   *  板砖→Brick user-facing alias for THIS conversation, independent of the UI
+   *  locale. "zh" when no session is active or the snapshot predates the field. */
+  readonly lang: "zh" | "en";
+  /** The loaded WINDOW of the session's record (long sessions, 2026-07-12):
+   *  the trailing blocks, extendable backward via `loadOlderBlocks`. Live
+   *  block events append to it as before. */
+  readonly record: TerminalRecord;
+  /** Absolute index `record[0]` has in the full record — the count of OLDER
+   *  blocks not loaded (0 = everything is loaded). Row keys and the record-
+   *  reset merge align by `recordStart + i`. */
+  readonly recordStart: number;
+  /** Where the conversation should land once the named session is loaded, or
+   *  null. Set by a search-result click (see `requestJump`); consumed and
+   *  cleared by Conversation once `sessionId` matches. Carries the target
+   *  session BECAUSE the request is made before the open: without it,
+   *  Conversation would consume the request against the session still on
+   *  screen and jump in the wrong transcript. */
+  readonly pendingJump: { sessionId: string; blockIndex: number } | null;
+  readonly streamingText: string | null;
+  readonly overlay: ApprovalOverlayState | null;
+  readonly status: SessionStatus;
+  readonly error: string | null;
+  /** Optimistic echo of the message the user just sent, shown
+   *  immediately (below the record, above the thinking/streaming row)
+   *  until the turn's own user RecordEvent lands. */
+  readonly pendingUser: string | null;
+  /** True while the supervisor-veto retract morph is in flight:
+   *  streamingText holds the vetoed candidate (the morph's shrink source)
+   *  and retryText buffers the retry's deltas. Cleared when the finalized
+   *  herta block lands (onRecord) or by the turn finished/failed safety
+   *  nets — never by animation completion. */
+  readonly retracting: boolean;
+  /** The retry's accumulated deltas while `retracting`; null otherwise.
+   *  The component's useRetractMorph shrinks the vetoed text to the common
+   *  prefix with this and types the rest forward from there. */
+  readonly retryText: string | null;
+  /** Server-computed divergence index (code points) for the retract morph's
+   *  backward erase: it halts here instead of wiping to empty. Null except
+   *  between a `retractFloor` and the clearing record/turn event. */
+  readonly retractKeepLen: number | null;
+  /** Renderer wall-clock (Date.now) when the current turn started; null when
+   *  idle. Used to time a live backend activity run (no record timing exists). */
+  readonly turnStartedAt: number | null;
+  /** True while the @板砖 backend turn is running (between its turn.started and
+   *  turn.finished), for the 处理中… placeholder. */
+  readonly backendActive: boolean;
+  /** Backend tool calls currently in flight (raw tool.call.started minus
+   *  finished). >1 during a parallel read-only batch (ADR 0025 slice 5) —
+   *  drives the multi-row shimmer in ActivityBlock. Reset with the backend
+   *  turn lifecycle. */
+  readonly backendInFlight: number;
+  /** Renderer wall-clock (Date.now) when the @板砖 backend turn started (its
+   *  backend-layer turn.started). Anchors the backend activity timer to the
+   *  actual 板砖 start, NOT turnStartedAt — which begins when Herta's turn
+   *  starts and so includes her speech-streaming time. Null until a backend run
+   *  starts; cleared on turn start / end / reset. */
+  readonly backendStartedAt: number | null;
+  /** True after the @板砖 backend turn FAILED (turn.failed{layer:"backend"}),
+   *  until the next turn starts / reset. Drives the device card's error state.
+   *  An INTERRUPT is not an error and does not set it (audit 2026-07-24, M2). */
+  readonly backendError: boolean;
+  /** Incremented once per CLEANLY FINISHED @板砖 run; 0 at session start.
+   *
+   *  The device card's green success flash used to be inferred from the
+   *  `backendActive` true→false edge plus "no error" — which silently became
+   *  wrong the moment an interrupt stopped counting as an error (M2): the
+   *  interrupt produced exactly that edge, so stopping a run flashed 完成 /
+   *  Done. An explicit success signal cannot be confused with any other
+   *  outcome, and it retires the edge-baseline ref whose staleness across a
+   *  session switch was its own bug. */
+  readonly backendSucceededSeq: number;
+  /** True while the long-session recap summarizer is running (between the
+   *  recap.compaction `start` and `end` bus events). Ephemeral — drives a
+   *  transient in-world status row; never persisted to the record. */
+  readonly recapCompacting: boolean;
+  /** True while the supervisor model is judging a candidate speech (between
+   *  the supervisor.check `start` and `end` bus events). Ephemeral — drives
+   *  the debounced 伽马风暴 hint row that explains a long reveal-hold; never
+   *  persisted to the record. */
+  readonly supervisorChecking: boolean;
+  /** Generated session title, or null when none exists yet. */
+  readonly title: string | null;
+  /** True when the latest title arrived via a live `session:title` event (so
+   *  the header should type it in); false for a disk-loaded title (reset),
+   *  which renders instantly. */
+  readonly titleAnimate: boolean;
+  /** Topic history (the topic rail's jump targets): seeded from the reset
+   *  snapshot, appended by title events carrying a `topic`, pruned when a
+   *  record reset truncates below an anchor (rewind). */
+  readonly topics: readonly SessionTopic[];
+  /** The FIRST user message sent since this session was activated (reset).
+   *  Frozen after the first message — the sidebar shows it for the active
+   *  session so intermediate messages don't flicker the preview. Null until
+   *  the first message of this activation lands. */
+  readonly activationFirstUser: string | null;
+  /** The EFFECTIVE backend (板砖) workspace — the cwd the coding backend
+   *  uses. Seeded from the reset snapshot and live-updated by `workspace`
+   *  events (set / reset-to-default). Null until a session is activated. */
+  readonly backendWorkspace: string | null;
+  /** True when `backendWorkspace` is still the managed-sandbox default. */
+  readonly backendWorkspaceIsDefault: boolean;
+  /** One-shot: text to load into the composer (set by a rewind — the withdrawn
+   *  user message returns here for editing). The Composer adopts it then calls
+   *  `clearComposerDraft`. Null when there's nothing to restore. */
+  readonly composerDraft: string | null;
+  /** One-shot transient notice shown by the composer — e.g. the rewind warning
+   *  that 板砖's file edits were NOT reverted. Cleared on the next keystroke. */
+  readonly composerNotice: string | null;
+  /** Non-null while the no-key onboarding card is open — holds the message the
+   *  user just tried to send with no DeepSeek key set. Saving a key re-submits
+   *  this text; cancelling restores it to the composer. Null = card closed. */
+  readonly needsKeyText: string | null;
+  /** True once the main process has resolved the initial state (opened a
+   *  session, or signalled no-session). Gates the disconnected UI so it
+   *  never flashes during the async launch bootstrap. */
+  readonly bootstrapped: boolean;
+  /** One-shot: the last turn FAILED for a non-interrupt reason (provider /
+   *  network error) with nothing committed to explain it — previously the
+   *  half-typed sentence just vanished (slice 4). Drives a small inline
+   *  notice in the conversation. Cleared when the next turn starts or the
+   *  session resets. A user interrupt (AbortError) never sets it. */
+  readonly turnFailed: boolean;
+  /** The failed turn's HTTP status when the provider reported one (the
+   *  official DeepSeek error codes — 401/402/429/500/503), else null. The
+   *  TurnFailedRow maps it to a specific message. Lifecycle mirrors
+   *  `turnFailed`. */
+  readonly turnFailedStatus: number | null;
+  /** The provider's own error code for a failure that carried no HTTP status.
+   *  Only "network-tls" is acted on: a certificate or proxy problem, where
+   *  "connection lost — please resend" would send the user around a loop that
+   *  cannot succeed (audit S3). Lifecycle mirrors `turnFailed`. */
+  readonly turnFailedProviderCode: string | null;
+  /** Main refused a tray-initiated navigation mid-turn (2026-07-13).
+   *  `target` is the session the tray tried to open (null = new-chat);
+   *  `seq` increments per refusal so a repeat of the same target re-fires.
+   *  The matching SessionItem / TopBar arms its two-step confirm on it. */
+  readonly navBlock: {
+    readonly target: string | null;
+    readonly seq: number;
+  } | null;
+}
+
+const INITIAL: SessionSnapshotView = {
+  sessionId: null,
+  lang: "zh",
+  record: [],
+  recordStart: 0,
+  pendingJump: null,
+  streamingText: null,
+  overlay: null,
+  status: "idle",
+  error: null,
+  pendingUser: null,
+  retracting: false,
+  retryText: null,
+  retractKeepLen: null,
+  turnStartedAt: null,
+  backendActive: false,
+  backendInFlight: 0,
+  backendStartedAt: null,
+  backendError: false,
+  backendSucceededSeq: 0,
+  recapCompacting: false,
+  supervisorChecking: false,
+  title: null,
+  titleAnimate: false,
+  topics: [],
+  activationFirstUser: null,
+  backendWorkspace: null,
+  backendWorkspaceIsDefault: false,
+  composerDraft: null,
+  composerNotice: null,
+  needsKeyText: null,
+  bootstrapped: false,
+  turnFailed: false,
+  turnFailedStatus: null,
+  turnFailedProviderCode: null,
+  navBlock: null,
+};
+
+/**
+ * NAMED TRANSIENT GROUPS (audit 2026-07-24, Class C).
+ *
+ * Every reset path here spreads the snapshot and nulls a hand-picked subset
+ * of the same transient fields — and each one historically cleared four to
+ * six siblings correctly while missing one (the failure notice surviving a
+ * rewind, L2). Naming the groups makes the omission visible at the call site:
+ * the question becomes "which groups does this boundary end?" instead of
+ * "did I remember every field?".
+ *
+ * Deliberately NOT one blanket TRANSIENT_CLEARED constant: the boundaries
+ * differ in kind. A record `reset` also serves a mid-turn drop-heal (must
+ * keep the live turn's progress), and `turn.finished` keeps `backendError`
+ * (the device card reports the failed dispatch until the next turn). A
+ * blanket clear would silently break both, so groups stay small and each
+ * call site states its deliberate keeps.
+ */
+
+/** View state owned by the STREAMING bubble (including the supervisor-veto
+ *  retract morph and the optimistic echo). Ends whenever the stream's content
+ *  is replaced or the turn stops producing it. */
+const STREAM_VIEW_CLEARED = {
+  streamingText: null,
+  retracting: false,
+  retryText: null,
+  retractKeepLen: null,
+  pendingUser: null,
+} as const;
+
+/** The one-shot inline failure notice. Belongs to the turn it describes —
+ *  cleared when the next turn starts, when the session resets, and when the
+ *  record it annotates is replaced. */
+const TURN_FAILURE_CLEARED = {
+  turnFailed: false,
+  turnFailedStatus: null,
+  turnFailedProviderCode: null,
+} as const;
+
+/**
+ * Renderer-side mirror of the active session, fed by IPC events from
+ * main. Implements the useSyncExternalStore contract: getSnapshot
+ * returns a referentially-stable object that only changes identity
+ * when state changes. Slice 4 is chat-only — no device-state
+ * derivation (Slice 5).
+ */
+export class SessionStore {
+  private snapshot: SessionSnapshotView = INITIAL;
+  private readonly listeners = new Set<() => void>();
+  private unsubs: Array<() => void> = [];
+  /** The connected bridge, held so onRecord's `dropped` branch can request a
+   *  record heal (fire-and-forget IPC). Null while disconnected. Internal —
+   *  the store stays a pure event-folder: the heal arrives back as an
+   *  ordinary `reset` RecordEvent on the record channel. */
+  private bridge: HertaBridge | null = null;
+  /** Whether a finalized herta block landed since the current turn started.
+   *  Drives the phantom-bubble cleanup (slice 4): a turn that finishes
+   *  WITHOUT committing one (clean-to-empty) must clear the streaming
+   *  bubble itself — no block will ever come to clear it. Internal —
+   *  never part of the snapshot. */
+  private hertaLandedThisTurn = false;
+
+  // The constructor is intentionally PURE — it does NOT subscribe to the
+  // bridge. Subscribing is a side effect; doing it in the constructor breaks
+  // under React StrictMode, where the provider creates the store during
+  // render but tears it down in an effect cleanup. StrictMode's dev
+  // double-invoke would dispose a constructor-subscribed store and never
+  // recreate it, leaving a dead store with no IPC listeners. Subscription
+  // lifecycle therefore lives in connect()/disconnect(), driven by the
+  // provider's useEffect (cleanup → setup re-subscribes cleanly).
+
+  /** Subscribe to the bridge's IPC event streams. Returns a disconnect
+   *  function. Idempotent and re-callable after disconnect. */
+  connect(bridge: HertaBridge): () => void {
+    this.disconnect();
+    this.bridge = bridge;
+    this.unsubs = [
+      bridge.onReset((e) => this.onReset(e)),
+      bridge.onRecord((e) => this.onRecord(e)),
+      bridge.onAgent((e) => this.onAgent(e)),
+      bridge.onTurn((e) => this.onTurn(e)),
+      bridge.onOverlay((e) => this.onOverlay(e)),
+      bridge.onSpeech((e) => this.onSpeech(e)),
+      bridge.onTitle((e) => this.onTitle(e)),
+      bridge.onSessionDeleted((e) => this.onSessionDeleted(e)),
+      bridge.onWorkspace((e) => this.onWorkspace(e)),
+      // Optional: only the Electron preload emits it (tray refusals).
+      ...(bridge.onNavBlocked !== undefined
+        ? [bridge.onNavBlocked((e) => this.onNavBlocked(e))]
+        : []),
+    ];
+    return () => this.disconnect();
+  }
+
+  private navBlockSeq = 0;
+
+  private onNavBlocked(e: NavBlockedEvent): void {
+    this.navBlockSeq += 1;
+    this.emit({
+      ...this.snapshot,
+      navBlock: { target: e.target, seq: this.navBlockSeq },
+    });
+  }
+
+  private disconnect(): void {
+    for (const u of this.unsubs) u();
+    this.unsubs = [];
+    this.bridge = null;
+  }
+
+  readonly subscribe = (cb: () => void): (() => void) => {
+    this.listeners.add(cb);
+    return () => {
+      this.listeners.delete(cb);
+    };
+  };
+
+  readonly getSnapshot = (): SessionSnapshotView => this.snapshot;
+
+  /** Optimistically echo the message the user just sent, before the turn's
+   *  user RecordEvent arrives. Cleared when that block lands (onRecord) or
+   *  when the turn ends / a reset replaces the session. */
+  markPendingUser(text: string): void {
+    this.emit({ ...this.snapshot, pendingUser: text });
+  }
+
+  /** Withdraw a rejected submit's optimistic echo (audit 2026-07-10): when
+   *  `submitText` rejects BEFORE any turn lifecycle event (single-turn
+   *  invariant), no safety net will clear the echo. Matching text only — a
+   *  stale rejection must never clear a NEWER submit's echo — and the text
+   *  goes back to the composer draft so nothing typed is lost. */
+  withdrawPendingUser(text: string): void {
+    if (this.snapshot.pendingUser !== text) return;
+    this.emit({ ...this.snapshot, pendingUser: null, composerDraft: text });
+  }
+
+  /** Stage the withdrawn user text (+ optional warning) for the composer to
+   *  adopt after a rewind. The Composer reads `composerDraft` and clears it.
+   *  `text` may be null to show a notice ALONE — a rewind that failed has no
+   *  withdrawn text to restore but still owes the user an explanation
+   *  (audit 2026-07-24, M3). */
+  requestComposerDraft(text: string | null, notice: string | null): void {
+    this.emit({
+      ...this.snapshot,
+      composerDraft: text,
+      composerNotice: notice,
+    });
+  }
+
+  /** The composer consumed the staged draft — null it so it isn't re-applied. */
+  clearComposerDraft(): void {
+    if (this.snapshot.composerDraft === null) return;
+    this.emit({ ...this.snapshot, composerDraft: null });
+  }
+
+  /** Dismiss the transient composer notice (e.g. on the next keystroke). */
+  clearComposerNotice(): void {
+    if (this.snapshot.composerNotice === null) return;
+    this.emit({ ...this.snapshot, composerNotice: null });
+  }
+
+  /** Open the no-key onboarding card, holding the message that couldn't send
+   *  (no DeepSeek key). Also clears the optimistic echo it had shown. */
+  requestKeyPrompt(text: string): void {
+    this.emit({ ...this.snapshot, pendingUser: null, needsKeyText: text });
+  }
+
+  /** Close the no-key onboarding card. */
+  clearKeyPrompt(): void {
+    if (this.snapshot.needsKeyText === null) return;
+    this.emit({ ...this.snapshot, needsKeyText: null });
+  }
+
+  /**
+   * Ask the conversation to jump to an absolute record index once the session
+   * is open (2026-07-27, search-result navigation).
+   *
+   * A store field rather than an IPC option: the target comes from a search
+   * hit the RENDERER already holds, and `Conversation` owns the only code
+   * that can perform the jump (it pages older blocks in, then scrolls the
+   * anchor row). Main has nothing to contribute, so nothing crosses the wire.
+   *
+   * Cleared by the consumer via `clearPendingJump` — and by `reset`, so a
+   * request that never got consumed (the session failed to open, the user
+   * clicked elsewhere first) cannot fire against a later session.
+   */
+  requestJump(sessionId: string, blockIndex: number): void {
+    this.emit({ ...this.snapshot, pendingJump: { sessionId, blockIndex } });
+  }
+
+  clearPendingJump(): void {
+    if (this.snapshot.pendingJump === null) return;
+    this.emit({ ...this.snapshot, pendingJump: null });
+  }
+
+  /** Single-flight guard for loadOlderBlocks. */
+  private loadingOlder = false;
+
+  /**
+   * Extend the record window BACKWARD by up to `count` blocks (the "load
+   * earlier" affordance for long sessions, 2026-07-12). Pages
+   * `[recordStart - count, recordStart)` from main and prepends it. Guards:
+   * single-flight; no-op when everything is loaded or the bridge lacks
+   * recordSlice (fakes); a response is dropped when the session switched or
+   * the window start moved (a rewind/heal reset re-anchored it) while the
+   * invoke was in flight — the absolute indices would no longer line up.
+   */
+  async loadOlderBlocks(count = 200): Promise<void> {
+    const { sessionId, recordStart } = this.snapshot;
+    if (
+      this.loadingOlder ||
+      sessionId === null ||
+      recordStart <= 0 ||
+      this.bridge?.recordSlice === undefined
+    ) {
+      return;
+    }
+    this.loadingOlder = true;
+    try {
+      const r = await this.bridge.recordSlice(sessionId, recordStart, count);
+      if (
+        this.snapshot.sessionId !== sessionId ||
+        this.snapshot.recordStart !== recordStart ||
+        r.blocks.length === 0 ||
+        r.start + r.blocks.length !== recordStart
+      ) {
+        return; // stale or empty — drop
+      }
+      this.emit({
+        ...this.snapshot,
+        record: [...r.blocks, ...this.snapshot.record],
+        recordStart: r.start,
+      });
+    } catch {
+      // best-effort — the affordance simply stays available
+    } finally {
+      this.loadingOlder = false;
+    }
+  }
+
+  /** Live-window trim (audit T3.5): drop the OLDEST blocks from the windowed
+   *  record, advancing `recordStart`, once live appends have grown it well
+   *  past the reset-tail bound. Caller-gated — the Conversation trims only
+   *  while the reader is pinned at the bottom and no morph is measuring row
+   *  slots. Nothing is lost: main keeps the full record, and "load earlier"
+   *  pages the dropped rows back on demand. */
+  trimRecordWindow(maxLen: number): void {
+    const excess = this.snapshot.record.length - maxLen;
+    if (excess <= 0) return;
+    this.emit({
+      ...this.snapshot,
+      record: this.snapshot.record.slice(excess),
+      recordStart: this.snapshot.recordStart + excess,
+    });
+  }
+
+  /** Full teardown: disconnect IPC + drop all React listeners. */
+  dispose(): void {
+    this.disconnect();
+    this.listeners.clear();
+  }
+
+  private emit(next: SessionSnapshotView): void {
+    this.snapshot = next;
+    for (const l of this.listeners) l();
+  }
+
+  private onReset(e: SessionSnapshot | SessionError | SessionNoSession): void {
+    if ("noSession" in e) {
+      this.emit({ ...INITIAL, bootstrapped: true });
+      return;
+    }
+    if ("error" in e) {
+      this.emit({ ...INITIAL, error: e.error });
+      return;
+    }
+    this.emit({
+      sessionId: e.sessionId,
+      // Pin the conversation's language for the 板砖→Brick alias (absent on
+      // legacy snapshots → zh).
+      lang: e.lang ?? "zh",
+      record: e.record,
+      recordStart: e.recordStart ?? 0,
+      // PRESERVED across the reset, deliberately (2026-07-27). A search click
+      // requests the jump BEFORE calling openSession, so that the conversation
+      // entrance — which fires on this very reset and otherwise re-pins and
+      // scrolls to the latest turn — can see the intent and stand down.
+      // Clearing here instead made the two race, and the entrance usually won.
+      // The window is tiny: Conversation consumes and clears it on the next
+      // commit. A FAILED open clears it explicitly at the call site.
+      //
+      // But only when the reset ACTIVATED the session the jump was for (audit
+      // BL12). The request already carries its target session — carrying it
+      // forward unconditionally meant a reset that activated a DIFFERENT
+      // session (a tray click, a rewind, a delete landing on a neighbour
+      // between the request and the open) handed a block index from one
+      // transcript to another, and the reader landed somewhere arbitrary.
+      pendingJump:
+        this.snapshot.pendingJump?.sessionId === e.sessionId
+          ? this.snapshot.pendingJump
+          : null,
+      streamingText: null,
+      overlay: e.overlay,
+      status: "idle",
+      error: null,
+      pendingUser: null,
+      retracting: false,
+      retryText: null,
+      retractKeepLen: null,
+      turnStartedAt: null,
+      backendActive: false,
+      backendInFlight: 0,
+      backendStartedAt: null,
+      backendError: false,
+      backendSucceededSeq: 0,
+      recapCompacting: false,
+      supervisorChecking: false,
+      // Disk-loaded title renders instantly (no typewriter on reopen).
+      title: e.title ?? null,
+      titleAnimate: false,
+      topics: e.topics ?? [],
+      // New activation: forget the prior activation's first message.
+      activationFirstUser: null,
+      // Seed the effective backend workspace from the snapshot; live
+      // `workspace` events update it thereafter.
+      backendWorkspace: e.backendWorkspace ?? null,
+      backendWorkspaceIsDefault: e.backendWorkspaceIsDefault ?? false,
+      // A fresh activation starts the composer empty (no stale rewind draft).
+      composerDraft: null,
+      composerNotice: null,
+      needsKeyText: null,
+      bootstrapped: true,
+      turnFailed: false,
+      turnFailedStatus: null,
+      turnFailedProviderCode: null,
+      // A reset means navigation actually happened — the refusal is moot.
+      navBlock: null,
+    });
+    this.hertaLandedThisTurn = false;
+  }
+
+  private onWorkspace(e: WorkspaceEvent): void {
+    if (e.kind !== "workspace") return; // ignore the dropped overflow sentinel
+    this.emit({
+      ...this.snapshot,
+      backendWorkspace: e.workspace,
+      backendWorkspaceIsDefault: e.isDefault,
+    });
+  }
+
+  private onSessionDeleted(e: SessionDeletedEvent): void {
+    // Only the OPEN session blanks the panel; deleting any other session
+    // leaves this view untouched (the sidebar list drops its card separately).
+    if (e.sessionId === this.snapshot.sessionId)
+      this.emit({ ...INITIAL, bootstrapped: true });
+  }
+
+  private onTitle(e: TitleEvent): void {
+    if (e.kind !== "title") return;
+    // A title event carrying a topic marks a boundary — append it (dedupe
+    // defensively: an IPC replay of the same event must not double it).
+    const last = this.snapshot.topics[this.snapshot.topics.length - 1];
+    const topics =
+      e.topic !== undefined &&
+      (last === undefined ||
+        last.anchorIndex !== e.topic.anchorIndex ||
+        last.title !== e.topic.title)
+        ? [...this.snapshot.topics, e.topic]
+        : this.snapshot.topics;
+    // Live generation → animate the header reveal.
+    this.emit({ ...this.snapshot, title: e.title, titleAnimate: true, topics });
+  }
+
+  private onRecord(e: RecordEvent): void {
+    if (e.kind === "dropped") {
+      // Overflow hole: a block event was lost, so this mirror is permanently
+      // missing a block (screen would diverge from the canonical record, D7).
+      // Ask main to re-emit the full record as a `reset` THROUGH the record
+      // channel — FIFO with block events makes the heal race-free; it folds
+      // below like any reset. Fire-and-forget; a missing bridge method (older
+      // fakes) or a rejected invoke degrades to the old ignore behavior.
+      // (Chat-scale streams never fill the bounded queue; defense in depth.)
+      void this.bridge?.resyncRecord?.().catch(() => undefined);
+      return;
+    }
+    if (e.kind === "reset") {
+      // Full-record replacement: adopt the record and clear the turn's
+      // transient view state. Session identity + title stay put. Two sources:
+      // a rewind (shorter record; the withdrawn user text is restored to the
+      // composer by the rewind action, not here) or a drop-heal resync
+      // (re-emitted full record after an overflow drop; see the `dropped`
+      // branch below).
+      //
+      // Timestamp preservation: the server's IN-MEMORY blocks carry `at` only on
+      // ones it stamped at creation (the opening seed) — live turn blocks were
+      // stamped on the streamed COPY, not the canonical block, so the reset record
+      // can arrive missing the `at` the GUI already holds. Rewind is a pure
+      // truncation (the survivors are a prefix), so carry over the existing
+      // per-index `at` wherever a reset block lacks one — otherwise the surviving
+      // bubbles lose their hover timestamps. (Heal resets come from the sink's
+      // mirror of STAMPED copies, so every block already carries `at` and this
+      // merge no-ops — index misalignment across the hole can't misstamp.)
+      // Windowing (2026-07-12): both sides are windows now, so alignment is
+      // by ABSOLUTE index — incoming block i sits at `start + i`; the prior
+      // window holds it at `start + i - prevStart` (when loaded).
+      const start = e.start ?? 0;
+      const prev = this.snapshot.record;
+      const prevStart = this.snapshot.recordStart;
+      const record = e.record.map((b, i) => {
+        if (b.at !== undefined) return b;
+        const at = prev[start + i - prevStart]?.at;
+        return at !== undefined ? { ...b, at } : b;
+      });
+      // A reset that changed the topic history (rewind) CARRIES the new one —
+      // adopt it. This used to re-derive the pruning here by testing anchor
+      // liveness against the new end, which is not the rule: a topic can be
+      // anchored at a message from hours ago (the title window's start) and
+      // still belong to the turn just withdrawn, so it passed the test and its
+      // rail tick outlived it (user 2026-07-30). The server owns the rule, and
+      // now the wire carries the answer rather than the inputs to a second
+      // implementation of it. No `topics` means this reset cannot have changed
+      // them (a drop-heal resync).
+      const topics = e.topics ?? this.snapshot.topics;
+      // `activationFirstUser` is frozen at this activation's first user block
+      // and is what the SIDEBAR shows for the active card. A rewind can
+      // withdraw the very message it froze — and this branch, which already
+      // prunes topics and the failure notice for "the truncation invalidated
+      // it", used to leave it standing: rewinding a just-sent message left the
+      // card previewing the withdrawn text (user 2026-08-03; the sidebar
+      // store's own refresh could not help, since the active card prefers this
+      // value over `lastUserText`). Only a SHRINKING reset re-decides — a
+      // drop-heal resync re-emits the same or a longer record and must not
+      // disturb a live turn's frozen preview. Gone from the record → null, and
+      // the card falls back to the disk-backed `lastUserText`.
+      const shrank = start + record.length < prevStart + prev.length;
+      const frozen = this.snapshot.activationFirstUser;
+      const activationFirstUser =
+        shrank &&
+        frozen !== null &&
+        !record.some((b) => b.kind === "user" && b.text === frozen)
+          ? null
+          : frozen;
+      this.emit({
+        ...this.snapshot,
+        record,
+        recordStart: start,
+        activationFirstUser,
+        ...STREAM_VIEW_CLEARED,
+        // The failure notice belongs to the turn it describes: a rewind that
+        // withdraws that turn must take the notice with it, or it sits under
+        // a now-shorter conversation reading as though the REWIND failed
+        // (audit 2026-07-24, L2). This branch already prunes topics for the
+        // same "the truncation invalidated it" reason.
+        //
+        // Deliberately NOT a blanket turn-transient clear: this branch also
+        // serves a mid-turn drop-heal resync, where clearing turnStartedAt /
+        // backendActive / overlay would break a LIVE turn.
+        ...TURN_FAILURE_CLEARED,
+        topics,
+      });
+      return;
+    }
+    const block = e.block;
+    if (block.kind === "herta") this.hertaLandedThisTurn = true;
+    const record = [...this.snapshot.record, block];
+    // A finalized herta block supersedes the transient streaming bubble.
+    const streamingText =
+      block.kind === "herta" ? null : this.snapshot.streamingText;
+    // It also terminates any in-flight retract morph — the block IS the
+    // retry's full text; the morph's transient state is done.
+    const retracting =
+      block.kind === "herta" ? false : this.snapshot.retracting;
+    const retryText = block.kind === "herta" ? null : this.snapshot.retryText;
+    const retractKeepLen =
+      block.kind === "herta" ? null : this.snapshot.retractKeepLen;
+    // The turn's real user block replaces the optimistic echo.
+    const pendingUser =
+      block.kind === "user" ? null : this.snapshot.pendingUser;
+    // Capture the FIRST user message of this activation (frozen after). These
+    // are streamed blocks (the activation's initial record arrives via reset,
+    // not onRecord), so the first one here is this activation's first message.
+    const activationFirstUser =
+      block.kind === "user" && this.snapshot.activationFirstUser === null
+        ? block.text
+        : this.snapshot.activationFirstUser;
+    this.emit({
+      ...this.snapshot,
+      record,
+      streamingText,
+      retracting,
+      retryText,
+      retractKeepLen,
+      pendingUser,
+      activationFirstUser,
+    });
+  }
+
+  private onAgent(e: SessionAgentEvent): void {
+    if (e.kind === "dropped") return;
+    const ev = e.event;
+    if (ev.type === "turn.started" && ev.layer === "backend") {
+      this.emit({
+        ...this.snapshot,
+        backendActive: true,
+        backendInFlight: 0,
+        backendStartedAt: Date.now(),
+        backendError: false,
+      });
+      return;
+    }
+    if (ev.type === "turn.finished" && ev.layer === "backend") {
+      // backendStartedAt is intentionally left set (carried via spread): the
+      // ActivityBlock already froze its elapsed against its captured start; the
+      // actor turn-finished clears it. A second @板砖 dispatch re-stamps it.
+      this.emit({
+        ...this.snapshot,
+        backendActive: false,
+        backendInFlight: 0,
+        backendError: false,
+      });
+      return;
+    }
+    // The run's VERDICT (audit 2026-07-24, 1.1). `turn.finished` only means
+    // the backend loop ended without throwing — a user-denied (blocked) or
+    // all-failed (partial) run ends exactly the same way and emits no
+    // turn.failed, so counting it as success flashed the card green 完成
+    // while the activity line beside it said 受阻. The report is the one
+    // value that states what happened.
+    if (ev.type === "agent.report" && ev.layer === "backend") {
+      if (ev.report.status === "completed") {
+        this.emit({
+          ...this.snapshot,
+          backendSucceededSeq: this.snapshot.backendSucceededSeq + 1,
+        });
+      }
+      return;
+    }
+    if (ev.type === "turn.failed" && ev.layer === "backend") {
+      // backendStartedAt is intentionally left set (carried via spread) — same
+      // rationale as turn.finished above; the actor turn-failed clears it.
+      //
+      // An INTERRUPT is not an error (audit 2026-07-24, M2). Stopping a run
+      // deliberately used to turn the always-visible 差分协处理器 card red and
+      // leave it red until the next message — while the conversation stayed
+      // (correctly) silent, so the two surfaces contradicted each other about
+      // the same event. The actor's own failure branch already encodes this
+      // policy ("the user did it deliberately", turnFailed below); the device
+      // path just never got the exclusion.
+      this.emit({
+        ...this.snapshot,
+        backendActive: false,
+        backendInFlight: 0,
+        backendError: ev.error.kind !== "interrupted",
+      });
+      return;
+    }
+    // In-flight tool tracking (ADR 0025 slice 5 chrome): a parallel batch
+    // emits several started events before any finished — the count drives
+    // the multi-row shimmer. Bounded below at 0 (defensive: a finished
+    // without its started can arrive after a mid-turn reconnect).
+    if (ev.type === "tool.call.started" && ev.layer === "backend") {
+      this.emit({
+        ...this.snapshot,
+        backendInFlight: this.snapshot.backendInFlight + 1,
+      });
+      return;
+    }
+    if (ev.type === "tool.call.finished" && ev.layer === "backend") {
+      this.emit({
+        ...this.snapshot,
+        backendInFlight: Math.max(0, this.snapshot.backendInFlight - 1),
+      });
+      return;
+    }
+    // Long-session recap compaction: a transient, ephemeral hint that the
+    // recap summarizer is running. `start` raises the in-world status row,
+    // `end` clears it. Never enters the durable record (per the event's
+    // ephemeral contract).
+    if (ev.type === "recap.compaction") {
+      this.emit({ ...this.snapshot, recapCompacting: ev.phase === "start" });
+      return;
+    }
+    // Supervisor judgment window (bug 4, 2026-07-09): same ephemeral
+    // contract as recap.compaction. `start` marks the verdict as pending
+    // (the paced reveal is holding its tail); `end` clears it on OK / veto /
+    // fail-soft alike. The Conversation debounces the visible hint so quick
+    // verdicts never flash it.
+    if (ev.type === "supervisor.check") {
+      this.emit({
+        ...this.snapshot,
+        supervisorChecking: ev.phase === "start",
+      });
+      return;
+    }
+    // Only the actor layer feeds Herta's streaming speech bubble. Backend
+    // (@板砖) deltas are the silent coding agent's tokens — per D6/D7 the
+    // backend never speaks to the user (its work projects as 差分协处理器
+    // record blocks), so they must not leak into the speech stream.
+    if (ev.type === "assistant.delta" && ev.layer === "actor") {
+      // Turn-active guard (audit T3.7 latent): deltas ride the agent channel
+      // while turn lifecycle rides its own — a tail delta pumped AFTER the
+      // cross-channel turn.finished would resurrect a phantom streaming
+      // bubble (and its caret) over the already-finalized block, with
+      // nothing left to clear it. Outside a turn there is nothing a delta
+      // can legitimately add: the finalized record block is the truth.
+      if (this.snapshot.status === "idle") return;
+      if (this.snapshot.retracting) {
+        // Deltas during a retract are the RETRY's tokens. Buffer them in
+        // retryText; the vetoed streamingText stays put — it's the morph's
+        // shrink source (useRetractMorph deletes it back to the common
+        // prefix with retryText and types the rest forward).
+        this.emit({
+          ...this.snapshot,
+          retryText: (this.snapshot.retryText ?? "") + ev.text,
+          status: "speaking",
+        });
+        return;
+      }
+      this.emit({
+        ...this.snapshot,
+        streamingText: (this.snapshot.streamingText ?? "") + ev.text,
+        status: "speaking",
+      });
+    }
+    // Other agent events ignored in Slice 4 (device states → Slice 5).
+  }
+
+  private onSpeech(e: SpeechControlEvent): void {
+    if (e.kind === "dropped") {
+      // Overflow hole on the speech channel: a `retract` may have been lost.
+      // Continuing as-is risks the WORST intermediate state — retry deltas
+      // appending to the vetoed candidate, fusing rejected + corrected text
+      // into one garbled bubble. Blank the live view instead; the finalized
+      // block re-renders the truth at commit. (Chat-scale streams never
+      // overflow the queue; this is defense in depth.)
+      this.emit({
+        ...this.snapshot,
+        streamingText: null,
+        retracting: false,
+        retryText: null,
+        retractKeepLen: null,
+      });
+      return;
+    }
+    if (e.kind === "retract") {
+      // Re-entrant retract while a morph is mid-erase: unreachable in the
+      // current actor (the veto retry commits unconditionally), and the morph
+      // is keyed on the `retracting` BOOLEAN — it would neither re-seed its
+      // shrink source nor restart its timers, while this handler would
+      // discard the buffered retry. Ignore the event instead: the in-flight
+      // morph continues coherently and the block commit settles the truth.
+      if (this.snapshot.retracting) return;
+      // Keep streamingText (the vetoed candidate — the morph's shrink source)
+      // and start buffering retry deltas fresh. Clear any stale floor from a
+      // prior retract. useRetractMorph owns the animation; record/turn events
+      // clear the state (onRecord herta block, onTurn finished/failed).
+      // Cross-iteration retracts (a turn CAN veto more than once — post-@板砖
+      // commentary is supervised too) arrive here with retracting FALSE: the
+      // prior retry's block commit cleared the state before the next
+      // candidate streamed, so each cycle seeds cleanly.
+      this.emit({
+        ...this.snapshot,
+        retracting: true,
+        retryText: null,
+        retractKeepLen: null,
+      });
+      return;
+    }
+    if (e.kind === "retractFloor") {
+      // The server-computed divergence (Bug 2). Only meaningful while
+      // retracting; ignore a floor that lands outside a morph (the cursor-0
+      // veto where no retract event fired).
+      if (this.snapshot.retracting) {
+        this.emit({ ...this.snapshot, retractKeepLen: e.keepLen });
+      }
+      return;
+    }
+  }
+
+  private onTurn(e: TurnLifecycleEvent): void {
+    if (e.kind === "started") {
+      this.hertaLandedThisTurn = false;
+      // Keep pendingUser — the optimistic echo stays until the real user
+      // block lands. Clear the (stale) streaming text AND any stale retract
+      // state — if a finished/failed event was dropped or reordered, a stuck
+      // retracting flag would silently route the new turn's deltas into retryText.
+      this.emit({
+        ...this.snapshot,
+        status: "thinking",
+        streamingText: null,
+        retracting: false,
+        retryText: null,
+        retractKeepLen: null,
+        turnStartedAt: Date.now(),
+        backendStartedAt: null,
+        backendError: false,
+        supervisorChecking: false,
+        // Same dropped-end-event reasoning as supervisorChecking above: a
+        // lost `recap.compaction end` otherwise strands the flag, and the
+        // RecapCompactRow shows where the galaxy should for the rest of the
+        // turn (review 2026-07-31 — the one sibling this list missed).
+        recapCompacting: false,
+        // NOTE: pendingUser is deliberately KEPT — it is the optimistic echo
+        // of the message that started this turn, and it clears when the
+        // turn's own user block lands. (So STREAM_VIEW_CLEARED, which drops
+        // it, is not applicable here.)
+        ...TURN_FAILURE_CLEARED,
+      });
+    } else if (e.kind === "finished") {
+      // Safety net: on success the user block already cleared pendingUser;
+      // this drops any dangling echo. Do NOT clear streamingText here on the
+      // normal path — the finalized record block clears it atomically
+      // (onRecord); clearing on finished could race the record event across
+      // IPC channels and flicker the normal end-of-stream transition. TWO
+      // exceptions clear it here because no block will ever come:
+      //   - an unresolved retract (an empty veto-retry commits nothing), and
+      //   - a turn that finished WITHOUT committing a herta block at all
+      //     (clean-to-empty, slice 4) — the phantom bubble + caret would
+      //     otherwise sit there forever. If the record event merely lost
+      //     the cross-channel race, its arrival re-renders the block anyway.
+      const retractCleanup =
+        this.snapshot.retracting ||
+        (!this.hertaLandedThisTurn && this.snapshot.streamingText !== null)
+          ? {
+              streamingText: null,
+              retracting: false,
+              retryText: null,
+              retractKeepLen: null,
+            }
+          : {};
+      this.emit({
+        ...this.snapshot,
+        status: "idle",
+        pendingUser: null,
+        turnStartedAt: null,
+        backendStartedAt: null,
+        backendActive: false,
+        // Safety net: if the recap.compaction / supervisor.check `end` event
+        // was dropped, the turn ending clears the transient hints so they
+        // can't linger.
+        recapCompacting: false,
+        supervisorChecking: false,
+        // Safety net: a permission gate exists only WITHIN a turn (the backend
+        // awaits its resolution), so a turn ending with the overlay still up
+        // means the `resolved` event was dropped/never sent. A stranded overlay
+        // is the worst stuck state in the GUI: it suppresses the composer,
+        // blocks session switching and new-session — only an app restart
+        // escaped. A late stale `resolved` after this is a harmless no-op.
+        overlay: null,
+        ...retractCleanup,
+      });
+    } else if (e.kind === "failed") {
+      // Safety net: on failure (no blocks emitted) drop the dangling echo and
+      // also clear any retract state (no finalized record block will come to
+      // clear it). `overlay: null` per the same stranded-gate rationale as
+      // "finished" — a turn that died mid-gate must not lock the app.
+      //
+      // turnFailed (slice 4): a genuine failure used to silently evaporate
+      // the half-typed sentence — surface a small inline notice instead. A
+      // user interrupt reports code "AbortError" (the actor's abort error
+      // name) and stays silent: the user did it deliberately.
+      this.emit({
+        ...this.snapshot,
+        status: "idle",
+        pendingUser: null,
+        streamingText: null,
+        retracting: false,
+        retryText: null,
+        retractKeepLen: null,
+        turnStartedAt: null,
+        backendStartedAt: null,
+        backendActive: false,
+        recapCompacting: false,
+        supervisorChecking: false,
+        overlay: null,
+        turnFailed: e.error.code !== "AbortError",
+        // The provider's HTTP status (official DeepSeek codes) when the
+        // failure carried one — the notice row maps it to a specific
+        // message (402 balance, 401 key, …) instead of "connection lost".
+        turnFailedStatus:
+          e.error.code !== "AbortError" ? (e.error.status ?? null) : null,
+        // And the provider's own code for the failures that have no HTTP
+        // status at all — a certificate or proxy problem reaches the row this
+        // way (audit S3).
+        turnFailedProviderCode:
+          e.error.code !== "AbortError" ? (e.error.providerCode ?? null) : null,
+      });
+    }
+  }
+
+  private onOverlay(e: OverlayEvent): void {
+    if (e.kind === "pending") {
+      this.emit({ ...this.snapshot, overlay: e.overlay });
+    } else if (e.kind === "resolved") {
+      this.emit({ ...this.snapshot, overlay: null });
+    }
+  }
+}

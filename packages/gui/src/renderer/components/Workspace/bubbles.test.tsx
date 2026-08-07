@@ -1,0 +1,266 @@
+import { screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import { renderWithLocale } from "../../i18n/test-util.js";
+import { GalaxyTravelRow } from "./GalaxyTravelRow.js";
+import { HertaBubble } from "./HertaBubble.js";
+import { UserBubble } from "./UserBubble.js";
+
+describe("UserBubble", () => {
+  it("renders text + timestamp, no avatar", () => {
+    renderWithLocale(<UserBubble text="hello" timestamp="10:24 AM" />);
+    expect(screen.getByText("hello")).toBeInTheDocument();
+    expect(screen.getByText("10:24 AM")).toBeInTheDocument();
+    expect(document.querySelector(".message-avatar")).not.toBeInTheDocument();
+  });
+
+  it("places the timestamp BELOW the bubble in an action row (hover-reveal), not inside it", () => {
+    const { container } = renderWithLocale(
+      <UserBubble text="hello" timestamp="10:24 AM" />,
+    );
+    const bubble = container.querySelector(".message-bubble");
+    const actions = container.querySelector(".message-actions");
+    expect(actions).not.toBeNull();
+    // The action row is NOT a descendant of the bubble — it sits below it.
+    expect(bubble?.contains(actions as Node)).toBe(false);
+    // It is the bubble's next sibling, both inside the row, and holds the time.
+    expect(bubble?.nextElementSibling).toBe(actions);
+    expect(actions?.parentElement?.classList.contains("message-row")).toBe(
+      true,
+    );
+    expect(actions?.querySelector(".message-actions__time")?.textContent).toBe(
+      "10:24 AM",
+    );
+  });
+
+  it("hides the action row when no timestamp and no rewind handler", () => {
+    renderWithLocale(<UserBubble text="hello" />);
+    expect(screen.getByText("hello")).toBeInTheDocument();
+    expect(document.querySelector(".message-actions")).toBeNull();
+  });
+
+  it("renders a rewind button (calls onRewind) only when onRewind is provided", () => {
+    const onRewind = vi.fn();
+    const { rerender } = renderWithLocale(
+      <UserBubble text="hi" timestamp="10:24 AM" />,
+    );
+    // No handler → no rewind button (just the timestamp).
+    expect(screen.queryByLabelText("Rewind to here")).toBeNull();
+    rerender(<UserBubble text="hi" timestamp="10:24 AM" onRewind={onRewind} />);
+    const btn = screen.getByLabelText("Rewind to here");
+    expect(btn.querySelector('svg[data-icon="rewind"]')).not.toBeNull();
+    // The button carries a styled tooltip (like the top-bar icons).
+    expect(screen.getByRole("tooltip")).toHaveTextContent("Rewind to here");
+    btn.click();
+    expect(onRewind).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a rewind button even with no timestamp (action row appears for it)", () => {
+    renderWithLocale(<UserBubble text="hi" onRewind={() => {}} />);
+    expect(screen.getByLabelText("Rewind to here")).toBeInTheDocument();
+    expect(document.querySelector(".message-actions")).not.toBeNull();
+  });
+});
+
+describe("HertaBubble", () => {
+  it("renders text + timestamp, no avatar", () => {
+    renderWithLocale(<HertaBubble text="certainly" timestamp="10:25 AM" />);
+    expect(screen.getByText("certainly")).toBeInTheDocument();
+    expect(screen.getByText("10:25 AM")).toBeInTheDocument();
+    expect(document.querySelector(".message-avatar")).not.toBeInTheDocument();
+  });
+
+  it("scrubs bidi/control characters before they reach the DOM (slice 2)", () => {
+    const RLO = String.fromCharCode(0x202e);
+    const ESC = String.fromCharCode(0x1b);
+    const { container } = renderWithLocale(
+      <HertaBubble text={`${RLO}倒着念${ESC}[31m`} timestamp="10:25 AM" />,
+    );
+    const textEl = container.querySelector(".message-text");
+    expect(textEl?.textContent).toBe("倒着念[31m");
+  });
+
+  it("slice 5: multi-paragraph text renders as a bubble stack, timestamp only on the tail", () => {
+    const { container } = renderWithLocale(
+      <HertaBubble
+        text={"第一段。\n\n第二段。\n\n第三段。"}
+        timestamp="10:25 AM"
+      />,
+    );
+    const rows = container.querySelectorAll(".message-row.herta-row");
+    expect(rows).toHaveLength(3);
+    // Intra-stack rows are tight; the tail row keeps the inter-message gap.
+    expect(rows[0]?.classList.contains("is-stack-mid")).toBe(true);
+    expect(rows[1]?.classList.contains("is-stack-mid")).toBe(true);
+    expect(rows[2]?.classList.contains("is-stack-mid")).toBe(false);
+    // One utterance = one action row, under the LAST bubble.
+    const actions = container.querySelectorAll(".message-actions");
+    expect(actions).toHaveLength(1);
+    expect(rows[2]?.contains(actions[0] as Node)).toBe(true);
+    expect(screen.getByText("第一段。")).toBeInTheDocument();
+    expect(screen.getByText("第三段。")).toBeInTheDocument();
+  });
+
+  it("slice 5: a leaked ``` fence renders as a monospace card OUTSIDE the bubble", () => {
+    const { container } = renderWithLocale(
+      <HertaBubble
+        text={"看这段：\n```ts\nconst x = 1;\n```\n就这样。"}
+        timestamp="10:25 AM"
+      />,
+    );
+    const code = container.querySelector(".code-standalone pre.code-block");
+    expect(code).not.toBeNull();
+    expect(code?.textContent).toBe("const x = 1;");
+    // The card header carries the fence's lang tag as a chip.
+    expect(
+      container.querySelector(".code-card__head .code-card__lang")?.textContent,
+    ).toBe("ts");
+    // The fence markers themselves never render.
+    expect(container.textContent).not.toContain("```");
+    // Three rows — prose bubble, bare code card, prose bubble. The code row
+    // carries NO bubble chrome (user feedback 2026-07-06: code is not speech).
+    const rows = container.querySelectorAll(".message-row.herta-row");
+    expect(rows).toHaveLength(3);
+    expect(rows[1]?.querySelector(".message-bubble")).toBeNull();
+    expect(container.querySelectorAll(".message-bubble")).toHaveLength(2);
+  });
+
+  it("slice 5: a lang-less fence falls back to the 'code' chip label", () => {
+    const { container } = renderWithLocale(
+      <HertaBubble text={"```\nplain()\n```"} timestamp="10:25 AM" />,
+    );
+    expect(container.querySelector(".code-card__lang")?.textContent).toBe(
+      "code",
+    );
+  });
+
+  it("inline backtick spans render monospace WITHOUT their delimiters", () => {
+    const { container } = renderWithLocale(
+      <HertaBubble text={"用 `read_file` 去看。"} timestamp="10:25 AM" />,
+    );
+    const inline = container.querySelector("code.inline-code");
+    // Slice 5 painted "`read_file`"; the delimiters read as unrendered
+    // markup next to any other chat client (owner 2026-07-27). The RECORD
+    // still carries them — this is display-only (D7).
+    expect(inline?.textContent).toBe("read_file");
+    expect(container.textContent).toContain("用 read_file 去看。");
+    expect(container.textContent).not.toContain("`");
+    // Single paragraph → still exactly one bubble (pre-stack DOM shape).
+    expect(container.querySelectorAll(".message-row.herta-row")).toHaveLength(
+      1,
+    );
+  });
+
+  it("slice 5: a single-paragraph reply keeps the pre-stack DOM shape", () => {
+    const { container } = renderWithLocale(
+      <HertaBubble text="就一句。" timestamp="10:25 AM" />,
+    );
+    const rows = container.querySelectorAll(".message-row.herta-row");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.classList.contains("is-stack-mid")).toBe(false);
+    expect(
+      rows[0]?.querySelector(".message-bubble.herta-bubble .message-text")
+        ?.textContent,
+    ).toBe("就一句。");
+  });
+
+  it("hides the action row when no timestamp is given (pre-timestamp block)", () => {
+    renderWithLocale(<HertaBubble text="certainly" />);
+    expect(screen.getByText("certainly")).toBeInTheDocument();
+    expect(document.querySelector(".message-actions")).toBeNull();
+  });
+
+  it("places the timestamp BELOW the bubble in an action row, and never a rewind button", () => {
+    const { container } = renderWithLocale(
+      <HertaBubble text="certainly" timestamp="10:25 AM" />,
+    );
+    const bubble = container.querySelector(".message-bubble");
+    const actions = container.querySelector(".message-actions");
+    expect(actions).not.toBeNull();
+    expect(bubble?.contains(actions as Node)).toBe(false);
+    expect(bubble?.nextElementSibling).toBe(actions);
+    expect(actions?.parentElement?.classList.contains("message-row")).toBe(
+      true,
+    );
+    // Rewind is a user-turn affordance only.
+    expect(screen.queryByLabelText("Rewind to here")).toBeNull();
+  });
+});
+
+describe("bubbles render @板砖 as a chip", () => {
+  it("UserBubble chips a bare mention", () => {
+    renderWithLocale(<UserBubble text="重构登录 @板砖" timestamp="10:24 AM" />);
+    const chip = document.querySelector(".banzhuan-mention");
+    expect(chip).not.toBeNull();
+    expect(chip?.textContent).toBe("@板砖");
+  });
+
+  it("UserBubble chips xxx@板砖 (no leading space)", () => {
+    renderWithLocale(<UserBubble text="go@板砖" timestamp="10:24 AM" />);
+    expect(document.querySelector(".banzhuan-mention")?.textContent).toBe(
+      "@板砖",
+    );
+  });
+
+  it("HertaBubble chips a bare mention (Herta calling case)", () => {
+    renderWithLocale(
+      <HertaBubble text="让 @板砖 去看看" timestamp="10:25 AM" />,
+    );
+    expect(document.querySelector(".banzhuan-mention")?.textContent).toBe(
+      "@板砖",
+    );
+  });
+
+  it("a backtick-quoted `@板砖` is NOT chipped", () => {
+    renderWithLocale(
+      <HertaBubble text="像 `@板砖` 这样写" timestamp="10:25 AM" />,
+    );
+    expect(document.querySelector(".banzhuan-mention")).toBeNull();
+  });
+
+  it("plain text with no mention renders unchanged", () => {
+    renderWithLocale(<UserBubble text="just text" timestamp="10:24 AM" />);
+    expect(screen.getByText("just text")).toBeInTheDocument();
+    expect(document.querySelector(".banzhuan-mention")).toBeNull();
+  });
+});
+
+describe("GalaxyTravelRow", () => {
+  it("renders the Chinese transfer text", () => {
+    renderWithLocale(<GalaxyTravelRow />);
+    expect(
+      screen.getByText("Message is crossing the galaxy…"),
+    ).toBeInTheDocument();
+  });
+
+  it("plays the entrance (is-shown) after mount", () => {
+    vi.stubGlobal("matchMedia", () => ({
+      matches: false,
+      addEventListener() {},
+      removeEventListener() {},
+    }));
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+      cb(0);
+      return 1;
+    });
+    const { container } = renderWithLocale(<GalaxyTravelRow />);
+    const row = container.querySelector(".status-row") as HTMLElement;
+    expect(row.classList.contains("is-shown")).toBe(true);
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("is shown immediately under reduced motion", () => {
+    vi.stubGlobal("matchMedia", () => ({
+      matches: true,
+      addEventListener() {},
+      removeEventListener() {},
+    }));
+    const { container } = renderWithLocale(<GalaxyTravelRow />);
+    expect(
+      (
+        container.querySelector(".status-row") as HTMLElement
+      ).classList.contains("is-shown"),
+    ).toBe(true);
+    vi.unstubAllGlobals();
+  });
+});

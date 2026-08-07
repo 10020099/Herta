@@ -1,0 +1,66 @@
+import { useState } from "react";
+import type { TFn } from "../../i18n/LocaleProvider.js";
+import { useUnpinConversation } from "./ConversationPin.js";
+import { DIFF_COLLAPSE_THRESHOLD, summarizeDiff } from "./diff-summary.js";
+
+export interface CollapsibleBodyProps {
+  readonly body: string;
+  /** Class for the <pre> (e.g. "system-body" / "backend-body"). */
+  readonly preClassName: string;
+  /** SESSION-scoped translator (from `makeT(lang)`), passed down like the
+   *  rest of the activity line's strings: this renders inside the record
+   *  projection, so its labels follow the session interaction language, not
+   *  the UI locale (ADR 0019 / ADR 0018). */
+  readonly t: TFn;
+  readonly threshold?: number;
+}
+
+/**
+ * Renders a block body. A long fenced diff (> threshold lines) collapses to a
+ * header + a summary disclosure; clicking expands the full body inline. Short
+ * diffs and non-diff bodies render in full with no toggle.
+ */
+export function CollapsibleBody(props: CollapsibleBodyProps): JSX.Element {
+  const t = props.t;
+  const unpin = useUnpinConversation();
+  const threshold = props.threshold ?? DIFF_COLLAPSE_THRESHOLD;
+  const summary = summarizeDiff(props.body);
+  const [expanded, setExpanded] = useState(false);
+
+  if (!summary.hasDiff || summary.diffLineCount <= threshold) {
+    return <pre className={props.preClassName}>{props.body}</pre>;
+  }
+
+  return (
+    <div className="collapsible-body">
+      {summary.preText.length > 0 && (
+        <pre className={props.preClassName}>{summary.preText}</pre>
+      )}
+      <button
+        type="button"
+        className="diff-disclosure"
+        aria-expanded={expanded}
+        onClick={() => {
+          // Expanding grows the record BELOW this toggle by up to thousands
+          // of px with no scroll event — unpin so the follow machinery can't
+          // later yank the viewport past the diff (see ConversationPin.tsx).
+          if (!expanded) unpin();
+          setExpanded((v) => !v);
+        }}
+      >
+        {expanded
+          ? `▾ ${t("workspace.diffCollapse")}`
+          : `▸ ${t("workspace.diffExpand", {
+              n: summary.diffLineCount,
+              add: summary.addCount,
+              del: summary.delCount,
+            })}`}
+      </button>
+      {expanded && (
+        <pre
+          className={props.preClassName}
+        >{`\`\`\`diff\n${summary.diffText}\n\`\`\``}</pre>
+      )}
+    </div>
+  );
+}

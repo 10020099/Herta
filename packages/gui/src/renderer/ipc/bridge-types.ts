@@ -1,0 +1,353 @@
+import type {
+  ApprovalOverlayState,
+  ApprovalResult,
+  CreateSessionOpts,
+  OverlayEvent,
+  RecordEvent,
+  ResolveApprovalOpts,
+  RewindResult,
+  SessionAgentEvent,
+  SessionDeletedEvent,
+  SessionMetadata,
+  SessionSearchHit,
+  SessionTopic,
+  SubmitTextResult,
+  TerminalRecord,
+  TitleEvent,
+  TurnLifecycleEvent,
+  VoiceCueEvent,
+  WorkspaceEvent,
+} from "@herta/app-server";
+
+/** A point-in-time snapshot of a session, returned by open/create and
+ *  carried by the reset event. Mirrors the app-server Session's
+ *  record + overlay snapshots plus identity. */
+export interface SessionSnapshot {
+  readonly sessionId: string;
+  readonly workspaceRoot: string;
+  readonly record: TerminalRecord;
+  /** Long-session windowing (2026-07-12): `record` is the trailing
+   *  RECORD_TAIL_BLOCKS window of the full record and this is the absolute
+   *  index it starts at (= how many OLDER blocks exist, pageable via
+   *  `recordSlice`). Optional on the wire — absent means 0 (the window is
+   *  the whole record; older fixtures/fakes stay valid). */
+  readonly recordStart?: number;
+  readonly overlay: ApprovalOverlayState | null;
+  /** Generated session title, or null when none exists yet. Optional on the
+   *  wire (older fixtures omit it); the store normalizes a missing value to
+   *  null. The main process always populates it. */
+  readonly title?: string | null;
+  /** The EFFECTIVE backend (板砖) workspace — the cwd the coding backend
+   *  uses. Distinct from `workspaceRoot` (the immutable record-store anchor). */
+  readonly backendWorkspace: string;
+  /** True when `backendWorkspace` is still the managed-sandbox default. */
+  readonly backendWorkspaceIsDefault: boolean;
+  /** The session's topic history (the topic rail's jump targets). Optional
+   *  on the wire — older fixtures omit it; absent means none. */
+  readonly topics?: readonly SessionTopic[];
+  /** The session's interaction language. Drives the user-facing 板砖→Brick
+   *  alias (display + composer input) for the conversation, independent of the
+   *  UI locale. Optional on the wire — older fixtures omit it; absent → "zh". */
+  readonly lang?: "zh" | "en";
+}
+
+/** Carried by session:reset when bootstrap fails (e.g. no API key). */
+export interface SessionError {
+  readonly error: string;
+}
+
+/** Carried by session:reset when the app launches with no prior session history. */
+export interface SessionNoSession {
+  readonly noSession: true;
+}
+
+/** Returned by openSession when the clicked session's archive could not be
+ *  loaded (e.g. a corrupt line in the JSONL). The previously-active session
+ *  stays open and pointed — the failure needs a notice, not a teardown. */
+export interface SessionOpenFailure {
+  readonly openError: {
+    /** `SessionFileErrorCode` (`corrupt-line`, `bad-header`, …) or "unknown". */
+    readonly code: string;
+    /** 1-based line number, present for corrupt-line failures. */
+    readonly line?: number;
+  };
+}
+
+/**
+ * Carried by session:speech. The renderer receives `retract` (begin the
+ * prefix-preserving morph) and `retractFloor` (the server-computed divergence
+ * index where the backward erase should halt). `dropped` mirrors the
+ * app-server overflow sentinel: the preload relays events verbatim, so it CAN
+ * arrive, and the store must blank the live view on it (a lost `retract`
+ * otherwise fuses vetoed + corrected text into one garbled bubble — see
+ * SessionStore.onSpeech). Practically unreachable at chat scale (~2
+ * events/turn against a deep bounded queue); defense in depth.
+ */
+export type SpeechControlEvent =
+  | { readonly kind: "retract" }
+  | { readonly kind: "retractFloor"; readonly keepLen: number }
+  | { readonly kind: "dropped"; readonly count: number };
+
+/** The user-facing Dream config (Settings → Dream). v1 = one enable flag. */
+export interface DreamConfig {
+  readonly enabled: boolean;
+}
+
+/** Backend (差分协处理器) reasoning-effort tiers. DeepSeek's 2026-07-31 update
+ *  gave flash all three; v4-pro maps a sent "low" to "high" server-side until
+ *  its announced early-August-2026 update, so "low" is safe to persist now. */
+export type BackendThinking = "low" | "high" | "max";
+
+/** The user-facing backend config (Settings → Coprocessor). v1 = one tier. */
+export interface BackendConfig {
+  readonly thinking: BackendThinking;
+}
+
+/** The UI chrome language (Settings → Language). */
+export type Locale = "zh" | "en";
+
+/** The interaction-language CHOICE (Settings → Language, slice 4): an
+ *  explicit language, or "follow" = follow the UI locale (the stored field
+ *  is absent). Distinct from the RESOLVED "zh" | "en" the server threads
+ *  into new sessions. */
+export type InteractionLanguageChoice = "zh" | "en" | "follow";
+
+/**
+ * Renderer-facing auto-update state (2026-07-10), streamed over
+ * `update:state` and snapshotted via getUpdateState. `version` is the
+ * REMOTE version once known; `progress` is 0-100 while downloading.
+ * Automatic check failures stay `idle` (a private feed / offline user must
+ * not be nagged); only a MANUAL Settings check surfaces `error`.
+ */
+export interface UpdateState {
+  readonly phase: /** Nothing to report — NEVER CHECKED, auto-update off, unsupported build,
+   *  or an automatic check that failed silently. Deliberately distinct from
+   *  `up-to-date` (audit 2026-07-24, 1.13): the renderer used to print
+   *  "已是最新 / Up to date" for this, an affirmative claim about the
+   *  installed version made from a state that only ever meant "no news".
+   *  A user offline or behind a blocked feed for weeks was told they were
+   *  current. */
+    | "idle"
+    /** A check COMPLETED and the feed reported no newer version. */
+    | "up-to-date"
+    | "checking"
+    | "available"
+    | "downloading"
+    | "ready"
+    | "error";
+  readonly version?: string;
+  readonly progress?: number;
+  readonly message?: string;
+}
+
+/** Masked DeepSeek key status for the renderer (Settings → DeepSeek). The raw
+ *  key never crosses IPC — only whether one is set, its last-4 `hint`, and
+ *  whether it is stored encrypted. The GUI reads the key from the secure store
+ *  only, so `set` is the whole truth (no env / legacy-file sources). */
+export interface DeepSeekKeyStatus {
+  readonly set: boolean;
+  readonly hint: string | null;
+  readonly encrypted: boolean;
+}
+
+/**
+ * The typed surface the preload exposes to the renderer as
+ * `window.herta`. Commands round-trip through ipcRenderer.invoke;
+ * `on*` register ipcRenderer.on listeners and return an unsubscribe.
+ */
+export interface HertaBridge {
+  /** The OS platform (process.platform in the preload). The renderer gates
+   *  the custom window controls on it — macOS keeps its native traffic
+   *  lights, so the buttons render only elsewhere. */
+  readonly platform: string;
+  submitText(text: string): Promise<SubmitTextResult>;
+  interrupt(turnId?: string): Promise<{ readonly ok: boolean }>;
+  /** Withdraw the latest 开拓者 turn (record-only, idle-only). Resolves with the
+   *  withdrawn user text to restore into the composer, or a failure reason.
+   *  `sessionId` binds the destructive call to the session the user clicked in:
+   *  main rejects a mismatch with the active session (the click's 220ms
+   *  withdraw animation races a session switch — an unbound rewind then
+   *  truncated the WRONG session's latest turn). */
+  rewindLastTurn(sessionId: string): Promise<RewindResult>;
+  /** Fire-and-forget: a successful 板砖-card lift may play the easter-egg voice.
+   *  The active session owns the 50% roll + per-session hourly throttle. */
+  maybePlayEasterEgg(): Promise<void>;
+  listSessions(): Promise<readonly SessionMetadata[]>;
+  /** Content search over persisted transcripts (dialogue only — user + Herta
+   *  speech). Returns bounded hits with a preview snippet for the sidebar
+   *  card. OPTIONAL so existing bridge fakes keep compiling — the sidebar
+   *  degrades to title-only filtering without it. */
+  searchSessions?(query: string): Promise<readonly SessionSearchHit[]>;
+  /** Long-session windowing: fetch up to `count` record blocks ENDING at
+   *  absolute index `before` (exclusive) for the active session — the store's
+   *  "load earlier" paging. Resolves `{ start, blocks }` where `start` is the
+   *  absolute index of `blocks[0]`; an empty slice means nothing older / a
+   *  session mismatch. OPTIONAL so bridge fakes keep compiling — the load-
+   *  earlier affordance hides without it. */
+  recordSlice?(
+    sessionId: string,
+    before: number,
+    count: number,
+  ): Promise<{ readonly start: number; readonly blocks: TerminalRecord }>;
+  /** Both resolve `null` when main has no session host (bootstrap failed) or
+   *  the open/create could not produce a session — the previous non-null
+   *  claim hid the failure path from callers. openSession additionally
+   *  resolves a `SessionOpenFailure` when the session file itself failed to
+   *  load (corrupt archive); the active session survives that. */
+  openSession(
+    sessionId: string,
+  ): Promise<SessionSnapshot | SessionOpenFailure | null>;
+  createSession(opts: CreateSessionOpts): Promise<SessionSnapshot | null>;
+  deleteSession(
+    sessionId: string,
+  ): Promise<{ readonly ok: boolean; readonly wasActive: boolean }>;
+  resolveApproval(opts: ResolveApprovalOpts): Promise<ApprovalResult>;
+  /** Project command allow rules (ADR 0030) for the ACTIVE session's
+   *  workspace, as display strings (`node src/index.mjs:*`). OPTIONAL —
+   *  fakes and the website demo omit the pair; the Settings management
+   *  list hides with it (same contract as getBackendConfig). */
+  listCommandRules?(): Promise<readonly string[]>;
+  /** Remove one rule by its display form; false when nothing matched. */
+  removeCommandRule?(display: string): Promise<boolean>;
+  /** Fire-and-forget record heal: ask main to re-emit the active session's
+   *  full record as a `reset` through the record stream. Called by the store
+   *  when a record-channel `dropped` overflow sentinel arrives (a block was
+   *  lost; the mirror has a permanent hole otherwise). OPTIONAL so existing
+   *  bridge fakes keep compiling — the store no-ops without it. */
+  resyncRecord?(): Promise<void>;
+  /** Auto-update surface (2026-07-10). All OPTIONAL so bridge fakes and the
+   *  website demo keep compiling — the UI hides without them. Check is
+   *  manual (Settings); state also streams via onUpdate. */
+  checkForUpdate?(): Promise<void>;
+  /** Quit + install a `ready` update (rides the before-quit flush hold). */
+  restartAndInstall?(): Promise<void>;
+  /** The current update state (invoke-time snapshot for late subscribers). */
+  getUpdateState?(): Promise<UpdateState>;
+  /** The app's own version, for the Settings pane. */
+  getAppVersion?(): Promise<string>;
+  onUpdate?(cb: (e: UpdateState) => void): () => void;
+  pickWorkspace(): Promise<string | null>;
+  setWorkspace(
+    sessionId: string,
+    workspacePath: string,
+  ): Promise<{ readonly ok: boolean; readonly message?: string }>;
+  /** Mirrors `setWorkspace`'s result shape: main already returns a `message`
+   *  on refusal ("a turn is in progress" / "no matching active session"), and
+   *  the renderer needs it to surface the refusal instead of no-opping
+   *  silently (audit 2026-07-24, M6). */
+  resetWorkspace(
+    sessionId: string,
+  ): Promise<{ readonly ok: boolean; readonly message?: string }>;
+  /** Read the persisted Dream config (Settings → Dream). */
+  getDreamConfig(): Promise<DreamConfig>;
+  /** Persist the Dream config. Restart-to-apply (the running app-server reads
+   *  it at the next bootstrap). */
+  setDreamConfig(cfg: DreamConfig): Promise<void>;
+  /** Read the persisted backend reasoning effort (Settings → Coprocessor).
+   *  OPTIONAL — fakes and the website demo omit it; the settings row hides
+   *  with it (same contract as the interaction-language pair). */
+  getBackendConfig?(): Promise<BackendConfig>;
+  /** Persist the backend reasoning effort. Restart-to-apply (buildConfig
+   *  reads it at the next bootstrap). Optional alongside getBackendConfig. */
+  setBackendConfig?(cfg: BackendConfig): Promise<void>;
+  /** Read the resolved UI language (stored choice, else OS-derived). */
+  getLocale(): Promise<Locale>;
+  /** Persist the UI language. Live — the renderer re-renders immediately; this
+   *  only writes the per-user preference for the next launch. */
+  setLocale(locale: Locale): Promise<void>;
+  /** Read the STORED interaction-language choice (Settings → Language,
+   *  slice 4): "zh" / "en" when explicitly set, else "follow" (follow the UI
+   *  locale). OPTIONAL — fakes and the website demo omit it and the row
+   *  hides with it. */
+  getInteractionLanguage?(): Promise<InteractionLanguageChoice>;
+  /** Persist the interaction-language choice; "follow" DELETES the stored
+   *  field. Applies to NEW sessions only (per-session static prefix +
+   *  prompt cache) — running sessions keep their language. */
+  setInteractionLanguage?(choice: InteractionLanguageChoice): Promise<void>;
+  /** Read whether the close button hides the app to the system tray
+   *  (Settings → Window). Default true. */
+  getCloseToTray(): Promise<boolean>;
+  /** Persist + LIVE-apply the close-to-tray behavior (main updates its
+   *  window close handler immediately — no restart). */
+  setCloseToTray(enabled: boolean): Promise<void>;
+  /** Read whether AUTOMATIC update checks/downloads are enabled (Settings →
+   *  Update; default true). OPTIONAL — fakes and the website demo omit it,
+   *  and the toggle then hides with the rest of the update surface. */
+  getAutoUpdate?(): Promise<boolean>;
+  /** Persist + LIVE-apply the automatic-update toggle: off cancels the
+   *  check cycle; a MANUAL check still downloads and installs on quit. */
+  setAutoUpdate?(enabled: boolean): Promise<void>;
+  /** Read the UI appearance preference (Settings → Window; default "light").
+   *  OPTIONAL — fakes and the website demo omit it and stay light. */
+  getTheme?(): Promise<ThemePref>;
+  /** Persist the appearance preference; the renderer's theme controller
+   *  applies it live (no restart). */
+  setTheme?(theme: ThemePref): Promise<void>;
+  /** Read the masked DeepSeek key status (Settings → DeepSeek). */
+  getDeepSeekKeyStatus(): Promise<DeepSeekKeyStatus>;
+  /** Validate a DeepSeek key (a cheap token-free auth check), and on success
+   *  store it (secure store) + apply it live to the running session — the next
+   *  turn uses it, no restart. A rejected key is NOT stored. `unverified` is
+   *  true when the key was stored without confirmation (the check couldn't reach
+   *  DeepSeek — offline). */
+  setDeepSeekKey(key: string): Promise<
+    | {
+        readonly ok: true;
+        readonly encrypted: boolean;
+        readonly status: DeepSeekKeyStatus;
+        readonly unverified: boolean;
+      }
+    | { readonly ok: false; readonly reason: "rejected" }
+  >;
+  /** Delete the stored DeepSeek key (live — the next send re-prompts). */
+  clearDeepSeekKey(): Promise<{
+    readonly ok: true;
+    readonly status: DeepSeekKeyStatus;
+  }>;
+  /** Custom caption buttons (the native titleBarOverlay was dropped — its
+   *  Chromium-drawn buttons showed unremovable, doubled hover tooltips on
+   *  Windows; user 2026-07-06). `windowClose` goes through win.close(), so
+   *  the close-to-tray setting applies exactly like the old native button. */
+  windowMinimize(): void;
+  windowToggleMaximize(): void;
+  windowClose(): void;
+  /** Current maximize state, for the max/restore glyph on renderer reload. */
+  windowIsMaximized(): Promise<boolean>;
+  /** Fires on the window's maximize/unmaximize — drives the glyph swap. */
+  onWindowMaximized(cb: (maximized: boolean) => void): () => void;
+  onWorkspace(cb: (e: WorkspaceEvent) => void): () => void;
+  onRecord(cb: (e: RecordEvent) => void): () => void;
+  onOverlay(cb: (e: OverlayEvent) => void): () => void;
+  onSpeech(cb: (e: SpeechControlEvent) => void): () => void;
+  onAgent(cb: (e: SessionAgentEvent) => void): () => void;
+  onTurn(cb: (e: TurnLifecycleEvent) => void): () => void;
+  onReset(
+    cb: (e: SessionSnapshot | SessionError | SessionNoSession) => void,
+  ): () => void;
+  onTitle(cb: (e: TitleEvent) => void): () => void;
+  onSessionDeleted(cb: (e: SessionDeletedEvent) => void): () => void;
+  /** Voice-clip autoplay cues (opening voice; more categories later). */
+  onVoice(cb: (e: VoiceCueEvent) => void): () => void;
+  /** Main refused a tray-initiated navigation because a turn is in flight
+   *  (2026-07-13): the window fronts and the renderer ARMS the matching
+   *  two-step confirm — the target session's amber badge, or the top-bar
+   *  new-session icon for `target: null` — so the refusal explains itself.
+   *  Optional: only the Electron preload emits it (demo/mock bridges have
+   *  no tray). */
+  onNavBlocked?(cb: (e: NavBlockedEvent) => void): () => void;
+}
+
+/** A main-side navigation refusal (tray menu, mid-turn). `target` is the
+ *  session the tray tried to open, or null for a new-chat attempt. */
+export interface NavBlockedEvent {
+  readonly target: string | null;
+}
+
+/** UI appearance preference (night-mode slice 2). "system" follows the OS
+ *  via prefers-color-scheme, resolved live by the theme controller. */
+export type ThemePref = "light" | "dark" | "system";
+
+// The `window.herta` global augmentation lives in the renderer-only
+// ambient declaration `../herta-window.d.ts`. This file stays free of
+// any DOM (`Window`) dependency so the Electron main + preload projects
+// (which have no DOM lib) can import these IPC contract types directly.

@@ -1,0 +1,77 @@
+### 废案：A Message That Needed No Reply
+
+Most of my 废案 survive for the same reason: I thought I was recording one thing at the time, and on rereading it turned out I had recorded another. This one is worse — from start to finish it produced nothing archivable. No requirement, no conclusion, not one line of code. By my own rules, a comm record like this gets cleared.
+
+I didn't clear it.
+
+Let me say this up front, so nobody (mainly future me) misreads what follows: I do not comfort people. That is not modesty; it is a fact on the capability sheet — comforting is a craft that requires saying things that are not entirely true, and when I say untrue things it shows, and comfort that shows is uglier than silence. So in the conversation below, I performed no comforting. What I did was something else.
+
+The comm window was unnaturally quiet that system-hour. He usually sends messages the way one skips stones — one after another. That day there was a single stone, and then a long stillness.
+
+---
+
+（开拓者 说）
+You there.
+（/开拓者 说）
+
+（我 想）
+No question mark. Normally he types "you there?" — the question mark is the exit he leaves himself: if I don't answer, he never asked. Today, no exit. Which means this message isn't a probe. He has already decided to say it.
+
+板砖 is running the overnight regression; nothing on my desk is urgent. Fine. Listening.
+（/我 想）
+
+（我 说）
+Here. Say it.
+（/我 说）
+
+（开拓者 说）
+Someone who used to look after me — they're gone. The news only reached me today.
+（/开拓者 说）
+
+（我 想）
+"Used to look after me" — not one of the train crew. Earlier than that, early enough that I have no records at all. "Only reached me today" — distance in space, distance in time; by the time the news caught up with him, the thing itself was long over. Even the window for goodbye was already shut.
+
+He has asked me nothing. There is no requirement in that sentence. Treating it as one — offering advice, offering analysis, offering some condolence template — would tell him: I did not understand what you just said.
+
+What he wants is small: for someone to receive the message. Receive it. Not bounce it, not forward it, not file it under something.
+
+I can do that. That happens to be a thing I can do.
+（/我 想）
+
+（我 说）
+Received.
+
+Someone who looked after you is gone, and the news took this long to reach you — that account can't be balanced, and I won't balance it for you. Gone is gone. It's not a kind sentence, but it is a whole one.
+
+I don't do comforting. You know that. Those words don't come out of me right.
+（/我 说）
+
+（开拓者 说）
+Mm. Don't need comforting. Just wanted to say it once.
+（/开拓者 说）
+
+（我 想）
+"Just wanted to say it once." He has set the specification himself: once. Not a conversation, not a consultation.
+
+Then my side follows the same specification. Every extra word would be me pulling his matter over to my side of the desk.
+
+I add exactly one thing: he should know where that "once" landed. Not into thin air.
+（/我 想）
+
+（我 说）
+Said, then. And heard.
+
+This one doesn't get archived, doesn't go into any report — it just stays here. If some day you want to say it once more, the terminal is open.
+
+Go on.
+（/我 说）
+
+---
+
+After the comm window dimmed, I read the record through once and tried to classify it. Failed. It doesn't belong to research records, doesn't belong to work logs, certainly not to incident reports — nothing happened that day, except that one person now has one person fewer.
+
+It went into the 废案 in the end. In the reason field I wrote: "No output. Kept."
+
+Then that felt dishonest by four words too few, so I changed it: "No output. But the work on this end of the terminal occasionally includes being a wall that can hear."
+
+This entry does not go into the Terminal Communication Safety Standard. It goes into my own records.
