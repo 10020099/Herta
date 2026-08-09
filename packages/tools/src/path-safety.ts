@@ -69,6 +69,33 @@ const DENY_SEGMENTS_EXACT = [".git", ".herta"];
  */
 const HARNESS_READ_PREFIXES = [".herta/logs/", ".herta/tool-results/"];
 
+/**
+ * User-supplied documents the 开拓者 attached to a session (ADR 0033).
+ *
+ * A THIRD class, deliberately not folded into HARNESS_READ_PREFIXES above,
+ * because the two carve-outs answer different questions and one flag meaning
+ * both would leave the next reader guessing which applied:
+ *
+ *   - HARNESS_READ_PREFIXES is for NAVIGATING harness internals — output the
+ *     harness wrote for the model, which the model has already seen in
+ *     truncated form. `read_file` only. `show_excerpt` is deliberately
+ *     excluded (ADR 0027 §5, pinned by a test): presenting harness internals
+ *     to the user is not what that tool is for.
+ *   - This one is USER CONTENT that merely happens to live under a harness
+ *     directory, so it is stored session-scoped and disappears with the
+ *     session. Presenting it back to the user is precisely the point — a
+ *     document Herta can read but can never quote would answer half the
+ *     request — so `show_excerpt` DOES get this one.
+ *
+ * Same guarantees as the harness carve-out and for the same reasons: judged on
+ * the POST-realpath relative path, so a symlink planted in the attachments dir
+ * is resolved to its target and judged on where it lands; must be a file
+ * strictly beneath the prefix; skips only the structural `.herta` denial, so
+ * the credential-basename and credential-directory checks still run over
+ * whatever the user handed us.
+ */
+const ATTACHMENT_READ_PREFIXES = [".herta/attachments/"];
+
 function isWindows(): boolean {
   return process.platform === "win32";
 }
@@ -119,6 +146,12 @@ export interface ResolveSafePathOpts {
    * never by any mutating or listing tool. See HARNESS_READ_PREFIXES.
    */
   allowHarnessReadPaths?: boolean;
+  /**
+   * Allow READ access to session attachments (`.herta/attachments/`).
+   * Passed by read_file AND show_excerpt — the asymmetry with the flag above
+   * is the whole point of there being two. See ATTACHMENT_READ_PREFIXES.
+   */
+  allowAttachmentPaths?: boolean;
 }
 
 export async function resolveSafePath(
@@ -170,19 +203,22 @@ export async function resolveSafePath(
     // trimmed, NTFS ADS suffix resolved) — no-op on POSIX.
     const segments = rel.split("/").map(winCanonicalizeSegment);
 
-    // Harness-evidence read carve-out: judged on the canonicalized,
-    // post-realpath segments (so `.herta ` / ADS tricks and symlink hops
-    // are already collapsed). Must be a FILE strictly beneath one of the
-    // allowed prefixes. Skips only the structural `.herta` denial below —
-    // the credential checks still run.
+    // Read carve-outs: judged on the canonicalized, post-realpath segments
+    // (so `.herta ` / ADS tricks and symlink hops are already collapsed).
+    // Must be a FILE strictly beneath one of the allowed prefixes. Skips only
+    // the structural `.herta` denial below — the credential checks still run.
     const canonicalRel = segments.join("/");
-    const inHarnessReadCarveOut =
-      opts.allowHarnessReadPaths === true &&
-      HARNESS_READ_PREFIXES.some(
+    const beneathAny = (prefixes: readonly string[]): boolean =>
+      prefixes.some(
         (p) =>
           caseNormalize(canonicalRel).startsWith(caseNormalize(p)) &&
           canonicalRel.length > p.length,
       );
+    const inReadCarveOut =
+      (opts.allowHarnessReadPaths === true &&
+        beneathAny(HARNESS_READ_PREFIXES)) ||
+      (opts.allowAttachmentPaths === true &&
+        beneathAny(ATTACHMENT_READ_PREFIXES));
 
     for (let i = 0; i < segments.length; i++) {
       const seg = segments[i] as string;
@@ -190,10 +226,10 @@ export async function resolveSafePath(
 
       // `.git` / `.herta` are STRUCTURAL tree denials kept case-sensitive on
       // POSIX (a repo could hold an unrelated `.GIT` dir, and denying it would
-      // break legit work) — caseNormalize only folds on Windows. The harness-
-      // evidence carve-out (reads only, see above) skips exactly this check;
-      // credential denials below are never skipped.
-      if (!inHarnessReadCarveOut) {
+      // break legit work) — caseNormalize only folds on Windows. Either read
+      // carve-out (see above) skips exactly this check; credential denials
+      // below are never skipped, for either.
+      if (!inReadCarveOut) {
         for (const denied of DENY_SEGMENTS_EXACT) {
           if (caseNormalize(denied) === segLower) {
             return {

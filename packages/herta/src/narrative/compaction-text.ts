@@ -28,8 +28,21 @@ export const COMPACTION_TEXT = {
   zh: {
     /** Header of a compacted contiguous-system-run summary block. */
     header: "[历史已压缩 · 板砖]",
-    /** Appended to an excerpt citation once its text is gone. */
+    /** Appended to an excerpt citation once its text is gone. Shared with the
+     *  attachment citation: the fact is identical ("the body is no longer in
+     *  front of you"), and two phrasings for one fact would only invite the
+     *  model to read a distinction into them. */
     excerptElided: "正文已略去",
+    /** Why an attachment carries no text at all. Distinct from the elision
+     *  above, and the distinction is load-bearing: elided means she WAS shown
+     *  it and no longer is; these mean it was never readable, so there is
+     *  nothing she could ever have seen. */
+    attachmentUnreadable: {
+      binary: "非文本文件，未取正文",
+      too_large: "文件过大，未取正文",
+      empty: "未提取到文本",
+      read_error: "读取失败",
+    },
     /** Digest of a `role: "noop-marker"` block. */
     noOutput: "（板砖无产出）",
     /** Footer replacing the tail of an over-long ```diff fence. */
@@ -39,6 +52,12 @@ export const COMPACTION_TEXT = {
   en: {
     header: "[history compacted · 板砖]",
     excerptElided: "body elided",
+    attachmentUnreadable: {
+      binary: "not a text file, no body taken",
+      too_large: "file too large, no body taken",
+      empty: "no text extracted",
+      read_error: "could not be read",
+    },
     noOutput: "(板砖 produced nothing)",
     diffSuppressed: (suppressed: number) =>
       `… (${suppressed} more lines suppressed — full diff in evidence)`,

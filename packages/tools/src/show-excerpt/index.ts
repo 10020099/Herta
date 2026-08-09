@@ -56,10 +56,16 @@ function cutAtChar(text: string, max: number): string {
  * accuracy.
  *
  * `readOnly` and the ordinary path guard: this is a read, and it is exempt
- * from nothing. It does NOT set `allowHarnessReadPaths` — read_file has that
- * carve-out so the backend can follow the harness's own
+ * from almost nothing. It does NOT set `allowHarnessReadPaths` — read_file has
+ * that carve-out so the backend can follow the harness's own
  * `.herta/logs/…` pointers, but PRESENTING harness internals to the user is
  * not what this tool is for.
+ *
+ * It DOES set `allowAttachmentPaths` (ADR 0033). The distinction is the reason
+ * those are two flags and not one: `.herta/attachments/` holds documents the
+ * 开拓者 handed over, so they are user content stored under a harness
+ * directory rather than harness internals, and showing one back is exactly
+ * this tool's job.
  */
 export function showExcerptTool(): HertaTool {
   return {
@@ -99,7 +105,12 @@ export function showExcerptTool(): HertaTool {
       }
       const { path, fromLine, toLine, match, context } = parsed.data;
 
-      const safe = await resolveSafePath(ctx.workspaceRoot, path);
+      // No harness-internals carve-out (see the header) — but attachments ARE
+      // presentable: a document the user handed over that Herta could read and
+      // never quote back would answer half the request (ADR 0033).
+      const safe = await resolveSafePath(ctx.workspaceRoot, path, {
+        allowAttachmentPaths: true,
+      });
       if (!safe.ok) {
         return {
           ok: false,

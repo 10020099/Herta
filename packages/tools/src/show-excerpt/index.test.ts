@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -176,6 +176,28 @@ describe("show_excerpt", () => {
     // the user is a different act, and this tool has no such carve-out.
     const r = await run({ path: ".herta/logs/whatever.log", fromLine: 1 });
     expect(r.ok).toBe(false);
+  });
+
+  it("DOES present a session attachment (ADR 0033)", async () => {
+    // The deliberate other half of the test above. An attachment is user
+    // content stored under a harness directory, not a harness internal, so a
+    // document Herta can read but never quote back would answer half the
+    // request. If these two ever agree, one carve-out has swallowed the other.
+    mkdirSync(join(root, ".herta", "attachments", "s1"), { recursive: true });
+    writeFileSync(
+      join(root, ".herta", "attachments", "s1", "spec.md"),
+      "# Spec\nline two\nline three\n",
+    );
+    const r = await run({
+      path: ".herta/attachments/s1/spec.md",
+      fromLine: 1,
+      toLine: 2,
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.data?.excerpt).toContain("# Spec");
+    expect(r.data?.excerpt).toContain("line two");
+    expect(r.data?.relPath).toBe(".herta/attachments/s1/spec.md");
   });
 
   it("rejects a binary file", async () => {

@@ -50,6 +50,7 @@ describe("resolveSafePath", () => {
       ".herta/keys/deepseek": "sk",
       ".herta/memory/project.jsonl": "{}",
       ".herta/logs/run.log": "log",
+      ".herta/attachments/s1/report.md": "# report",
       ".herta/capsules/project.json": "{}",
       "ok.md": "ok",
     });
@@ -204,6 +205,82 @@ describe("resolveSafePath", () => {
         return; // symlink creation unavailable (Windows non-admin) — skip
       }
       const r = await resolveSafePath(ws.root, ".herta/logs/sneaky.log", opts);
+      expect(r.ok).toBe(false);
+    });
+  });
+
+  describe("attachment read carve-out (ADR 0033)", () => {
+    const opts = { allowAttachmentPaths: true };
+
+    it("allows a file beneath .herta/attachments/ with the flag", async () => {
+      const r = await resolveSafePath(
+        ws.root,
+        ".herta/attachments/s1/report.md",
+        opts,
+      );
+      expect(r.ok).toBe(true);
+    });
+
+    it("without the flag the same path stays denied", async () => {
+      const r = await resolveSafePath(
+        ws.root,
+        ".herta/attachments/s1/report.md",
+      );
+      expect(r.ok).toBe(false);
+    });
+
+    // The two carve-outs are separate flags precisely so that neither implies
+    // the other; if they ever collapse into one, these two fail.
+    it("the attachment flag does NOT open the harness-evidence subtrees", async () => {
+      for (const p of [".herta/logs/run.log", ".herta/tool-results/t/c.json"]) {
+        const r = await resolveSafePath(ws.root, p, opts);
+        expect(r.ok, `expected ${p} denied`).toBe(false);
+      }
+    });
+
+    it("the harness-evidence flag does NOT open attachments", async () => {
+      const r = await resolveSafePath(
+        ws.root,
+        ".herta/attachments/s1/report.md",
+        { allowHarnessReadPaths: true },
+      );
+      expect(r.ok).toBe(false);
+    });
+
+    it("covers only files strictly beneath the prefix", async () => {
+      for (const p of [
+        ".herta/attachments", // the directory itself
+        ".herta/attachments-evil/x.md", // prefix must match a whole segment
+      ]) {
+        const r = await resolveSafePath(ws.root, p, opts);
+        expect(r.ok, `expected ${p} denied`).toBe(false);
+      }
+    });
+
+    // A user can attach a file with any name at all, so the credential guard
+    // matters MORE here than in the harness carve-out, not less.
+    it("credential basenames stay denied even inside the carve-out", async () => {
+      const r = await resolveSafePath(
+        ws.root,
+        ".herta/attachments/s1/id_rsa",
+        opts,
+      );
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.code).toBe("path_denied");
+    });
+
+    it("a symlink inside attachments pointing at .herta/keys is judged on its target", async () => {
+      const linkPath = join(ws.root, ".herta", "attachments", "s1", "s.md");
+      try {
+        await symlink(join(ws.root, ".herta", "keys", "deepseek"), linkPath);
+      } catch {
+        return; // symlink creation unavailable (Windows non-admin) — skip
+      }
+      const r = await resolveSafePath(
+        ws.root,
+        ".herta/attachments/s1/s.md",
+        opts,
+      );
       expect(r.ok).toBe(false);
     });
   });

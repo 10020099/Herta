@@ -83,6 +83,15 @@ function sanitizeDigest(digest: SystemBlockDigest): SystemBlockDigest {
               })),
             }),
       };
+    case "attachment":
+      // The filename and path come from OUTSIDE the workspace — the user
+      // picked them — so they are the least trusted strings in this union.
+      // Counts and the `unreadable` literal are harness-computed.
+      return {
+        ...digest,
+        name: cleanBody(digest.name),
+        path: cleanBody(digest.path),
+      };
     case "skip":
       return digest;
   }
@@ -105,6 +114,17 @@ function sanitizeSection(s: EvidenceSection): EvidenceSection {
     case "risks":
     case "todos":
       return { ...s, items: s.items.map(cleanBody) };
+    case "attachment":
+      // `text` is the head of a document the user supplied, so this is the
+      // one section whose content never passed through the repo or the
+      // backend at all. A planted （我 说） in an uploaded file must not be
+      // able to forge an actor block any more than one in a source file can.
+      return {
+        ...s,
+        name: cleanBody(s.name),
+        path: cleanBody(s.path),
+        text: cleanBody(s.text),
+      };
     case "error":
       return { ...s, message: cleanBody(s.message) };
   }

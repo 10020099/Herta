@@ -16,6 +16,38 @@ const blocks: TerminalRecordBlock[] = [
   { kind: "herta", surface: "speech", text: "加好了，只跑了定向测试。" },
 ];
 
+describe("buildEpisodeDigest — attachments (ADR 0033)", () => {
+  // The ADR claims dreams need no new rule for attachments, because the
+  // citation rides `body` and the document's text rides `evidenceDetail`,
+  // which no dream ever reads. That is a claim about behaviour, so it is
+  // pinned here rather than asserted in prose: she should be able to dream
+  // that the 开拓者 handed her a spec, and never dream its contents.
+  const withAttachment: TerminalRecordBlock[] = [
+    { kind: "user", text: "看看这个" },
+    {
+      kind: "system",
+      label: "系统",
+      body: "附件 spec.md · 120 行 · 4.8K 字 · .herta/attachments/s1/spec.md",
+      evidenceDetail: "↳ 附件 spec.md\nCONFIDENTIAL ROADMAP Q4 REVENUE TARGET",
+      digest: {
+        kind: "attachment",
+        name: "spec.md",
+        path: ".herta/attachments/s1/spec.md",
+        lines: 120,
+        chars: 4800,
+      },
+    },
+    { kind: "herta", surface: "speech", text: "看完了。" },
+  ];
+
+  it("keeps the citation and never the document body", () => {
+    const d = buildEpisodeDigest(withAttachment);
+    expect(d).toContain("附件 spec.md");
+    expect(d).not.toContain("CONFIDENTIAL");
+    expect(d).not.toContain("REVENUE");
+  });
+});
+
 describe("buildEpisodeDigest", () => {
   it("includes user + herta lines and the verified outcome evidence", () => {
     const d = buildEpisodeDigest(blocks);

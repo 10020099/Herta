@@ -165,6 +165,23 @@ function renderStructuredDigest(
       // costs four characters and makes "I was shown this" and "I can still
       // read this" two distinguishable states.
       return `Excerpt ${d.path}:${d.from}-${d.to} · ${COMPACTION_TEXT[lang].excerptElided}`;
+    case "attachment": {
+      // Same two-state contract as `excerpt` above, and the same hazard for
+      // the same reason: she really was shown the head of this document last
+      // turn, and a citation formatted like its neighbours would invite her
+      // to keep quoting a body that is no longer in front of her.
+      //
+      // What survives is deliberately the PATH, not just the name. The file
+      // is still on disk, so "开拓者 gave me a spec at <path>" is the one
+      // digest line here that stays actionable after compaction — she can
+      // send 板砖 back to it. A bare name would leave her knowing a document
+      // existed and unable to reach it.
+      const tail =
+        d.unreadable === undefined
+          ? COMPACTION_TEXT[lang].excerptElided
+          : COMPACTION_TEXT[lang].attachmentUnreadable[d.unreadable];
+      return `Attachment ${d.name} (${d.path}) · ${tail}`;
+    }
     case "text":
       return fallbackDigest(d.text);
   }

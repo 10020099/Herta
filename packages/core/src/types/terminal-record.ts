@@ -231,6 +231,26 @@ export type SystemBlockDigest =
       readonly to: number;
     }
   | {
+      /** A document the 开拓者 handed over (ADR 0033). Same lifecycle split as
+       *  `excerpt` above and for the same reason: the head excerpt rides
+       *  `evidenceDetail` and is dropped when the block folds, so the digest
+       *  keeps only the CITATION — what the file is and where it sits. A later
+       *  turn goes on knowing "开拓者 gave me a spec, it is at <path>" without
+       *  re-paying for the text, and can reach the file again through 板砖. */
+      readonly kind: "attachment";
+      readonly name: string;
+      /** Workspace-relative, so a later dispatch can reach it. */
+      readonly path: string;
+      readonly lines: number;
+      readonly chars: number;
+      /** Why no excerpt was taken, when none was. Absent on the ordinary path.
+       *  Present means the block's body SAYS the file could not be read as
+       *  text — never silence, because Herta speaking about a document she was
+       *  never shown is the failure supervisor rule 9 exists to prevent, one
+       *  step upstream of 板砖. */
+      readonly unreadable?: "binary" | "too_large" | "empty" | "read_error";
+    }
+  | {
       /** No richer structure — digest to the text's first line, truncated. */
       readonly kind: "text";
       readonly text: string;
@@ -287,6 +307,19 @@ export type EvidenceSection =
       /** The done-marker's unfinished todos (`↳ 待办:`). */
       readonly kind: "todos";
       readonly items: readonly string[];
+    }
+  | {
+      /** An attached document's head excerpt (`↳ 附件 <name>`). Verbatim from
+       *  disk — the harness cut it, so nothing paraphrased it on the way in
+       *  (ADR 0033, the same reflex as `show_excerpt`). */
+      readonly kind: "attachment";
+      readonly name: string;
+      readonly path: string;
+      readonly text: string;
+      /** The head stopped at the presentation bound and the file continues.
+       *  Rendered as a note so neither reader mistakes the head for the whole
+       *  document. */
+      readonly clipped: boolean;
     }
   | {
       /** The bridge-failure marker's raw error text (`↳ 错误:`). */

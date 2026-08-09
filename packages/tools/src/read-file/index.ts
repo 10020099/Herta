@@ -57,8 +57,12 @@ export function readFileTool(): HertaTool {
       // own "full output at .herta/logs/… / .herta/tool-results/…" pointers
       // (ADR 0025 slice 2). Mutating and listing tools keep the whole-tree
       // `.herta` denial.
+      // allowAttachmentPaths: documents the 开拓者 handed over (ADR 0033).
+      // Shared with show_excerpt, unlike the flag above — these are user
+      // content, not harness internals, so presenting them back is the point.
       const safe = await resolveSafePath(ctx.workspaceRoot, path, {
         allowHarnessReadPaths: true,
+        allowAttachmentPaths: true,
       });
       if (!safe.ok) {
         return {

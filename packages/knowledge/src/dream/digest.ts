@@ -30,6 +30,27 @@ export function dreamRelevantSystemBody(b: SystemBlock): string | null {
   return b.body;
 }
 
+/**
+ * Whether a block's `evidenceDetail` belongs in the episode alongside its body.
+ *
+ * The body/evidence split is NOT the same question as the block-level skip
+ * above: a block can be worth dreaming while its detail is not. Attachments
+ * (ADR 0033) are the case that forced this apart. Their `evidenceDetail` holds
+ * the head of a document the 开拓者 uploaded — the one payload in the record
+ * that never came from the repo, the backend, or Herta — and dreams distil into
+ * a first-person autobiography that persists across sessions. She should
+ * remember being handed a spec; the spec's contents are not hers to keep.
+ *
+ * So the citation in `body` stays (that is what happened) and the detail is
+ * dropped. `show_excerpt` detail is deliberately NOT dropped here: repo
+ * excerpts are bounded work evidence and have ridden into dreams since ADR
+ * 0027 — changing that is a separate decision, not a side effect of this one.
+ */
+export function dreamRelevantEvidenceDetail(b: SystemBlock): string | null {
+  if (b.digest?.kind === "attachment") return null;
+  return b.evidenceDetail ?? null;
+}
+
 export function buildEpisodeDigest(
   blocks: readonly TerminalRecordBlock[],
 ): string {
@@ -59,10 +80,11 @@ export function buildEpisodeDigest(
       // labeled so the model grounds the verdict in what actually happened.
       // The ↳ 待办 roll-up line is dropped: open work items are operational
       // residue, not part of what happened.
+      const detail = dreamRelevantEvidenceDetail(b);
       const evidence =
-        b.evidenceDetail === undefined
+        detail === null
           ? ""
-          : b.evidenceDetail
+          : detail
               .split("\n")
               .filter((l) => !l.startsWith("↳ 待办"))
               .join("\n");

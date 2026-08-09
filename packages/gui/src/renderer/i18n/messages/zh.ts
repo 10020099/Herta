@@ -190,6 +190,15 @@ export const zh = {
   "activity.bg.signal": "信号中止",
   "activity.todo.list": "任务清单",
   "activity.todo.step": "步骤",
+  // Attachments (ADR 0033). The unreadable reasons are deliberately four
+  // distinct strings rather than one "读取失败": the user needs to know
+  // whether to convert the file, split it, or that we simply cannot read it.
+  "activity.attachment.label": "附件",
+  "activity.attachment.chars": "字",
+  "activity.attachment.unreadable.binary": "非文本文件",
+  "activity.attachment.unreadable.tooLarge": "文件过大，未取正文",
+  "activity.attachment.unreadable.empty": "未提取到文本",
+  "activity.attachment.unreadable.readError": "读取失败",
   "activity.plan.more": "还有 {n} 项",
   "plan.card.title": "任务清单",
   "plan.card.itemsUnavailable": "这次记录没有留下清单明细。",
@@ -198,6 +207,9 @@ export const zh = {
   // Chinese and keeps them there (ADR 0018); these translate the DISPLAY.
   "evidence.output": "输出",
   "evidence.excerpt": "摘录",
+  "evidence.attachment": "附件",
+  /** Noted under a head excerpt so neither reader takes it for the whole file. */
+  "evidence.attachment.clipped": "（仅开头部分，正文更长）",
   "evidence.files": "改动文件",
   "evidence.risks": "风险",
   "evidence.todos": "待办",

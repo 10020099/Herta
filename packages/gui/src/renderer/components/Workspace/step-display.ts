@@ -81,6 +81,26 @@ export function stepDisplayBody(
             "activity.result.lines",
           )}`
         : block.body;
+    case "attachment": {
+      // Composed wholly from the digest, so the canonical CN body is never
+      // parsed (ADR 0018's pattern). The FILENAME stays verbatim in every
+      // language — it is the user's own data, not chrome.
+      const label = t("activity.attachment.label");
+      if (d.unreadable !== undefined) {
+        const why =
+          d.unreadable === "binary"
+            ? t("activity.attachment.unreadable.binary")
+            : d.unreadable === "too_large"
+              ? t("activity.attachment.unreadable.tooLarge")
+              : d.unreadable === "empty"
+                ? t("activity.attachment.unreadable.empty")
+                : t("activity.attachment.unreadable.readError");
+        return `${label} ${d.name} · ${why}`;
+      }
+      const lines = `${d.lines.toLocaleString()} ${t("activity.result.lines")}`;
+      const chars = `${d.chars.toLocaleString()} ${t("activity.attachment.chars")}`;
+      return `${label} ${d.name} · ${lines} · ${chars}`;
+    }
     case "skip":
       // The patch-preview block (the only skip-digest producer): localize
       // its first-line label, keep the files + diff fence verbatim (the
@@ -132,6 +152,13 @@ export function stepDisplayDetail(
           return `↳ ${t("evidence.risks")}: ${s.items.join("; ")}`;
         case "todos":
           return `↳ ${t("evidence.todos")}: ${s.items.join("; ")}`;
+        case "attachment": {
+          // The clipped note is part of the evidence, not decoration: without
+          // it a head excerpt reads as the entire document, to the user and
+          // to anyone reading this pane over their shoulder.
+          const note = s.clipped ? `\n${t("evidence.attachment.clipped")}` : "";
+          return `↳ ${t("evidence.attachment")} ${s.name}\n${s.text}${note}`;
+        }
         case "error":
           return `↳ ${t("evidence.error")}: ${s.message}`;
         default:
