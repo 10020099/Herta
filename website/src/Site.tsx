@@ -985,8 +985,6 @@ export function Site(): JSX.Element {
           </span>
           <p>
             © 2026 PersonaCLI ·{" "}
-            {/* Was "HertaCLI" while pointing at PersonaCLI/Herta — the repo
-                was renamed and the label was not. */}
             <a href={REPO_URL} target="_blank" rel="noreferrer">
               Herta
             </a>{" "}
