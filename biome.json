@@ -18,7 +18,8 @@
       "!**/coverage",
       "!**/*.tsbuildinfo",
       "!**/prompt-assets.generated.ts",
-      "!data"
+      "!data",
+      "!trailer-materials"
     ]
   },
   "formatter": { "enabled": true, "indentStyle": "space", "indentWidth": 2 },

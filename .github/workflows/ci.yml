@@ -1,12 +1,18 @@
 name: ci
-# Actions-minutes diet (2026-07-19, reaffirmed by owner 2026-08-03): while
-# this repo stays PRIVATE (pre-trailer), every run burns paid minutes — so
-# NO per-push CI, only one scheduled run per day plus manual dispatch. When
-# the repo goes PUBLIC, Actions minutes become free — restore the
-# push/pull_request triggers then if wanted.
+# No per-push CI by decision (2026-07-19, reaffirmed 2026-08-03): one scheduled
+# run per day plus manual dispatch. It began as an Actions-minutes diet for the
+# PRIVATE dev repo, where every run burns paid minutes; the public mirror keeps
+# the same triggers so this file stays identical in both and the mirror script
+# has one less exception to carry.
 #
-# (July 2026 quota exhaustion had the cron commented out; restored 08-03
+# Consequence in both: pushes land ungated — run the local gates before pushing.
+# (July 2026 quota exhaustion had the cron commented out; restored 2026-08-03
 # with the August reset, per the note it carried.)
+#
+# Now that the mirror is public, its Actions minutes are free, so push /
+# pull_request triggers there would cost nothing — worth doing if outside PRs
+# start arriving. Not taken yet: that is an owner decision, and the sibling
+# note at the bottom of this file records why a second runner was dropped once.
 on:
   schedule:
     - cron: "0 3 * * *" # daily 03:00 UTC
