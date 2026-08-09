@@ -171,6 +171,11 @@ export const en = {
   "composer.aria": "Message composer",
   "composer.send": "Send message",
   "composer.stop": "Interrupt the current turn",
+  "composer.attach": "Add documents",
+  "composer.attach.busy":
+    "This turn isn't finished — wait for her, then drop the file.",
+  "composer.attach.tooMany": "Ten files at a time, at most.",
+  "composer.attach.failed": "Those files didn't make it in.",
   "connect.button": "Connect to Herta",
   "connect.failed": "Couldn't start a session — try again.",
   "workspace.rewind": "Rewind to here",

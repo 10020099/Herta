@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
   type AgentEvent,
   type ApprovalOverlayState,
@@ -74,6 +74,7 @@ import {
   registerRunCommandRule,
   registerWriteNewFileRule,
 } from "@herta/tools";
+import { ingestAttachment, MAX_ATTACHMENTS_PER_ACTION } from "./attachments.js";
 import {
   BusActorStreamingSink,
   SLOW_MS_PER_CHAR,
@@ -90,6 +91,8 @@ import {
 import type {
   ApprovalResult,
   AppServerConfig,
+  AttachedFile,
+  AttachResult,
   OverlayEvent,
   RecordEvent,
   ResolveApprovalOpts,
@@ -1005,6 +1008,51 @@ export class SessionImpl implements Session {
     this.driver.appendSystemNote("系统", `workspace → ${workspace}`);
     this._record = this.driver.getRecord();
     return { ok: true };
+  }
+
+  /**
+   * Ingest documents the 开拓者 handed over (ADR 0033): copy each into the
+   * session's attachment directory under the EFFECTIVE backend workspace and
+   * append one → 系统 block per file.
+   *
+   * The effective workspace, not `this.workspaceRoot`: the block's path is
+   * what 板砖 later resolves, and it resolves against the backend root. A
+   * later workspace change strands the path the same way it strands every
+   * other relative path already in the record — no new class of staleness.
+   *
+   * Idle-only, same guard and rationale as setWorkspace (audit 2026-07-10,
+   * finding 13): `appendSystemBlock` is only safe between turns.
+   */
+  async attachFiles(paths: readonly string[]): Promise<AttachResult> {
+    if (this.currentTurn !== null) {
+      return { ok: false, reason: "turn_in_progress" };
+    }
+    if (paths.length === 0) return { ok: false, reason: "no_files" };
+    // Reject the whole action rather than ingesting a prefix: a user who
+    // dropped 30 files and got 10 with no explanation would reasonably
+    // believe all 30 arrived.
+    if (paths.length > MAX_ATTACHMENTS_PER_ACTION) {
+      return { ok: false, reason: "too_many" };
+    }
+
+    const files: AttachedFile[] = [];
+    for (const sourcePath of paths) {
+      const ingested = await ingestAttachment({
+        sourcePath,
+        workspaceRoot: this.wsHolder.current,
+        sessionId: this.sessionId,
+      });
+      this.driver.appendSystemBlock(ingested.block);
+      files.push({
+        name: basename(sourcePath),
+        path: ingested.relPath,
+        ...(ingested.unreadable !== undefined
+          ? { unreadable: ingested.unreadable }
+          : {}),
+      });
+    }
+    this._record = this.driver.getRecord();
+    return { ok: true, files };
   }
 
   /**

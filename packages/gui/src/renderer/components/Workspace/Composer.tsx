@@ -175,13 +175,70 @@ export function Composer(): JSX.Element {
     [],
   );
 
+  // ── Attachments (ADR 0033) ────────────────────────────────────────────────
+  // `dragDepth` counts enter/leave rather than using a boolean: dragging over a
+  // child element fires leave-then-enter, and a boolean flickers the highlight
+  // off on every internal boundary crossing.
+  const dragDepth = useRef(0);
+  const [dragOver, setDragOver] = useState(false);
+
+  const sendAttachments = (paths: readonly string[]): void => {
+    if (paths.length === 0 || sessionId === null) return;
+    void bridge.attachFiles(sessionId, paths).then((r) => {
+      // Refusals are SHOWN. `attachFiles` is idle-only, and a drop that
+      // silently did nothing mid-turn would read as a broken drop target
+      // (the same no-op-silently failure the M6 audit found on setWorkspace).
+      if (!r.ok) {
+        sessionStore.setComposerNotice(
+          r.message === "a turn is in progress"
+            ? t("composer.attach.busy")
+            : r.message === "too many files at once"
+              ? t("composer.attach.tooMany")
+              : t("composer.attach.failed"),
+        );
+      }
+    });
+  };
+
+  const onPickAttachments = (): void => {
+    void bridge.pickAttachments().then((paths) => {
+      if (paths !== null) sendAttachments(paths);
+    });
+  };
+
   return (
     <form
       ref={composerRef}
-      className={`composer${shrunk ? " is-shrunk" : ""}${suppressed ? " is-suppressed" : ""}`}
+      className={`composer${shrunk ? " is-shrunk" : ""}${suppressed ? " is-suppressed" : ""}${dragOver ? " is-dragover" : ""}`}
       onSubmit={(e) => {
         e.preventDefault();
         doSubmit();
+      }}
+      onDragEnter={(e) => {
+        if (!e.dataTransfer.types.includes("Files")) return;
+        dragDepth.current += 1;
+        setDragOver(true);
+      }}
+      onDragOver={(e) => {
+        // Without preventDefault the browser navigates to the dropped file and
+        // the drop handler never runs — the classic silent-nothing-happens.
+        if (e.dataTransfer.types.includes("Files")) e.preventDefault();
+      }}
+      onDragLeave={() => {
+        dragDepth.current = Math.max(0, dragDepth.current - 1);
+        if (dragDepth.current === 0) setDragOver(false);
+      }}
+      onDrop={(e) => {
+        if (!e.dataTransfer.types.includes("Files")) return;
+        e.preventDefault();
+        dragDepth.current = 0;
+        setDragOver(false);
+        // Electron 43 removed File.path; only the preload can resolve a real
+        // path (webUtils), so the File objects never leave this handler.
+        const paths = Array.from(e.dataTransfer.files)
+          .map((f) => bridge.pathForFile(f))
+          .filter((p) => p.length > 0);
+        sendAttachments(paths);
       }}
     >
       {/* Herta's tide wave living at the composer's floor (glass-wave merge,
@@ -282,6 +339,21 @@ export function Composer(): JSX.Element {
           swapped (user 2026-07-04). The stop square is a sized <span>, not a
           ■ text glyph — font metrics rendered the glyph tiny and
           inconsistent across fonts. */}
+      {/* Attach. Disabled during a turn for the same reason the main-process
+          handler refuses then: the ingest rides an out-of-turn record append.
+          Showing it disabled beats letting a click produce a refusal notice. */}
+      <button
+        type="button"
+        className="composer-attach"
+        aria-label={t("composer.attach")}
+        title={t("composer.attach")}
+        disabled={busy}
+        onClick={onPickAttachments}
+      >
+        <svg viewBox="0 0 14 14" aria-hidden="true" focusable="false">
+          <path d="M9.5 4.2 5.3 8.4a1.6 1.6 0 0 0 2.3 2.3l4.2-4.2a3 3 0 0 0-4.2-4.2L3.2 6.6a4.3 4.3 0 0 0 6.1 6.1l3.4-3.4" />
+        </svg>
+      </button>
       <button
         ref={sendButtonRef}
         type={busy ? "button" : "submit"}

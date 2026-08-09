@@ -23,6 +23,10 @@ export type {
   TerminalRecord,
   TerminalRecordBlock,
 } from "@herta/core";
+// The attachment ingest (ADR 0033) is deliberately NOT re-exported here: it is
+// called only by SessionImpl inside this package, and `_public-api.test.ts`
+// pins this barrel to the four symbols consumers actually need. Its own tests
+// import it by relative path.
 export type { DefaultDirs, DefaultDirsOpts } from "./config-helpers.js";
 export { defaultDirsFor } from "./config-helpers.js";
 export type { RecordTail } from "./record-window.js";

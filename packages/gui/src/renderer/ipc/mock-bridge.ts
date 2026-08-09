@@ -53,6 +53,10 @@ export interface MockHertaBridgeOpts {
   readonly commandRules?: readonly string[];
   readonly pickWorkspaceResult?: string | null;
   readonly setWorkspaceResult?: { ok: boolean; message?: string };
+  /** Seed for the attachment picker (ADR 0033). Null = cancelled. */
+  readonly pickAttachmentsResult?: readonly string[] | null;
+  /** Lets a test drive the refusal paths (turn in progress, too many). */
+  readonly attachFilesResult?: { ok: boolean; message?: string };
   readonly getDreamConfigResult?: DreamConfig;
   /** Seed for getBackendConfig (Settings → Coprocessor). Default
    *  `{ thinking: "high" }` (the real handler's default). */
@@ -115,6 +119,9 @@ export interface MockHertaBridge {
     pickWorkspace: number;
     setWorkspace: Array<[string, string]>;
     resetWorkspace: string[];
+    pickAttachments: number;
+    attachFiles: Array<[string, readonly string[]]>;
+    pathForFile: number;
     getDreamConfig: number;
     setDreamConfig: DreamConfig[];
     getBackendConfig: number;
@@ -209,6 +216,9 @@ export function createMockHertaBridge(
     windowClose: 0,
     setWorkspace: [],
     resetWorkspace: [],
+    pickAttachments: 0,
+    attachFiles: [],
+    pathForFile: 0,
   };
 
   // Live masked status, seeded then mutated by set/clear so tests can observe
@@ -329,6 +339,20 @@ export function createMockHertaBridge(
     resetWorkspace: async (sid) => {
       calls.resetWorkspace.push(sid);
       return { ok: true };
+    },
+    pickAttachments: async () => {
+      calls.pickAttachments += 1;
+      return opts.pickAttachmentsResult ?? null;
+    },
+    attachFiles: async (sid, paths) => {
+      calls.attachFiles.push([sid, paths]);
+      return opts.attachFilesResult ?? { ok: true };
+    },
+    // jsdom Files have no real path; the mock returns the name so a drop test
+    // can assert what got forwarded without pretending to know a temp path.
+    pathForFile: (file) => {
+      calls.pathForFile += 1;
+      return file.name;
     },
     getDreamConfig: async () => {
       calls.getDreamConfig += 1;

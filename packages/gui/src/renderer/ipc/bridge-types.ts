@@ -238,6 +238,18 @@ export interface HertaBridge {
   resetWorkspace(
     sessionId: string,
   ): Promise<{ readonly ok: boolean; readonly message?: string }>;
+  /** Open the OS file picker for documents (ADR 0033). Null when cancelled. */
+  pickAttachments(): Promise<readonly string[] | null>;
+  /** Ingest documents into the session. Same refusal shape as setWorkspace —
+   *  the renderer must surface it rather than no-op silently. */
+  attachFiles(
+    sessionId: string,
+    paths: readonly string[],
+  ): Promise<{ readonly ok: boolean; readonly message?: string }>;
+  /** The real filesystem path of a dropped `File`. Electron 43 removed
+   *  `File.path`, so only the preload can answer this — the renderer never
+   *  holds a File beyond the drop handler. */
+  pathForFile(file: File): string;
   /** Read the persisted Dream config (Settings → Dream). */
   getDreamConfig(): Promise<DreamConfig>;
   /** Persist the Dream config. Restart-to-apply (the running app-server reads

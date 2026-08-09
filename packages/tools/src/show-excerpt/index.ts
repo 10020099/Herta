@@ -11,10 +11,10 @@ import type {
 } from "@herta/core";
 import { formatInputIssues } from "../input-issues.js";
 import { resolveSafePath } from "../path-safety.js";
+import { looksBinary } from "../text-sniff.js";
 import { showExcerptInputSchema, showExcerptJsonSchema } from "./schema.js";
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
-const SNIFF_BYTES = 4096;
 
 /** Presentation bounds. Larger than `boundedTail`'s 15/800 (sized for a
  *  command's log tail) because this exists to be READ, but still bounded:
@@ -177,7 +177,7 @@ export function showExcerptTool(): HertaTool {
           summary: "read failed",
         };
       }
-      if (buf.subarray(0, Math.min(SNIFF_BYTES, buf.length)).includes(0)) {
+      if (looksBinary(buf)) {
         return {
           ok: false,
           error: {

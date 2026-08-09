@@ -177,6 +177,24 @@ export type WorkspaceSetResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly reason: "turn_in_progress" };
 
+/** One ingested document (ADR 0033). `unreadable` mirrors the block's digest:
+ *  the file was stored but no excerpt was taken, and the record says why. */
+export interface AttachedFile {
+  readonly name: string;
+  readonly path: string;
+  readonly unreadable?: string;
+}
+
+/** Result of `attachFiles`. Idle-only for the same reason as setWorkspace —
+ *  it rides the same out-of-turn append. `too_many` guards the per-action cap
+ *  rather than silently ingesting a prefix. */
+export type AttachResult =
+  | { readonly ok: true; readonly files: readonly AttachedFile[] }
+  | {
+      readonly ok: false;
+      readonly reason: "turn_in_progress" | "too_many" | "no_files";
+    };
+
 // ───── Wire events (one type per AsyncIterable subscription) ─────
 
 export type RecordEvent =
@@ -409,6 +427,11 @@ export interface Session {
   /** Restore the managed-sandbox default backend workspace. Persisted +
    *  broadcast (with `isDefault: true`). Idle-only, like setWorkspace. */
   resetWorkspace(): Promise<WorkspaceSetResult>;
+  /** Ingest documents the user handed over (ADR 0033): copy each into the
+   *  session's attachment directory and append one → 系统 block per file.
+   *  Idle-only, like setWorkspace — it rides the same out-of-turn append.
+   *  Optional: only the GUI SessionImpl implements it. */
+  attachFiles?(paths: readonly string[]): Promise<AttachResult>;
 
   subscribeRecord(): AsyncIterable<RecordEvent>;
   subscribeOverlay(): AsyncIterable<OverlayEvent>;

@@ -2675,3 +2675,144 @@ describe("invokeBanzhuanBridge — backend context slices", () => {
     expect(captured?.recentDialogue).toContain("开拓者：写个归并排序");
   });
 });
+
+describe("task context — attachments reach 板砖 (ADR 0033)", () => {
+  // The task context rides runBrief's SECOND argument (RunBriefOptions), not
+  // the brief — the brief is deliberately near-empty so Herta cannot frame the
+  // task (ADR 0007). That is exactly the argument attachments must reach.
+  interface SeenOpts {
+    userMessages?: ReadonlyArray<{ text: string }>;
+  }
+
+  function capturingRuntime(): {
+    runtime: CodingAgentRuntime;
+    seen: () => SeenOpts | undefined;
+  } {
+    let captured: SeenOpts | undefined;
+    const runtime = {
+      runBrief: async (brief: HertaToAgentBrief, opts: SeenOpts) => {
+        captured = opts;
+        return {
+          taskId: brief.taskId,
+          status: "completed" as const,
+          changedFiles: [],
+          evidence: [],
+          tests: [],
+          permissions: [],
+          residualRisks: [],
+          nextActions: [],
+        };
+      },
+    } as unknown as CodingAgentRuntime;
+    return { runtime, seen: () => captured };
+  }
+
+  const attachment = (over: Record<string, unknown> = {}): SystemBlock => ({
+    kind: "system",
+    label: "系统",
+    body: "附件 spec.md · 120 行 · 4.8K 字 · .herta/attachments/s1/spec-ab12cd34.md",
+    evidenceDetail: "↳ 附件 spec.md\nHEAD-EXCERPT-TEXT",
+    digest: {
+      kind: "attachment",
+      name: "spec.md",
+      path: ".herta/attachments/s1/spec-ab12cd34.md",
+      lines: 120,
+      chars: 4800,
+      ...over,
+    },
+  });
+
+  it("names the file and its path in the backend's task context", async () => {
+    // Without this the feature half-works invisibly: Herta sees a document
+    // her coprocessor has no way to find. extractUserMessages kept only
+    // `kind === "user"`, and an attachment is a system block.
+    const { runtime, seen } = capturingRuntime();
+    await invokeBanzhuanBridge(
+      [
+        attachment(),
+        { kind: "user", text: "照这个改" },
+        { kind: "herta", surface: "speech", text: "@板砖 上。" },
+      ],
+      [],
+      {
+        bus: new InMemoryEventBus<AgentEvent>(),
+        runtimeFactory: () => runtime,
+        signal: new AbortController().signal,
+      },
+    );
+    const msgs = seen()?.userMessages ?? [];
+    const joined = msgs.map((m) => m.text).join("\n");
+    expect(joined).toContain("spec.md");
+    expect(joined).toContain(".herta/attachments/s1/spec-ab12cd34.md");
+    expect(joined).toContain("照这个改");
+  });
+
+  it("does NOT replay the head excerpt — 板砖 has the path and tools that read", async () => {
+    const { runtime, seen } = capturingRuntime();
+    await invokeBanzhuanBridge(
+      [attachment(), { kind: "user", text: "改" }],
+      [],
+      {
+        bus: new InMemoryEventBus<AgentEvent>(),
+        runtimeFactory: () => runtime,
+        signal: new AbortController().signal,
+      },
+    );
+    const joined = (seen()?.userMessages ?? []).map((m) => m.text).join("\n");
+    expect(joined).not.toContain("HEAD-EXCERPT-TEXT");
+  });
+
+  it("an unreadable attachment is named, with its reason, not omitted", async () => {
+    // The task may well BE "why can't you read this?"; silence would leave
+    // 板砖 inventing an answer about a file nobody told it about.
+    const { runtime, seen } = capturingRuntime();
+    await invokeBanzhuanBridge(
+      [attachment({ unreadable: "binary" }), { kind: "user", text: "这个？" }],
+      [],
+      {
+        bus: new InMemoryEventBus<AgentEvent>(),
+        runtimeFactory: () => runtime,
+        signal: new AbortController().signal,
+      },
+    );
+    const joined = (seen()?.userMessages ?? []).map((m) => m.text).join("\n");
+    expect(joined).toContain("spec.md");
+    expect(joined).toContain("binary");
+  });
+
+  it("a file that never landed tells 板砖 not to look for it", async () => {
+    const { runtime, seen } = capturingRuntime();
+    await invokeBanzhuanBridge(
+      [
+        attachment({ path: "", unreadable: "read_error" }),
+        { kind: "user", text: "?" },
+      ],
+      [],
+      {
+        bus: new InMemoryEventBus<AgentEvent>(),
+        runtimeFactory: () => runtime,
+        signal: new AbortController().signal,
+      },
+    );
+    const joined = (seen()?.userMessages ?? []).map((m) => m.text).join("\n");
+    expect(joined).toContain("不要去找它");
+  });
+
+  it("localizes the citation line for an EN session", async () => {
+    const { runtime, seen } = capturingRuntime();
+    await invokeBanzhuanBridge(
+      [attachment(), { kind: "user", text: "go" }],
+      [],
+      {
+        bus: new InMemoryEventBus<AgentEvent>(),
+        runtimeFactory: () => runtime,
+        signal: new AbortController().signal,
+        lang: "en",
+      },
+    );
+    const joined = (seen()?.userMessages ?? []).map((m) => m.text).join("\n");
+    expect(joined).toContain("[attachment]");
+    expect(joined).toContain("The Trailblazer provided a file");
+    expect(joined).not.toContain("开拓者");
+  });
+});

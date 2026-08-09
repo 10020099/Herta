@@ -1419,6 +1419,52 @@ body:after{
 .composer-input::placeholder {
   color: var(--muted-4);
 }
+/* Attach (ADR 0033). A quiet ghost button, not a second primary: attaching is
+   an occasional act beside an every-message one, and two filled circles either
+   side of the input would read as a choice between them. Positioned for the
+   same reason as .composer-send — the .composer-wave layer is a positioned
+   first child, and non-positioned in-flow content slips beneath it. */
+.composer-attach {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  color: var(--muted-3);
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    background 0.15s ease,
+    opacity 0.15s ease;
+}
+.composer-attach svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.composer-attach:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--ink-a08, rgba(0, 0, 0, 0.06));
+}
+.composer-attach:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+/* Drop target. Only the border and a faint wash change — the composer is a
+   text field first, and a full-surface overlay during a drag would hide the
+   draft the user is about to attach a file to. */
+.composer.is-dragover {
+  border-color: var(--mention-ink, #4d86ff);
+  box-shadow: 0 0 0 1px var(--mention-ink, #4d86ff) inset;
+}
 .composer-send {
   /* Positioned so it paints above the .composer-wave layer (a positioned
      first child); non-positioned in-flow content would slip beneath it. */

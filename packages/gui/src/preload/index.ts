@@ -1,4 +1,9 @@
-import { contextBridge, type IpcRendererEvent, ipcRenderer } from "electron";
+import {
+  contextBridge,
+  type IpcRendererEvent,
+  ipcRenderer,
+  webUtils,
+} from "electron";
 import type { HertaBridge } from "../renderer/ipc/bridge-types.js";
 import { CMD, EVT } from "./channels.js";
 
@@ -37,6 +42,14 @@ const bridge: HertaBridge = {
     ipcRenderer.invoke(CMD.setWorkspace, sessionId, path),
   resetWorkspace: (sessionId) =>
     ipcRenderer.invoke(CMD.resetWorkspace, sessionId),
+  pickAttachments: () => ipcRenderer.invoke(CMD.pickAttachments),
+  attachFiles: (sessionId, paths) =>
+    ipcRenderer.invoke(CMD.attachFiles, sessionId, paths),
+  // Electron 43 removed `File.path`, and this preload is CJS + sandboxed
+  // (main/index.ts:266 records why it must stay that way), so a dropped
+  // file's real path is only reachable through webUtils here. The renderer
+  // gets a path string and never a File handle.
+  pathForFile: (file) => webUtils.getPathForFile(file),
   getDreamConfig: () => ipcRenderer.invoke(CMD.getDreamConfig),
   setDreamConfig: (cfg) => ipcRenderer.invoke(CMD.setDreamConfig, cfg),
   getBackendConfig: () => ipcRenderer.invoke(CMD.getBackendConfig),

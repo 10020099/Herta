@@ -20,6 +20,8 @@ export const CMD = {
   pickWorkspace: "session:pickWorkspace",
   setWorkspace: "session:setWorkspace",
   resetWorkspace: "session:resetWorkspace",
+  pickAttachments: "session:pickAttachments",
+  attachFiles: "session:attachFiles",
   getDreamConfig: "settings:getDreamConfig",
   setDreamConfig: "settings:setDreamConfig",
   getBackendConfig: "settings:getBackendConfig",

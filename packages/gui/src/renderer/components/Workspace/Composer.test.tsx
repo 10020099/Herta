@@ -592,3 +592,115 @@ describe("Composer @板砖 hint — extra coverage", () => {
     expect(document.querySelector(".composer-ghost")).not.toBeNull();
   });
 });
+
+describe("Composer — attachments (ADR 0033)", () => {
+  /** A drop event carrying files. jsdom's DataTransfer is not constructible
+   *  with files, so hand fireEvent the shape the handler actually reads. */
+  function fileDrop(files: Array<{ name: string }>): Record<string, unknown> {
+    return {
+      dataTransfer: { types: ["Files"], files },
+    };
+  }
+
+  /** Attaching is session-scoped — the main handler matches the id against the
+   *  active session — so the composer no-ops without one. Seed a session the
+   *  way the app does, or every assertion below passes vacuously. */
+  function renderAttached(mock = createMockHertaBridge()) {
+    const r = renderComposer(mock);
+    act(() => {
+      mock.emitReset({
+        sessionId: "s-1",
+        workspaceRoot: "/r",
+        record: [],
+        overlay: null,
+        title: null,
+        backendWorkspace: "/r",
+        backendWorkspaceIsDefault: true,
+      });
+    });
+    return r;
+  }
+
+  it("opens the picker and forwards the chosen paths", async () => {
+    const mock = createMockHertaBridge({
+      pickAttachmentsResult: ["/docs/spec.md", "/docs/notes.txt"],
+    });
+    renderAttached(mock);
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Add documents"));
+    });
+    expect(mock.calls.pickAttachments).toBe(1);
+    expect(mock.calls.attachFiles).toHaveLength(1);
+    expect(mock.calls.attachFiles[0]?.[1]).toEqual([
+      "/docs/spec.md",
+      "/docs/notes.txt",
+    ]);
+  });
+
+  it("a cancelled picker attaches nothing", async () => {
+    const mock = createMockHertaBridge({ pickAttachmentsResult: null });
+    renderAttached(mock);
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Add documents"));
+    });
+    expect(mock.calls.attachFiles).toHaveLength(0);
+  });
+
+  it("resolves dropped files through the preload rather than File.path", async () => {
+    // Electron 43 removed File.path. If this ever regresses to reading the
+    // property directly it yields undefined and the drop silently no-ops.
+    const mock = createMockHertaBridge();
+    const { container } = renderAttached(mock);
+    const form = container.querySelector(".composer") as HTMLElement;
+    await act(async () => {
+      fireEvent.drop(form, fileDrop([{ name: "a.md" }, { name: "b.csv" }]));
+    });
+    expect(mock.calls.pathForFile).toBe(2);
+    expect(mock.calls.attachFiles[0]?.[1]).toEqual(["a.md", "b.csv"]);
+  });
+
+  it("highlights on drag enter and clears on leave", () => {
+    const { container } = renderComposer();
+    const form = container.querySelector(".composer") as HTMLElement;
+    fireEvent.dragEnter(form, { dataTransfer: { types: ["Files"] } });
+    expect(form.className).toContain("is-dragover");
+    fireEvent.dragLeave(form, { dataTransfer: { types: ["Files"] } });
+    expect(form.className).not.toContain("is-dragover");
+  });
+
+  it("ignores a drag that carries no files", () => {
+    // Dragging selected text across the composer must not arm the drop UI.
+    const { container } = renderComposer();
+    const form = container.querySelector(".composer") as HTMLElement;
+    fireEvent.dragEnter(form, { dataTransfer: { types: ["text/plain"] } });
+    expect(form.className).not.toContain("is-dragover");
+  });
+
+  it("surfaces a refusal instead of no-opping silently", async () => {
+    // The M6 lesson applied to a new surface: a drop that quietly does nothing
+    // reads as a broken drop target.
+    const mock = createMockHertaBridge({
+      attachFilesResult: { ok: false, message: "a turn is in progress" },
+    });
+    const { container } = renderAttached(mock);
+    const form = container.querySelector(".composer") as HTMLElement;
+    await act(async () => {
+      fireEvent.drop(form, fileDrop([{ name: "a.md" }]));
+    });
+    expect(
+      screen.getByText(/wait for her, then drop the file/i),
+    ).toBeInTheDocument();
+  });
+
+  it("names the too-many refusal specifically", async () => {
+    const mock = createMockHertaBridge({
+      attachFilesResult: { ok: false, message: "too many files at once" },
+    });
+    const { container } = renderAttached(mock);
+    const form = container.querySelector(".composer") as HTMLElement;
+    await act(async () => {
+      fireEvent.drop(form, fileDrop([{ name: "a.md" }]));
+    });
+    expect(screen.getByText(/Ten files at a time/i)).toBeInTheDocument();
+  });
+});

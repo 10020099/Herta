@@ -358,6 +358,14 @@ export class SessionStore {
     this.emit({ ...this.snapshot, composerDraft: null });
   }
 
+  /** Show a transient composer notice with no draft to restore — an attach
+   *  refusal (ADR 0033). Distinct from `requestComposerDraft`, whose contract
+   *  is "here is text to put back AND why": passing a null draft through that
+   *  path would read as a rewind that lost the message. */
+  setComposerNotice(notice: string): void {
+    this.emit({ ...this.snapshot, composerNotice: notice });
+  }
+
   /** Dismiss the transient composer notice (e.g. on the next keystroke). */
   clearComposerNotice(): void {
     if (this.snapshot.composerNotice === null) return;

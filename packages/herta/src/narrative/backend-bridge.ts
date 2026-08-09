@@ -1159,7 +1159,7 @@ async function invokeBanzhuanBridgeInner(
 
   let report: AgentExecutionReport | undefined;
   try {
-    const extracted = extractUserMessages(record);
+    const extracted = extractUserMessages(record, deps.lang);
     const boundary = findLastDispatchBoundary(record);
     const recentDialogue = extractRecentDialogue(record, boundary);
     const workingHistory = extractWorkingHistory(record, boundary);
@@ -1293,11 +1293,63 @@ export interface ExtractedUserMessages {
   readonly omitted: number;
 }
 
-function extractUserMessages(record: TerminalRecord): ExtractedUserMessages {
+/**
+ * Harness-authored line telling 板砖 that a document arrived and where it is
+ * (ADR 0033). Localized like the rest of the backend's own prose (ADR 0016);
+ * the filename and path are data and stay verbatim in both.
+ *
+ * Three shapes, because the three states need different things from 板砖:
+ * a readable file it should open, a stored-but-unexcerpted file it can still
+ * search (binary / oversized), and a file that never landed at all.
+ */
+function attachmentTaskLine(
+  d: { name: string; path: string; unreadable?: string },
+  lang: PromptLang,
+): string {
+  const en = lang === "en";
+  if (d.path.length === 0) {
+    return en
+      ? `[attachment] The Trailblazer tried to provide a file (${d.name}) but it could not be read. It is NOT on disk — do not look for it.`
+      : `〔附件〕开拓者尝试提供文件（${d.name}），但读取失败，文件不在磁盘上——不要去找它。`;
+  }
+  if (d.unreadable !== undefined) {
+    return en
+      ? `[attachment] The Trailblazer provided a file: ${d.name} — at ${d.path}. The harness took no excerpt from it (${d.unreadable}); it is on disk and you may still search it.`
+      : `〔附件〕开拓者提供了文件：${d.name}，位于 ${d.path}。框架未从中取正文（${d.unreadable}）；文件在磁盘上，仍可检索。`;
+  }
+  return en
+    ? `[attachment] The Trailblazer provided a file: ${d.name} — at ${d.path}. Read it with your file tools if the task needs it.`
+    : `〔附件〕开拓者提供了文件：${d.name}，位于 ${d.path}。任务需要时用文件工具自行读取。`;
+}
+
+/**
+ * Build the backend's task context from the record.
+ *
+ * Named for user MESSAGES but no longer only that: attachment blocks are
+ * folded in as harness-authored citation lines (ADR 0033). They have to be.
+ * The backend receives task evidence exclusively through this function, and an
+ * attachment is a `system` block — so filtering on `kind === "user"` alone
+ * meant Herta could see a document her coprocessor had no way to find. That is
+ * the failure mode this feature would otherwise ship with, silently: everything
+ * looks right until 板砖 is asked to use the file.
+ *
+ * The head excerpt is deliberately NOT replayed. 板砖 has the path and four
+ * tools that read; pre-feeding it content would pay for the same bytes twice
+ * and cap what it can see at the head.
+ */
+function extractUserMessages(
+  record: TerminalRecord,
+  lang: PromptLang = "zh",
+): ExtractedUserMessages {
   const all: { text: string }[] = [];
   for (const block of record) {
     if (block.kind === "user") {
       all.push({ text: block.text });
+    } else if (block.kind === "system" && block.digest?.kind === "attachment") {
+      // An attachment that could not be read is still worth naming: the task
+      // may well BE "why can't you read this?", and silence would leave 板砖
+      // inventing an answer about a file it was never told about.
+      all.push({ text: attachmentTaskLine(block.digest, lang) });
     }
   }
   // Keep from the newest backwards until either cap trips. The newest

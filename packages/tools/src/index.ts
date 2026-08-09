@@ -41,6 +41,12 @@ export type { ListFilesInput } from "./list-files/schema.js";
 export type { MemorySaveData } from "./memory-save/index.js";
 export { memorySaveTool } from "./memory-save/index.js";
 export type { MemorySaveInput } from "./memory-save/schema.js";
+// Exported so the attachment ingest (ADR 0033) can assert end-to-end that
+// whatever it writes is reachable through the carve-out and refused without
+// it — the two halves living in different packages is exactly why that needs
+// a test rather than a shared assumption.
+export type { ResolveSafePathOpts, SafePathResult } from "./path-safety.js";
+export { resolveSafePath } from "./path-safety.js";
 export type { ReadFileData } from "./read-file/index.js";
 export { readFileTool } from "./read-file/index.js";
 export type { ReadFileInput } from "./read-file/schema.js";
@@ -62,6 +68,7 @@ export {
   showExcerptTool,
 } from "./show-excerpt/index.js";
 export type { ShowExcerptInput } from "./show-excerpt/schema.js";
+export { looksBinary, SNIFF_BYTES } from "./text-sniff.js";
 export type { TodoWriteData } from "./todo-write/index.js";
 export { MAX_TODO_ITEMS, todoWriteTool } from "./todo-write/index.js";
 export type { TodoWriteInput } from "./todo-write/schema.js";

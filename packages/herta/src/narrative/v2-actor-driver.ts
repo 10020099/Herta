@@ -720,7 +720,20 @@ export class V2ActorDriver {
    * is single-threaded and this is only called between turns.
    */
   appendSystemNote(label: SystemBlockLabel, body: string): void {
-    const block: SystemBlock = { kind: "system", label, body };
+    this.appendSystemBlock({ kind: "system", label, body });
+  }
+
+  /**
+   * The same out-of-turn append for a block that carries structured fields —
+   * attachments (ADR 0033), which need `digest` / `evidenceDetail` / `evidence`
+   * that a label-and-body note cannot express.
+   *
+   * The caller owns sanitizing. Every producer of a system block does (the
+   * bridge at construction, `ingestAttachment` before returning), because the
+   * serializer does NOT sanitize system bodies at read — construction is the
+   * only gate on this trust boundary.
+   */
+  appendSystemBlock(block: SystemBlock): void {
     this.record = [...this.record, block];
     // D1: when the sink persists on flush, the flushBlocks below writes this
     // block (persisting here too would duplicate it). Otherwise persist now.

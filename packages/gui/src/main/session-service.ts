@@ -619,6 +619,37 @@ export function createSessionService(
         homedir(),
       ),
     );
+    handle(CMD.pickAttachments, async () => {
+      const r = await dialog.showOpenDialog(win, {
+        properties: ["openFile", "multiSelections"],
+      });
+      return r.canceled || r.filePaths.length === 0 ? null : r.filePaths;
+    });
+    handle(
+      CMD.attachFiles,
+      async (_e, sessionId: string, paths: readonly string[]) => {
+        const s = host?.activeSession ?? null;
+        if (s === null || s.sessionId !== sessionId) {
+          return { ok: false as const, message: "no matching active session" };
+        }
+        if (s.attachFiles === undefined) {
+          return { ok: false as const, message: "attachments unavailable" };
+        }
+        const r = await s.attachFiles(paths);
+        if (r.ok) return { ok: true as const };
+        // Each refusal gets its own words: "a turn is in progress" is a
+        // retry-in-a-moment, "too many files" is a do-something-different.
+        return {
+          ok: false as const,
+          message:
+            r.reason === "turn_in_progress"
+              ? "a turn is in progress"
+              : r.reason === "too_many"
+                ? "too many files at once"
+                : "no files",
+        };
+      },
+    );
     handle(CMD.resetWorkspace, async (_e, sessionId: string) => {
       const s = host?.activeSession ?? null;
       if (s === null || s.sessionId !== sessionId) {
