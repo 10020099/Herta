@@ -1,8 +1,10 @@
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  truncateSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,6 +16,7 @@ import {
   headExcerpt,
   ingestAttachment,
   MAX_ATTACHMENT_BYTES,
+  MAX_ATTACHMENT_STORE_BYTES,
   safeStoredName,
 } from "./attachments.js";
 
@@ -84,11 +87,10 @@ describe("ingestAttachment", () => {
     // The name is fully user-controlled and the write does NOT go through the
     // tool path guard, so the flattening is the only thing standing there.
     const p = seed("evil.txt", "x\n");
-    const r = await ingest(p, "../../../.ssh/id_rsa");
+    const r = await ingest(p, "../../../outside (1).txt");
 
     expect(r.relPath.startsWith(`${attachmentDirFor("s1")}/`)).toBe(true);
     expect(r.relPath).not.toContain("..");
-    expect(r.relPath).not.toContain(".ssh");
     // …and the flattened result still lands inside the workspace.
     const safe = await resolveSafePath(ws, r.relPath, {
       allowAttachmentPaths: true,
@@ -96,17 +98,58 @@ describe("ingestAttachment", () => {
     expect(safe.ok).toBe(true);
   });
 
-  it("a credential-shaped stored name is still denied by the path guard", async () => {
-    // Flattening keeps the file inside the dir, but the credential denylist is
-    // never skipped inside a carve-out — belt and braces, both engaged.
-    const r = await ingest(seed("k.txt", "x\n"), "id_rsa");
-    const safe = await resolveSafePath(ws, r.relPath, {
-      allowAttachmentPaths: true,
-    });
-    // The hash suffix means the stored basename is `id_rsa-<hash>`, not the
-    // denied `id_rsa` exactly; assert the shape rather than a false denial.
-    expect(safe.ok).toBe(true);
-    expect(r.relPath).toContain("id_rsa-");
+  it("refuses a credential-shaped source outright — nothing stored", async () => {
+    // This test's first version asserted the OPPOSITE: that id_rsa stored as
+    // `id_rsa-<hash>` and passed the path guard, framed as belt-and-braces.
+    // The hash suffix is not a second belt — it is a bypass of the basename
+    // denylist, and the attach IPC accepts arbitrary renderer paths, which
+    // together made attach a read-any-file primitive. Deny at the door is the
+    // only place the deny works.
+    const r = await ingest(seed("id_rsa", "----KEY----\n"));
+    expect(r.unreadable).toBe("denied");
+    expect(r.relPath).toBe("");
+    expect(r.block.body).toContain("已拒收");
+    expect(r.block.evidenceDetail).toBeUndefined();
+    expect(JSON.stringify(r.block)).not.toContain("KEY");
+    // The session dir gained nothing.
+    expect(existsSync(join(ws, ".herta", "attachments", "s1"))).toBe(false);
+  });
+
+  it("refuses a source under a sensitive directory (.ssh), whatever its name", async () => {
+    mkdirSync(join(src, ".ssh"), { recursive: true });
+    writeFileSync(join(src, ".ssh", "config"), "Host *\n");
+    const r = await ingest(join(src, ".ssh", "config"));
+    expect(r.unreadable).toBe("denied");
+    expect(r.relPath).toBe("");
+  });
+
+  it("a credential-shaped DISPLAY name is refused even off an innocent source", async () => {
+    // The display override exists for drag flows where main only has a temp
+    // path; it must not become the hole the source check closed.
+    const r = await ingest(seed("innocent.txt", "x\n"), ".env");
+    expect(r.unreadable).toBe("denied");
+  });
+
+  it("refuses a file over the storage ceiling WITHOUT storing it", async () => {
+    // stat runs before read: the first implementation read every source into
+    // memory before deciding, so a mis-dropped multi-GB file meant a
+    // same-sized buffer on the Electron main process. truncateSync extends
+    // by metadata, so this test costs no real 65MB write.
+    const p = seed("huge.iso", "seed");
+    truncateSync(p, MAX_ATTACHMENT_STORE_BYTES + 1);
+    const r = await ingest(p);
+    expect(r.unreadable).toBe("too_large");
+    expect(r.relPath).toBe("");
+    expect(existsSync(join(ws, ".herta", "attachments", "s1"))).toBe(false);
+  });
+
+  it("writes the BL6 gitignore beside what it stores", async () => {
+    // In a real repo, the first `git add -A` after an attach would otherwise
+    // sweep the user's own documents into a commit.
+    await ingest(seed("a.md", "hi\n"));
+    const gi = join(ws, ".herta", ".gitignore");
+    expect(existsSync(gi)).toBe(true);
+    expect(readFileSync(gi, "utf8")).toContain("*");
   });
 
   it("a planted actor marker in the document cannot forge a block", async () => {

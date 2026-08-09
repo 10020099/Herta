@@ -42,6 +42,7 @@ export const COMPACTION_TEXT = {
       too_large: "文件过大，未取正文",
       empty: "未提取到文本",
       read_error: "读取失败",
+      denied: "涉及密钥或凭据，已拒收",
     },
     /** Digest of a `role: "noop-marker"` block. */
     noOutput: "（板砖无产出）",
@@ -57,6 +58,7 @@ export const COMPACTION_TEXT = {
       too_large: "file too large, no body taken",
       empty: "no text extracted",
       read_error: "could not be read",
+      denied: "credential-shaped, refused",
     },
     noOutput: "(板砖 produced nothing)",
     diffSuppressed: (suppressed: number) =>

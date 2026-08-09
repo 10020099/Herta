@@ -247,8 +247,19 @@ export type SystemBlockDigest =
        *  Present means the block's body SAYS the file could not be read as
        *  text — never silence, because Herta speaking about a document she was
        *  never shown is the failure supervisor rule 9 exists to prevent, one
-       *  step upstream of 板砖. */
-      readonly unreadable?: "binary" | "too_large" | "empty" | "read_error";
+       *  step upstream of 板砖.
+       *
+       *  `denied` is the credential guard (ADR 0033 review): the ingest
+       *  refuses credential-shaped SOURCES (id_rsa, .env, anything under
+       *  .ssh/) outright, because the stored name gains a hash suffix that
+       *  the basename denylist no longer matches — deny-at-the-door is the
+       *  only place the deny works. Nothing is stored for this state. */
+      readonly unreadable?:
+        | "binary"
+        | "too_large"
+        | "empty"
+        | "read_error"
+        | "denied";
     }
   | {
       /** No richer structure — digest to the text's first line, truncated. */

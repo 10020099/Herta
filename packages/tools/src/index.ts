@@ -16,6 +16,14 @@ import { showExcerptTool } from "./show-excerpt/index.js";
 import { todoWriteTool } from "./todo-write/index.js";
 import { writeNewFileTool } from "./write-new-file/index.js";
 
+// Exported for the attachment ingest (ADR 0033): the denylist must apply to
+// the SOURCE file at the door, because safeStoredName's hash suffix means the
+// stored name (`id_rsa-ab12cd34`) no longer matches the basename rules — a
+// deny that only ran on the stored side would be a bypass, not a guard.
+export {
+  isCredentialBasename,
+  isSensitiveSegment,
+} from "./credential-denylist.js";
 export type { EditFileData, EditFileRuleDeps } from "./edit-file/index.js";
 export {
   editFileTool,

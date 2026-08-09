@@ -1307,6 +1307,13 @@ function attachmentTaskLine(
   lang: PromptLang,
 ): string {
   const en = lang === "en";
+  if (d.unreadable === "denied") {
+    // Refused, not broken — 板砖 must not diagnose a "read failure" on a file
+    // the harness rejected on purpose, and must not go looking for it.
+    return en
+      ? `[attachment] The Trailblazer tried to provide a file (${d.name}) but the harness refused it: credential-shaped files are never ingested. It is NOT on disk — do not look for it.`
+      : `〔附件〕开拓者尝试提供文件（${d.name}），但框架拒收了它——密钥/凭据形状的文件一律不收。文件不在磁盘上——不要去找它。`;
+  }
   if (d.path.length === 0) {
     return en
       ? `[attachment] The Trailblazer tried to provide a file (${d.name}) but it could not be read. It is NOT on disk — do not look for it.`

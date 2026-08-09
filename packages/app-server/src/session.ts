@@ -1035,19 +1035,42 @@ export class SessionImpl implements Session {
       return { ok: false, reason: "too_many" };
     }
 
-    const files: AttachedFile[] = [];
+    // Phase 1 — ingest (async, disk only, no record mutation). Phase 2 —
+    // guard + append, all synchronous. The first cut appended inside the
+    // await loop, which reopened exactly the hazard the idle-only guard
+    // exists for: every await yields the event loop, submitText can start a
+    // turn in that window, and an out-of-turn append lands MID-turn (dropped
+    // note / rewound sink cursor / duplicate JSONL — audit 2026-07-10,
+    // finding 13). setWorkspace never had this problem only because its
+    // guard-to-append path contains no await; with ingest I/O in between,
+    // the guard must be re-checked on the far side.
+    const ingested = [];
     for (const sourcePath of paths) {
-      const ingested = await ingestAttachment({
+      ingested.push({
         sourcePath,
-        workspaceRoot: this.wsHolder.current,
-        sessionId: this.sessionId,
+        result: await ingestAttachment({
+          sourcePath,
+          workspaceRoot: this.wsHolder.current,
+          sessionId: this.sessionId,
+        }),
       });
-      this.driver.appendSystemBlock(ingested.block);
+    }
+
+    if (this.currentTurn !== null) {
+      // A turn started while the files were being copied. The copies stay on
+      // disk — harmless, content-hashed, and a retry of the same drop reuses
+      // them byte-for-byte — but no record blocks may be appended now.
+      return { ok: false, reason: "turn_in_progress" };
+    }
+
+    const files: AttachedFile[] = [];
+    for (const { sourcePath, result } of ingested) {
+      this.driver.appendSystemBlock(result.block);
       files.push({
         name: basename(sourcePath),
-        path: ingested.relPath,
-        ...(ingested.unreadable !== undefined
-          ? { unreadable: ingested.unreadable }
+        path: result.relPath,
+        ...(result.unreadable !== undefined
+          ? { unreadable: result.unreadable }
           : {}),
       });
     }

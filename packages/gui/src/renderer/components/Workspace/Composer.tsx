@@ -184,20 +184,25 @@ export function Composer(): JSX.Element {
 
   const sendAttachments = (paths: readonly string[]): void => {
     if (paths.length === 0 || sessionId === null) return;
-    void bridge.attachFiles(sessionId, paths).then((r) => {
-      // Refusals are SHOWN. `attachFiles` is idle-only, and a drop that
-      // silently did nothing mid-turn would read as a broken drop target
-      // (the same no-op-silently failure the M6 audit found on setWorkspace).
-      if (!r.ok) {
-        sessionStore.setComposerNotice(
-          r.message === "a turn is in progress"
-            ? t("composer.attach.busy")
-            : r.message === "too many files at once"
-              ? t("composer.attach.tooMany")
-              : t("composer.attach.failed"),
-        );
-      }
-    });
+    void bridge
+      .attachFiles(sessionId, paths)
+      .then((r) => {
+        // Refusals are SHOWN. `attachFiles` is idle-only, and a drop that
+        // silently did nothing mid-turn would read as a broken drop target
+        // (the same no-op-silently failure the M6 audit found on setWorkspace).
+        if (!r.ok) {
+          sessionStore.setComposerNotice(
+            r.message === "a turn is in progress"
+              ? t("composer.attach.busy")
+              : r.message === "too many files at once"
+                ? t("composer.attach.tooMany")
+                : t("composer.attach.failed"),
+          );
+        }
+      })
+      // A rejected IPC call (handler threw) must land in the same notice, not
+      // as an unhandled rejection with a drop that looked like it worked.
+      .catch(() => sessionStore.setComposerNotice(t("composer.attach.failed")));
   };
 
   const onPickAttachments = (): void => {

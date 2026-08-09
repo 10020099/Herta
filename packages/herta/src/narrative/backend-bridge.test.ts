@@ -2780,6 +2780,28 @@ describe("task context — attachments reach 板砖 (ADR 0033)", () => {
     expect(joined).toContain("binary");
   });
 
+  it("a DENIED attachment is described as refused, not as a read failure", async () => {
+    // 板砖 must not diagnose a broken file the harness rejected on purpose —
+    // "why can't you read my key?" should get "it was refused", not a hunt.
+    const { runtime, seen } = capturingRuntime();
+    await invokeBanzhuanBridge(
+      [
+        attachment({ path: "", unreadable: "denied" }),
+        { kind: "user", text: "这个呢" },
+      ],
+      [],
+      {
+        bus: new InMemoryEventBus<AgentEvent>(),
+        runtimeFactory: () => runtime,
+        signal: new AbortController().signal,
+      },
+    );
+    const joined = (seen()?.userMessages ?? []).map((m) => m.text).join("\n");
+    expect(joined).toContain("拒收");
+    expect(joined).toContain("不要去找它");
+    expect(joined).not.toContain("读取失败");
+  });
+
   it("a file that never landed tells 板砖 not to look for it", async () => {
     const { runtime, seen } = capturingRuntime();
     await invokeBanzhuanBridge(

@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, statSync, writeFileSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import type { SystemBlock } from "@herta/core";
+import { ensureHertaGitignore } from "@herta/core";
 import { sanitizeSystemBlock } from "@herta/herta";
 import {
+  isCredentialBasename,
+  isSensitiveSegment,
   looksBinary,
   MAX_EXCERPT_CHARS,
   MAX_EXCERPT_LINES,
@@ -19,12 +21,22 @@ import {
  * `search_text`, `glob` and `show_excerpt` handle documents of any size
  * already, and ADR 0025 slice 2's persistence layer survived a 347K-char read.
  * A 200-page document is a file.
+ *
+ * All I/O is async: this runs on the Electron MAIN process, and a synchronous
+ * multi-megabyte copy there freezes the whole window for its duration.
  */
 
-/** Per-file byte cap. Above this the file is still STORED — refusing to store
- *  a large document would be the wrong failure, since searching a 5MB log is a
- *  real use — but no head excerpt is taken and the block says so. */
+/** Per-file excerpt cap. Above this the file may still be STORED (searching a
+ *  5MB log is a real use) but no head excerpt is taken and the block says so. */
 export const MAX_ATTACHMENT_BYTES = 2 * 1024 * 1024;
+
+/** Storage ceiling (ADR 0033, amended after review). Files above this are
+ *  REFUSED without being read: the first implementation read every source
+ *  into memory before deciding anything, so a mis-dropped 20GB ISO meant a
+ *  multi-gigabyte buffer (or ERR_FS_FILE_TOO_LARGE dressed up as a read
+ *  error) and a workspace copy nobody asked for. The stat runs first and a
+ *  too-big file costs nothing. */
+export const MAX_ATTACHMENT_STORE_BYTES = 64 * 1024 * 1024;
 
 /** Decoded-character cap, applied after the byte cap because a UTF-8 file can
  *  be far smaller in bytes than in the chars a prompt pays for. */
@@ -44,15 +56,38 @@ export type AttachmentUnreadable =
   | "binary"
   | "too_large"
   | "empty"
-  | "read_error";
+  | "read_error"
+  | "denied";
 
 export interface IngestedAttachment {
   /** The record block to append. Already sanitized. */
   readonly block: SystemBlock;
-  /** Workspace-relative path the file was stored at. */
+  /** Workspace-relative path the file was stored at. Empty when nothing was
+   *  stored (read_error, denied, over the storage ceiling). */
   readonly relPath: string;
   /** Set when no excerpt was taken. */
   readonly unreadable?: AttachmentUnreadable;
+}
+
+/**
+ * Credential guard on the SOURCE path (ADR 0033 review finding).
+ *
+ * Two reasons this must run at the door rather than relying on the stored
+ * side. First, `safeStoredName` appends a content hash, so `id_rsa` stores as
+ * `id_rsa-ab12cd34` — a name the credential-basename denylist no longer
+ * matches. The store-side guard is structurally bypassed for exactly the
+ * files it exists to protect. Second, the attach IPC accepts arbitrary paths
+ * from the renderer, and the renderer is sandboxed away from the filesystem
+ * on purpose: without this check, attach is a read-any-file primitive whose
+ * output (the head excerpt) streams straight back to the renderer through the
+ * record. The same shared denylist every tool uses (D4 — one definition of
+ * "credential-shaped", or none).
+ */
+function isCredentialShapedSource(sourcePath: string): boolean {
+  const segments = sourcePath.split(/[\\/]/).filter((s) => s.length > 0);
+  const base = segments[segments.length - 1] ?? "";
+  if (isCredentialBasename(base)) return true;
+  return segments.some((s) => isSensitiveSegment(s));
 }
 
 /**
@@ -104,6 +139,25 @@ function formatCount(n: number): string {
   return n >= 1000 ? `${Math.round(n / 100) / 10}K` : String(n);
 }
 
+/** The not-stored result shapes share one constructor so `relPath: ""` and
+ *  the block's empty digest path can never drift apart. */
+function notStored(
+  displayName: string,
+  unreadable: AttachmentUnreadable,
+): IngestedAttachment {
+  return {
+    block: buildBlock({
+      displayName,
+      relPath: null,
+      lines: 0,
+      chars: 0,
+      unreadable,
+    }),
+    relPath: "",
+    unreadable,
+  };
+}
+
 /**
  * Copy one file into the session's attachment directory and build its record
  * block.
@@ -113,6 +167,10 @@ function formatCount(n: number): string {
  * resolves against the backend root. If the user changes workspace afterwards
  * the stored path goes stale — the same way every other relative path already
  * in the record does, so this introduces no new class of staleness.
+ *
+ * Never throws: every failure becomes a block that says what happened. The
+ * caller appends whatever comes back, so a throw here would be a file that
+ * vanished without a trace — the one outcome worse than any failure state.
  */
 export async function ingestAttachment(opts: {
   readonly sourcePath: string;
@@ -125,38 +183,53 @@ export async function ingestAttachment(opts: {
 }): Promise<IngestedAttachment> {
   const displayName = opts.displayName ?? basename(opts.sourcePath);
 
-  let bytes: Buffer;
-  let tooLargeBytes = false;
+  // Credential guard first — before any read, and on BOTH names (they are the
+  // same in today's flows, but the display override must not become the hole).
+  if (
+    isCredentialShapedSource(opts.sourcePath) ||
+    isCredentialShapedSource(displayName)
+  ) {
+    return notStored(displayName, "denied");
+  }
+
+  // Stat before read: the storage ceiling must not cost a read of the very
+  // bytes it exists to refuse.
+  let size: number;
   try {
-    const st = statSync(opts.sourcePath);
-    tooLargeBytes = st.size > MAX_ATTACHMENT_BYTES;
+    size = (await stat(opts.sourcePath)).size;
+  } catch {
+    return notStored(displayName, "read_error");
+  }
+  if (size > MAX_ATTACHMENT_STORE_BYTES) {
+    return notStored(displayName, "too_large");
+  }
+
+  let bytes: Buffer;
+  try {
     bytes = await readFile(opts.sourcePath);
   } catch {
-    // Nothing was stored, so there is no path to cite. Say so and stop —
-    // an attachment block naming a file that is not there would be worse
-    // than the failure it hides.
-    return {
-      block: buildBlock({
-        displayName,
-        relPath: null,
-        lines: 0,
-        chars: 0,
-        unreadable: "read_error",
-      }),
-      relPath: "",
-      unreadable: "read_error",
-    };
+    return notStored(displayName, "read_error");
   }
 
   const dir = attachmentDirFor(opts.sessionId);
   const storedName = safeStoredName(displayName, bytes);
   const relPath = `${dir}/${storedName}`;
-  const absDir = join(opts.workspaceRoot, ...dir.split("/"));
-  mkdirSync(absDir, { recursive: true });
-  writeFileSync(join(absDir, storedName), bytes);
+  try {
+    const absDir = join(opts.workspaceRoot, ...dir.split("/"));
+    await mkdir(absDir, { recursive: true });
+    await writeFile(join(absDir, storedName), bytes);
+    // Same reason as every other `.herta` writer (audit BL6): in a real repo,
+    // the first `git add -A` after an attach would otherwise sweep the user's
+    // own documents into a commit. Best-effort by its own contract.
+    ensureHertaGitignore(opts.workspaceRoot);
+  } catch {
+    // The write failed, so nothing is at the path — same truth as read_error:
+    // not on disk, do not cite a location.
+    return notStored(displayName, "read_error");
+  }
 
-  // Stored either way — a file too big to excerpt is still worth searching.
-  if (tooLargeBytes) {
+  // Stored, but larger than the excerpt cap — searchable, not excerpted.
+  if (size > MAX_ATTACHMENT_BYTES) {
     return {
       block: buildBlock({
         displayName,
@@ -243,6 +316,7 @@ function buildBlock(a: {
     too_large: "文件过大，未取正文",
     empty: "未提取到文本",
     read_error: "读取失败",
+    denied: "涉及密钥或凭据，已拒收",
   };
 
   const parts = [`附件 ${a.displayName}`];

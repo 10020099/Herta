@@ -228,6 +228,7 @@ export const en = {
   "activity.attachment.unreadable.tooLarge": "too large, no body taken",
   "activity.attachment.unreadable.empty": "no text extracted",
   "activity.attachment.unreadable.readError": "could not be read",
+  "activity.attachment.unreadable.denied": "credential-shaped — refused",
   "activity.plan.more": "+{n} more",
   "plan.card.title": "Todo list",
   "plan.card.itemsUnavailable": "This record kept no item detail.",

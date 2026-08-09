@@ -203,6 +203,7 @@ export const zh = {
   "activity.attachment.unreadable.tooLarge": "文件过大，未取正文",
   "activity.attachment.unreadable.empty": "未提取到文本",
   "activity.attachment.unreadable.readError": "读取失败",
+  "activity.attachment.unreadable.denied": "涉及密钥或凭据，已拒收",
   "activity.plan.more": "还有 {n} 项",
   "plan.card.title": "任务清单",
   "plan.card.itemsUnavailable": "这次记录没有留下清单明细。",

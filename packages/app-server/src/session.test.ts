@@ -1417,3 +1417,78 @@ describe("Session — no-key onboarding (live DeepSeek key)", () => {
     await cleanup();
   });
 });
+
+describe("Session — attachFiles (ADR 0033)", () => {
+  /** A hermetic attach setup: the default backend workspace lives under the
+   *  real homedir, so point the session at a temp dir first — which also
+   *  exercises the documented contract that attachments land under the
+   *  EFFECTIVE backend workspace, not the record anchor. */
+  async function mkAttachSession() {
+    const cfg = mkConfig();
+    const made = await mkStubSession(cfg);
+    const backendWs = mkdtempSync(join(tmpdir(), "herta-attach-ws-"));
+    const set = await made.session.setWorkspace(backendWs);
+    expect(set.ok).toBe(true);
+    const srcDir = mkdtempSync(join(tmpdir(), "herta-attach-src-"));
+    return { ...made, backendWs, srcDir };
+  }
+
+  it("ingests files into the backend workspace and appends one block per file", async () => {
+    const { session, backendWs, srcDir, cleanup } = await mkAttachSession();
+    writeFileSync(join(srcDir, "spec.md"), "# spec\nbody\n");
+    writeFileSync(join(srcDir, "notes.txt"), "notes\n");
+
+    const r = await session.attachFiles([
+      join(srcDir, "spec.md"),
+      join(srcDir, "notes.txt"),
+    ]);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.files).toHaveLength(2);
+
+    const attachBlocks = session.record.filter(
+      (b) => b.kind === "system" && b.digest?.kind === "attachment",
+    );
+    expect(attachBlocks).toHaveLength(2);
+    // The stored file is really under the EFFECTIVE workspace…
+    const rel = r.files[0]?.path ?? "";
+    expect(existsSync(join(backendWs, ...rel.split("/")))).toBe(true);
+    // …and BL6 holds: the .herta dir self-ignores before any git add -A.
+    expect(existsSync(join(backendWs, ".herta", ".gitignore"))).toBe(true);
+    await cleanup();
+  });
+
+  it("refuses more than the per-action cap outright — no prefix ingested", async () => {
+    const { session, srcDir, cleanup } = await mkAttachSession();
+    const paths = Array.from({ length: 11 }, (_, i) => {
+      const p = join(srcDir, `f${i}.txt`);
+      writeFileSync(p, "x\n");
+      return p;
+    });
+    const r = await session.attachFiles(paths);
+    expect(r).toEqual({ ok: false, reason: "too_many" });
+    expect(
+      session.record.some(
+        (b) => b.kind === "system" && b.digest?.kind === "attachment",
+      ),
+    ).toBe(false);
+    await cleanup();
+  });
+
+  it("a credential-shaped source is refused at the door, per file", async () => {
+    const { session, backendWs, srcDir, cleanup } = await mkAttachSession();
+    writeFileSync(join(srcDir, "id_rsa"), "----KEY----\n");
+    const r = await session.attachFiles([join(srcDir, "id_rsa")]);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.files[0]?.unreadable).toBe("denied");
+    expect(r.files[0]?.path).toBe("");
+    // Nothing on disk, and the record block says refused — not silence.
+    expect(existsSync(join(backendWs, ".herta", "attachments"))).toBe(false);
+    const block = session.record.find(
+      (b) => b.kind === "system" && b.digest?.kind === "attachment",
+    );
+    expect(block?.kind === "system" && block.body).toContain("已拒收");
+    await cleanup();
+  });
+});
