@@ -127,6 +127,11 @@ repository**. The app builds and runs without them (silent); official
 installer releases on the [releases page](https://github.com/PersonaCLI/Herta/releases)
 include them.
 
+One clip is the exception and does ship here:
+`website/src/assets/opening-voice.opus`, which the website demo paces its
+opening reveal to. Like every other game-derived asset it is fan content and
+sits outside the MIT grant — see the exclusion list in [LICENSE](./LICENSE).
+
 ## Philosophy
 
 The design intent — why a self rather than a role, why memory must forget,
