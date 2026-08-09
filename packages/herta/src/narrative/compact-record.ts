@@ -283,12 +283,72 @@ export interface CompactOptions {
  *
  * See docs/superpowers/specs/2026-05-24-narrative-compaction-design.md §7.
  */
+/** An attachment block (ADR 0033) — the one system-block shape produced by a
+ *  USER act rather than by the bridge or the backend. */
+function isAttachmentBlock(b: TerminalRecordBlock): b is SystemBlock {
+  return b.kind === "system" && b.digest?.kind === "attachment";
+}
+
+/**
+ * Per-block two-state fold for attachment blocks (ADR 0033, corrected).
+ *
+ * The run-compaction below CANNOT give attachments the "verbatim in its own
+ * turn, a citation forever after" lifecycle, because it only folds runs of
+ * ≥ minRunSize contiguous system blocks. `show_excerpt` blocks always sit
+ * inside a dispatch's run, so folding reaches them; an attachment block sits
+ * ALONE between a herta block and the user's next message, and a run of one
+ * passes through verbatim — which would keep the document's head excerpt in
+ * every subsequent prompt of the session. The two-state lane has to be
+ * per-block here, keyed exactly like the done-marker's: has Herta SPOKEN
+ * since?
+ *
+ *   State 1 (no speech after the block): verbatim — she is reading the head
+ *   in the turn that responds to it.
+ *   State 2 (some speech follows): the head is dropped and the body says so
+ *   (`· 正文已略去`), leaving the citation. "I was shown this" and "I can
+ *   still read this" stay two distinguishable states — the same
+ *   fabricated-quote hazard the excerpt digest documents.
+ *
+ * An unreadable attachment has no detail to drop and its body already says
+ * why; appending an elision note would claim a body that never existed, so it
+ * passes through unchanged in both states.
+ */
+function foldAttachmentForPrompt(
+  block: SystemBlock,
+  spokenSince: boolean,
+  lang: PromptLang,
+): SystemBlock {
+  if (!spokenSince) return block;
+  if (block.evidenceDetail === undefined || block.evidenceDetail.length === 0) {
+    return block;
+  }
+  const { evidenceDetail: _dropped, ...rest } = block;
+  return {
+    ...rest,
+    body: `${block.body} · ${COMPACTION_TEXT[lang].excerptElided}`,
+  };
+}
+
 export function compactRecordForPrompt(
   record: TerminalRecord,
   opts?: CompactOptions,
 ): TerminalRecord {
   const minRunSize = opts?.minRunSize ?? 2;
   const lang = opts?.lang ?? "zh";
+
+  // The newest herta SPEECH bounds the attachment folds: an attachment block
+  // BEFORE it has been responded to (State 2); one after it has not. Same
+  // speech-only rule as the done-marker walk below and for the same reason
+  // (audit 2026-07-24, 1.10) — a （我 想） committed after the block must not
+  // flip it.
+  let lastSpeechIdx = -1;
+  for (let k = record.length - 1; k >= 0; k--) {
+    const b = record[k];
+    if (b !== undefined && b.kind === "herta" && b.surface === "speech") {
+      lastSpeechIdx = k;
+      break;
+    }
+  }
 
   // Done-marker two-state lifecycle: find the last done-marker; the verdict
   // is "spoken" if any herta block appears after it. In State 1 (verdict turn,
@@ -337,9 +397,20 @@ export function compactRecordForPrompt(
       continue;
     }
     if (current.kind === "system") {
-      // Find the end of the contiguous system run.
+      // Attachment blocks never join a run: they are a user act, and folding
+      // one into a `[历史已压缩 · 板砖]` summary would file the user's own
+      // document under 板砖's name. Each carries its own two-state fold.
+      if (isAttachmentBlock(current)) {
+        output.push(foldAttachmentForPrompt(current, i < lastSpeechIdx, lang));
+        i += 1;
+        continue;
+      }
+      // Find the end of the contiguous system run (attachment blocks end a
+      // run for the reason above; the segment after one restarts cleanly).
       let j = i + 1;
-      while (j < record.length && record[j]?.kind === "system") {
+      while (j < record.length) {
+        const b = record[j];
+        if (b?.kind !== "system" || isAttachmentBlock(b)) break;
         j += 1;
       }
       // If the pass-through done-marker is inside this run, exclude it from

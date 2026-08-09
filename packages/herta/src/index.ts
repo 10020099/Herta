@@ -21,6 +21,7 @@ export {
   type BeatFirer,
   invokeBanzhuanBridge,
   projectBackendEvent,
+  sanitizeSystemBlock,
 } from "./narrative/backend-bridge.js";
 export {
   BeatPolicy,

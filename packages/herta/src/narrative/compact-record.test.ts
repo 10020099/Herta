@@ -907,3 +907,157 @@ describe("compaction markers — session language", () => {
     expect(en).not.toContain("const x = 1;");
   });
 });
+
+describe("attachment blocks — per-block two-state fold (ADR 0033)", () => {
+  // The run-compaction above never reaches these: an attachment block sits
+  // ALONE between a herta block and the user's next message, and a run of one
+  // passes through verbatim. Without the per-block fold, the document's head
+  // would ride evidenceDetail into every subsequent prompt of the session.
+  const attachment: SystemBlock = {
+    kind: "system",
+    label: "系统",
+    body: "附件 spec.md · 120 行 · 4.8K 字 · .herta/attachments/s1/spec.md",
+    evidenceDetail: "↳ 附件 spec.md\n# Spec\nCONFIDENTIAL-HEAD-LINE",
+    digest: {
+      kind: "attachment",
+      name: "spec.md",
+      path: ".herta/attachments/s1/spec.md",
+      lines: 120,
+      chars: 4800,
+    },
+  };
+
+  const sys = (out: TerminalRecord): SystemBlock[] =>
+    out.filter((b): b is SystemBlock => b.kind === "system");
+
+  it("State 1 — no speech since: the head passes through verbatim", () => {
+    const out = compactRecordForPrompt([
+      { kind: "herta", surface: "speech", text: "嗯？" },
+      attachment,
+      { kind: "user", text: "看看这份" },
+    ]);
+    const kept = sys(out)[0];
+    expect(kept?.evidenceDetail).toContain("CONFIDENTIAL-HEAD-LINE");
+    expect(kept?.body).not.toContain("正文已略去");
+  });
+
+  it("State 2 — speech follows: the head is dropped and the body says so", () => {
+    const out = compactRecordForPrompt([
+      attachment,
+      { kind: "user", text: "看看这份" },
+      { kind: "herta", surface: "speech", text: "看完了，一般。" },
+      { kind: "user", text: "第三章呢？" },
+    ]);
+    const folded = sys(out)[0];
+    expect(folded?.evidenceDetail).toBeUndefined();
+    expect(folded?.body).toContain("正文已略去");
+    // The citation survives whole — she still knows what and where it is.
+    expect(folded?.body).toContain("spec.md");
+    expect(folded?.body).toContain(".herta/attachments/s1/spec.md");
+    expect(JSON.stringify(out)).not.toContain("CONFIDENTIAL-HEAD-LINE");
+  });
+
+  it("a thought after the block does not fold it (speech-only rule)", () => {
+    // Same rule as the done-marker (audit 2026-07-24, 1.10): the mood-routed
+    // path commits a （我 想） before the responding speech, and that thought
+    // must not strip the head from the very prompt that generates the reply.
+    const out = compactRecordForPrompt([
+      attachment,
+      { kind: "user", text: "看看这份" },
+      { kind: "herta", surface: "thought", text: "先扫一眼。" },
+    ]);
+    expect(sys(out)[0]?.evidenceDetail).toContain("CONFIDENTIAL-HEAD-LINE");
+  });
+
+  it("an unreadable attachment never gains an elision note", () => {
+    // There was never a body to elide; claiming one was is exactly the
+    // shown-vs-readable confusion the two-state split exists to prevent.
+    const unreadable: SystemBlock = {
+      kind: "system",
+      label: "系统",
+      body: "附件 photo.bin · 非文本文件，未取正文",
+      digest: {
+        kind: "attachment",
+        name: "photo.bin",
+        path: ".herta/attachments/s1/photo.bin",
+        lines: 0,
+        chars: 0,
+        unreadable: "binary",
+      },
+    };
+    const out = compactRecordForPrompt([
+      unreadable,
+      { kind: "user", text: "这个呢" },
+      { kind: "herta", surface: "speech", text: "读不了。" },
+    ]);
+    expect(sys(out)[0]?.body).toBe(unreadable.body);
+  });
+
+  it("adjacent attachments never fold into a 板砖-headed summary", () => {
+    // A multi-file attach is ≥2 contiguous system blocks — big enough for the
+    // run-compaction, whose header names 板砖. Filing the user's own documents
+    // under the coprocessor's name would be a false receipt, so attachments
+    // break runs and each folds alone.
+    const second: SystemBlock = {
+      ...attachment,
+      body: "附件 notes.md · 10 行 · 200 字 · .herta/attachments/s1/notes.md",
+      evidenceDetail: "↳ 附件 notes.md\nSECOND-HEAD-LINE",
+      digest: {
+        kind: "attachment",
+        name: "notes.md",
+        path: ".herta/attachments/s1/notes.md",
+        lines: 10,
+        chars: 200,
+      },
+    };
+    const out = compactRecordForPrompt([
+      attachment,
+      second,
+      { kind: "user", text: "都看看" },
+      { kind: "herta", surface: "speech", text: "看了。" },
+    ]);
+    const s = JSON.stringify(out);
+    expect(s).not.toContain("历史已压缩");
+    expect(s).not.toContain("CONFIDENTIAL-HEAD-LINE");
+    expect(s).not.toContain("SECOND-HEAD-LINE");
+    expect(sys(out).map((b) => b.digest?.kind)).toEqual([
+      "attachment",
+      "attachment",
+    ]);
+  });
+
+  it("an attachment beside a dispatch run neither joins it nor breaks its fold", () => {
+    const out = compactRecordForPrompt([
+      attachment,
+      {
+        kind: "system",
+        label: "差分协处理器",
+        body: 'Reading {"path":"a.ts"}',
+      },
+      {
+        kind: "system",
+        label: "差分协处理器",
+        body: 'Writing {"path":"a.ts"}',
+      },
+      { kind: "user", text: "继续" },
+      { kind: "herta", surface: "speech", text: "行。" },
+    ]);
+    const s = JSON.stringify(out);
+    // The dispatch pair still compacts; the attachment folded on its own.
+    expect(s).toContain("历史已压缩");
+    expect(s).not.toContain("CONFIDENTIAL-HEAD-LINE");
+    expect(s).toContain("正文已略去");
+  });
+
+  it("localizes the elision note by session language", () => {
+    const out = compactRecordForPrompt(
+      [
+        attachment,
+        { kind: "user", text: "read it" },
+        { kind: "herta", surface: "speech", text: "done." },
+      ],
+      { lang: "en" },
+    );
+    expect(sys(out)[0]?.body).toContain("body elided");
+  });
+});

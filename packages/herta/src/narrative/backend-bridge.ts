@@ -151,7 +151,11 @@ function sanitizeEvidence(
  * summaries, and `evidence` feeds the localized detail pane — all the same
  * trust class as `body`.
  */
-function sanitizeSystemBlock(block: SystemBlock): SystemBlock {
+// Exported for the ADR 0033 attachment producer (app-server): attachment
+// blocks are the one system-block shape built OUTSIDE this bridge, and the
+// serializer does NOT sanitize system bodies at read — construction is the
+// only gate. Everything bridge-internal keeps calling it directly.
+export function sanitizeSystemBlock(block: SystemBlock): SystemBlock {
   return {
     ...block,
     body: cleanBody(block.body),
