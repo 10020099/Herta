@@ -1130,6 +1130,20 @@ export function createDemoBridge(
     pickWorkspace: async () => null,
     setWorkspace: async () => ({ ok: true }),
     resetWorkspace: async () => ({ ok: true }),
+    // Attachments (ADR 0033) are inert in the demo: the site runs the REAL
+    // renderer, so the paperclip and the drop zone exist, but a browser page
+    // has no filesystem to ingest from. Rather than hide the control (which
+    // would make the demo diverge from the app it is showing), each entry
+    // point dead-ends honestly.
+    //
+    // `pathForFile` returning "" is the load-bearing one: the composer filters
+    // empty paths, so a visitor dragging a file onto the demo gets a no-op
+    // instead of a refusal notice for something they could never do here.
+    // `pickAttachments` returning null is the same as cancelling the picker.
+    pickAttachments: async () => null,
+    attachFiles: async () => ({ ok: false, message: "unavailable in the demo" }),
+    removeAttachment: async () => ({ ok: true }),
+    pathForFile: () => "",
     getDreamConfig: async () => ({ enabled: true }),
     setDreamConfig: async () => {},
     getLocale: async () => lang,
