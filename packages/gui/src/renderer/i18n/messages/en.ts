@@ -172,6 +172,8 @@ export const en = {
   "composer.send": "Send message",
   "composer.stop": "Interrupt the current turn",
   "composer.attach": "Add documents",
+  "composer.attach.formats":
+    "Text files: code / Markdown / txt / csv / json / logs",
   "composer.attach.busy":
     "This turn isn't finished — wait for her, then drop the file.",
   "composer.attach.tooMany": "Ten files at a time, at most.",

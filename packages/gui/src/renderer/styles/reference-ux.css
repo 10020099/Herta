@@ -2628,6 +2628,14 @@ button.agent-preview:active {
     transform: none;
   }
 }
+/* A live-attached document's group rides the SAME adopted entrance (ADR 0033,
+   owner 2026-08-10: the row popped in with no motion). One keyframe, one feel;
+   the class is set only for a mount whose newest block is seconds old, so a
+   session switch never double-animates (its stagger targets the row wrapper,
+   this targets the group — and the recency gate keeps them apart anyway). */
+.activity-line-group.is-attach-enter {
+  animation: conv-switch-in 350ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
 
 @media (prefers-reduced-motion: reduce) {
   .morph-clone,
@@ -3339,6 +3347,14 @@ button.session-item__badge--dismiss {
   opacity: 0;
   visibility: hidden;
   transition: opacity 120ms ease, visibility 0s linear 120ms;
+}
+/* Muted second line (e.g. the attach hint's supported-formats note). Its own
+   block line under the label; both lines keep the pill's nowrap. */
+.tooltip-sub {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--muted-3);
 }
 .tooltip-bottom .tooltip {
   top: 100%;

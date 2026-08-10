@@ -123,8 +123,35 @@ export const ActivityBlock = memo(function ActivityBlock(
   const reduced = useReducedMotion();
   const unpin = useUnpinConversation();
   const [userToggled, setUserToggled] = useState<boolean | null>(null);
+  // An all-attachment group is a USER act filed under the system chip (ADR
+  // 0033): "which files did I just hand over" is the whole point of the row,
+  // so it defaults OPEN — a collapsed `系统 ›` with the filenames behind a
+  // click answered nothing (owner 2026-08-10). Backend activity keeps the
+  // default-collapsed contract below: the line IS the rendering (F4). Mixed
+  // groups (an attachment swept into a dispatch run by an edge-case record
+  // tail) count as activity, not as an attach act.
+  const isAttachmentGroup =
+    blocks.length > 0 && blocks.every((b) => b.digest?.kind === "attachment");
   // Default-collapsed even while running — the line IS the rendering (F4).
-  const expanded = expandable ? (userToggled ?? false) : false;
+  const expanded = expandable ? (userToggled ?? isAttachmentGroup) : false;
+  // Entrance for a LIVE attach (owner 2026-08-10: the row popped in with no
+  // motion). Same adopted feel as the session-switch entrance (350ms / 12px /
+  // easeOutQuint — one motion vocabulary, not two). Recency-gated off the
+  // block's own `at` stamp, decided ONCE at mount: a live append is seconds
+  // old, a session switch or reload mounts blocks that are not — so history
+  // never replays the entrance. Deliberately no store flag ("animate the next
+  // group") — cross-component transient state is the exact class the
+  // 2026-07-24 audit catalogued.
+  const [entering] = useState(() => {
+    if (!isAttachmentGroup || reduced) return false;
+    const at = blocks[blocks.length - 1]?.at;
+    if (at === undefined) return false;
+    const age = Date.now() - Date.parse(at);
+    // `5000 > age`, not `age < 5000`: the no-hardcoded-english guard scans
+    // .tsx lines for `>text<` JSX-text shapes, and the `<` here after the
+    // `>=` reads as a text node ">= 0 && age<" to its regex.
+    return Number.isFinite(age) && age >= 0 && 5000 > age;
+  });
 
   const startRef = useRef<number | null>(null);
   const [frozenMs, setFrozenMs] = useState<number | null>(null);
@@ -276,7 +303,9 @@ export const ActivityBlock = memo(function ActivityBlock(
 
   return (
     <div
-      className={`activity-line-group${active ? " is-active" : ""}`}
+      className={`activity-line-group${active ? " is-active" : ""}${
+        entering ? " is-attach-enter" : ""
+      }`}
       data-testid="activity-block"
     >
       {/* The toggle shrinks to its CONTENT; the row around it holds the
@@ -438,7 +467,9 @@ export const ActivityBlock = memo(function ActivityBlock(
                       ? "fail"
                       : b.digest?.kind === "todo"
                         ? "todo"
-                        : stepIcon(b.body)
+                        : b.digest?.kind === "attachment"
+                          ? "attach"
+                          : stepIcon(b.body)
                   }
                   active={shimmer}
                   failed={failed}

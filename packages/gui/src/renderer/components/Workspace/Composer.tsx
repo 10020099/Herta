@@ -10,6 +10,7 @@ import { aliasBrickInput } from "../../lib/banzhuan-mention.js";
 import { renderBanzhuanText } from "../../lib/banzhuan-text.js";
 import { submitMessage } from "../../lib/submit-message.js";
 import { stopAllVoice } from "../../voice/play-voice.js";
+import { Tooltip } from "../Tooltip/Tooltip.js";
 import { AuraVisual } from "../UtilityRail/AuraVisual.js";
 import { useWorkspaceRefs } from "./WorkspaceRefs.js";
 
@@ -346,19 +347,30 @@ export function Composer(): JSX.Element {
           inconsistent across fonts. */}
       {/* Attach. Disabled during a turn for the same reason the main-process
           handler refuses then: the ingest rides an out-of-turn record append.
-          Showing it disabled beats letting a click produce a refusal notice. */}
-      <button
-        type="button"
-        className="composer-attach"
-        aria-label={t("composer.attach")}
-        title={t("composer.attach")}
-        disabled={busy}
-        onClick={onPickAttachments}
+          Showing it disabled beats letting a click produce a refusal notice.
+          The hint is the app's styled Tooltip like the topbar icons — the
+          first cut used the native `title`, which renders as the OS's own
+          beige box and matches nothing (owner 2026-08-10). placement="top"
+          because the composer sits at the window's bottom edge; align="end"
+          because the button sits near the right one. */}
+      <Tooltip
+        label={t("composer.attach")}
+        sub={t("composer.attach.formats")}
+        placement="top"
+        align="end"
       >
-        <svg viewBox="0 0 14 14" aria-hidden="true" focusable="false">
-          <path d="M9.5 4.2 5.3 8.4a1.6 1.6 0 0 0 2.3 2.3l4.2-4.2a3 3 0 0 0-4.2-4.2L3.2 6.6a4.3 4.3 0 0 0 6.1 6.1l3.4-3.4" />
-        </svg>
-      </button>
+        <button
+          type="button"
+          className="composer-attach"
+          aria-label={t("composer.attach")}
+          disabled={busy}
+          onClick={onPickAttachments}
+        >
+          <svg viewBox="0 0 14 14" aria-hidden="true" focusable="false">
+            <path d="M9.5 4.2 5.3 8.4a1.6 1.6 0 0 0 2.3 2.3l4.2-4.2a3 3 0 0 0-4.2-4.2L3.2 6.6a4.3 4.3 0 0 0 6.1 6.1l3.4-3.4" />
+          </svg>
+        </button>
+      </Tooltip>
       <button
         ref={sendButtonRef}
         type={busy ? "button" : "submit"}

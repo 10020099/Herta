@@ -710,3 +710,129 @@ describe("ActivityBlock live plan strip", () => {
     expect(history?.querySelector(".activity-plan__row")).toBeNull();
   });
 });
+
+describe("ActivityBlock — attachment groups (ADR 0033, owner 2026-08-10)", () => {
+  const attach = (name: string, over: { at?: string } = {}): SystemBlock => ({
+    kind: "system",
+    label: "系统",
+    body: `附件 ${name} · 87 行 · 1.3K 字 · .herta/attachments/s/${name}`,
+    digest: {
+      kind: "attachment",
+      name,
+      path: `.herta/attachments/s/${name}`,
+      lines: 87,
+      chars: 1300,
+    },
+    ...over,
+  });
+
+  it("defaults OPEN — the filenames are the point of the row", () => {
+    const { container } = renderWithLocale(
+      <A
+        blocks={[attach("spec.md"), attach("notes.txt")]}
+        active={false}
+        turnStartedAt={null}
+        backendStartedAt={null}
+      />,
+    );
+    expect(screen.getByRole("button").getAttribute("aria-expanded")).toBe(
+      "true",
+    );
+    const history = container.querySelector(".activity-line__history.is-open");
+    expect(history).not.toBeNull();
+    expect(history?.textContent).toContain("spec.md");
+    expect(history?.textContent).toContain("notes.txt");
+    // …with the composer's paperclip glyph, not the generic dot.
+    expect(history?.querySelector('[data-icon="attach"]')).not.toBeNull();
+  });
+
+  it("the user can still collapse it", () => {
+    const { container } = renderWithLocale(
+      <A
+        blocks={[attach("spec.md")]}
+        active={false}
+        turnStartedAt={null}
+        backendStartedAt={null}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button"));
+    expect(screen.getByRole("button").getAttribute("aria-expanded")).toBe(
+      "false",
+    );
+    expect(
+      container.querySelector(".activity-line__history.is-open"),
+    ).toBeNull();
+  });
+
+  it("a mixed group counts as backend activity and stays collapsed", () => {
+    renderWithLocale(
+      <A
+        blocks={[attach("spec.md"), step("Reading a.ts")]}
+        active={false}
+        turnStartedAt={null}
+        backendStartedAt={null}
+      />,
+    );
+    expect(screen.getByRole("button").getAttribute("aria-expanded")).toBe(
+      "false",
+    );
+  });
+
+  it("a LIVE attach mounts with the entrance; a loaded one does not", () => {
+    // Recency-gated off the block's own `at` stamp, decided once at mount —
+    // no store flag, no cross-component state (the 2026-07-24 audit class).
+    const live = renderWithLocale(
+      <A
+        blocks={[attach("spec.md", { at: new Date().toISOString() })]}
+        active={false}
+        turnStartedAt={null}
+        backendStartedAt={null}
+      />,
+    );
+    expect(live.container.querySelector(".is-attach-enter")).not.toBeNull();
+    live.unmount();
+
+    const loaded = renderWithLocale(
+      <A
+        blocks={[
+          attach("spec.md", {
+            at: new Date(Date.now() - 60_000).toISOString(),
+          }),
+        ]}
+        active={false}
+        turnStartedAt={null}
+        backendStartedAt={null}
+      />,
+    );
+    expect(loaded.container.querySelector(".is-attach-enter")).toBeNull();
+    loaded.unmount();
+
+    // No timestamp at all (pre-stamp records): never animate.
+    const unstamped = renderWithLocale(
+      <A
+        blocks={[attach("spec.md")]}
+        active={false}
+        turnStartedAt={null}
+        backendStartedAt={null}
+      />,
+    );
+    expect(unstamped.container.querySelector(".is-attach-enter")).toBeNull();
+  });
+
+  it("a recent backend group never borrows the attach entrance", () => {
+    const { container } = renderWithLocale(
+      <A
+        blocks={[
+          {
+            ...step("Reading a.ts"),
+            at: new Date().toISOString(),
+          },
+        ]}
+        active={false}
+        turnStartedAt={null}
+        backendStartedAt={null}
+      />,
+    );
+    expect(container.querySelector(".is-attach-enter")).toBeNull();
+  });
+});

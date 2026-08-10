@@ -2,6 +2,11 @@ import { type ReactNode, useState } from "react";
 
 export interface TooltipProps {
   readonly label: string;
+  /** Optional muted second line (ADR 0033: the attach hint names the supported
+   *  formats). A separate line rather than one long label because the pill is
+   *  `white-space: nowrap` — appending detail to the label makes one very wide
+   *  pill, while a subline keeps the primary action scannable. */
+  readonly sub?: string;
   readonly placement?: "top" | "bottom";
   readonly align?: "start" | "center" | "end";
   readonly children: ReactNode;
@@ -27,6 +32,9 @@ export function Tooltip(props: TooltipProps): JSX.Element {
       {props.children}
       <span className="tooltip" role="tooltip">
         {props.label}
+        {props.sub !== undefined && (
+          <span className="tooltip-sub">{props.sub}</span>
+        )}
       </span>
     </span>
   );

@@ -151,6 +151,11 @@ export const zh = {
   "composer.send": "发送消息",
   "composer.stop": "打断当前回合",
   "composer.attach": "添加文档",
+  /** The tooltip's muted second line — what slice 1 actually reads. Named as
+   *  kinds rather than an extension list: the sniff accepts ANY text file, so
+   *  enumerating extensions would be both incomplete and falsely exclusive. */
+  "composer.attach.formats":
+    "文本类文件：代码 / Markdown / txt / csv / json / 日志",
   "composer.attach.busy": "这一回合还没结束，等她说完再放文件。",
   "composer.attach.tooMany": "一次最多十个文件。",
   "composer.attach.failed": "文件没能加进来。",

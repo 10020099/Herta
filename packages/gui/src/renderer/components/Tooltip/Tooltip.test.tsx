@@ -78,6 +78,23 @@ describe("Tooltip", () => {
     ).toBe(true);
   });
 
+  it("renders a muted second line when sub is given, none otherwise", () => {
+    const { container, rerender } = render(
+      <Tooltip label="Add documents" sub="Text files">
+        <button type="button">T</button>
+      </Tooltip>,
+    );
+    expect(container.querySelector(".tooltip-sub")?.textContent).toBe(
+      "Text files",
+    );
+    rerender(
+      <Tooltip label="Add documents">
+        <button type="button">T</button>
+      </Tooltip>,
+    );
+    expect(container.querySelector(".tooltip-sub")).toBeNull();
+  });
+
   it("suppresses the tooltip on pointerdown and re-arms it on pointerleave", () => {
     const { container } = render(
       <Tooltip label="X">

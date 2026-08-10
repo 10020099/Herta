@@ -8,6 +8,7 @@ export type StepIconKey =
   | "result"
   | "fail"
   | "todo"
+  | "attach"
   | "dot";
 
 /** Choose an icon from a projected step body. Parses our own leading verb
@@ -68,6 +69,11 @@ const PATHS: Record<StepIconKey, JSX.Element> = {
       <rect x="2.5" y="2.5" width="9" height="9" rx="1.5" />
       <path d="M4.8 7.2l1.6 1.6 3-3.4" />
     </>
+  ),
+  // The composer's own paperclip (ADR 0033), so an attachment row and the
+  // button that made it share one glyph.
+  attach: (
+    <path d="M9.5 4.2 5.3 8.4a1.6 1.6 0 0 0 2.3 2.3l4.2-4.2a3 3 0 0 0-4.2-4.2L3.2 6.6a4.3 4.3 0 0 0 6.1 6.1l3.4-3.4" />
   ),
   dot: <circle cx="7" cy="7" r="2.2" />,
 };

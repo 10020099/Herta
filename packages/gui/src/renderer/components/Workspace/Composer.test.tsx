@@ -403,10 +403,17 @@ describe("Composer send button ref", () => {
 
 describe("Composer send tooltip", () => {
   it("shows NO tooltip on the send button (self-evident control; user 2026-06-13)", () => {
-    renderComposer();
+    // Scoped to the SEND button since the attach button gained a tooltip
+    // (ADR 0033, owner 2026-08-10) — the 2026-06-13 decision was about the
+    // arrow being self-evident, not a composer-wide tooltip ban.
+    const { container } = renderComposer();
     const send = screen.getByRole("button", { name: "Send message" });
     expect(send).not.toHaveAttribute("title");
-    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    expect(send.closest(".tooltip-wrap")).toBeNull();
+    // Exactly one tooltip in the composer, and it belongs to attach.
+    const wraps = container.querySelectorAll(".tooltip-wrap");
+    expect(wraps).toHaveLength(1);
+    expect(wraps[0]?.querySelector(".composer-attach")).not.toBeNull();
   });
 });
 
@@ -635,6 +642,26 @@ describe("Composer — attachments (ADR 0033)", () => {
       "/docs/spec.md",
       "/docs/notes.txt",
     ]);
+  });
+
+  it("the attach hint is the styled tooltip with the formats subline", () => {
+    // The first cut used the native `title`, which renders as the OS's own
+    // beige box beside an app full of styled pills (owner 2026-08-10).
+    const { container } = renderComposer();
+    const wrap = [...container.querySelectorAll(".tooltip-wrap")].find(
+      (w) => w.querySelector(".composer-attach") !== null,
+    );
+    expect(wrap).toBeTruthy();
+    expect(wrap?.classList.contains("tooltip-top")).toBe(true);
+    expect(wrap?.querySelector(".tooltip")?.textContent).toContain(
+      "Add documents",
+    );
+    expect(wrap?.querySelector(".tooltip-sub")?.textContent).toContain(
+      "Text files",
+    );
+    expect(
+      container.querySelector(".composer-attach")?.getAttribute("title"),
+    ).toBeNull();
   });
 
   it("a cancelled picker attaches nothing", async () => {
