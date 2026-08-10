@@ -10,7 +10,11 @@ import {
 } from "@herta/core";
 import { afterEach, describe, expect, it } from "vitest";
 import { mkTmpWorkspace, type TmpWorkspace } from "../testing/tmp-workspace.js";
-import { type SearchTextData, searchTextTool } from "./index.js";
+import {
+  isAttachmentSearchRoot,
+  type SearchTextData,
+  searchTextTool,
+} from "./index.js";
 import { detectRg } from "./rg-engine.js";
 
 const rgBin = await detectRg();
@@ -508,5 +512,36 @@ describe("searchTextTool — attachments (ADR 0033, amended 2026-08-10)", () => 
       noopProgress,
     );
     expect(r.ok).toBe(false);
+  });
+
+  it("searches a stored-without-excerpt attachment ABOVE the 1MiB scan cap", async () => {
+    // Review 2026-08-10: the files this carve-out exists for are the over-2MB
+    // ones the ingest stored on the promise they stay searchable — and the
+    // ordinary scan cap silently skipped them, making the first carve-out fix
+    // true only for files small enough to have excerpts anyway.
+    const big = `${"x".repeat(3 * 1024 * 1024)}\nDEEP-NEEDLE-42\n`;
+    ws = await mkTmpWorkspace({ ".herta/attachments/s1/big.log": big });
+    const r = await searchTextTool().run(
+      {
+        id: "1",
+        tool: "search_text",
+        input: { pattern: "DEEP-NEEDLE-42", path: ".herta/attachments/s1" },
+      },
+      ctx(ws.root),
+      noopProgress,
+    );
+    expect(r.ok).toBe(true);
+    expect((r.data as SearchTextData).matches.length).toBeGreaterThan(0);
+  });
+
+  it("an attachment root always takes the JS engine (engine-independence)", () => {
+    // rg mirrors SKIP_DIR_NAMES as `-g !.herta/**` and respects the BL6
+    // gitignore, so an rg-backed attachment search returned zero candidates
+    // while JS found matches. The predicate below is what forces JS.
+    expect(isAttachmentSearchRoot(".herta/attachments/s1")).toBe(true);
+    expect(isAttachmentSearchRoot(".herta/attachments/s1/big.log")).toBe(true);
+    expect(isAttachmentSearchRoot("src")).toBe(false);
+    expect(isAttachmentSearchRoot(".herta/logs/run.log")).toBe(false);
+    expect(isAttachmentSearchRoot("")).toBe(false);
   });
 });

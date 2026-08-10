@@ -68,7 +68,11 @@ export {
 } from "./run-command/index.js";
 export type { RunCommandInput } from "./run-command/schema.js";
 export type { SearchMatch, SearchTextData } from "./search-text/index.js";
-export { searchTextTool } from "./search-text/index.js";
+export {
+  ATTACHMENT_SEARCH_MAX_BYTES,
+  isAttachmentSearchRoot,
+  searchTextTool,
+} from "./search-text/index.js";
 export type { SearchTextInput } from "./search-text/schema.js";
 export {
   MAX_EXCERPT_CHARS,

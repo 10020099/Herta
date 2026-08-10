@@ -17,6 +17,34 @@ import { searchTextInputSchema, searchTextJsonSchema } from "./schema.js";
 
 const MAX_FILE_BYTES = 1 * 1024 * 1024;
 const SNIFF_BYTES = 4096;
+
+/** The attachment subtree (ADR 0033). A search rooted here gets two special
+ *  behaviors, both found in the 2026-08-10 review of the carve-out:
+ *
+ *  1. The JS engine, always. rg's arg list mirrors SKIP_DIR_NAMES as
+ *     `-g !.herta/**` and rg respects the BL6 `.herta/.gitignore` (`*`), so an
+ *     rg-backed search into this subtree returned ZERO candidates while the JS
+ *     scanner found matches — silent engine divergence, the exact failure the
+ *     slice-3 design ("results are engine-independent") forbids. Attachment
+ *     dirs hold at most a handful of files, so the JS scanner's performance
+ *     is a non-issue; skipping rg makes the equivalence structural.
+ *  2. A lifted per-file cap. The 1 MiB scan cap exists to bound a
+ *     whole-workspace walk, but the files this carve-out exists FOR are the
+ *     over-2MB ones the ingest stored WITHOUT an excerpt on the promise that
+ *     they stay searchable — a promise the cap silently broke for both
+ *     engines (rg carries its own `--max-filesize=1048576`). An explicit
+ *     search into the attachment dir reads one file of at most the storage
+ *     ceiling; `ATTACHMENT_SEARCH_MAX_BYTES` must equal that ceiling, and an
+ *     app-server test pins the two together.
+ */
+const ATTACHMENT_PREFIX = ".herta/attachments/";
+export const ATTACHMENT_SEARCH_MAX_BYTES = 64 * 1024 * 1024;
+
+/** Whether a canonical workspace-relative search root is inside the
+ *  attachment subtree. Exported for the lockstep test. */
+export function isAttachmentSearchRoot(rel: string): boolean {
+  return rel.startsWith(ATTACHMENT_PREFIX);
+}
 /** Wall-clock budget for one search (audit 2026-07-13 T2.3): the backstop
  *  for slow-but-not-rejected patterns — polynomial backtracking, huge trees.
  *  Checked between lines; on expiry the scan stops and returns what it has
@@ -85,7 +113,13 @@ function makeFileLoader(
       } catch {
         return null;
       }
-      if (fileInfo.size > MAX_FILE_BYTES) return null;
+      // Attachments get the lifted cap — the stored-without-excerpt files are
+      // over the 1 MiB scan cap BY DEFINITION (that is why they had no
+      // excerpt), and the searchable promise is the reason they were stored.
+      const cap = relPath.startsWith(ATTACHMENT_PREFIX)
+        ? ATTACHMENT_SEARCH_MAX_BYTES
+        : MAX_FILE_BYTES;
+      if (fileInfo.size > cap) return null;
       let buf: Buffer;
       try {
         buf = await readFile(safeEntry.resolved);
@@ -367,7 +401,8 @@ export function searchTextTool(opts: SearchTextToolOpts = {}): HertaTool {
       // (no binary, pattern dialect rejected, spawn failure) falls through.
       let outcome: ScanOutcome | null = null;
       const engine =
-        process.env.HERTA_SEARCH_ENGINE === "js"
+        process.env.HERTA_SEARCH_ENGINE === "js" ||
+        isAttachmentSearchRoot(safe.relative)
           ? "js"
           : (opts.engine ?? "auto");
       if (engine === "auto") {

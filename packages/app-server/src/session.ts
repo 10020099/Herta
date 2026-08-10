@@ -1006,11 +1006,26 @@ export class SessionImpl implements Session {
     // record cites workspace-RELATIVE paths, so leaving the files behind would
     // silently break every document already handed over — and would make
     // removeAttachment unlink from a root the file was never in.
+    const fromRoot = this.wsHolder.current;
     await migrateAttachments({
-      fromRoot: this.wsHolder.current,
+      fromRoot,
       toRoot: workspace,
       sessionId: this.sessionId,
     });
+    // Guard re-check on the far side of the await (review 2026-08-10): the
+    // migration can be a multi-megabyte copy, and a turn starting during it
+    // would make the appendSystemNote below a MID-turn write and hand the
+    // in-flight dispatch a half-switched holder. Refuse — and move the files
+    // BACK first, because a refusal that leaves them under the new root while
+    // the holder stays old would break every citation in the record.
+    if (this.currentTurn !== null) {
+      await migrateAttachments({
+        fromRoot: workspace,
+        toRoot: fromRoot,
+        sessionId: this.sessionId,
+      });
+      return { ok: false, reason: "turn_in_progress" };
+    }
     this.wsHolder.current = workspace;
     this.wsIsDefault = false;
     this.persister.appendWorkspaceSet(workspace, new Date().toISOString());
@@ -1145,6 +1160,16 @@ export class SessionImpl implements Session {
       // must not block the record from recording the withdrawal.
     }
 
+    // Guard re-check on the far side of the await — the same hole attachFiles
+    // closed and this method then reintroduced: `rm` yields the event loop,
+    // and a turn starting in that window would make the block replacement and
+    // the sink re-seed below MID-turn mutations. Refusing here is self-healing:
+    // the file is already gone, the block is not yet marked, and the retry
+    // finds the same targets while `rm --force` tolerates the missing file.
+    if (this.currentTurn !== null) {
+      return { ok: false, reason: "turn_in_progress" };
+    }
+
     for (const { index, block } of targets) {
       const d = block.digest;
       if (d?.kind !== "attachment") continue;
@@ -1181,11 +1206,22 @@ export class SessionImpl implements Session {
     }
     const def = defaultWorkspaceFor(homedir(), this.sessionId);
     // Same reason as setWorkspace: the documents belong to the conversation.
+    const resetFrom = this.wsHolder.current;
     await migrateAttachments({
-      fromRoot: this.wsHolder.current,
+      fromRoot: resetFrom,
       toRoot: def,
       sessionId: this.sessionId,
     });
+    // Same far-side re-check as setWorkspace (review 2026-08-10) — and the
+    // same move-back on refusal, so the citations keep resolving.
+    if (this.currentTurn !== null) {
+      await migrateAttachments({
+        fromRoot: def,
+        toRoot: resetFrom,
+        sessionId: this.sessionId,
+      });
+      return { ok: false, reason: "turn_in_progress" };
+    }
     this.wsHolder.current = def;
     this.wsIsDefault = true;
     this.persister.appendWorkspaceSet(def, new Date().toISOString());
