@@ -284,45 +284,33 @@ export const ActivityBlock = memo(function ActivityBlock(
     if (el === null) return;
     const prev = prevExpandedRef.current;
     prevExpandedRef.current = expanded;
-    // The panel is `overflow: hidden` so the max-height reveal clips cleanly —
-    // but that also clips a row's hover tooltip (the attachment ✕). Release
-    // the clip whenever the panel is at rest OPEN, and restore it before any
-    // collapse so the animation still hides the outgoing content.
-    const settleOpen = (): void => {
-      el.style.maxHeight = "none";
-      el.style.overflow = "visible";
-    };
+    // The panel stays `overflow: hidden` throughout (the CSS default here) so
+    // the max-height reveal clips cleanly. An earlier pass lifted the clip
+    // while open, to stop it cutting a row's hover tooltip; that is gone —
+    // the tooltip is portaled to <body> now (see Tooltip `portal`), which
+    // fixes the clipping for every ancestor rather than this one, and lets
+    // the reveal keep the simple always-clipped behaviour it was written for.
     // First commit for this element: set the resting state, no animation.
-    // Attachment groups land here already expanded, so they need the clip
-    // released without ever running a transition.
     if (prev === null) {
-      if (expanded) settleOpen();
-      else el.style.maxHeight = "0px";
+      el.style.maxHeight = expanded ? "none" : "0px";
       return;
     }
     // Steps changed but the open/closed state held — never animate on step
     // churn; keep an open panel free-growing and a closed one collapsed.
     if (prev === expanded) {
-      if (expanded) settleOpen();
+      if (expanded) el.style.maxHeight = "none";
       return;
     }
     if (reduced) {
-      if (expanded) settleOpen();
-      else {
-        el.style.overflow = "";
-        el.style.maxHeight = "0px";
-      }
+      el.style.maxHeight = expanded ? "none" : "0px";
       return;
     }
     if (expanded) {
       // 0 → measured content height; onTransitionEnd then releases the ceiling
-      // to `none` so a later inner-diff expand isn't clipped. The clip stays on
-      // for the duration — the growing content must not spill past the ceiling.
+      // to `none` so a later inner-diff expand isn't clipped.
       el.style.maxHeight = `${el.scrollHeight}px`;
     } else {
       // `none` → pinned px → reflow → 0, giving the collapse a start value.
-      // Re-clip first, or the shrinking panel would show its overflow.
-      el.style.overflow = "";
       el.style.maxHeight = `${el.scrollHeight}px`;
       void el.offsetHeight;
       el.style.maxHeight = "0px";
@@ -475,11 +463,7 @@ export const ActivityBlock = memo(function ActivityBlock(
           onTransitionEnd={(e) => {
             if (e.propertyName !== "max-height") return;
             const el = historyRef.current;
-            if (el === null || !expanded) return;
-            el.style.maxHeight = "none";
-            // Now that the reveal is finished, stop clipping — a row's hover
-            // tooltip needs to paint outside the panel's box.
-            el.style.overflow = "visible";
+            if (el !== null && expanded) el.style.maxHeight = "none";
           }}
         >
           <div className="activity-line__history-inner">

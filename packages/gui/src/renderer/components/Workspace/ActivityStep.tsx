@@ -74,14 +74,19 @@ export function ActivityStep(props: ActivityStepProps): JSX.Element {
           />
           {props.onRemove !== undefined && (
             // The app's styled pill, not the native `title` (owner
-            // 2026-08-10 — the same OS-beige-box mismatch the paperclip had).
-            // Bottom placement: the pill then opens INTO the history panel,
-            // whose clip ActivityBlock lifts once open, instead of upward
-            // across the group boundary where it was being cut.
+            // 2026-08-10 — the same OS-beige-box mismatch the paperclip had),
+            // and PORTALED. This row sits inside the activity history panel
+            // inside the conversation scroller; an in-flow pill was cut there
+            // twice, by two different causes (the panel's reveal clip, then
+            // whatever paints past its bottom edge once the detail pane is
+            // closed). Rendering to <body> at fixed coords ends the class —
+            // nothing can clip an element it does not contain — and the
+            // placement auto-flips when the viewport bottom is close.
             <Tooltip
               label={props.removeLabel ?? ""}
               placement="bottom"
               align="center"
+              portal
             >
               <button
                 type="button"

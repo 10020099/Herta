@@ -3435,6 +3435,22 @@ button.session-item__badge--dismiss {
   visibility: hidden;
   transition: none;
 }
+/* Portal pill (Tooltip `portal`): lifted to <body> and positioned from the
+   trigger's viewport rect, so no ancestor overflow, mask or paint order can
+   reach it — the attachment ✕ sits inside the activity history panel inside
+   the conversation scroller, and the in-flow pill was cut there twice by two
+   different causes. Its presence IS the hover state (decided in JS), so the
+   opacity/visibility dance above must not apply to it. Placed AFTER the
+   align rules: those set `transform`, and at equal specificity the later
+   rule wins — the portal's own centering has to be the last word. */
+.tooltip.tooltip--portal {
+  position: fixed;
+  transform: translateX(-50%);
+  opacity: 1;
+  visibility: visible;
+  transition: none;
+  z-index: 1000;
+}
 
 /* ── 板砖 live status line (2026-06-12 seamless-workbench §6) ─────── */
 .activity-line-group {

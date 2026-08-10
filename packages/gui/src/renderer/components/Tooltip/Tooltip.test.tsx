@@ -1,5 +1,5 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 import { Tooltip } from "./Tooltip.js";
 
 describe("Tooltip", () => {
@@ -93,6 +93,70 @@ describe("Tooltip", () => {
       </Tooltip>,
     );
     expect(container.querySelector(".tooltip-sub")).toBeNull();
+  });
+
+  describe("portal mode", () => {
+    it("renders nothing until hovered, then mounts the pill on document.body", () => {
+      vi.useFakeTimers();
+      const { container } = render(
+        <Tooltip label="Remove" portal>
+          <button type="button">T</button>
+        </Tooltip>,
+      );
+      // No in-flow pill at all — that is the point: an element that is not
+      // inside the clipping container cannot be clipped by it.
+      expect(container.querySelector(".tooltip")).toBeNull();
+      expect(document.querySelector(".tooltip--portal")).toBeNull();
+
+      const wrap = container.querySelector(".tooltip-wrap") as HTMLElement;
+      fireEvent.pointerEnter(wrap);
+      act(() => {
+        vi.advanceTimersByTime(500);
+      });
+      const pill = document.querySelector(".tooltip--portal");
+      expect(pill).not.toBeNull();
+      expect(pill?.textContent).toBe("Remove");
+      // On <body>, not inside the wrap.
+      expect(container.querySelector(".tooltip--portal")).toBeNull();
+
+      fireEvent.pointerLeave(wrap);
+      expect(document.querySelector(".tooltip--portal")).toBeNull();
+      vi.useRealTimers();
+    });
+
+    it("does not appear before the hover delay elapses", () => {
+      vi.useFakeTimers();
+      const { container } = render(
+        <Tooltip label="Remove" portal>
+          <button type="button">T</button>
+        </Tooltip>,
+      );
+      fireEvent.pointerEnter(
+        container.querySelector(".tooltip-wrap") as HTMLElement,
+      );
+      act(() => {
+        vi.advanceTimersByTime(200);
+      });
+      expect(document.querySelector(".tooltip--portal")).toBeNull();
+      vi.useRealTimers();
+    });
+
+    it("pointerdown cancels a pending reveal (click should not leave a pill)", () => {
+      vi.useFakeTimers();
+      const { container } = render(
+        <Tooltip label="Remove" portal>
+          <button type="button">T</button>
+        </Tooltip>,
+      );
+      const wrap = container.querySelector(".tooltip-wrap") as HTMLElement;
+      fireEvent.pointerEnter(wrap);
+      fireEvent.pointerDown(wrap);
+      act(() => {
+        vi.advanceTimersByTime(500);
+      });
+      expect(document.querySelector(".tooltip--portal")).toBeNull();
+      vi.useRealTimers();
+    });
   });
 
   it("suppresses the tooltip on pointerdown and re-arms it on pointerleave", () => {

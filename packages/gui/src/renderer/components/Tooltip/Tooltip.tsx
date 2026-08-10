@@ -1,4 +1,5 @@
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 export interface TooltipProps {
   readonly label: string;
@@ -9,8 +10,31 @@ export interface TooltipProps {
   readonly sub?: string;
   readonly placement?: "top" | "bottom";
   readonly align?: "start" | "center" | "end";
+  /**
+   * Render the pill into `document.body`, positioned `fixed` from the
+   * trigger's rect, instead of absolutely inside the wrap.
+   *
+   * For triggers that live inside a clipping or scrolling container. The
+   * in-flow pill is a child of whatever contains the trigger, so it is subject
+   * to every ancestor's overflow, mask and paint order — and the attachment
+   * row's ✕ sits inside the activity history panel inside the conversation
+   * scroller, where the pill was cut off twice in a row by two different
+   * causes. Lifting it out of the flow removes the whole class rather than the
+   * instance: nothing can clip an element that is not inside it.
+   *
+   * Opt-in, because the in-flow path is simpler and correct for the toolbar
+   * buttons that have used it since 2026-06-13.
+   */
+  readonly portal?: boolean;
   readonly children: ReactNode;
 }
+
+/** Matches the CSS hover-reveal delay so the portal path feels identical to
+ *  the in-flow one (which gets it from `transition-delay`). */
+const HOVER_DELAY_MS = 400;
+/** Below the trigger unless the viewport bottom is closer than this. */
+const FLIP_THRESHOLD_PX = 56;
+const GAP_PX = 6;
 
 export function Tooltip(props: TooltipProps): JSX.Element {
   const placement = props.placement ?? "bottom";
@@ -21,21 +45,107 @@ export function Tooltip(props: TooltipProps): JSX.Element {
   // pointer leaves and returns (user 2026-06-13). pointerdown suppresses
   // immediately (before the click resolves); pointerleave re-arms it.
   const [suppressed, setSuppressed] = useState(false);
+  const wrapRef = useRef<HTMLSpanElement>(null);
+  const timer = useRef<number | null>(null);
+  // Portal-only: the in-flow path is driven entirely by CSS :hover.
+  const [fixedAt, setFixedAt] = useState<{
+    left: number;
+    top?: number;
+    bottom?: number;
+  } | null>(null);
+
+  const clearTimer = (): void => {
+    if (timer.current !== null) {
+      window.clearTimeout(timer.current);
+      timer.current = null;
+    }
+  };
+  // Clear a pending reveal if the row unmounts mid-hover. Reads the ref
+  // directly rather than closing over `clearTimer`, which is a new function
+  // every render — listing it as a dep would re-run this on each one.
+  useEffect(
+    () => () => {
+      if (timer.current !== null) window.clearTimeout(timer.current);
+    },
+    [],
+  );
+
+  const openPortal = (): void => {
+    const el = wrapRef.current;
+    if (el === null) return;
+    const r = el.getBoundingClientRect();
+    const roomBelow = window.innerHeight - r.bottom;
+    // Anchoring the flipped pill by `bottom` avoids having to know its height
+    // before it renders — no measure pass, no first-frame jump.
+    setFixedAt(
+      placement === "top" || roomBelow < FLIP_THRESHOLD_PX
+        ? {
+            left: Math.round(r.left + r.width / 2),
+            bottom: Math.round(window.innerHeight - r.top + GAP_PX),
+          }
+        : {
+            left: Math.round(r.left + r.width / 2),
+            top: Math.round(r.bottom + GAP_PX),
+          },
+    );
+  };
+
   return (
     <span
+      ref={wrapRef}
       className={`tooltip-wrap tooltip-${placement} tooltip-align-${align}${
         suppressed ? " is-suppressed" : ""
       }`}
-      onPointerDown={() => setSuppressed(true)}
-      onPointerLeave={() => setSuppressed(false)}
+      onPointerDown={() => {
+        setSuppressed(true);
+        clearTimer();
+        setFixedAt(null);
+      }}
+      onPointerEnter={
+        props.portal === true
+          ? () => {
+              clearTimer();
+              timer.current = window.setTimeout(openPortal, HOVER_DELAY_MS);
+            }
+          : undefined
+      }
+      onPointerLeave={() => {
+        setSuppressed(false);
+        clearTimer();
+        setFixedAt(null);
+      }}
     >
       {props.children}
-      <span className="tooltip" role="tooltip">
-        {props.label}
-        {props.sub !== undefined && (
-          <span className="tooltip-sub">{props.sub}</span>
+      {props.portal !== true && (
+        <span className="tooltip" role="tooltip">
+          {props.label}
+          {props.sub !== undefined && (
+            <span className="tooltip-sub">{props.sub}</span>
+          )}
+        </span>
+      )}
+      {props.portal === true &&
+        fixedAt !== null &&
+        !suppressed &&
+        createPortal(
+          <span
+            className="tooltip tooltip--portal"
+            role="tooltip"
+            style={{
+              left: `${fixedAt.left}px`,
+              ...(fixedAt.top !== undefined ? { top: `${fixedAt.top}px` } : {}),
+              ...(fixedAt.bottom !== undefined
+                ? { bottom: `${fixedAt.bottom}px` }
+                : {}),
+            }}
+          >
+            {props.label}
+            {props.sub !== undefined && (
+              <span className="tooltip-sub">{props.sub}</span>
+            )}
+          </span>,
+          document.body,
         )}
-      </span>
     </span>
   );
 }
