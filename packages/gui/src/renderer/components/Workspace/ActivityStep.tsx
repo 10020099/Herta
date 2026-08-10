@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { TFn } from "../../i18n/LocaleProvider.js";
 import { Tooltip } from "../Tooltip/Tooltip.js";
 import { CollapsibleBody } from "./CollapsibleBody.js";
+import { useUnpinConversation } from "./ConversationPin.js";
 import { StepIcon, type StepIconKey, stepIcon } from "./step-icon.js";
 
 export interface ActivityStepProps {
@@ -51,6 +52,7 @@ export function ActivityStep(props: ActivityStepProps): JSX.Element {
   // strip the literal arrow to avoid a doubled "↳ ↳".
   const body = continuation ? props.body.replace(/^\s*↳\s*/, "") : props.body;
   const [detailOpen, setDetailOpen] = useState(false);
+  const unpin = useUnpinConversation();
   const hasDetail = props.detail !== undefined && props.detail.length > 0;
   return (
     <div
@@ -115,7 +117,18 @@ export function ActivityStep(props: ActivityStepProps): JSX.Element {
             type="button"
             className="activity-step__detail-toggle"
             aria-expanded={detailOpen}
-            onClick={() => setDetailOpen((v) => !v)}
+            onClick={() => {
+              // Same disclosure contract as the activity history's chevron
+              // (ConversationPin.tsx), which this toggle never joined when it
+              // was added: opening grows the flow BELOW the toggle, the
+              // scroller's ResizeObserver watches the scroller's own box and
+              // so never fires, and the focus-scroll that follows the click
+              // reaches the scroll handler as a plain "reader left the
+              // bottom" — lighting the jump chip nobody asked for and
+              // disarming the next send's travel (owner 2026-08-10).
+              if (!detailOpen) unpin();
+              setDetailOpen((v) => !v);
+            }}
           >
             {props.t(
               detailOpen ? "activity.detail.hide" : "activity.detail.show",

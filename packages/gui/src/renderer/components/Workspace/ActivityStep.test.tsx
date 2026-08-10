@@ -1,8 +1,9 @@
 import { fireEvent, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { LocaleProvider, makeT } from "../../i18n/LocaleProvider.js";
 import { renderWithLocale } from "../../i18n/test-util.js";
 import { ActivityStep } from "./ActivityStep.js";
+import { ConversationPinProvider } from "./ConversationPin.js";
 
 const tEn = makeT("en");
 
@@ -102,5 +103,34 @@ describe("ActivityStep", () => {
       <ActivityStep body="Reading a.ts" t={tEn} active={false} />,
     );
     expect(container.querySelector(".activity-step__detail-toggle")).toBeNull();
+  });
+
+  it("unpins the conversation when OPENING the detail pane, not when closing", () => {
+    // Opening grows the flow below the toggle. The scroller's ResizeObserver
+    // watches the scroller's own box, so it never fires for content growth,
+    // and the focus-scroll that follows the click reaches the scroll handler
+    // as a plain "reader left the bottom" — lighting the jump chip and
+    // disarming the next send's flight (owner 2026-08-10). The activity
+    // history's chevron has always declared its disclosure; this toggle did
+    // not. Closing must NOT unpin: nothing grows, and a reader sitting at the
+    // bottom should stay followed.
+    const unpin = vi.fn();
+    const { container } = renderWithLocale(
+      <ConversationPinProvider unpin={unpin}>
+        <ActivityStep
+          body="Reading a.ts"
+          t={tEn}
+          active={false}
+          detail="↳ output:\nline"
+        />
+      </ConversationPinProvider>,
+    );
+    const toggle = container.querySelector(
+      ".activity-step__detail-toggle",
+    ) as HTMLElement;
+    fireEvent.click(toggle); // open
+    expect(unpin).toHaveBeenCalledTimes(1);
+    fireEvent.click(toggle); // close
+    expect(unpin).toHaveBeenCalledTimes(1);
   });
 });

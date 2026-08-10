@@ -270,7 +270,13 @@ export const Conversation = memo(function Conversation(): JSX.Element {
       // below the fold. Flying to it would launch the bubble off the bottom
       // edge of a view the reader never asked to leave. Let the bubble land
       // in the flow unseen, exactly like the reduced-motion path.
-      !pinnedRef.current
+      //
+      // A DISCLOSURE unpin does not count as reading history, and must be
+      // tested the same way here as in the send effect below — the two
+      // decisions have to agree or the send hands its travel to a flight that
+      // was never armed. Expanding a detail pane and then sending lost the
+      // animation entirely until this matched (owner 2026-08-10).
+      (!pinnedRef.current && !syntheticUnpinRef.current)
     ) {
       // No overlay/composer or reduced motion → the flow bubble shows directly,
       // and nothing will fly. Recorded because the send effect below decides
@@ -1433,7 +1439,16 @@ export const Conversation = memo(function Conversation(): JSX.Element {
   // choose to, and the chip is the affordance that already exists for it.
   useEffect(() => {
     if (pendingUser === null) return;
-    if (!pinnedRef.current) {
+    // A DISCLOSURE unpin is not "reading history" (owner 2026-08-10). Opening
+    // an activity history or a detail pane unpins on purpose — the follow must
+    // not yank the viewport past what was just opened — but the reader is
+    // still sitting at the bottom, and sending IS a request to see their own
+    // message. Treated as scrolled-away it lost both halves of the send at
+    // once: no flight (the clone declines to fly into a blind spot) and the
+    // jump chip lit while the reader had never left. `syntheticUnpinRef` is
+    // cleared by the first real scroll event, so a reader who expands and THEN
+    // scrolls away is genuinely reading history and still gets the chip.
+    if (!pinnedRef.current && !syntheticUnpinRef.current) {
       // Reading history. The message still lands in the flow below; the chip
       // says so. No re-pin, no headroom reservation (its measurements describe
       // an anchor that is off screen), no travel — and the detection effect
