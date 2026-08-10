@@ -70,6 +70,24 @@ export function Tooltip(props: TooltipProps): JSX.Element {
     [],
   );
 
+  // Close an open portal pill on any scroll or resize (review #4). Its
+  // position is captured ONCE at open and it is `position: fixed`, so a wheel
+  // scroll of the conversation while hovering left the pill floating detached
+  // at stale viewport coords — the in-flow pill moved with its row for free.
+  // Closing (rather than re-measuring per frame) matches what a tooltip is:
+  // scrolled away means no longer being asked about. Capture phase, because
+  // the conversation scroller's scroll event does not bubble to window.
+  useEffect(() => {
+    if (fixedAt === null) return;
+    const close = (): void => setFixedAt(null);
+    window.addEventListener("scroll", close, { capture: true, passive: true });
+    window.addEventListener("resize", close);
+    return () => {
+      window.removeEventListener("scroll", close, { capture: true });
+      window.removeEventListener("resize", close);
+    };
+  }, [fixedAt]);
+
   const openPortal = (): void => {
     const el = wrapRef.current;
     if (el === null) return;
@@ -91,6 +109,7 @@ export function Tooltip(props: TooltipProps): JSX.Element {
   };
 
   return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: the span is a transparent wrapper — the interactive element is the CHILD control, and these handlers only observe its bubbled pointer/focus events to time the pill. Making the span itself focusable/interactive would add a second tab stop for no control.
     <span
       ref={wrapRef}
       className={`tooltip-wrap tooltip-${placement} tooltip-align-${align}${
@@ -114,6 +133,19 @@ export function Tooltip(props: TooltipProps): JSX.Element {
         clearTimer();
         setFixedAt(null);
       }}
+      // Keyboard parity (review #4): the in-flow pill reveals on
+      // `:has(:focus-visible)` in CSS; the portal path has to do it in JS or
+      // tabbing to the control shows nothing. Immediate, no hover delay —
+      // reaching a control by keyboard is already deliberate.
+      onFocus={props.portal === true ? openPortal : undefined}
+      onBlur={
+        props.portal === true
+          ? () => {
+              clearTimer();
+              setFixedAt(null);
+            }
+          : undefined
+      }
     >
       {props.children}
       {props.portal !== true && (

@@ -188,16 +188,22 @@ export function safeStoredName(originalName: string, bytes: Buffer): string {
  * screen, prompt — which is the copy nobody asked to publish.
  */
 export function headExcerpt(text: string): { text: string; clipped: boolean } {
-  const lines = text.split("\n");
+  // Redact BEFORE slicing (review #4 — the first version sliced first, with a
+  // comment confidently justifying the wrong order). Slice-then-redact leaves
+  // a key cut by the char boundary as a fragment the patterns may no longer
+  // match — `sk-or-v1-a6a9` — a partial leak. Redact-then-slice turns the
+  // whole key into a marker before any cut; the worst a cut can then do is
+  // truncate the MARKER, which discloses nothing. The full-text redact is a
+  // bounded regex pass over at most MAX_ATTACHMENT_CHARS.
+  const redacted = redactSecrets(text);
+  const lines = redacted.split("\n");
   let out = lines.slice(0, MAX_EXCERPT_LINES).join("\n");
   let clipped = lines.length > MAX_EXCERPT_LINES;
   if (out.length > MAX_EXCERPT_CHARS) {
     out = out.slice(0, MAX_EXCERPT_CHARS);
     clipped = true;
   }
-  // Redact AFTER slicing so a secret straddling the cut cannot be halved into
-  // something the patterns no longer recognize but a reader still can.
-  return { text: redactSecrets(out), clipped };
+  return { text: out, clipped };
 }
 
 function formatCount(n: number): string {

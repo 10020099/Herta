@@ -11,6 +11,7 @@ import type {
 } from "@herta/core";
 import { formatInputIssues } from "../input-issues.js";
 import { resolveSafePath } from "../path-safety.js";
+import { redactSecrets } from "../run-command/redactor.js";
 import { looksBinary } from "../text-sniff.js";
 import { showExcerptInputSchema, showExcerptJsonSchema } from "./schema.js";
 
@@ -266,7 +267,21 @@ export function showExcerptTool(): HertaTool {
         used += cost;
       }
       end = start + numbered.length - 1;
-      const excerpt = numbered.join("\n");
+      // Redact the assembled excerpt (review #4). This tool's output reaches
+      // the RECORD — evidenceDetail, the GUI's evidence pane, Herta's prompt —
+      // and every other record-reaching producer already redacts: run_command
+      // tails, search_text results, the attachment head. This was the one open
+      // door left: 板砖 asked to 展示 a key-bearing file put the key on
+      // screen and into the provider prompt verbatim. ADR 0027's fidelity
+      // promise ("the harness cut it, nothing paraphrased it") is about
+      // provenance, not secrets — a `[REDACTED:api_key]` marker is the
+      // harness speaking, which that contract already allows. `read_file`
+      // stays byte-exact: it never reaches the record, and its re-read
+      // offsets must match the file (the documented BL17 boundary).
+      // Redacted AFTER assembly so the multi-line PEM rule sees the block
+      // whole; the matching itself ran on the original text above, so
+      // `match`/range semantics are unchanged.
+      const excerpt = redactSecrets(numbered.join("\n"));
 
       return {
         ok: true,

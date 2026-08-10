@@ -200,6 +200,25 @@ describe("show_excerpt", () => {
     expect(r.data?.relPath).toBe(".herta/attachments/s1/spec.md");
   });
 
+  it("redacts secrets — its output reaches the record (review #4)", async () => {
+    // Every other record-reaching producer redacts (run_command tails,
+    // search_text results, attachment heads); this was the one open door:
+    // 展示 a key-bearing file put the key in evidenceDetail, the GUI pane,
+    // and the provider prompt verbatim.
+    const KEY = `sk-or-v1-${"5".repeat(56)}`;
+    seed("cfg.ts", [`const token = "${KEY}";`, "const port = 4300;"]);
+    const r = await run({ path: "cfg.ts", fromLine: 1, toLine: 2 });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.data?.excerpt).not.toContain(KEY);
+    // `token = "…"` matches the env-assignment rule before the sk- pattern
+    // ever runs — the marker KIND is the redactor's business, not this
+    // test's. What matters is that a marker replaced the key.
+    expect(r.data?.excerpt).toContain("[REDACTED:");
+    // The rest of the excerpt is untouched — fidelity minus the secret.
+    expect(r.data?.excerpt).toContain("const port = 4300;");
+  });
+
   it("rejects a binary file", async () => {
     writeFileSync(join(root, "b.bin"), Buffer.from([0x41, 0x00, 0x42]));
     const r = await run({ path: "b.bin", fromLine: 1 });

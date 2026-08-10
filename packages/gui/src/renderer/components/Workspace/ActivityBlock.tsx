@@ -329,8 +329,17 @@ export const ActivityBlock = memo(function ActivityBlock(
       // a FINISHED animation applied, and an element with a filling
       // opacity/transform animation stays a stacking context — which would
       // trap a row's tooltip z-index inside this group forever. The entrance
-      // is a one-shot; nothing should outlive it.
-      onAnimationEnd={entering ? () => setEntering(false) : undefined}
+      // is a one-shot; nothing should outlive it. Gated on the animation
+      // NAME: React's onAnimationEnd fires for BUBBLED descendant animations
+      // too, and a future child animation ending first would otherwise clear
+      // the entrance mid-flight.
+      onAnimationEnd={
+        entering
+          ? (e) => {
+              if (e.animationName === "conv-switch-in") setEntering(false);
+            }
+          : undefined
+      }
       data-testid="activity-block"
     >
       {/* The toggle shrinks to its CONTENT; the row around it holds the

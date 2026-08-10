@@ -267,6 +267,21 @@ describe("safeStoredName", () => {
   });
 });
 
+describe("headExcerpt — redaction order (review #4)", () => {
+  it("a key straddling the char cut leaks NOTHING, not even a fragment", () => {
+    // Slice-then-redact (the first shipped order) left the fragment
+    // `sk-or-v1-a6a9…` when the 4000-char boundary cut through a key — too
+    // short for the pattern, still a partial disclosure. Redact-then-slice
+    // turns the key into a marker before any cut can halve it.
+    const KEY = `sk-or-v1-${"7".repeat(56)}`;
+    // Pad line 1 so the key on line 1 straddles the char cap exactly.
+    const pad = "x".repeat(4000 - 10 - Math.floor(KEY.length / 2));
+    const { text } = headExcerpt(`${pad} ${KEY}\nrest\n`);
+    expect(text).not.toContain("sk-or-v1");
+    expect(text).not.toContain("7777");
+  });
+});
+
 describe("headExcerpt", () => {
   it("flags a clip by line count and by char count", () => {
     const manyLines = headExcerpt(

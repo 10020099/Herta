@@ -141,6 +141,31 @@ describe("Tooltip", () => {
       vi.useRealTimers();
     });
 
+    it("reveals immediately on keyboard focus and closes on blur (a11y parity)", () => {
+      const { container } = render(
+        <Tooltip label="Remove" portal>
+          <button type="button">T</button>
+        </Tooltip>,
+      );
+      const btn = container.querySelector("button") as HTMLElement;
+      fireEvent.focus(btn);
+      expect(document.querySelector(".tooltip--portal")).not.toBeNull();
+      fireEvent.blur(btn);
+      expect(document.querySelector(".tooltip--portal")).toBeNull();
+    });
+
+    it("closes on scroll — a fixed pill must not float detached", () => {
+      const { container } = render(
+        <Tooltip label="Remove" portal>
+          <button type="button">T</button>
+        </Tooltip>,
+      );
+      fireEvent.focus(container.querySelector("button") as HTMLElement);
+      expect(document.querySelector(".tooltip--portal")).not.toBeNull();
+      fireEvent.scroll(window);
+      expect(document.querySelector(".tooltip--portal")).toBeNull();
+    });
+
     it("pointerdown cancels a pending reveal (click should not leave a pill)", () => {
       vi.useFakeTimers();
       const { container } = render(
