@@ -155,7 +155,7 @@ export const ActivityBlock = memo(function ActivityBlock(
   // never replays the entrance. Deliberately no store flag ("animate the next
   // group") — cross-component transient state is the exact class the
   // 2026-07-24 audit catalogued.
-  const [entering] = useState(() => {
+  const [entering, setEntering] = useState(() => {
     if (!isAttachmentGroup || reduced) return false;
     const at = blocks[blocks.length - 1]?.at;
     if (at === undefined) return false;
@@ -337,6 +337,12 @@ export const ActivityBlock = memo(function ActivityBlock(
       className={`activity-line-group${active ? " is-active" : ""}${
         entering ? " is-attach-enter" : ""
       }`}
+      // Drop the class once it has played. `animation-fill-mode: both` keeps
+      // a FINISHED animation applied, and an element with a filling
+      // opacity/transform animation stays a stacking context — which would
+      // trap a row's tooltip z-index inside this group forever. The entrance
+      // is a one-shot; nothing should outlive it.
+      onAnimationEnd={entering ? () => setEntering(false) : undefined}
       data-testid="activity-block"
     >
       {/* The toggle shrinks to its CONTENT; the row around it holds the

@@ -62,11 +62,49 @@ export function ActivityStep(props: ActivityStepProps): JSX.Element {
         <StepIcon kind={icon} />
       </span>
       <div className="activity-step__text">
-        <CollapsibleBody
-          body={body}
-          preClassName="activity-step__body"
-          t={props.t}
-        />
+        {/* The body and the ✕ share one row so the control tracks the
+            FILENAME, not the text column (owner 2026-08-10: expanding the
+            detail pane widened the column and carried the ✕ rightward with
+            it). The toggle and the detail sit below, full width. */}
+        <div className="activity-step__headline">
+          <CollapsibleBody
+            body={body}
+            preClassName="activity-step__body"
+            t={props.t}
+          />
+          {props.onRemove !== undefined && (
+            // The app's styled pill, not the native `title` (owner
+            // 2026-08-10 — the same OS-beige-box mismatch the paperclip had).
+            // Bottom placement: the pill then opens INTO the history panel,
+            // whose clip ActivityBlock lifts once open, instead of upward
+            // across the group boundary where it was being cut.
+            <Tooltip
+              label={props.removeLabel ?? ""}
+              placement="bottom"
+              align="center"
+            >
+              <button
+                type="button"
+                className="activity-step__remove"
+                aria-label={props.removeLabel}
+                onClick={props.onRemove}
+              >
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 12 12"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.4"
+                  strokeLinecap="round"
+                  aria-hidden="true"
+                >
+                  <path d="M3 3l6 6M9 3l-6 6" />
+                </svg>
+              </button>
+            </Tooltip>
+          )}
+        </div>
         {hasDetail && (
           <button
             type="button"
@@ -83,34 +121,6 @@ export function ActivityStep(props: ActivityStepProps): JSX.Element {
           <pre className="activity-step__detail">{props.detail}</pre>
         )}
       </div>
-      {props.onRemove !== undefined && (
-        // The app's styled pill, not the native `title` (owner 2026-08-10 —
-        // the same OS-beige-box mismatch the paperclip had). Placed top-center
-        // because the control now sits mid-row rather than at the far edge;
-        // ActivityBlock lifts the history panel's clip once it is open so the
-        // pill is not cut off by the reveal's overflow.
-        <Tooltip label={props.removeLabel ?? ""} placement="top" align="center">
-          <button
-            type="button"
-            className="activity-step__remove"
-            aria-label={props.removeLabel}
-            onClick={props.onRemove}
-          >
-            <svg
-              width="12"
-              height="12"
-              viewBox="0 0 12 12"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.4"
-              strokeLinecap="round"
-              aria-hidden="true"
-            >
-              <path d="M3 3l6 6M9 3l-6 6" />
-            </svg>
-          </button>
-        </Tooltip>
-      )}
     </div>
   );
 }

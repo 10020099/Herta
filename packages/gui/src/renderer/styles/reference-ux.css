@@ -1449,14 +1449,17 @@ body:after{
   color: var(--danger, #d9534f);
   background: var(--ink-a08, rgba(0, 0, 0, 0.06));
 }
-/* The ✕ sits immediately after the filename, not at the row's far edge
-   (owner 2026-08-10). `.activity-step__text` is `flex: 1` so ordinary rows
-   fill the width; on a removable row it shrinks to its content instead, and
-   the control follows the text with only the row's own 8px gap. A long body
-   still wraps first, so the ✕ lands after the LAST line, never mid-sentence.
-   The wrap is the Tooltip's span, so match either shape. */
-.activity-step:has(.activity-step__remove) .activity-step__text {
-  flex: 0 1 auto;
+/* The ✕ shares a row with the BODY, not with the whole text column (owner
+   2026-08-10). The first cut shrank `.activity-step__text` instead, which
+   worked until the detail pane opened — the column then sized to the pane's
+   width and carried the ✕ rightward with it. Pairing the control with the
+   headline makes it track the filename in both states, and the toggle and
+   detail below keep the column's full width. */
+.activity-step__headline {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
 }
 /* Attach (ADR 0033). A quiet ghost button, not a second primary: attaching is
    an occasional act beside an every-message one, and two filled circles either

@@ -11,6 +11,7 @@ import {
   looksBinary,
   MAX_EXCERPT_CHARS,
   MAX_EXCERPT_LINES,
+  redactSecrets,
 } from "@herta/tools";
 
 /**
@@ -167,9 +168,25 @@ export function safeStoredName(originalName: string, bytes: Buffer): string {
   return `${safeStem}-${hash}${ext}`;
 }
 
-/** Cut the head of a document for `evidenceDetail`. Presentation bounds, shared
- *  with `show_excerpt` — this exists to be read, and it lands in Herta's prompt
- *  for exactly one turn (the per-block fold drops it once she has spoken). */
+/**
+ * Cut the head of a document for `evidenceDetail`. Presentation bounds, shared
+ * with `show_excerpt` — this exists to be read, and it lands in Herta's prompt
+ * for exactly one turn (the per-block fold drops it once she has spoken).
+ *
+ * REDACTED (2026-08-10, found in an owner screenshot). The filename guard
+ * cannot carry this on its own: it refuses credential-SHAPED names, and a file
+ * called `openrouter_key.txt` matches none of them — so the ingest stored it,
+ * cut its head, and put two live API keys into the record, the GUI, and the
+ * prompt sent to DeepSeek. `run_command` output and `search_text` results have
+ * always run through `redactSecrets`; the ingest was the one producer of
+ * untrusted text that did not, and a hand-uploaded file is the likeliest place
+ * of all for a key to appear.
+ *
+ * The STORED file is left verbatim. It is the user's document, redacting it
+ * would corrupt their data, and the tools that read it are the ones they
+ * pointed at it deliberately. This redacts the copy that travels — record,
+ * screen, prompt — which is the copy nobody asked to publish.
+ */
 export function headExcerpt(text: string): { text: string; clipped: boolean } {
   const lines = text.split("\n");
   let out = lines.slice(0, MAX_EXCERPT_LINES).join("\n");
@@ -178,7 +195,9 @@ export function headExcerpt(text: string): { text: string; clipped: boolean } {
     out = out.slice(0, MAX_EXCERPT_CHARS);
     clipped = true;
   }
-  return { text: out, clipped };
+  // Redact AFTER slicing so a secret straddling the cut cannot be halved into
+  // something the patterns no longer recognize but a reader still can.
+  return { text: redactSecrets(out), clipped };
 }
 
 function formatCount(n: number): string {

@@ -66,6 +66,11 @@ export {
   registerRunCommandRule,
   runCommandTool,
 } from "./run-command/index.js";
+// Exported for the attachment ingest (ADR 0033, 2026-08-10): run_command
+// output and search_text results already redact, and an uploaded document is
+// the same class of untrusted text reaching the record and a provider — one
+// definition of "secret-shaped", or none.
+export { redactSecrets } from "./run-command/redactor.js";
 export type { RunCommandInput } from "./run-command/schema.js";
 export type { SearchMatch, SearchTextData } from "./search-text/index.js";
 export {
