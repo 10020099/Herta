@@ -1,6 +1,35 @@
 import type { MessageKey } from "../../i18n/keys.js";
 import type { SystemBlock } from "./group-record.js";
 
+/**
+ * Shorten a filename from the MIDDLE for display (owner 2026-08-10: a long
+ * name wrapped the attachment row onto three lines).
+ *
+ * Middle, not end: the extension is the most informative few characters in a
+ * filename — `…-summary-20260806-超级无敌长的文件.txt` still reads as a text
+ * file, `jiuwen-vs-aisf-sysagent-multi-inten…` does not. CSS `text-overflow`
+ * can only cut the end, which is why this is done in JS.
+ *
+ * Display-only (D7): the record body, the digest and Herta's prompt all keep
+ * the real name — she must be able to say which file, and 板砖 resolves the
+ * path, not this. The full name also stays visible in the evidence pane's
+ * `↳ 附件 <name>` header, which wraps freely.
+ *
+ * Budget is in CHARACTERS, not measured width. A CJK name is wider per
+ * character, so this under-fills rather than over-fills for those — the safe
+ * direction, and it keeps the function pure and testable.
+ */
+export function middleTruncateName(name: string, max = 44): string {
+  const chars = [...name]; // surrogate-safe: never split an emoji or CJK-ext
+  if (chars.length <= max) return name;
+  // Keep the extension whole when it is a plausible one; otherwise keep a
+  // fixed tail so the end of the name is still recognisable.
+  const ext = /\.[A-Za-z0-9]{1,8}$/.exec(name)?.[0] ?? "";
+  const tail = Math.max(ext.length, 8);
+  const head = Math.max(4, max - tail - 1);
+  return `${chars.slice(0, head).join("")}…${chars.slice(chars.length - tail).join("")}`;
+}
+
 /** Localized display verbs for projected op steps, keyed by the digest's
  *  harness-authored verb union. */
 const VERB_KEY: Record<string, MessageKey> = {
@@ -83,9 +112,11 @@ export function stepDisplayBody(
         : block.body;
     case "attachment": {
       // Composed wholly from the digest, so the canonical CN body is never
-      // parsed (ADR 0018's pattern). The FILENAME stays verbatim in every
-      // language — it is the user's own data, not chrome.
+      // parsed (ADR 0018's pattern). The filename is the user's own data, not
+      // chrome, so it is never TRANSLATED — only shortened for the row
+      // (see middleTruncateName); the record keeps it whole.
       const label = t("activity.attachment.label");
+      const name = middleTruncateName(d.name);
       if (d.unreadable !== undefined) {
         const why =
           d.unreadable === "binary"
@@ -99,11 +130,11 @@ export function stepDisplayBody(
                   : d.unreadable === "removed"
                     ? t("activity.attachment.unreadable.removed")
                     : t("activity.attachment.unreadable.readError");
-        return `${label} ${d.name} · ${why}`;
+        return `${label} ${name} · ${why}`;
       }
       const lines = `${d.lines.toLocaleString()} ${t("activity.result.lines")}`;
       const chars = `${d.chars.toLocaleString()} ${t("activity.attachment.chars")}`;
-      return `${label} ${d.name} · ${lines} · ${chars}`;
+      return `${label} ${name} · ${lines} · ${chars}`;
     }
     case "skip":
       // The patch-preview block (the only skip-digest producer): localize

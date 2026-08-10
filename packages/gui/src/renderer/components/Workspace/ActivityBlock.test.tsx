@@ -778,6 +778,38 @@ describe("ActivityBlock — attachment groups (ADR 0033, owner 2026-08-10)", () 
     );
   });
 
+  it("shortens a long filename from the MIDDLE, keeping the extension", () => {
+    // Owner 2026-08-10: a long name wrapped the row onto three lines. The
+    // extension is the most informative part, so the cut is in the middle.
+    const long =
+      "jiuwen-vs-aisf-sysagent-multi-intent-summary-20260806-超级无敌长的文件-这个文件就很长长长长长.txt";
+    renderWithLocale(
+      <A
+        blocks={[
+          {
+            ...attach("x"),
+            digest: {
+              kind: "attachment",
+              name: long,
+              path: ".herta/attachments/s/x.txt",
+              lines: 3,
+              chars: 128,
+            },
+          },
+        ]}
+        active={false}
+        turnStartedAt={null}
+        backendStartedAt={null}
+      />,
+    );
+    const row = screen.getByText(/jiuwen-vs-aisf/);
+    expect(row.textContent).toContain("…");
+    expect(row.textContent).toContain(".txt");
+    expect(row.textContent).not.toContain(long);
+    // The record itself is untouched — only the row is shortened.
+    expect(long.length).toBeGreaterThan(60);
+  });
+
   it("offers a take-back only where it can work, and passes the stored path", () => {
     const removed: string[] = [];
     const { container } = renderWithLocale(

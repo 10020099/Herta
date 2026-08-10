@@ -1428,6 +1428,15 @@ body:after{
   align-self: flex-start;
   width: 20px;
   height: 20px;
+  /* `* { box-sizing: border-box }` is set globally, so the UA's default
+     button padding (1px 6px) is subtracted from the 20px box rather than
+     added to it: the content box collapses to 8px wide and the glyph centres
+     on THAT, sitting visibly off-centre in the hover square (owner
+     2026-08-10). Zero the padding and the border-box IS the content box. */
+  padding: 0;
+  /* Buttons inherit a text line-height that adds phantom leading around an
+     inline SVG child; `display: block` on the icon plus 0 here removes it. */
+  line-height: 0;
   border: 0;
   border-radius: 5px;
   display: grid;
@@ -1440,6 +1449,9 @@ body:after{
     opacity 0.12s ease,
     color 0.12s ease,
     background 0.12s ease;
+}
+.activity-step__remove svg {
+  display: block;
 }
 .activity-step:hover .activity-step__remove,
 .activity-step__remove:focus-visible {
@@ -1460,6 +1472,15 @@ body:after{
   align-items: flex-start;
   gap: 8px;
   min-width: 0;
+}
+/* The headline body is one line (the filename is middle-truncated in JS), so
+   the ✕ never gets pushed onto a wrap. `.activity-step__body` is pre-wrap for
+   command output and diffs, which must keep their newlines — so this override
+   is scoped to the headline of a REMOVABLE row rather than loosened there. */
+.activity-step__headline:has(.activity-step__remove) .activity-step__body {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 /* Attach (ADR 0033). A quiet ghost button, not a second primary: attaching is
    an occasional act beside an every-message one, and two filled circles either
