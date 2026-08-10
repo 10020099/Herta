@@ -72,7 +72,12 @@ function makeFileLoader(
       // Per-file gate (2026-07-10 audit, finding 1): realpaths the entry
       // (closing symlink escapes) and applies the credential denylist;
       // denied files are skipped like unreadable ones.
-      const safeEntry = await resolveSafePath(ctx.workspaceRoot, relPath);
+      // allowAttachmentPaths must match the root gate below, or an explicit
+      // search INTO the attachments dir would pass the root check and then
+      // silently skip every file it walked.
+      const safeEntry = await resolveSafePath(ctx.workspaceRoot, relPath, {
+        allowAttachmentPaths: true,
+      });
       if (!safeEntry.ok) return null;
       let fileInfo: Stats;
       try {
@@ -297,7 +302,17 @@ export function searchTextTool(opts: SearchTextToolOpts = {}): HertaTool {
         };
       }
 
-      const safe = await resolveSafePath(ctx.workspaceRoot, path);
+      // allowAttachmentPaths (ADR 0033, amended 2026-08-10): a document the
+      // 开拓者 attached is stored but may be too large or too binary for a
+      // head excerpt, and both the ADR and the backend's own citation line
+      // told 板砖 it could still SEARCH such a file. That was false until
+      // here — search_text took the ordinary guard, so `.herta` denied it,
+      // and the promise could not be kept. Reaching an attachment still
+      // requires pointing `path` AT it: the walker skips any `.herta`
+      // directory it meets, so a workspace-root search never descends here.
+      const safe = await resolveSafePath(ctx.workspaceRoot, path, {
+        allowAttachmentPaths: true,
+      });
       if (!safe.ok) {
         return {
           ok: false,

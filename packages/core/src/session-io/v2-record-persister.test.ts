@@ -251,3 +251,81 @@ describe("V2RecordPersister.forResume — heal truncated trailing line", () => {
     expect(() => readSessionFile(file)).toThrow(SessionFileError);
   });
 });
+
+describe("V2RecordPersister.replaceBlockAt (ADR 0033 removal)", () => {
+  let tmp: string;
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "v2-replace-"));
+  });
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  function seeded() {
+    const p = V2RecordPersister.forNewSession({
+      sessionId: "s-1",
+      workspaceRoot: "/repo",
+      startedAt: new Date("2026-08-10T00:00:00.000Z"),
+      transcriptDir: tmp,
+    });
+    p.appendBlock({ kind: "user", text: "one" });
+    p.appendWorkspaceSet("/other", "2026-08-10T00:00:01.000Z");
+    p.appendBlock({ kind: "system", label: "系统", body: "two" });
+    p.appendBlock({ kind: "herta", surface: "speech", text: "three" });
+    return p;
+  }
+
+  it("replaces the addressed block and leaves every other line intact", () => {
+    const p = seeded();
+    p.replaceBlockAt(1, { kind: "system", label: "系统", body: "REPLACED" });
+    const { record, latestWorkspaceSet } = readSessionFile(p.sessionFile);
+    // Same count — the whole point: rewind, topic anchors and the sink cursor
+    // all index by block position.
+    expect(record).toHaveLength(3);
+    expect(record[0]).toMatchObject({ kind: "user", text: "one" });
+    expect(record[1]).toMatchObject({ body: "REPLACED" });
+    expect(record[2]).toMatchObject({ text: "three" });
+    // The interleaved meta line survived.
+    expect(latestWorkspaceSet).toBe("/other");
+  });
+
+  it("counts BLOCKS, not lines — a meta line never shifts the index", () => {
+    const p = seeded();
+    // Block 2 sits after the workspace_set meta line; a line-indexed
+    // implementation would hit the wrong row here.
+    p.replaceBlockAt(2, { kind: "system", label: "系统", body: "LAST" });
+    const { record } = readSessionFile(p.sessionFile);
+    expect(record[2]).toMatchObject({ body: "LAST" });
+    expect(record[1]).toMatchObject({ body: "two" });
+  });
+
+  it("is a no-op past the end rather than an error", () => {
+    const p = seeded();
+    const before = readFileSync(p.sessionFile, "utf8");
+    p.replaceBlockAt(99, { kind: "system", label: "系统", body: "nope" });
+    expect(readFileSync(p.sessionFile, "utf8")).toBe(before);
+  });
+
+  it("survives the round-trip as a real record", () => {
+    const p = seeded();
+    p.replaceBlockAt(1, {
+      kind: "system",
+      label: "系统",
+      body: "附件 spec.md · 已移除",
+      digest: {
+        kind: "attachment",
+        name: "spec.md",
+        path: ".herta/attachments/s-1/spec-ab12cd34.md",
+        lines: 0,
+        chars: 0,
+        unreadable: "removed",
+      },
+    });
+    const { record } = readSessionFile(p.sessionFile);
+    const b = record[1];
+    expect(b?.kind === "system" && b.digest).toMatchObject({
+      kind: "attachment",
+      unreadable: "removed",
+    });
+  });
+});

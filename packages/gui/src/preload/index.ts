@@ -45,6 +45,8 @@ const bridge: HertaBridge = {
   pickAttachments: () => ipcRenderer.invoke(CMD.pickAttachments),
   attachFiles: (sessionId, paths) =>
     ipcRenderer.invoke(CMD.attachFiles, sessionId, paths),
+  removeAttachment: (sessionId, path) =>
+    ipcRenderer.invoke(CMD.removeAttachment, sessionId, path),
   // Electron 43 removed `File.path`, and this preload is CJS + sandboxed
   // (main/index.ts:266 records why it must stay that way), so a dropped
   // file's real path is only reachable through webUtils here. The renderer

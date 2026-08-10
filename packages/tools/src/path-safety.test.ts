@@ -231,6 +231,19 @@ describe("resolveSafePath", () => {
 
     // The two carve-outs are separate flags precisely so that neither implies
     // the other; if they ever collapse into one, these two fail.
+    // search_text carries the flag too (2026-08-10): the ADR justified STORING
+    // oversized/binary attachments on the grounds that they stay searchable,
+    // and the backend's citation line says so to 板砖 — a promise the ordinary
+    // guard silently broke.
+    it("search_text's per-file gate reaches an attachment with the flag", async () => {
+      const r = await resolveSafePath(
+        ws.root,
+        ".herta/attachments/s1/report.md",
+        { allowAttachmentPaths: true },
+      );
+      expect(r.ok).toBe(true);
+    });
+
     it("the attachment flag does NOT open the harness-evidence subtrees", async () => {
       for (const p of [".herta/logs/run.log", ".herta/tool-results/t/c.json"]) {
         const r = await resolveSafePath(ws.root, p, opts);

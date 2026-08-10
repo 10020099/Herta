@@ -61,6 +61,18 @@ export interface ActivityBlockProps {
    * it doing this second". They are deliberately not merged.
    */
   readonly plan?: PlanContext | null;
+  /**
+   * Factory for an attachment row's take-back handler, or undefined when
+   * removal is unavailable (no session, or a turn in flight). A FACTORY keyed
+   * on the stored path rather than a handler taking one, so the row itself
+   * never has to hold or forward record state.
+   *
+   * A prop, not a hook call here: this component is `memo`'d over a stable
+   * `blocks` identity, and reaching for the bridge inside it would make every
+   * historical group re-render on unrelated store churn — the same reasoning
+   * that keeps `plan` a prop.
+   */
+  readonly onRemoveAttachment?: (path: string) => () => void;
 }
 
 /** Visible plan rows before the "+n more" tail. A bound, not a layout: real
@@ -96,6 +108,7 @@ export const ActivityBlock = memo(function ActivityBlock(
   const { blocks, active, turnStartedAt, backendStartedAt, lang } = props;
   const inFlightCount = props.inFlightCount ?? 1;
   const plan = props.plan ?? null;
+  const onRemoveAttachment = props.onRemoveAttachment;
   const t = useMemo(() => makeT(lang), [lang]);
   const chip = activityChipLabel(blocks);
   const summary = activitySummary(blocks);
@@ -474,6 +487,19 @@ export const ActivityBlock = memo(function ActivityBlock(
                   active={shimmer}
                   failed={failed}
                   detail={stepDisplayDetail(b, t)}
+                  // Take-back, offered only where it can actually work: a
+                  // stored attachment (a path to delete), not already removed,
+                  // and no turn in flight — the removal rides the same
+                  // out-of-turn record write as the attach.
+                  {...(onRemoveAttachment !== undefined &&
+                  b.digest?.kind === "attachment" &&
+                  b.digest.path.length > 0 &&
+                  b.digest.unreadable !== "removed"
+                    ? {
+                        onRemove: onRemoveAttachment(b.digest.path),
+                        removeLabel: t("activity.attachment.remove"),
+                      }
+                    : {})}
                 />
               );
             })}

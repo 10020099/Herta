@@ -59,6 +59,7 @@ describe("bridge-types", () => {
       resetWorkspace: async () => ({ ok: true }),
       pickAttachments: async () => null,
       attachFiles: async () => ({ ok: true }),
+      removeAttachment: async () => ({ ok: true }),
       pathForFile: () => "/tmp/x.md",
       getDreamConfig: async () => ({ enabled: true }),
       setDreamConfig: async () => undefined,

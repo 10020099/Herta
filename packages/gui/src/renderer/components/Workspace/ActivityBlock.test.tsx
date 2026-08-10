@@ -778,6 +778,91 @@ describe("ActivityBlock — attachment groups (ADR 0033, owner 2026-08-10)", () 
     );
   });
 
+  it("offers a take-back only where it can work, and passes the stored path", () => {
+    const removed: string[] = [];
+    const { container } = renderWithLocale(
+      <A
+        blocks={[
+          attach("spec.md"),
+          // Already withdrawn — no second ✕.
+          {
+            ...attach("old.md"),
+            digest: {
+              kind: "attachment",
+              name: "old.md",
+              path: ".herta/attachments/s/old.md",
+              lines: 0,
+              chars: 0,
+              unreadable: "removed",
+            },
+          },
+          // Nothing on disk to delete — no ✕ either.
+          {
+            ...attach("id_rsa"),
+            digest: {
+              kind: "attachment",
+              name: "id_rsa",
+              path: "",
+              lines: 0,
+              chars: 0,
+              unreadable: "denied",
+            },
+          },
+        ]}
+        active={false}
+        turnStartedAt={null}
+        backendStartedAt={null}
+        onRemoveAttachment={(p) => () => removed.push(p)}
+      />,
+    );
+    const buttons = container.querySelectorAll(".activity-step__remove");
+    expect(buttons).toHaveLength(1);
+    fireEvent.click(buttons[0] as Element);
+    expect(removed).toEqual([".herta/attachments/s/spec.md"]);
+  });
+
+  it("shows no take-back at all when the factory is absent (mid-turn)", () => {
+    // Conversation withholds the factory while a turn runs — the removal
+    // rides the same out-of-turn record write as the attach, so an ✕ that
+    // could only earn a refusal is not rendered.
+    const { container } = renderWithLocale(
+      <A
+        blocks={[attach("spec.md")]}
+        active={false}
+        turnStartedAt={null}
+        backendStartedAt={null}
+      />,
+    );
+    expect(container.querySelector(".activity-step__remove")).toBeNull();
+  });
+
+  it("a removed attachment renders its state instead of counts", () => {
+    renderWithLocale(
+      <A
+        blocks={[
+          {
+            ...attach("spec.md"),
+            body: "附件 spec.md · 已移除",
+            digest: {
+              kind: "attachment",
+              name: "spec.md",
+              path: ".herta/attachments/s/spec.md",
+              lines: 0,
+              chars: 0,
+              unreadable: "removed",
+            },
+          },
+        ]}
+        active={false}
+        turnStartedAt={null}
+        backendStartedAt={null}
+      />,
+    );
+    expect(
+      screen.getByText(/attachment spec\.md · removed/i),
+    ).toBeInTheDocument();
+  });
+
   it("a LIVE attach mounts with the entrance; a loaded one does not", () => {
     // Recency-gated off the block's own `at` stamp, decided once at mount —
     // no store flag, no cross-component state (the 2026-07-24 audit class).

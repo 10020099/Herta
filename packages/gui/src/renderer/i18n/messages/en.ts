@@ -172,8 +172,7 @@ export const en = {
   "composer.send": "Send message",
   "composer.stop": "Interrupt the current turn",
   "composer.attach": "Add documents",
-  "composer.attach.formats":
-    "Text files: code / Markdown / txt / csv / json / logs",
+  "composer.attach.formats": ".md .txt .csv .json .log .py .ts and other text",
   "composer.attach.busy":
     "This turn isn't finished — wait for her, then drop the file.",
   "composer.attach.tooMany": "Ten files at a time, at most.",
@@ -231,6 +230,9 @@ export const en = {
   "activity.attachment.unreadable.empty": "no text extracted",
   "activity.attachment.unreadable.readError": "could not be read",
   "activity.attachment.unreadable.denied": "credential-shaped — refused",
+  "activity.attachment.unreadable.removed": "removed",
+  "activity.attachment.remove": "Remove this attachment",
+  "activity.attachment.removeFailed": "Couldn't remove that attachment.",
   "activity.plan.more": "+{n} more",
   "plan.card.title": "Todo list",
   "plan.card.itemsUnavailable": "This record kept no item detail.",

@@ -451,3 +451,62 @@ describe.skipIf(rgBin === null)(
     });
   },
 );
+
+describe("searchTextTool — attachments (ADR 0033, amended 2026-08-10)", () => {
+  it("searches an attachment when pointed at it", async () => {
+    // The ADR justifies STORING an oversized or binary attachment on the
+    // grounds that 板砖 can still search it, and the backend's citation line
+    // promises exactly that. Until this carve-out, `.herta` denied the path
+    // and the promise was false.
+    ws = await mkTmpWorkspace({
+      ".herta/attachments/s1/notes.md": "alpha\nNEEDLE-IN-ATTACHMENT\nbeta\n",
+    });
+    const r = await searchTextTool().run(
+      {
+        id: "1",
+        tool: "search_text",
+        input: {
+          pattern: "NEEDLE-IN-ATTACHMENT",
+          path: ".herta/attachments/s1",
+        },
+      },
+      ctx(ws.root),
+      noopProgress,
+    );
+    expect(r.ok).toBe(true);
+    const data = r.data as SearchTextData;
+    expect(data.matches.length).toBeGreaterThan(0);
+    expect(data.matches[0]?.path).toContain("notes.md");
+  });
+
+  it("a workspace-root search still never descends into .herta", async () => {
+    // The carve-out opens an EXPLICIT path, not discovery: the walker skips
+    // any `.herta` directory it meets, so ordinary searches stay clean and
+    // an attachment cannot leak into an unrelated result set.
+    ws = await mkTmpWorkspace({
+      "src/a.ts": "const x = 1;\n",
+      ".herta/attachments/s1/notes.md": "SECRET-STRING-XYZ\n",
+    });
+    const r = await searchTextTool().run(
+      { id: "1", tool: "search_text", input: { pattern: "SECRET-STRING-XYZ" } },
+      ctx(ws.root),
+      noopProgress,
+    );
+    expect(r.ok).toBe(true);
+    expect((r.data as SearchTextData).matches).toHaveLength(0);
+  });
+
+  it("the carve-out does not open the rest of .herta", async () => {
+    ws = await mkTmpWorkspace({ ".herta/keys/deepseek": "sk-live\n" });
+    const r = await searchTextTool().run(
+      {
+        id: "1",
+        tool: "search_text",
+        input: { pattern: "sk-", path: ".herta/keys" },
+      },
+      ctx(ws.root),
+      noopProgress,
+    );
+    expect(r.ok).toBe(false);
+  });
+});

@@ -43,6 +43,7 @@ export const COMPACTION_TEXT = {
       empty: "未提取到文本",
       read_error: "读取失败",
       denied: "涉及密钥或凭据，已拒收",
+      removed: "开拓者已移除",
     },
     /** Digest of a `role: "noop-marker"` block. */
     noOutput: "（板砖无产出）",
@@ -59,6 +60,7 @@ export const COMPACTION_TEXT = {
       empty: "no text extracted",
       read_error: "could not be read",
       denied: "credential-shaped, refused",
+      removed: "withdrawn by the Trailblazer",
     },
     noOutput: "(板砖 produced nothing)",
     diffSuppressed: (suppressed: number) =>

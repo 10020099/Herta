@@ -656,9 +656,12 @@ describe("Composer — attachments (ADR 0033)", () => {
     expect(wrap?.querySelector(".tooltip")?.textContent).toContain(
       "Add documents",
     );
-    expect(wrap?.querySelector(".tooltip-sub")?.textContent).toContain(
-      "Text files",
-    );
+    // Extensions, not category prose (owner 2026-08-10) — with a trailing
+    // "and other text" so the list reads as representative, not exhaustive.
+    const sub = wrap?.querySelector(".tooltip-sub")?.textContent ?? "";
+    expect(sub).toContain(".md");
+    expect(sub).toContain(".csv");
+    expect(sub).toContain("other text");
     expect(
       container.querySelector(".composer-attach")?.getAttribute("title"),
     ).toBeNull();

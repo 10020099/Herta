@@ -1430,7 +1430,7 @@ describe("Session — attachFiles (ADR 0033)", () => {
     const set = await made.session.setWorkspace(backendWs);
     expect(set.ok).toBe(true);
     const srcDir = mkdtempSync(join(tmpdir(), "herta-attach-src-"));
-    return { ...made, backendWs, srcDir };
+    return { ...made, cfg, backendWs, srcDir };
   }
 
   it("ingests files into the backend workspace and appends one block per file", async () => {
@@ -1472,6 +1472,91 @@ describe("Session — attachFiles (ADR 0033)", () => {
         (b) => b.kind === "system" && b.digest?.kind === "attachment",
       ),
     ).toBe(false);
+    await cleanup();
+  });
+
+  it("removeAttachment deletes the file and MARKS the block, keeping the count", async () => {
+    const { session, backendWs, srcDir, cleanup } = await mkAttachSession();
+    writeFileSync(join(srcDir, "spec.md"), "# spec\nSECRET-BODY-LINE\n");
+    const a = await session.attachFiles([join(srcDir, "spec.md")]);
+    expect(a.ok).toBe(true);
+    if (!a.ok) return;
+    const rel = a.files[0]?.path ?? "";
+    const before = session.record.length;
+    expect(existsSync(join(backendWs, ...rel.split("/")))).toBe(true);
+
+    const r = await session.removeAttachment(rel);
+    expect(r).toEqual({ ok: true, removed: 1 });
+
+    // The file is gone…
+    expect(existsSync(join(backendWs, ...rel.split("/")))).toBe(false);
+    // …the block count is UNCHANGED (rewind, topic anchors and the sink
+    // cursor all index by block position)…
+    expect(session.record.length).toBe(before);
+    // …and the block now says so, with no prompt-visible body left.
+    const block = session.record.find(
+      (b) => b.kind === "system" && b.digest?.kind === "attachment",
+    );
+    if (block?.kind !== "system") throw new Error("no attachment block");
+    expect(block.digest).toMatchObject({ unreadable: "removed" });
+    expect(block.body).toContain("已移除");
+    expect(block.evidenceDetail).toBeUndefined();
+    expect(JSON.stringify(session.record)).not.toContain("SECRET-BODY-LINE");
+    await cleanup();
+  });
+
+  it("the removal survives a reload — it is on disk, not just in memory", async () => {
+    const { session, cfg, srcDir, cleanup } = await mkAttachSession();
+    writeFileSync(join(srcDir, "spec.md"), "# spec\nbody\n");
+    const a = await session.attachFiles([join(srcDir, "spec.md")]);
+    if (!a.ok) return;
+    await session.removeAttachment(a.files[0]?.path ?? "");
+
+    const { readSessionFile } = await import("@herta/core");
+    const onDisk = readSessionFile(
+      join(cfg.transcriptDir, `${session.sessionId}.jsonl`),
+    );
+    const b = onDisk.record.find(
+      (x) => x.kind === "system" && x.digest?.kind === "attachment",
+    );
+    expect(b?.kind === "system" && b.digest).toMatchObject({
+      unreadable: "removed",
+    });
+    await cleanup();
+  });
+
+  it("an unknown path is not_found, and a second removal is idempotent", async () => {
+    const { session, srcDir, cleanup } = await mkAttachSession();
+    writeFileSync(join(srcDir, "spec.md"), "# spec\n");
+    const a = await session.attachFiles([join(srcDir, "spec.md")]);
+    if (!a.ok) return;
+    const rel = a.files[0]?.path ?? "";
+
+    expect(await session.removeAttachment("nope/missing.md")).toEqual({
+      ok: false,
+      reason: "not_found",
+    });
+    expect(await session.removeAttachment(rel)).toEqual({
+      ok: true,
+      removed: 1,
+    });
+    // Already withdrawn — the second call finds nothing left to mark rather
+    // than re-marking and re-deleting.
+    expect(await session.removeAttachment(rel)).toEqual({
+      ok: false,
+      reason: "not_found",
+    });
+    await cleanup();
+  });
+
+  it("refuses a path outside this session's attachment directory", async () => {
+    // The path comes from the RENDERER. Even if a block somehow cited an
+    // outside file, the unlink is gated on the session's own prefix.
+    const { session, cleanup } = await mkAttachSession();
+    expect(await session.removeAttachment("../../etc/passwd")).toEqual({
+      ok: false,
+      reason: "not_found",
+    });
     await cleanup();
   });
 

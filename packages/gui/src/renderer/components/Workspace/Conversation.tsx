@@ -1750,6 +1750,29 @@ export const Conversation = memo(function Conversation(): JSX.Element {
   // backward from the end, memoized on the record like `items`) and handed
   // ONLY to the group rendered as active, below.
   const plan = useMemo(() => planContext(record), [record]);
+  // Attachment take-back (ADR 0033, owner 2026-08-10). Undefined while a turn
+  // runs or with no session — the removal rides the same out-of-turn record
+  // write as the attach, so an ✕ that could only earn a refusal is not shown
+  // at all. A FACTORY per stored path so ActivityStep holds no record state;
+  // memoized on the two things it closes over, keeping the rows memo stable
+  // between turns.
+  const removeAttachmentFactory = useMemo(() => {
+    if (sessionId === null || status !== "idle") return undefined;
+    return (path: string) => () => {
+      void bridge
+        .removeAttachment(sessionId, path)
+        .then((r) => {
+          if (!r.ok) {
+            sessionStore.setComposerNotice(
+              t("activity.attachment.removeFailed"),
+            );
+          }
+        })
+        .catch(() =>
+          sessionStore.setComposerNotice(t("activity.attachment.removeFailed")),
+        );
+    };
+  }, [sessionId, status, bridge, sessionStore, t]);
   // The rewind control shows only on the LATEST user turn, and only when idle
   // (no in-flight turn to race the truncation). Find the last `user` block index.
   const lastUserIndex = useMemo(() => {
@@ -1866,6 +1889,7 @@ export const Conversation = memo(function Conversation(): JSX.Element {
               // flight, so a past group showing it would claim 板砖 is
               // working through a plan it finished turns ago.
               plan={isActive ? plan : null}
+              onRemoveAttachment={removeAttachmentFactory}
             />
           </ErrorBoundary>
         );
@@ -1880,6 +1904,7 @@ export const Conversation = memo(function Conversation(): JSX.Element {
       backendStartedAt,
       backendInFlight,
       plan,
+      removeAttachmentFactory,
       // Read by the activity group's `isActive` (L1) — without it the rows
       // memo would keep rendering the last group as live after the backend
       // stopped.

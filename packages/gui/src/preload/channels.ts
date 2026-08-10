@@ -22,6 +22,7 @@ export const CMD = {
   resetWorkspace: "session:resetWorkspace",
   pickAttachments: "session:pickAttachments",
   attachFiles: "session:attachFiles",
+  removeAttachment: "session:removeAttachment",
   getDreamConfig: "settings:getDreamConfig",
   setDreamConfig: "settings:setDreamConfig",
   getBackendConfig: "settings:getBackendConfig",

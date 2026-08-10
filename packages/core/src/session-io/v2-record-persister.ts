@@ -275,4 +275,55 @@ export class V2RecordPersister {
     writeFileSync(tmp, `${kept.join("\n")}\n`, "utf8");
     renameSync(tmp, this.sessionFile);
   }
+
+  /**
+   * Replace the block at `blockIndex` (0-based over BLOCK lines only, matching
+   * the in-memory `TerminalRecord` index) with `block`, leaving every other
+   * line — header, meta, and all other blocks — byte-identical.
+   *
+   * The one mutation this append-only file supports, added for attachment
+   * removal (ADR 0033, 2026-08-10). Deliberately a REPLACE and not a delete:
+   * dropping a line would shift every later block index, and rewind, topic
+   * anchors and the sink cursor all count those. Replacing keeps the count
+   * exact, so nothing downstream has to know this happened.
+   *
+   * Atomic (temp + rename, same as `truncateToBlockCount`) so a crash
+   * mid-write cannot leave a half-rewritten transcript. A `blockIndex` past
+   * the end is a no-op rather than an error: the caller resolved it from a
+   * record that a concurrent rewind may since have shortened.
+   */
+  replaceBlockAt(blockIndex: number, block: TerminalRecordBlock): void {
+    let raw: string;
+    try {
+      raw = readFileSync(this.sessionFile, "utf8");
+    } catch (err) {
+      if ((err as { code?: string }).code === "ENOENT") return;
+      throw err;
+    }
+    const lines = raw.split("\n");
+    if (lines[lines.length - 1] === "") lines.pop();
+    let blockCount = 0;
+    let replaced = false;
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i];
+      if (line === undefined || line.length === 0) continue;
+      let parsed: { _kind?: string };
+      try {
+        parsed = JSON.parse(line) as { _kind?: string };
+      } catch {
+        break; // corrupt/partial tail — never rewrite past a bad line
+      }
+      if (parsed._kind !== undefined) continue; // meta line, not a block
+      if (blockCount === blockIndex) {
+        lines[i] = JSON.stringify(block);
+        replaced = true;
+        break;
+      }
+      blockCount += 1;
+    }
+    if (!replaced) return;
+    const tmp = `${this.sessionFile}.replace-tmp`;
+    writeFileSync(tmp, `${lines.join("\n")}\n`, "utf8");
+    renameSync(tmp, this.sessionFile);
+  }
 }

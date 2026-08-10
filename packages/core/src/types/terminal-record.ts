@@ -253,13 +253,21 @@ export type SystemBlockDigest =
        *  refuses credential-shaped SOURCES (id_rsa, .env, anything under
        *  .ssh/) outright, because the stored name gains a hash suffix that
        *  the basename denylist no longer matches — deny-at-the-door is the
-       *  only place the deny works. Nothing is stored for this state. */
+       *  only place the deny works. Nothing is stored for this state.
+       *
+       *  `removed` is the 开拓者 taking it back (2026-08-10). The block is
+       *  MARKED, never deleted: block indices are counted by rewind, topic
+       *  anchors and the sink cursor, and — the real reason — if Herta has
+       *  already spoken about the document, erasing its citation would leave
+       *  her own words referring to something that never happened. The file
+       *  is gone from disk; the record still says one arrived and then went. */
       readonly unreadable?:
         | "binary"
         | "too_large"
         | "empty"
         | "read_error"
-        | "denied";
+        | "denied"
+        | "removed";
     }
   | {
       /** No richer structure — digest to the text's first line, truncated. */

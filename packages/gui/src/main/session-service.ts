@@ -650,6 +650,27 @@ export function createSessionService(
         };
       },
     );
+    handle(
+      CMD.removeAttachment,
+      async (_e, sessionId: string, path: string) => {
+        const s = host?.activeSession ?? null;
+        if (s === null || s.sessionId !== sessionId) {
+          return { ok: false as const, message: "no matching active session" };
+        }
+        if (s.removeAttachment === undefined) {
+          return { ok: false as const, message: "attachments unavailable" };
+        }
+        const r = await s.removeAttachment(path);
+        if (r.ok) return { ok: true as const };
+        return {
+          ok: false as const,
+          message:
+            r.reason === "turn_in_progress"
+              ? "a turn is in progress"
+              : "attachment not found",
+        };
+      },
+    );
     handle(CMD.resetWorkspace, async (_e, sessionId: string) => {
       const s = host?.activeSession ?? null;
       if (s === null || s.sessionId !== sessionId) {

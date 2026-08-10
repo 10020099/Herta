@@ -151,11 +151,11 @@ export const zh = {
   "composer.send": "发送消息",
   "composer.stop": "打断当前回合",
   "composer.attach": "添加文档",
-  /** The tooltip's muted second line — what slice 1 actually reads. Named as
-   *  kinds rather than an extension list: the sniff accepts ANY text file, so
-   *  enumerating extensions would be both incomplete and falsely exclusive. */
-  "composer.attach.formats":
-    "文本类文件：代码 / Markdown / txt / csv / json / 日志",
+  /** The tooltip's muted second line. Extensions, not kinds (owner
+   *  2026-08-10): a reader scans `.md .txt .csv` faster than a sentence about
+   *  categories. The trailing 等 keeps it honest — the sniff accepts any text
+   *  file, so the list is representative, not exhaustive. */
+  "composer.attach.formats": ".md .txt .csv .json .log .py .ts 等文本文件",
   "composer.attach.busy": "这一回合还没结束，等她说完再放文件。",
   "composer.attach.tooMany": "一次最多十个文件。",
   "composer.attach.failed": "文件没能加进来。",
@@ -209,6 +209,9 @@ export const zh = {
   "activity.attachment.unreadable.empty": "未提取到文本",
   "activity.attachment.unreadable.readError": "读取失败",
   "activity.attachment.unreadable.denied": "涉及密钥或凭据，已拒收",
+  "activity.attachment.unreadable.removed": "已移除",
+  "activity.attachment.remove": "移除这个附件",
+  "activity.attachment.removeFailed": "没能移除这个附件。",
   "activity.plan.more": "还有 {n} 项",
   "plan.card.title": "任务清单",
   "plan.card.itemsUnavailable": "这次记录没有留下清单明细。",

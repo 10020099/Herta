@@ -733,6 +733,23 @@ export class V2ActorDriver {
    * serializer does NOT sanitize system bodies at read — construction is the
    * only gate on this trust boundary.
    */
+  /**
+   * Replace one block in place — same index, same count (ADR 0033 attachment
+   * removal). Persists the replacement and returns true when it landed.
+   *
+   * Does NOT flush the sink: the sink streams by a monotonic cursor over new
+   * blocks, so a mutation behind that cursor is invisible to it. The caller
+   * re-syncs the renderer instead (SessionImpl does, via resyncRecord).
+   */
+  replaceBlockAt(index: number, block: SystemBlock): boolean {
+    if (index < 0 || index >= this.record.length) return false;
+    const next = [...this.record];
+    next[index] = block;
+    this.record = next;
+    this.persister?.replaceBlockAt(index, block);
+    return true;
+  }
+
   appendSystemBlock(block: SystemBlock): void {
     this.record = [...this.record, block];
     // D1: when the sink persists on flush, the flushBlocks below writes this

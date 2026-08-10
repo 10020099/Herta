@@ -1307,6 +1307,13 @@ function attachmentTaskLine(
   lang: PromptLang,
 ): string {
   const en = lang === "en";
+  if (d.unreadable === "removed") {
+    // Withdrawn on purpose. 板砖 must neither look for the file nor treat its
+    // absence as a fault — and must not act on a document the user took back.
+    return en
+      ? `[attachment] The Trailblazer provided a file (${d.name}) and then WITHDREW it. It is gone from disk — do not look for it, and do not act on its contents.`
+      : `〔附件〕开拓者曾提供文件（${d.name}），随后又撤回了它。文件已从磁盘删除——不要去找它，也不要再依据它的内容行事。`;
+  }
   if (d.unreadable === "denied") {
     // Refused, not broken — 板砖 must not diagnose a "read failure" on a file
     // the harness rejected on purpose, and must not go looking for it.

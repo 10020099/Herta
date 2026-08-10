@@ -246,6 +246,12 @@ export interface HertaBridge {
     sessionId: string,
     paths: readonly string[],
   ): Promise<{ readonly ok: boolean; readonly message?: string }>;
+  /** Take back an attached document: deletes the stored file and marks its
+   *  record block removed. Same refusal shape as attachFiles. */
+  removeAttachment(
+    sessionId: string,
+    path: string,
+  ): Promise<{ readonly ok: boolean; readonly message?: string }>;
   /** The real filesystem path of a dropped `File`. Electron 43 removed
    *  `File.path`, so only the preload can answer this — the renderer never
    *  holds a File beyond the drop handler. */

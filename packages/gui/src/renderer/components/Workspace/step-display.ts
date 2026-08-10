@@ -96,7 +96,9 @@ export function stepDisplayBody(
                 ? t("activity.attachment.unreadable.empty")
                 : d.unreadable === "denied"
                   ? t("activity.attachment.unreadable.denied")
-                  : t("activity.attachment.unreadable.readError");
+                  : d.unreadable === "removed"
+                    ? t("activity.attachment.unreadable.removed")
+                    : t("activity.attachment.unreadable.readError");
         return `${label} ${d.name} · ${why}`;
       }
       const lines = `${d.lines.toLocaleString()} ${t("activity.result.lines")}`;

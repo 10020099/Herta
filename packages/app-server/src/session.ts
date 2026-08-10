@@ -11,7 +11,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { readdir } from "node:fs/promises";
+import { readdir, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import {
@@ -34,6 +34,7 @@ import {
   ruleDisplay,
   SessionApprovalCache,
   type SessionTopic,
+  type SystemBlock,
   type TerminalRecord,
   type TerminalRecordBlock,
   type V2RecordPersister,
@@ -74,7 +75,11 @@ import {
   registerRunCommandRule,
   registerWriteNewFileRule,
 } from "@herta/tools";
-import { ingestAttachment, MAX_ATTACHMENTS_PER_ACTION } from "./attachments.js";
+import {
+  attachmentDirFor,
+  ingestAttachment,
+  MAX_ATTACHMENTS_PER_ACTION,
+} from "./attachments.js";
 import {
   BusActorStreamingSink,
   SLOW_MS_PER_CHAR,
@@ -95,6 +100,7 @@ import type {
   AttachResult,
   OverlayEvent,
   RecordEvent,
+  RemoveAttachmentResult,
   ResolveApprovalOpts,
   RewindResult,
   Session,
@@ -1076,6 +1082,81 @@ export class SessionImpl implements Session {
     }
     this._record = this.driver.getRecord();
     return { ok: true, files };
+  }
+
+  /**
+   * Take back an attached document (ADR 0033, owner 2026-08-10): delete the
+   * stored file and MARK every block citing it `unreadable: "removed"`.
+   *
+   * Marked, not deleted. Dropping the block would shift every later index —
+   * rewind, topic anchors and the sink cursor all count them — and, the real
+   * reason, if Herta has already spoken about the document then erasing its
+   * citation leaves her own words pointing at something that never happened.
+   * The file goes; the record keeps saying one arrived and was withdrawn.
+   *
+   * The caller supplies a path from the RENDERER, so it is never trusted for
+   * the delete: the block found by that path supplies its own harness-written
+   * path, and that is re-checked against this session's attachment prefix
+   * before anything is unlinked.
+   *
+   * Idle-only, like every other out-of-turn record write.
+   */
+  async removeAttachment(path: string): Promise<RemoveAttachmentResult> {
+    if (this.currentTurn !== null) {
+      return { ok: false, reason: "turn_in_progress" };
+    }
+    const record = this.driver.getRecord();
+    const targets: Array<{ index: number; block: SystemBlock }> = [];
+    record.forEach((b, index) => {
+      if (b.kind !== "system") return;
+      const d = b.digest;
+      if (d?.kind !== "attachment") return;
+      if (d.path !== path || d.path.length === 0) return;
+      if (d.unreadable === "removed") return; // already withdrawn
+      targets.push({ index, block: b });
+    });
+    if (targets.length === 0) return { ok: false, reason: "not_found" };
+
+    // Delete once, from the BLOCK's own path, and only inside this session's
+    // attachment directory — a renderer-supplied path never reaches unlink.
+    const prefix = `${attachmentDirFor(this.sessionId)}/`;
+    const stored = targets[0]?.block.digest;
+    const relPath =
+      stored?.kind === "attachment" && stored.path.startsWith(prefix)
+        ? stored.path
+        : null;
+    if (relPath === null) return { ok: false, reason: "not_found" };
+    try {
+      await rm(join(this.wsHolder.current, ...relPath.split("/")), {
+        force: true,
+      });
+    } catch {
+      // Best-effort: a file already gone (manual delete, workspace switched)
+      // must not block the record from recording the withdrawal.
+    }
+
+    for (const { index, block } of targets) {
+      const d = block.digest;
+      if (d?.kind !== "attachment") continue;
+      // Drop the head excerpt with the file. Keeping prompt-visible content
+      // for a document the user just took back would be the opposite of what
+      // they asked for.
+      const { evidenceDetail: _d, evidence: _e, ...rest } = block;
+      this.driver.replaceBlockAt(index, {
+        ...rest,
+        body: `附件 ${d.name} · 已移除`,
+        digest: { ...d, lines: 0, chars: 0, unreadable: "removed" },
+      });
+    }
+
+    this._record = this.driver.getRecord();
+    // The sink streams by a monotonic cursor and mirrors block REFERENCES, so
+    // a mutation behind the cursor is invisible to it — re-seed with the new
+    // record (same move rewind makes after truncating), then push the
+    // corrected record to the renderer.
+    this.sink.seedEmittedCount(this._record.length, this._record);
+    this.resyncRecord();
+    return { ok: true, removed: targets.length };
   }
 
   /**

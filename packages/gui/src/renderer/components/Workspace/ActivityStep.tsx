@@ -27,6 +27,18 @@ export interface ActivityStepProps {
    * NONE of what Herta reads from these fields.
    */
   readonly detail?: string;
+  /**
+   * Take-back handler for an attachment row (ADR 0033, owner 2026-08-10).
+   * Present only on a live, not-yet-removed attachment while the session is
+   * idle — the removal rides the same out-of-turn record write as the attach,
+   * so the parent withholds it mid-turn rather than letting a click earn a
+   * refusal.
+   */
+  readonly onRemove?: () => void;
+  /** Label + aria for the take-back control. Required when `onRemove` is set;
+   *  passed rather than translated here so the row keeps following the SESSION
+   *  lang (ADR 0019) like every other string in it. */
+  readonly removeLabel?: string;
 }
 
 /** One row in an activity block: a verb icon + the (collapsible) body. */
@@ -70,6 +82,28 @@ export function ActivityStep(props: ActivityStepProps): JSX.Element {
           <pre className="activity-step__detail">{props.detail}</pre>
         )}
       </div>
+      {props.onRemove !== undefined && (
+        <button
+          type="button"
+          className="activity-step__remove"
+          aria-label={props.removeLabel}
+          title={props.removeLabel}
+          onClick={props.onRemove}
+        >
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 12 12"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.4"
+            strokeLinecap="round"
+            aria-hidden="true"
+          >
+            <path d="M3 3l6 6M9 3l-6 6" />
+          </svg>
+        </button>
+      )}
     </div>
   );
 }

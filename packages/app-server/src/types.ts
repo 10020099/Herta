@@ -195,6 +195,15 @@ export type AttachResult =
       readonly reason: "turn_in_progress" | "too_many" | "no_files";
     };
 
+/** Result of `removeAttachment`. `removed` counts the blocks marked, which is
+ *  >1 when the same document was attached more than once. */
+export type RemoveAttachmentResult =
+  | { readonly ok: true; readonly removed: number }
+  | {
+      readonly ok: false;
+      readonly reason: "turn_in_progress" | "not_found";
+    };
+
 // ───── Wire events (one type per AsyncIterable subscription) ─────
 
 export type RecordEvent =
@@ -432,6 +441,9 @@ export interface Session {
    *  Idle-only, like setWorkspace — it rides the same out-of-turn append.
    *  Optional: only the GUI SessionImpl implements it. */
   attachFiles?(paths: readonly string[]): Promise<AttachResult>;
+  /** Take back an attached document: delete the stored file and mark every
+   *  block citing it removed. Idle-only, like attachFiles. */
+  removeAttachment?(path: string): Promise<RemoveAttachmentResult>;
 
   subscribeRecord(): AsyncIterable<RecordEvent>;
   subscribeOverlay(): AsyncIterable<OverlayEvent>;
