@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { TFn } from "../../i18n/LocaleProvider.js";
+import { Tooltip } from "../Tooltip/Tooltip.js";
 import { CollapsibleBody } from "./CollapsibleBody.js";
 import { StepIcon, type StepIconKey, stepIcon } from "./step-icon.js";
 
@@ -83,26 +84,32 @@ export function ActivityStep(props: ActivityStepProps): JSX.Element {
         )}
       </div>
       {props.onRemove !== undefined && (
-        <button
-          type="button"
-          className="activity-step__remove"
-          aria-label={props.removeLabel}
-          title={props.removeLabel}
-          onClick={props.onRemove}
-        >
-          <svg
-            width="12"
-            height="12"
-            viewBox="0 0 12 12"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.4"
-            strokeLinecap="round"
-            aria-hidden="true"
+        // The app's styled pill, not the native `title` (owner 2026-08-10 —
+        // the same OS-beige-box mismatch the paperclip had). Placed top-center
+        // because the control now sits mid-row rather than at the far edge;
+        // ActivityBlock lifts the history panel's clip once it is open so the
+        // pill is not cut off by the reveal's overflow.
+        <Tooltip label={props.removeLabel ?? ""} placement="top" align="center">
+          <button
+            type="button"
+            className="activity-step__remove"
+            aria-label={props.removeLabel}
+            onClick={props.onRemove}
           >
-            <path d="M3 3l6 6M9 3l-6 6" />
-          </svg>
-        </button>
+            <svg
+              width="12"
+              height="12"
+              viewBox="0 0 12 12"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.4"
+              strokeLinecap="round"
+              aria-hidden="true"
+            >
+              <path d="M3 3l6 6M9 3l-6 6" />
+            </svg>
+          </button>
+        </Tooltip>
       )}
     </div>
   );

@@ -1560,6 +1560,54 @@ describe("Session — attachFiles (ADR 0033)", () => {
     await cleanup();
   });
 
+  it("attachments FOLLOW a workspace change — the cited path keeps resolving", async () => {
+    // Before this, changing 板砖's working directory silently broke every
+    // document already handed over: the block cites a workspace-RELATIVE path,
+    // and the file stayed under the old root.
+    const { session, backendWs, srcDir, cleanup } = await mkAttachSession();
+    writeFileSync(join(srcDir, "spec.md"), "# spec\nbody\n");
+    const a = await session.attachFiles([join(srcDir, "spec.md")]);
+    if (!a.ok) return;
+    const rel = a.files[0]?.path ?? "";
+    expect(existsSync(join(backendWs, ...rel.split("/")))).toBe(true);
+
+    const nextWs = mkdtempSync(join(tmpdir(), "herta-attach-ws2-"));
+    expect((await session.setWorkspace(nextWs)).ok).toBe(true);
+
+    // The SAME relative path now resolves under the new root…
+    expect(existsSync(join(nextWs, ...rel.split("/")))).toBe(true);
+    // …and exactly one copy exists — a move, not a copy.
+    expect(existsSync(join(backendWs, ...rel.split("/")))).toBe(false);
+    await cleanup();
+  });
+
+  it("removal after a workspace change deletes the real file, not a ghost", async () => {
+    // The mirror of the bug above: removeAttachment unlinks from the CURRENT
+    // root with force:true, so without the migration it reported success while
+    // the real file sat orphaned under the old workspace.
+    const { session, srcDir, cleanup } = await mkAttachSession();
+    writeFileSync(join(srcDir, "spec.md"), "# spec\n");
+    const a = await session.attachFiles([join(srcDir, "spec.md")]);
+    if (!a.ok) return;
+    const rel = a.files[0]?.path ?? "";
+
+    const nextWs = mkdtempSync(join(tmpdir(), "herta-attach-ws3-"));
+    await session.setWorkspace(nextWs);
+    expect(await session.removeAttachment(rel)).toEqual({
+      ok: true,
+      removed: 1,
+    });
+    expect(existsSync(join(nextWs, ...rel.split("/")))).toBe(false);
+    await cleanup();
+  });
+
+  it("a workspace change with no attachments is a harmless no-op", async () => {
+    const { session, cleanup } = await mkAttachSession();
+    const nextWs = mkdtempSync(join(tmpdir(), "herta-attach-ws4-"));
+    expect((await session.setWorkspace(nextWs)).ok).toBe(true);
+    await cleanup();
+  });
+
   it("a credential-shaped source is refused at the door, per file", async () => {
     const { session, backendWs, srcDir, cleanup } = await mkAttachSession();
     writeFileSync(join(srcDir, "id_rsa"), "----KEY----\n");

@@ -79,6 +79,7 @@ import {
   attachmentDirFor,
   ingestAttachment,
   MAX_ATTACHMENTS_PER_ACTION,
+  migrateAttachments,
 } from "./attachments.js";
 import {
   BusActorStreamingSink,
@@ -1001,6 +1002,15 @@ export class SessionImpl implements Session {
     if (this.currentTurn !== null) {
       return { ok: false, reason: "turn_in_progress" };
     }
+    // Attachments follow the session, not the folder (owner 2026-08-10). The
+    // record cites workspace-RELATIVE paths, so leaving the files behind would
+    // silently break every document already handed over — and would make
+    // removeAttachment unlink from a root the file was never in.
+    await migrateAttachments({
+      fromRoot: this.wsHolder.current,
+      toRoot: workspace,
+      sessionId: this.sessionId,
+    });
     this.wsHolder.current = workspace;
     this.wsIsDefault = false;
     this.persister.appendWorkspaceSet(workspace, new Date().toISOString());
@@ -1170,6 +1180,12 @@ export class SessionImpl implements Session {
       return { ok: false, reason: "turn_in_progress" };
     }
     const def = defaultWorkspaceFor(homedir(), this.sessionId);
+    // Same reason as setWorkspace: the documents belong to the conversation.
+    await migrateAttachments({
+      fromRoot: this.wsHolder.current,
+      toRoot: def,
+      sessionId: this.sessionId,
+    });
     this.wsHolder.current = def;
     this.wsIsDefault = true;
     this.persister.appendWorkspaceSet(def, new Date().toISOString());

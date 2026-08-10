@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { basename, extname, join } from "node:path";
+import { existsSync } from "node:fs";
+import { cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { basename, dirname, extname, join } from "node:path";
 import type { SystemBlock } from "@herta/core";
 import { ensureHertaGitignore } from "@herta/core";
 import { sanitizeSystemBlock } from "@herta/herta";
@@ -50,6 +51,51 @@ export const MAX_ATTACHMENTS_PER_ACTION = 10;
  *  it, and so the path class in `resolveSafePath` can be a fixed prefix. */
 export function attachmentDirFor(sessionId: string): string {
   return `.herta/attachments/${sessionId}`;
+}
+
+/**
+ * Move a session's attachments when the backend workspace changes
+ * (owner question, 2026-08-10).
+ *
+ * Attachment blocks cite a workspace-RELATIVE path, and 板砖 resolves it
+ * against whatever root is current at dispatch time. So without this, changing
+ * the coprocessor's working directory silently broke every document already
+ * handed over: the citation still read `.herta/attachments/<sid>/spec.md`, and
+ * that path no longer pointed at anything. `removeAttachment` had the mirror
+ * bug — it unlinked from the CURRENT root with `force: true`, reporting success
+ * while the real file sat orphaned under the old one.
+ *
+ * A MOVE, not a copy: exactly one copy of a user's document should exist, and
+ * switching back and forth should not scatter duplicates across every workspace
+ * they have ever pointed at.
+ *
+ * Best-effort and non-throwing, because a workspace change must not fail over
+ * file housekeeping — but deliberately NOT silent about the order of
+ * operations: the old directory is removed only after the copy lands, so a
+ * failure mid-way leaves the originals where they are rather than losing them.
+ * Returns whether anything moved, for the caller's log/test.
+ */
+export async function migrateAttachments(opts: {
+  readonly fromRoot: string;
+  readonly toRoot: string;
+  readonly sessionId: string;
+}): Promise<boolean> {
+  if (opts.fromRoot === opts.toRoot) return false;
+  const rel = attachmentDirFor(opts.sessionId).split("/");
+  const from = join(opts.fromRoot, ...rel);
+  const to = join(opts.toRoot, ...rel);
+  try {
+    if (!existsSync(from)) return false;
+    await mkdir(dirname(to), { recursive: true });
+    // Merge rather than replace: switching away and back should find the
+    // directory as it was left. Content-hashed names make same-name collisions
+    // same-content, so overwriting is a no-op on identical files.
+    await cp(from, to, { recursive: true, force: true });
+    await rm(from, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export type AttachmentUnreadable =
