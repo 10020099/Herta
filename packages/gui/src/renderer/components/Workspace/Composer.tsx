@@ -366,7 +366,15 @@ export function Composer(): JSX.Element {
           disabled={busy}
           onClick={onPickAttachments}
         >
-          <svg viewBox="0 0 14 14" aria-hidden="true" focusable="false">
+          {/* viewBox origin nudged by the path's own ink offset (owner asked
+              me to check this button, 2026-08-10). Measured with getBBox: the
+              paperclip's ink spans y 1.70–13.96 in a 0–14 box, so its centre
+              sits 0.83 units low — ~0.95px at this size — and 0.32 right. The
+              <svg> element is perfectly centred in the button; the drawing
+              inside it is not, which no layout measurement can see. Shifting
+              the window by that offset lands ink centre on box centre without
+              touching the scale. */}
+          <svg viewBox="0.32 0.83 14 14" aria-hidden="true" focusable="false">
             <path d="M9.5 4.2 5.3 8.4a1.6 1.6 0 0 0 2.3 2.3l4.2-4.2a3 3 0 0 0-4.2-4.2L3.2 6.6a4.3 4.3 0 0 0 6.1 6.1l3.4-3.4" />
           </svg>
         </button>

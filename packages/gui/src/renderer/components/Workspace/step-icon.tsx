@@ -71,9 +71,15 @@ const PATHS: Record<StepIconKey, JSX.Element> = {
     </>
   ),
   // The composer's own paperclip (ADR 0033), so an attachment row and the
-  // button that made it share one glyph.
+  // button that made it share one glyph — including its centring correction.
+  // The path's ink sits 0.32 right and 0.83 low of this shared 14×14 box's
+  // centre (measured with getBBox); the icons here share one <svg>, so the
+  // offset is undone with a transform rather than the viewBox nudge the
+  // composer's standalone copy uses. Same result, ~0.95px up-left.
   attach: (
-    <path d="M9.5 4.2 5.3 8.4a1.6 1.6 0 0 0 2.3 2.3l4.2-4.2a3 3 0 0 0-4.2-4.2L3.2 6.6a4.3 4.3 0 0 0 6.1 6.1l3.4-3.4" />
+    <g transform="translate(-0.32 -0.83)">
+      <path d="M9.5 4.2 5.3 8.4a1.6 1.6 0 0 0 2.3 2.3l4.2-4.2a3 3 0 0 0-4.2-4.2L3.2 6.6a4.3 4.3 0 0 0 6.1 6.1l3.4-3.4" />
+    </g>
   ),
   dot: <circle cx="7" cy="7" r="2.2" />,
 };
