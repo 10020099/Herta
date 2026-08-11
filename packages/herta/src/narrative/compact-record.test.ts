@@ -908,6 +908,111 @@ describe("compaction markers — session language", () => {
   });
 });
 
+describe("stranded evidenceDetail — the run-of-one hole (self-review 2026-08-11)", () => {
+  // The run-compaction only reaches a block's detail inside a run of ≥2. A
+  // block that lands ALONE passed through with its detail in EVERY later
+  // prompt — and the bridge produces exactly that whenever a beat fires next
+  // to the block. ADR 0033 §1 closed this for attachments and asserted
+  // show_excerpt "always sits inside a dispatch's run"; the beat makes that
+  // false, so ADR 0027's two-state lane was silently broken for excerpts and
+  // command tails.
+  const excerpt: SystemBlock = {
+    kind: "system",
+    label: "差分协处理器",
+    body: "↳ excerpt src/a.ts:120-140",
+    evidenceDetail: "↳ 摘录 src/a.ts:120-140\n120\tconst LEAKED = 1;",
+    digest: { kind: "excerpt", path: "src/a.ts", from: 120, to: 140 },
+  };
+
+  it("a stranded excerpt drops its detail once she has spoken; the citation stays", () => {
+    const out = compactRecordForPrompt([
+      { kind: "user", text: "看一下" },
+      { kind: "herta", surface: "speech", text: "@板砖 去。" },
+      excerpt, // alone: a beat on either side
+      { kind: "herta", surface: "speech", text: "看到了。" },
+      { kind: "user", text: "然后" },
+    ]);
+    const kept = out.find(
+      (b) => b.kind === "system" && b.body.includes("excerpt"),
+    );
+    expect(kept).toBeDefined();
+    expect(kept?.kind === "system" && kept.evidenceDetail).toBeUndefined();
+    expect(kept?.kind === "system" && kept.body).toBe(excerpt.body);
+    expect(JSON.stringify(out)).not.toContain("LEAKED");
+  });
+
+  it("State 1 is untouched — no speech since means she is still reading it", () => {
+    const out = compactRecordForPrompt([
+      { kind: "user", text: "看一下" },
+      { kind: "herta", surface: "speech", text: "@板砖 去。" },
+      excerpt,
+      { kind: "herta", surface: "thought", text: "（我 想）扫一眼。" },
+    ]);
+    expect(JSON.stringify(out)).toContain("LEAKED");
+  });
+
+  it("the real bridge shape: beat before the done-marker strands its roll-up", () => {
+    const out = compactRecordForPrompt([
+      { kind: "user", text: "改一下" },
+      { kind: "herta", surface: "speech", text: "@板砖 去。" },
+      {
+        kind: "system",
+        label: "差分协处理器",
+        body: 'Reading {"path":"a.ts"}',
+      },
+      {
+        kind: "system",
+        label: "系统",
+        body: "patch preview: a.ts\n\n```diff\n+x\n```",
+      },
+      {
+        kind: "system",
+        label: "差分协处理器",
+        body: 'Writing {"path":"a.ts"}',
+      },
+      { kind: "herta", surface: "speech", text: "diff 干净。" }, // BeatPolicy
+      {
+        kind: "system",
+        label: "差分协处理器",
+        body: "完成 · 1 个文件",
+        role: "done-marker",
+        evidenceDetail: "↳ 改动文件: a.ts\n↳ 待办: STRANDED-TODO",
+      },
+      { kind: "herta", surface: "speech", text: "改完了。" },
+      { kind: "user", text: "然后呢" },
+    ]);
+    expect(JSON.stringify(out)).not.toContain("STRANDED-TODO");
+    // The citation survives, and so does the diff hint on the same block.
+    const marker = out.find(
+      (b) => b.kind === "system" && b.body.includes("完成 · 1 个文件"),
+    );
+    expect(marker?.kind === "system" && marker.body).toContain("git diff");
+  });
+
+  it("the State-1 pass-through done-marker still keeps its roll-up", () => {
+    // The verdict turn: the marker is emitted OUTSIDE the pass-through branch
+    // precisely so its evidence reaches the prompt that writes the verdict.
+    const out = compactRecordForPrompt([
+      { kind: "user", text: "改一下" },
+      { kind: "herta", surface: "speech", text: "@板砖 去。" },
+      {
+        kind: "system",
+        label: "差分协处理器",
+        body: 'Writing {"path":"a.ts"}',
+      },
+      { kind: "herta", surface: "speech", text: "diff 干净。" },
+      {
+        kind: "system",
+        label: "差分协处理器",
+        body: "完成 · 1 个文件",
+        role: "done-marker",
+        evidenceDetail: "↳ 改动文件: a.ts\n↳ 待办: KEEP-THIS",
+      },
+    ]);
+    expect(JSON.stringify(out)).toContain("KEEP-THIS");
+  });
+});
+
 describe("done-marker diff re-read hint (E2E 2026-08-11)", () => {
   // Patch previews are prompt-skipped once their run compacts, so "which
   // lines changed?" one turn after a dispatch found nothing to quote and got
@@ -1161,6 +1266,89 @@ describe("attachment blocks — per-block two-state fold (ADR 0033)", () => {
     expect(
       sys(compactRecordForPrompt(drifted))[0]?.evidenceDetail,
     ).toBeUndefined();
+  });
+
+  it("a filename INSIDE another filename does not re-open the shorter one (self-review 2026-08-11)", () => {
+    // The first cut matched by bare substring and claimed the extension made
+    // collisions impossible. It does not: `report.md` is a suffix of
+    // `final-report.md`, so naming the long file re-inflated the short one's
+    // head too — a spurious 4000-char head plus the cache churn it drags.
+    const short: SystemBlock = {
+      ...attachment,
+      body: "附件 report.md · 10 行 · 200 字 · .herta/attachments/s1/report.md",
+      evidenceDetail: "↳ 附件 report.md\nSHORT-FILE-HEAD",
+      digest: {
+        kind: "attachment",
+        name: "report.md",
+        path: ".herta/attachments/s1/report.md",
+        lines: 10,
+        chars: 200,
+      },
+    };
+    const long: SystemBlock = {
+      ...attachment,
+      body: "附件 final-report.md · 10 行 · 200 字 · .herta/attachments/s1/final-report.md",
+      evidenceDetail: "↳ 附件 final-report.md\nLONG-FILE-HEAD",
+      digest: {
+        kind: "attachment",
+        name: "final-report.md",
+        path: ".herta/attachments/s1/final-report.md",
+        lines: 10,
+        chars: 200,
+      },
+    };
+    const out = compactRecordForPrompt([
+      short,
+      long,
+      { kind: "user", text: "都看看" },
+      { kind: "herta", surface: "speech", text: "看了。" },
+      { kind: "user", text: "嗯" },
+      { kind: "herta", surface: "speech", text: "。" },
+      { kind: "user", text: "好" },
+      { kind: "herta", surface: "speech", text: "。" },
+      { kind: "user", text: "final-report.md 第三条再说说" },
+    ]);
+    const s = JSON.stringify(out);
+    expect(s).toContain("LONG-FILE-HEAD"); // the named file
+    expect(s).not.toContain("SHORT-FILE-HEAD"); // NOT its substring neighbour
+  });
+
+  it("a name embedded in an unrelated word does not re-open its window", () => {
+    const tiny: SystemBlock = {
+      ...attachment,
+      body: "附件 log.md · 10 行",
+      evidenceDetail: "↳ 附件 log.md\nTINY-HEAD",
+      digest: {
+        kind: "attachment",
+        name: "log.md",
+        path: ".herta/attachments/s1/log.md",
+        lines: 10,
+        chars: 200,
+      },
+    };
+    const tail: TerminalRecordBlock[] = [
+      { kind: "user", text: "看看" },
+      { kind: "herta", surface: "speech", text: "看了。" },
+      { kind: "user", text: "嗯" },
+      { kind: "herta", surface: "speech", text: "。" },
+      { kind: "user", text: "好" },
+      { kind: "herta", surface: "speech", text: "。" },
+    ];
+    // "catalog.md" contains "log.md" — flanked by a filename char, so no.
+    const embedded = compactRecordForPrompt([
+      tiny,
+      ...tail,
+      { kind: "user", text: "catalog.md 里写了什么" },
+    ]);
+    expect(JSON.stringify(embedded)).not.toContain("TINY-HEAD");
+    // A real reference still lands, including with CJK hard against it
+    // (Chinese has no spaces — a word-boundary rule would have broken this).
+    const real = compactRecordForPrompt([
+      tiny,
+      ...tail,
+      { kind: "user", text: "回到log.md，第二段说了什么" },
+    ]);
+    expect(JSON.stringify(real)).toContain("TINY-HEAD");
   });
 
   it("a reference re-opens only ITS file's window", () => {

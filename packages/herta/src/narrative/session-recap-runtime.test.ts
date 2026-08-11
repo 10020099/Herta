@@ -197,12 +197,13 @@ describe("prepareTurnRecap", () => {
     expect(system).not.toContain("800 字");
   });
 
-  it("a roll that overflows maxRecapChars forces the NEXT crossing to re-derive", async () => {
-    // Backstory already at the cap: the floored addendum pushes the concat
-    // over. The overflow is accepted THIS crossing (recording something beats
-    // dropping it) and the advance counter jumps to the re-derive threshold
-    // so the next crossing recompresses the whole span back under the cap.
-    const prev = "忆".repeat(800); // exactly maxRecapChars
+  it("a roll that would overflow maxRecapChars trims the HEAD, states it, and forces a re-derive", async () => {
+    // Self-review 2026-08-11: an unbounded concat trades one visible trim for
+    // a SILENT total wipe — distrustCachedRecapText discards the whole cache
+    // past 2× the cap, on the premise that the write path never exceeds it.
+    // Backstory already at the cap, in paragraphs so the trim has seams.
+    const paras = ["首段".repeat(100), "次段".repeat(100), "末段".repeat(100)];
+    const prev = paras.join("\n\n"); // 600 chars + separators, cap 800
     const { rt, getCache } = makeRT({
       cache: {
         boundaryIndex: 2,
@@ -210,12 +211,61 @@ describe("prepareTurnRecap", () => {
         lang: "zh",
         advancesSinceRederive: 1,
       },
+      summarizeText: "补记".repeat(150), // 300 chars → concat would be ~904
     });
     const res = await prepareTurnRecap(manyTurns(5), PREFIX, rt, false, SIGNAL);
-    expect(res.recap).toBe(`${prev}\n\n我记得之前的对话。`);
+    const stored = res.recap ?? "";
+    // The bound holds — which is the whole point.
+    expect(stored.length).toBeLessThanOrEqual(TIGHT.maxRecapChars);
+    // The loss is STATED, the newest memory and the addendum are kept, and
+    // the oldest paragraph is what went.
+    expect(stored).toContain("更早的回忆因篇幅略去");
+    expect(stored).toContain("补记");
+    expect(stored).toContain("末段");
+    expect(stored).not.toContain("首段");
+    // …and the next crossing re-derives, recompressing the span properly.
     expect(getCache()).toMatchObject({
       advancesSinceRederive: TIGHT.rederiveEveryNAdvances,
     });
+  });
+
+  it("a roll that fits is NOT trimmed and does not force a re-derive", async () => {
+    const { rt, getCache } = makeRT({
+      cache: {
+        boundaryIndex: 2,
+        recapText: "旧回忆",
+        lang: "zh",
+        advancesSinceRederive: 1,
+      },
+    });
+    const res = await prepareTurnRecap(manyTurns(5), PREFIX, rt, false, SIGNAL);
+    expect(res.recap).toBe("旧回忆\n\n我记得之前的对话。");
+    expect(res.recap).not.toContain("因篇幅略去");
+    expect(getCache()).toMatchObject({ advancesSinceRederive: 2 });
+  });
+
+  it("the stored recap never crosses the read path's discard threshold", async () => {
+    // The failure this bounds: distrustCachedRecapText drops the ENTIRE cache
+    // over 2× the cap. Roll repeatedly against a cache that keeps growing and
+    // assert the invariant holds every time.
+    let cache: RecapCache = {
+      boundaryIndex: 2,
+      recapText: "起始回忆",
+      lang: "zh",
+      advancesSinceRederive: 1,
+    };
+    for (let round = 0; round < 12; round++) {
+      const { rt, getCache } = makeRT({
+        cache,
+        summarizeText: `第${round}段补记`.repeat(40),
+      });
+      await prepareTurnRecap(manyTurns(5), PREFIX, rt, false, SIGNAL);
+      const next = getCache();
+      expect(next).not.toBeNull();
+      if (next === null) return; // narrows for TS; the expect above is the assertion
+      cache = next;
+      expect(cache.recapText.length).toBeLessThanOrEqual(TIGHT.maxRecapChars);
+    }
   });
 
   it("falls back to a placeholder when the summarizer throws, and increments the failure counter", async () => {

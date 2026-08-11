@@ -392,6 +392,44 @@ function foldAttachmentForPrompt(
   };
 }
 
+/** Characters that can appear INSIDE a filename. A display-name match
+ *  flanked by one of these is part of a longer name, not a reference to
+ *  this file. */
+const FILENAME_CHAR = /[A-Za-z0-9._-]/;
+
+/** Shortest display name usable as a re-inflation needle. Below this the
+ *  name is too weak to be evidence of intent even with boundaries — a file
+ *  called `a` would re-open its window on the English article. */
+const MIN_REFERENCE_NAME_LEN = 3;
+
+/**
+ * Does `text` REFERENCE the file called `needle` (both already lowercased)?
+ *
+ * Boundary-checked, not a bare substring test (self-review 2026-08-11). The
+ * first cut used `includes`, and its comment claimed the extension made
+ * collisions impossible — which covers a bare WORD colliding ("spec"), not
+ * one filename sitting inside another: `report.md` is a suffix of
+ * `final-report.md`, so naming the long file re-inflated the short one too.
+ * A match counts only when neither flank is a filename character.
+ */
+function mentionsFile(text: string, needle: string): boolean {
+  if (needle.length < MIN_REFERENCE_NAME_LEN) return false;
+  for (let from = 0; ; ) {
+    const at = text.indexOf(needle, from);
+    if (at === -1) return false;
+    const before = at > 0 ? text.charAt(at - 1) : "";
+    const after =
+      at + needle.length < text.length ? text.charAt(at + needle.length) : "";
+    if (
+      (before === "" || !FILENAME_CHAR.test(before)) &&
+      (after === "" || !FILENAME_CHAR.test(after))
+    ) {
+      return true;
+    }
+    from = at + 1;
+  }
+}
+
 /**
  * Decide the fold state for the attachment block at `idx`. Fold only when
  * Herta has spoken since AND the user-turn window past the anchor is
@@ -407,10 +445,8 @@ function attachmentFoldDecision(
   userIdxs: readonly number[],
 ): AttachmentFoldState {
   if (idx >= lastSpeechIdx) return "verbatim";
-  // Anchor: the most recent user message after the block that names the
-  // file, else the block itself. The display name always carries its
-  // extension (`spec.md`), so a bare-word collision ("spec") cannot re-open
-  // the window by accident.
+  // Anchor: the most recent user message after the block that REFERENCES the
+  // file (boundary-checked — see mentionsFile), else the block itself.
   const name =
     block.digest?.kind === "attachment" ? block.digest.name : undefined;
   let anchor = idx;
@@ -420,7 +456,7 @@ function attachmentFoldDecision(
       const ui = userIdxs[k];
       if (ui === undefined || ui <= idx) break;
       const ub = record[ui];
-      if (ub?.kind === "user" && ub.text.toLowerCase().includes(needle)) {
+      if (ub?.kind === "user" && mentionsFile(ub.text.toLowerCase(), needle)) {
         anchor = ui;
         break;
       }
@@ -435,6 +471,39 @@ function attachmentFoldDecision(
     ATTACHMENT_VERBATIM_USER_TURNS + ATTACHMENT_HINT_USER_TURNS
     ? "citation-hint"
     : "citation";
+}
+
+/**
+ * Drop a verbatim-passed-through block's `evidenceDetail` once Herta has
+ * SPOKEN since it (self-review 2026-08-11). The citation — the body — always
+ * survives; only the detail goes.
+ *
+ * The run-compaction below reaches a block's detail only when the block sits
+ * in a run of ≥ minRunSize. A block that lands ALONE passes through verbatim,
+ * detail included, in EVERY later prompt of the session — and the bridge
+ * produces exactly that shape whenever a BeatPolicy beat fires next to the
+ * block (`patch preview → Writing → 【beat】 → done-marker` leaves the marker
+ * by itself). ADR 0033 §1 found this hole for attachments and closed it with
+ * a per-block fold, while asserting that `show_excerpt` "always sits inside a
+ * dispatch's run" — false for the same beat reason, so ADR 0027's "verbatim
+ * in its own turn, a citation forever after" was silently broken for every
+ * stranded excerpt (≤ 4000 chars each) and command-output tail. Ten stranded
+ * excerpts is the ~40K chars of permanent prompt weight ADR 0033 used to
+ * justify building the attachment fold in the first place.
+ *
+ * Keyed on SPEECH, like every other two-state lane here (audit 2026-07-24,
+ * 1.10). Attachments never reach this — they carry their own richer fold —
+ * and neither does the State-1 pass-through done-marker, which is emitted
+ * outside this branch precisely so its roll-up survives its verdict turn.
+ */
+function foldStrandedDetail(
+  block: TerminalRecordBlock,
+  spokenSince: boolean,
+): TerminalRecordBlock {
+  if (!spokenSince || block.kind !== "system") return block;
+  if (block.evidenceDetail === undefined) return block;
+  const { evidenceDetail: _dropped, ...rest } = block;
+  return rest;
 }
 
 export function compactRecordForPrompt(
@@ -583,22 +652,30 @@ export function compactRecordForPrompt(
         } else {
           // All entries in the run hit a skip rule — pass them
           // through verbatim rather than emitting an empty-header
-          // summary (spec §4.4).
-          for (const b of runBlocks) output.push(b);
+          // summary (spec §4.4). Still a verbatim pass-through, so the
+          // stranded-detail fold applies (see foldStrandedDetail).
+          for (let k = 0; k < runBlocks.length; k++) {
+            const b = runBlocks[k];
+            if (b !== undefined) {
+              output.push(foldStrandedDetail(b, i + k < lastSpeechIdx));
+            }
+          }
         }
       } else {
-        // Run shorter than minRunSize — pass through verbatim (the hinted
-        // marker, if here, gains its hint line without losing anything).
+        // Run shorter than minRunSize — pass through verbatim, minus any
+        // stranded evidenceDetail (the hinted marker, if here, also gains
+        // its hint line).
         for (let k = i; k < compactEnd; k++) {
           const b = record[k];
           if (b === undefined) continue;
+          const folded = foldStrandedDetail(b, k < lastSpeechIdx);
           output.push(
-            k === diffHintIdx && b.kind === "system"
+            k === diffHintIdx && folded.kind === "system"
               ? {
-                  ...b,
-                  body: `${b.body}\n${COMPACTION_TEXT[lang].diffRereadHint}`,
+                  ...folded,
+                  body: `${folded.body}\n${COMPACTION_TEXT[lang].diffRereadHint}`,
                 }
-              : b,
+              : folded,
           );
         }
       }

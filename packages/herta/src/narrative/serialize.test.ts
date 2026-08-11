@@ -618,6 +618,13 @@ describe("serializeTerminalRecord — long-record equivalence vs naive reference
     const passThroughIdx =
       lastDoneMarkerIdx >= 0 && !verdictSpoken ? lastDoneMarkerIdx : -1;
 
+    // Newest herta SPEECH — bounds the stranded-detail fold below.
+    let lastSpeechIdx = -1;
+    for (let k = 0; k < record.length; k++) {
+      const b = record[k];
+      if (b?.kind === "herta" && b.surface === "speech") lastSpeechIdx = k;
+    }
+
     // Diff re-read hint (2026-08-11), naive forward form: the newest marker,
     // once FOLDED (verdict spoken), hints while ≤ N user turns follow it.
     let diffHintIdx = -1;
@@ -668,10 +675,18 @@ describe("serializeTerminalRecord — long-record equivalence vs naive reference
           for (let k = i; k < compactEnd; k++) {
             const b = record[k];
             if (b === undefined) continue;
+            // Stranded-detail fold (2026-08-11), naive form: a verbatim
+            // pass-through drops its evidenceDetail once a speech follows.
+            const folded =
+              b.kind === "system" &&
+              b.evidenceDetail !== undefined &&
+              k < lastSpeechIdx
+                ? { ...b, evidenceDetail: undefined }
+                : b;
             output.push(
-              k === diffHintIdx && b.kind === "system"
-                ? { ...b, body: `${b.body}\n${hint}` }
-                : b,
+              k === diffHintIdx && folded.kind === "system"
+                ? { ...folded, body: `${folded.body}\n${hint}` }
+                : folded,
             );
           }
         }
@@ -771,6 +786,17 @@ describe("serializeTerminalRecord — long-record equivalence vs naive reference
         label: "系统",
         body: `patch preview: file${t}.ts\n\n\`\`\`diff\n${longDiff}\n\`\`\``,
       });
+      // An in-turn BEAT before the marker — the BeatPolicy shape that
+      // STRANDS the marker alone in its own run (self-review 2026-08-11).
+      // Without this the equivalence pin never exercised the stranded-detail
+      // fold and passed vacuously.
+      if (t % 5 === 2) {
+        blocks.push({
+          kind: "herta",
+          surface: "speech",
+          text: `第 ${t} 单的 diff 干净。`,
+        });
+      }
       if (t % 3 === 0) {
         blocks.push({
           kind: "system",

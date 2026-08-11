@@ -71,14 +71,62 @@ const RUNTIME_TEXT = {
       `〔之前还有约 ${droppedTurns} 段对话，细节略。〕`,
     elided: (droppedBlocks: number) =>
       `〔更早的 ${droppedBlocks} 段记录因篇幅略去〕`,
+    /** Head of a rolled recap trimmed to keep the stored text under the cap
+     *  (self-review 2026-08-11) — see `boundRolledRecap`. */
+    recapHeadElided: "〔更早的回忆因篇幅略去〕",
   },
   en: {
     placeholder: (droppedTurns: number) =>
       `〔About ${droppedTurns} earlier exchanges before this; details omitted.〕`,
     elided: (droppedBlocks: number) =>
       `〔${droppedBlocks} earlier record blocks elided for length〕`,
+    recapHeadElided: "〔earlier recollection elided for length〕",
   },
 } as const;
+
+/**
+ * Join a roll's backstory and addendum under a HARD length bound.
+ *
+ * The mechanical roll (ADR 0035) made the stored recap `prior + addendum`,
+ * which can exceed `maxRecapChars` — and `distrustCachedRecapText` below
+ * discards the WHOLE cache past 2× the cap, on a comment that assumes the
+ * write path never exceeds it. Self-review 2026-08-11 traced the corner
+ * where that fires: a re-derive persistently over the summarizer input
+ * budget downgrades to a roll every crossing, each adding up to a floored
+ * addendum, and ~6 crossings past the first overflow the entire recap is
+ * erased without a word — the amnesia the mechanical roll exists to
+ * prevent, arriving later and all at once.
+ *
+ * So the bound is restored at the write side, and it is stated: whole
+ * leading PARAGRAPHS of the backstory are dropped (the recap is
+ * autobiography prose; a mid-sentence cut would read as corruption) behind
+ * an elision note. This is the backstop, not the plan — the caller also
+ * forces the next crossing to re-derive, which recompresses the full span
+ * properly. Trimming the head keeps the newest memory, which is the half a
+ * later turn is most likely to need.
+ */
+function boundRolledRecap(
+  prev: string,
+  addendum: string,
+  maxChars: number,
+  lang: PromptLang,
+): { text: string; trimmed: boolean } {
+  const joined = `${prev}\n\n${addendum}`;
+  if (joined.length <= maxChars) return { text: joined, trimmed: false };
+  const note = RUNTIME_TEXT[lang].recapHeadElided;
+  const paras = prev.split("\n\n");
+  // Drop leading paragraphs until the whole thing fits (the last paragraph
+  // of the backstory is never dropped here — if even that does not fit, the
+  // fallback below keeps the addendum alone).
+  while (paras.length > 1) {
+    paras.shift();
+    const kept = paras.join("\n\n");
+    if (`${note}\n\n${kept}\n\n${addendum}`.length <= maxChars) {
+      return { text: `${note}\n\n${kept}\n\n${addendum}`, trimmed: true };
+    }
+  }
+  return { text: `${note}\n\n${addendum}`, trimmed: true };
+}
 
 function placeholder(droppedTurns: number, lang: PromptLang): string {
   return RUNTIME_TEXT[lang].placeholder(droppedTurns);
@@ -344,20 +392,24 @@ export async function prepareTurnRecap(
       // to every future prompt, so a summarizer-laundered forged label
       // must be neutralized here, at its last construction point.
       const safe = sanitizeActorText(text, { role: "system-body" });
-      const stored = isRoll ? `${prevRecap}\n\n${safe}` : safe;
+      // The concatenation is bounded at the cap (boundRolledRecap): the read
+      // path discards a cache past 2× the cap outright, so an unbounded write
+      // path would trade one visible trim for a silent total wipe.
+      const bounded = isRoll
+        ? boundRolledRecap(prevRecap, safe, cfg.maxRecapChars, lang)
+        : { text: safe, trimmed: false };
+      const stored = bounded.text;
       rt.consecutiveFailures = 0;
       rt.skippedWhileOpen = 0;
       let advancesSinceRederive = isRederive
         ? 0
         : (cache?.advancesSinceRederive ?? 0) + 1;
-      // A concatenated recap can exceed maxRecapChars by up to one addendum
-      // (the floor above). Force the NEXT crossing to re-derive — it
-      // recompresses the whole span back under the cap. (If that re-derive
-      // is itself over the summarizer input budget it downgrades back to a
-      // roll, and the recap grows by ≤ one floored addendum per crossing —
-      // a pathological span, and even there growth stays slow and bounded
-      // per crossing.)
-      if (isRoll && stored.length > cfg.maxRecapChars) {
+      // A trim means the backstory no longer fits beside its addendum. Force
+      // the NEXT crossing to re-derive — it recompresses the whole span back
+      // under the cap properly, which is the real fix; the trim is only the
+      // backstop for the corner where re-derive can't run (span over the
+      // summarizer input budget → downgrade to a roll every crossing).
+      if (bounded.trimmed) {
         advancesSinceRederive = Math.max(
           advancesSinceRederive,
           cfg.rederiveEveryNAdvances,
