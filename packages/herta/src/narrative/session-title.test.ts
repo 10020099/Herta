@@ -150,6 +150,71 @@ describe("generateSessionTitle", () => {
     expect(t).toBeNull();
   });
 
+  it("with no currentTitle the prompt is byte-identical to the pre-contract one", () => {
+    // Initial titles must not pay for or be biased by an incumbent that
+    // does not exist.
+    const input = { userText: "帮我看报错", hertaText: "在看了" };
+    const frame = buildTitlePrompt(input);
+    expect(frame.stableSystem).not.toContain("当前标题");
+    expect(frame).toEqual(buildTitlePrompt({ ...input }));
+  });
+
+  it("with a currentTitle the system prompt carries the incumbent contract (owner 2026-08-11)", () => {
+    const zh = buildTitlePrompt({
+      userText: "继续",
+      hertaText: "嗯",
+      currentTitle: "排查解析报错",
+    });
+    expect(zh.stableSystem).toContain("当前标题：排查解析报错");
+    expect(zh.stableSystem).toContain("一字不改");
+    const en = buildTitlePrompt({
+      userText: "go on",
+      hertaText: "mm",
+      lang: "en",
+      currentTitle: "Debugging a parser error",
+    });
+    expect(en.stableSystem).toContain(
+      "Current title: Debugging a parser error",
+    );
+    expect(en.stableSystem).toContain("EXACTLY");
+  });
+
+  it("an exact copy of the incumbent survives sanitize — including a `…`-capped one", async () => {
+    // sanitizeTitle strips a trailing `…` (it is in TRAIL_PUNCT), so running
+    // a capped incumbent through it AGAIN returns a DIFFERENT string — and a
+    // "different" title appends a ghost topic tick, which is precisely what
+    // the copy contract exists to prevent.
+    const incumbent = "一二三四五六七八九十一二三四…";
+    const t = await generateSessionTitle(
+      fakeProvider(incumbent),
+      { userText: "x", hertaText: "y", currentTitle: incumbent },
+      ac.signal,
+    );
+    expect(t).toBe(incumbent);
+  });
+
+  it("a quoted copy of a capped incumbent still lands on the incumbent", async () => {
+    // The model wraps its copy in quotes → the exact-match short-circuit
+    // misses → sanitize strips the wrap AND the trailing `…`. The
+    // one-ellipsis-short comparison restores the intent.
+    const incumbent = "一二三四五六七八九十一二三四…";
+    const t = await generateSessionTitle(
+      fakeProvider(`「${incumbent}」`),
+      { userText: "x", hertaText: "y", currentTitle: incumbent },
+      ac.signal,
+    );
+    expect(t).toBe(incumbent);
+  });
+
+  it("a genuinely new title sanitizes normally despite an incumbent", async () => {
+    const t = await generateSessionTitle(
+      fakeProvider("「聊聊午饭」"),
+      { userText: "x", hertaText: "y", currentTitle: "排查解析报错" },
+      ac.signal,
+    );
+    expect(t).toBe("聊聊午饭");
+  });
+
   it("ignores the reasoning chain and reads the title from text-delta", async () => {
     // deepseek-v4-flash is a reasoning model: it streams reasoning-delta
     // before the answer. The title must come only from text-delta.

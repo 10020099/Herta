@@ -1141,7 +1141,10 @@ export function createDemoBridge(
     // instead of a refusal notice for something they could never do here.
     // `pickAttachments` returning null is the same as cancelling the picker.
     pickAttachments: async () => null,
-    attachFiles: async () => ({ ok: false, message: "unavailable in the demo" }),
+    attachFiles: async () => ({
+      ok: false,
+      message: "unavailable in the demo",
+    }),
     removeAttachment: async () => ({ ok: true }),
     pathForFile: () => "",
     getDreamConfig: async () => ({ enabled: true }),

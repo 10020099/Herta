@@ -456,6 +456,68 @@ describe("SessionImpl — title generation", () => {
     expect(readSessionTitle(cfg.transcriptDir, sessionId)).toBe("新标题");
     await session.close();
   });
+
+  it("a re-title shows the model the incumbent title; an exact copy adds no topic tick (owner 2026-08-11)", async () => {
+    // Same-topic re-entry, pre-contract: the model regenerated from scratch
+    // and a PARAPHRASE of the old title counted as a topic change — title
+    // churn plus a ghost tick on the rail. With the incumbent in the prompt,
+    // "still on topic" is expressible as an exact copy, and appendTopic's
+    // exact-match dedup swallows it.
+    const cfg = mkConfig();
+    const sessionId = randomUUID();
+    writeSessionTitle(cfg.transcriptDir, sessionId, "排查解析报错");
+    const systems: string[] = [];
+    const copying: ProviderAdapter = {
+      streamChat(frame: Parameters<ProviderAdapter["streamChat"]>[0]) {
+        systems.push("stableSystem" in frame ? frame.stableSystem : "");
+        return (async function* () {
+          yield {
+            type: "text-delta",
+            text: "排查解析报错",
+          } satisfies ProviderEvent;
+          yield { type: "finish", reason: "stop" } satisfies ProviderEvent;
+        })();
+      },
+    };
+    const session = await mkSession(cfg, sessionId, copying, [
+      { kind: "user", text: "帮我看下解析报错" },
+      { kind: "herta", surface: "speech", text: "看了。" },
+    ] as TerminalRecord);
+    // The sidecar had no topic history — resume synthesizes the first entry.
+    expect(session.topics).toHaveLength(1);
+
+    await session.submitText("还有一处也炸了"); // re-entry re-title
+    await session.whenTitleSettled();
+
+    expect(systems).toHaveLength(1);
+    expect(systems[0]).toContain("当前标题：排查解析报错");
+    expect(systems[0]).toContain("一字不改");
+    // The copy re-derived the same title: kept, and NO second topic entry.
+    expect(session.title).toBe("排查解析报错");
+    expect(session.topics).toHaveLength(1);
+    await session.close();
+  });
+
+  it("the initial title's prompt carries no incumbent contract", async () => {
+    const cfg = mkConfig();
+    const sessionId = randomUUID();
+    const systems: string[] = [];
+    const capturing: ProviderAdapter = {
+      streamChat(frame: Parameters<ProviderAdapter["streamChat"]>[0]) {
+        systems.push("stableSystem" in frame ? frame.stableSystem : "");
+        return (async function* () {
+          yield { type: "text-delta", text: "新标题" } satisfies ProviderEvent;
+          yield { type: "finish", reason: "stop" } satisfies ProviderEvent;
+        })();
+      },
+    };
+    const session = await mkSession(cfg, sessionId, capturing);
+    await session.submitText("hi");
+    await session.whenTitleSettled();
+    expect(systems).toHaveLength(1);
+    expect(systems[0]).not.toContain("当前标题");
+    await session.close();
+  });
 });
 
 describe("buildRecentTitleInput", () => {

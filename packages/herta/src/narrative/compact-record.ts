@@ -290,7 +290,29 @@ function isAttachmentBlock(b: TerminalRecordBlock): b is SystemBlock {
 }
 
 /**
- * Per-block two-state fold for attachment blocks (ADR 0033, corrected).
+ * How many user turns keep an attachment's head excerpt verbatim (State 1)
+ * before it folds to a citation. Counted from the fold ANCHOR — the block
+ * itself, or the most recent user message that names the file — so the drop
+ * turn plus the next two follow-ups all read the head, and naming the file
+ * later re-opens the same window (owner 2026-08-11).
+ */
+export const ATTACHMENT_VERBATIM_USER_TURNS = 3;
+
+/**
+ * How many further user turns a freshly folded citation carries the re-read
+ * hint (`attachmentRereadHint`). The user's follow-up may not name the file,
+ * and Herta's only route back to the body is a 板砖 dispatch — for a few
+ * turns after the fold the harness says so under the citation, then the
+ * hint expires and the bare citation remains (owner 2026-08-11: "like the
+ * meta-think parts — and completely remove the hint after N turns").
+ */
+export const ATTACHMENT_HINT_USER_TURNS = 3;
+
+/** The attachment projection's three states — see foldAttachmentForPrompt. */
+type AttachmentFoldState = "verbatim" | "citation-hint" | "citation";
+
+/**
+ * Per-block two-state fold for attachment blocks (ADR 0033, amended §6g).
  *
  * The run-compaction below CANNOT give attachments the "verbatim in its own
  * turn, a citation forever after" lifecycle, because it only folds runs of
@@ -299,15 +321,40 @@ function isAttachmentBlock(b: TerminalRecordBlock): b is SystemBlock {
  * ALONE between a herta block and the user's next message, and a run of one
  * passes through verbatim — which would keep the document's head excerpt in
  * every subsequent prompt of the session. The two-state lane has to be
- * per-block here, keyed exactly like the done-marker's: has Herta SPOKEN
- * since?
+ * per-block here.
  *
- *   State 1 (no speech after the block): verbatim — she is reading the head
- *   in the turn that responds to it.
- *   State 2 (some speech follows): the head is dropped and the body says so
+ * The original key was the done-marker's — one speech after the block ends
+ * State 1. That protected against fabricated quotes after the conversation
+ * moved on, but punished the conversation that STAYED on the document: the
+ * user's first follow-up question already found the head gone, and Herta's
+ * only honest paths were a 板砖 re-read or answering from her own prior
+ * commentary — the confabulation hazard the fold exists to prevent, created
+ * by it (owner 2026-08-11). The key is now a record-structural window:
+ *
+ *   State 1 (verbatim) while EITHER
+ *     - Herta has not SPOKEN since the block (she is reading the head in the
+ *       turn that responds to it — same speech-only rule as the done-marker,
+ *       audit 2026-07-24 1.10: a （我 想） must not flip it), OR
+ *     - fewer than ATTACHMENT_VERBATIM_USER_TURNS user messages follow the
+ *       fold anchor. The anchor starts at the block and MOVES to the most
+ *       recent user message whose text names the file (case-insensitive
+ *       substring of the display name) — returning to the document re-opens
+ *       the window, and the window can expire again after it.
+ *   State 2 (both exhausted): the head is dropped and the body says so
  *   (`· 正文已略去`), leaving the citation. "I was shown this" and "I can
  *   still read this" stay two distinguishable states — the same
- *   fabricated-quote hazard the excerpt digest documents.
+ *   fabricated-quote hazard the excerpt digest documents. For the first
+ *   ATTACHMENT_HINT_USER_TURNS turns of this state the citation carries a
+ *   second line — the re-read hint — because the follow-up that needs the
+ *   body back may not name the file, and her only route to it is a 板砖
+ *   dispatch; the hint then expires (State 3, the bare citation), so an old
+ *   attachment does not nudge every later turn toward a dispatch.
+ *
+ * Deliberately NOT wall-clock ("keep it while the conversation continues
+ * without a long break" was the first proposal): every fold decision here is
+ * a pure function of the record, so the same record always builds the same
+ * prompt — reopening a session later must not change what Herta can read
+ * (recap cache keying, rewind, and the labs all assume this).
  *
  * An unreadable attachment has no detail to drop and its body already says
  * why; appending an elision note would claim a body that never existed, so it
@@ -315,18 +362,69 @@ function isAttachmentBlock(b: TerminalRecordBlock): b is SystemBlock {
  */
 function foldAttachmentForPrompt(
   block: SystemBlock,
-  spokenSince: boolean,
+  state: AttachmentFoldState,
   lang: PromptLang,
 ): SystemBlock {
-  if (!spokenSince) return block;
+  if (state === "verbatim") return block;
+  // No detail means nothing was ever elided — unreadable and removed blocks
+  // pass through unchanged, and the hint stays away too: for `removed` the
+  // file is gone from disk, so inviting a re-read would be a lie.
   if (block.evidenceDetail === undefined || block.evidenceDetail.length === 0) {
     return block;
   }
   const { evidenceDetail: _dropped, ...rest } = block;
+  const text = COMPACTION_TEXT[lang];
+  const hint =
+    state === "citation-hint" ? `\n${text.attachmentRereadHint}` : "";
   return {
     ...rest,
-    body: `${block.body} · ${COMPACTION_TEXT[lang].excerptElided}`,
+    body: `${block.body} · ${text.excerptElided}${hint}`,
   };
+}
+
+/**
+ * Decide the fold state for the attachment block at `idx`. Fold only when
+ * Herta has spoken since AND the user-turn window past the anchor is
+ * exhausted; a fresh fold carries the re-read hint for a further
+ * ATTACHMENT_HINT_USER_TURNS turns — see `foldAttachmentForPrompt` for the
+ * full contract.
+ */
+function attachmentFoldDecision(
+  record: TerminalRecord,
+  idx: number,
+  block: SystemBlock,
+  lastSpeechIdx: number,
+  userIdxs: readonly number[],
+): AttachmentFoldState {
+  if (idx >= lastSpeechIdx) return "verbatim";
+  // Anchor: the most recent user message after the block that names the
+  // file, else the block itself. The display name always carries its
+  // extension (`spec.md`), so a bare-word collision ("spec") cannot re-open
+  // the window by accident.
+  const name =
+    block.digest?.kind === "attachment" ? block.digest.name : undefined;
+  let anchor = idx;
+  if (name !== undefined && name.length > 0) {
+    const needle = name.toLowerCase();
+    for (let k = userIdxs.length - 1; k >= 0; k--) {
+      const ui = userIdxs[k];
+      if (ui === undefined || ui <= idx) break;
+      const ub = record[ui];
+      if (ub?.kind === "user" && ub.text.toLowerCase().includes(needle)) {
+        anchor = ui;
+        break;
+      }
+    }
+  }
+  let turnsAfterAnchor = 0;
+  for (const ui of userIdxs) {
+    if (ui > anchor) turnsAfterAnchor += 1;
+  }
+  if (turnsAfterAnchor < ATTACHMENT_VERBATIM_USER_TURNS) return "verbatim";
+  return turnsAfterAnchor <
+    ATTACHMENT_VERBATIM_USER_TURNS + ATTACHMENT_HINT_USER_TURNS
+    ? "citation-hint"
+    : "citation";
 }
 
 export function compactRecordForPrompt(
@@ -336,11 +434,11 @@ export function compactRecordForPrompt(
   const minRunSize = opts?.minRunSize ?? 2;
   const lang = opts?.lang ?? "zh";
 
-  // The newest herta SPEECH bounds the attachment folds: an attachment block
-  // BEFORE it has been responded to (State 2); one after it has not. Same
-  // speech-only rule as the done-marker walk below and for the same reason
-  // (audit 2026-07-24, 1.10) — a （我 想） committed after the block must not
-  // flip it.
+  // The newest herta SPEECH lower-bounds the attachment folds: a block she
+  // has not yet responded to stays verbatim regardless of the user-turn
+  // window. Same speech-only rule as the done-marker walk below and for the
+  // same reason (audit 2026-07-24, 1.10) — a （我 想） committed after the
+  // block must not flip it.
   let lastSpeechIdx = -1;
   for (let k = record.length - 1; k >= 0; k--) {
     const b = record[k];
@@ -349,6 +447,14 @@ export function compactRecordForPrompt(
       break;
     }
   }
+
+  // User-block indices, in order — the attachment fold's window and anchor
+  // search both count these (attachmentFoldDecision). Collected once; empty
+  // when the record has no attachments to spend it on is still cheap.
+  const userIdxs: number[] = [];
+  record.forEach((b, k) => {
+    if (b.kind === "user") userIdxs.push(k);
+  });
 
   // Done-marker two-state lifecycle: find the last done-marker; the verdict
   // is "spoken" if any herta block appears after it. In State 1 (verdict turn,
@@ -401,7 +507,13 @@ export function compactRecordForPrompt(
       // one into a `[历史已压缩 · 板砖]` summary would file the user's own
       // document under 板砖's name. Each carries its own two-state fold.
       if (isAttachmentBlock(current)) {
-        output.push(foldAttachmentForPrompt(current, i < lastSpeechIdx, lang));
+        output.push(
+          foldAttachmentForPrompt(
+            current,
+            attachmentFoldDecision(record, i, current, lastSpeechIdx, userIdxs),
+            lang,
+          ),
+        );
         i += 1;
         continue;
       }

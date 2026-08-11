@@ -941,32 +941,155 @@ describe("attachment blocks — per-block two-state fold (ADR 0033)", () => {
     expect(kept?.body).not.toContain("正文已略去");
   });
 
-  it("State 2 — speech follows: the head is dropped and the body says so", () => {
-    const out = compactRecordForPrompt([
+  it("State 1 spans the drop turn plus two follow-ups; the third folds it (§6g window)", () => {
+    // The one-speech key punished the conversation that STAYED on the
+    // document: the first follow-up already found the head gone, and Herta's
+    // honest paths were a 板砖 re-read or answering from her own commentary —
+    // the confabulation hazard the fold exists to prevent (owner 2026-08-11).
+    const withinWindow = compactRecordForPrompt([
       attachment,
       { kind: "user", text: "看看这份" },
       { kind: "herta", surface: "speech", text: "看完了，一般。" },
       { kind: "user", text: "第三章呢？" },
     ]);
-    const folded = sys(out)[0];
+    // Two user turns since the block — she can still read the head while
+    // answering the follow-up.
+    expect(sys(withinWindow)[0]?.evidenceDetail).toContain(
+      "CONFIDENTIAL-HEAD-LINE",
+    );
+
+    const exhausted = compactRecordForPrompt([
+      attachment,
+      { kind: "user", text: "看看这份" },
+      { kind: "herta", surface: "speech", text: "看完了，一般。" },
+      { kind: "user", text: "第三章呢？" },
+      { kind: "herta", surface: "speech", text: "论证太松。" },
+      { kind: "user", text: "换个话题吧" },
+    ]);
+    const folded = sys(exhausted)[0];
     expect(folded?.evidenceDetail).toBeUndefined();
     expect(folded?.body).toContain("正文已略去");
     // The citation survives whole — she still knows what and where it is.
     expect(folded?.body).toContain("spec.md");
     expect(folded?.body).toContain(".herta/attachments/s1/spec.md");
-    expect(JSON.stringify(out)).not.toContain("CONFIDENTIAL-HEAD-LINE");
+    expect(JSON.stringify(exhausted)).not.toContain("CONFIDENTIAL-HEAD-LINE");
   });
 
-  it("a thought after the block does not fold it (speech-only rule)", () => {
+  it("no speech since the block keeps it verbatim even past the window (speech lower bound)", () => {
     // Same rule as the done-marker (audit 2026-07-24, 1.10): the mood-routed
     // path commits a （我 想） before the responding speech, and that thought
-    // must not strip the head from the very prompt that generates the reply.
+    // must not strip the head from the very prompt that generates the reply —
+    // however many user messages have piled up unanswered.
     const out = compactRecordForPrompt([
       attachment,
       { kind: "user", text: "看看这份" },
       { kind: "herta", surface: "thought", text: "先扫一眼。" },
+      { kind: "user", text: "在吗" },
+      { kind: "user", text: "？" },
+      { kind: "user", text: "喂" },
     ]);
     expect(sys(out)[0]?.evidenceDetail).toContain("CONFIDENTIAL-HEAD-LINE");
+  });
+
+  it("a fresh fold carries the re-read hint; the hint expires after N more turns (§6g)", () => {
+    // The follow-up that needs the body back may not name the file, and
+    // Herta's only route to it is a 板砖 dispatch — so the citation says so
+    // for a few turns (owner 2026-08-11), then stops nudging.
+    const exchanges = (n: number): TerminalRecordBlock[] =>
+      Array.from({ length: n }, (_, k) => [
+        { kind: "user", text: `第 ${k} 句` } as TerminalRecordBlock,
+        {
+          kind: "herta",
+          surface: "speech",
+          text: "嗯。",
+        } as TerminalRecordBlock,
+      ]).flat();
+
+    // 3 user turns past the block — just folded, hint attached.
+    const fresh = compactRecordForPrompt([attachment, ...exchanges(3)]);
+    const freshBody = sys(fresh)[0]?.body ?? "";
+    expect(freshBody).toContain("正文已略去");
+    expect(freshBody).toContain("需要时可派板砖重读");
+    expect(sys(fresh)[0]?.evidenceDetail).toBeUndefined();
+
+    // 5 user turns — last hinted prompt.
+    const lastHinted = compactRecordForPrompt([attachment, ...exchanges(5)]);
+    expect(sys(lastHinted)[0]?.body).toContain("需要时可派板砖重读");
+
+    // 6 user turns — the hint expires; the bare citation remains.
+    const expired = compactRecordForPrompt([attachment, ...exchanges(6)]);
+    const expiredBody = sys(expired)[0]?.body ?? "";
+    expect(expiredBody).toContain("正文已略去");
+    expect(expiredBody).not.toContain("板砖重读");
+  });
+
+  it("naming the file re-opens the window, which can expire again (§6g re-inflate)", () => {
+    const base: TerminalRecord = [
+      attachment,
+      { kind: "user", text: "看看这份" },
+      { kind: "herta", surface: "speech", text: "看完了。" },
+      { kind: "user", text: "聊点别的" },
+      { kind: "herta", surface: "speech", text: "行。" },
+      { kind: "user", text: "今天天气不错" },
+      { kind: "herta", surface: "speech", text: "嗯。" },
+    ];
+    // Window exhausted (3 user turns past the block, speech since) — folded.
+    expect(
+      sys(compactRecordForPrompt(base))[0]?.evidenceDetail,
+    ).toBeUndefined();
+
+    // A later user message naming the file (case-insensitively) moves the
+    // anchor there: the head is back in front of her for the return turn…
+    const returned: TerminalRecord = [
+      ...base,
+      { kind: "user", text: "回到 SPEC.md，第二段那个论点站得住吗" },
+    ];
+    expect(sys(compactRecordForPrompt(returned))[0]?.evidenceDetail).toContain(
+      "CONFIDENTIAL-HEAD-LINE",
+    );
+
+    // …and the re-opened window expires the same way the first one did.
+    const drifted: TerminalRecord = [
+      ...returned,
+      { kind: "herta", surface: "speech", text: "站不住。" },
+      { kind: "user", text: "好吧" },
+      { kind: "herta", surface: "speech", text: "嗯。" },
+      { kind: "user", text: "午饭吃什么" },
+      { kind: "herta", surface: "speech", text: "随你。" },
+      { kind: "user", text: "走了" },
+    ];
+    expect(
+      sys(compactRecordForPrompt(drifted))[0]?.evidenceDetail,
+    ).toBeUndefined();
+  });
+
+  it("a reference re-opens only ITS file's window", () => {
+    const second: SystemBlock = {
+      ...attachment,
+      body: "附件 notes.md · 10 行 · 200 字 · .herta/attachments/s1/notes.md",
+      evidenceDetail: "↳ 附件 notes.md\nSECOND-HEAD-LINE",
+      digest: {
+        kind: "attachment",
+        name: "notes.md",
+        path: ".herta/attachments/s1/notes.md",
+        lines: 10,
+        chars: 200,
+      },
+    };
+    const out = compactRecordForPrompt([
+      attachment,
+      second,
+      { kind: "user", text: "都看看" },
+      { kind: "herta", surface: "speech", text: "看了。" },
+      { kind: "user", text: "嗯" },
+      { kind: "herta", surface: "speech", text: "。" },
+      { kind: "user", text: "好" },
+      { kind: "herta", surface: "speech", text: "。" },
+      { kind: "user", text: "notes.md 里第三条再说说" },
+    ]);
+    const s = JSON.stringify(out);
+    expect(s).toContain("SECOND-HEAD-LINE");
+    expect(s).not.toContain("CONFIDENTIAL-HEAD-LINE");
   });
 
   it("an unreadable attachment never gains an elision note", () => {
@@ -989,7 +1112,12 @@ describe("attachment blocks — per-block two-state fold (ADR 0033)", () => {
       unreadable,
       { kind: "user", text: "这个呢" },
       { kind: "herta", surface: "speech", text: "读不了。" },
+      { kind: "user", text: "哦" },
+      { kind: "herta", surface: "speech", text: "。" },
+      { kind: "user", text: "行吧" },
     ]);
+    // Window exhausted AND spoken since — deep in State 2 territory, and the
+    // body still must not claim an elided body that never existed.
     expect(sys(out)[0]?.body).toBe(unreadable.body);
   });
 
@@ -1015,6 +1143,10 @@ describe("attachment blocks — per-block two-state fold (ADR 0033)", () => {
       second,
       { kind: "user", text: "都看看" },
       { kind: "herta", surface: "speech", text: "看了。" },
+      { kind: "user", text: "嗯" },
+      { kind: "herta", surface: "speech", text: "。" },
+      { kind: "user", text: "好" },
+      { kind: "herta", surface: "speech", text: "。" },
     ]);
     const s = JSON.stringify(out);
     expect(s).not.toContain("历史已压缩");
@@ -1041,6 +1173,9 @@ describe("attachment blocks — per-block two-state fold (ADR 0033)", () => {
       },
       { kind: "user", text: "继续" },
       { kind: "herta", surface: "speech", text: "行。" },
+      { kind: "user", text: "然后呢" },
+      { kind: "herta", surface: "speech", text: "在做。" },
+      { kind: "user", text: "好" },
     ]);
     const s = JSON.stringify(out);
     // The dispatch pair still compacts; the attachment folded on its own.
@@ -1055,9 +1190,15 @@ describe("attachment blocks — per-block two-state fold (ADR 0033)", () => {
         attachment,
         { kind: "user", text: "read it" },
         { kind: "herta", surface: "speech", text: "done." },
+        { kind: "user", text: "ok" },
+        { kind: "herta", surface: "speech", text: "." },
+        { kind: "user", text: "next" },
       ],
       { lang: "en" },
     );
     expect(sys(out)[0]?.body).toContain("body elided");
+    // The fresh fold's hint localizes too (板砖 stays literal per ADR 0015 —
+    // display alias only).
+    expect(sys(out)[0]?.body).toContain("send 板砖 to re-read");
   });
 });

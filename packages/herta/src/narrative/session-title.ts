@@ -34,6 +34,17 @@ const TITLE_TEXT = {
     ].join("\n"),
     userLabel: "【开拓者】",
     hertaLabel: "【黑塔】",
+    /** Incumbent-title contract (owner 2026-08-11): shown the current title,
+     *  the model can express "still the same topic" as an exact copy — which
+     *  the caller's exact-match dedup then swallows. Without this, a
+     *  same-topic re-entry regenerated from scratch and a PARAPHRASE of the
+     *  old title counted as a topic change: title churn plus a ghost tick on
+     *  the topic rail. */
+    incumbent: (title: string) =>
+      [
+        `当前标题：${title}`,
+        "如果下面的对话仍然在聊当前标题概括的主题，请一字不改地原样输出当前标题；只有当话题确实变了，才生成新标题。",
+      ].join("\n"),
   },
   en: {
     system: [
@@ -55,6 +66,11 @@ const TITLE_TEXT = {
     ].join("\n"),
     userLabel: "[Trailblazer] ",
     hertaLabel: "[Herta] ",
+    incumbent: (title: string) =>
+      [
+        `Current title: ${title}`,
+        "If the conversation below is still about the topic the current title describes, output the current title EXACTLY as given, character for character. Only produce a new title when the topic has genuinely changed.",
+      ].join("\n"),
   },
 } as const;
 
@@ -110,6 +126,12 @@ export function buildTitlePrompt(input: {
   hertaText: string;
   /** Language of the instruction prose and generated title. Default "zh". */
   readonly lang?: PromptLang;
+  /** The session's current title, when it has one. Appends the incumbent
+   *  contract to the system prompt — "copy it exactly if still on topic" —
+   *  so same-topic retitles converge to a fixed point instead of churning
+   *  through paraphrases. Absent (initial title): prompt byte-identical to
+   *  before the contract existed. */
+  readonly currentTitle?: string;
 }): ActorPromptFrame {
   const text = TITLE_TEXT[input.lang ?? "zh"];
   // escapeUserText on BOTH sides (audit 2026-07-13 T2.5): this was the one
@@ -117,9 +139,16 @@ export function buildTitlePrompt(input: {
   // sanitizeTitle + 14-char cap, output never re-enters the actor prompt),
   // but a forged block marker in either text has no business reaching ANY
   // model as structure. Idempotent over already-sanitized Herta speech.
+  // The incumbent title passed through sanitizeTitle when it was made
+  // (display-unsafe stripped, ≤ MAX_LEN), and escapeUserText again here —
+  // same hygiene, same reasoning.
   const user = `${text.userLabel}${escapeUserText(input.userText)}\n${text.hertaLabel}${escapeUserText(input.hertaText)}`;
+  const system =
+    input.currentTitle === undefined
+      ? text.system
+      : `${text.system}\n\n${text.incumbent(escapeUserText(input.currentTitle))}`;
   return {
-    stableSystem: text.system,
+    stableSystem: system,
     repoInstructions: "",
     memoryContext: "",
     retrievedLore: "",
@@ -168,7 +197,12 @@ export function sanitizeTitle(
  */
 export async function generateSessionTitle(
   provider: ProviderAdapter,
-  input: { userText: string; hertaText: string; readonly lang?: PromptLang },
+  input: {
+    userText: string;
+    hertaText: string;
+    readonly lang?: PromptLang;
+    readonly currentTitle?: string;
+  },
   signal: AbortSignal,
 ): Promise<string | null> {
   const frame = buildTitlePrompt(input);
@@ -181,5 +215,24 @@ export async function generateSessionTitle(
   } catch {
     return null;
   }
-  return sanitizeTitle(buffered, input.lang ?? "zh");
+  // An exact copy of the incumbent skips sanitizeTitle: the incumbent already
+  // passed it once, and running it AGAIN is not a no-op — a title that ended
+  // with the cap's `…` would lose it to the trailing-punctuation strip, so
+  // "copied exactly" would come back as a DIFFERENT string, defeating the
+  // dedup the copy exists to hit.
+  if (input.currentTitle !== undefined) {
+    const copied = stripDisplayUnsafe(buffered).replace(/\s+/g, " ").trim();
+    if (copied === input.currentTitle) return input.currentTitle;
+  }
+  const sanitized = sanitizeTitle(buffered, input.lang ?? "zh");
+  // Same trap one step later: a faithful copy of a `…`-capped incumbent that
+  // survives to sanitize comes back one ellipsis short. Restore the intent.
+  if (
+    sanitized !== null &&
+    input.currentTitle !== undefined &&
+    `${sanitized}…` === input.currentTitle
+  ) {
+    return input.currentTitle;
+  }
+  return sanitized;
 }

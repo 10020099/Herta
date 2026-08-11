@@ -45,6 +45,13 @@ export const COMPACTION_TEXT = {
       denied: "涉及密钥或凭据，已拒收",
       removed: "开拓者已移除",
     },
+    /** Second line under a freshly folded attachment citation (ADR 0033
+     *  §6g): the user's follow-up may not name the file, so for a few turns
+     *  after the fold the harness reminds Herta that "elided" is not "gone" —
+     *  the document is still on disk and 板砖 can re-read it. Prompt-only
+     *  scaffolding, same register as the meta-think anchors; it expires so an
+     *  old attachment does not carry a standing nudge forever. */
+    attachmentRereadHint: "（正文仍在磁盘上，需要时可派板砖重读）",
     /** Digest of a `role: "noop-marker"` block. */
     noOutput: "（板砖无产出）",
     /** Footer replacing the tail of an over-long ```diff fence. */
@@ -62,6 +69,8 @@ export const COMPACTION_TEXT = {
       denied: "credential-shaped, refused",
       removed: "withdrawn by the Trailblazer",
     },
+    attachmentRereadHint:
+      "(the full text is still on disk — send 板砖 to re-read it if needed)",
     noOutput: "(板砖 produced nothing)",
     diffSuppressed: (suppressed: number) =>
       `… (${suppressed} more lines suppressed — full diff in evidence)`,

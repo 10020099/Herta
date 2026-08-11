@@ -1308,7 +1308,16 @@ export class SessionImpl implements Session {
       if (input === null) return;
       const title = await generateSessionTitle(
         this.titleProvider,
-        { ...input, lang: this.lang },
+        {
+          ...input,
+          lang: this.lang,
+          // Incumbent-title contract (owner 2026-08-11): a re-title that sees
+          // the current title can say "still on topic" by copying it exactly,
+          // which appendTopic's exact-match dedup then swallows — no churn,
+          // no ghost topic tick on a same-topic re-entry. Absent on the
+          // initial title (nothing to keep).
+          ...(this._title !== null ? { currentTitle: this._title } : {}),
+        },
         this.titleAbort.signal,
       );
       if (title === null) return;
