@@ -411,22 +411,59 @@ const MIN_REFERENCE_NAME_LEN = 3;
  * one filename sitting inside another: `report.md` is a suffix of
  * `final-report.md`, so naming the long file re-inflated the short one too.
  * A match counts only when neither flank is a filename character.
+ *
+ * The flank class cannot carry CJK names — the SECOND review round caught
+ * that the fix above held for Latin and silently failed for the product's
+ * primary case: `报告.md` inside `年度报告.md` has flank `度`, which is not
+ * a "filename character", so the boundary test passed. And the class cannot
+ * simply grow CJK, because prose-flank and name-interior-flank are locally
+ * indistinguishable in a spaceless script — `回到报告.md` (a legitimate
+ * reference) has exactly the same shape. What disambiguates is knowledge the
+ * character class does not have: the OTHER attachments' names. A match lying
+ * inside an occurrence of a longer SIBLING attachment's name is that
+ * sibling's reference, not this file's — and both-files-attached is
+ * precisely how the collision arises. `longerSiblings` carries the record's
+ * attachment names that strictly contain `needle`; a match covered by one is
+ * skipped. Residual, accepted and documented: a longer CJK name that is NOT
+ * itself an attachment still collides (`新版质检报告.md` mentioned in prose
+ * while only `质检报告.md` was attached) — the cost is one spurious
+ * re-inflated head, and the alternative (suppressing CJK-flank matches
+ * outright) would break every spaceless CJK prose reference.
  */
-function mentionsFile(text: string, needle: string): boolean {
+function mentionsFile(
+  text: string,
+  needle: string,
+  longerSiblings: readonly string[],
+): boolean {
   if (needle.length < MIN_REFERENCE_NAME_LEN) return false;
   for (let from = 0; ; ) {
     const at = text.indexOf(needle, from);
     if (at === -1) return false;
+    from = at + 1;
     const before = at > 0 ? text.charAt(at - 1) : "";
     const after =
       at + needle.length < text.length ? text.charAt(at + needle.length) : "";
     if (
-      (before === "" || !FILENAME_CHAR.test(before)) &&
-      (after === "" || !FILENAME_CHAR.test(after))
+      (before !== "" && FILENAME_CHAR.test(before)) ||
+      (after !== "" && FILENAME_CHAR.test(after))
     ) {
-      return true;
+      continue;
     }
-    from = at + 1;
+    // Sibling containment: is this occurrence inside a longer attachment
+    // name present at the covering position in the text?
+    let covered = false;
+    for (const sib of longerSiblings) {
+      for (
+        let inSib = sib.indexOf(needle);
+        inSib !== -1 && !covered;
+        inSib = sib.indexOf(needle, inSib + 1)
+      ) {
+        const sibStart = at - inSib;
+        if (sibStart >= 0 && text.startsWith(sib, sibStart)) covered = true;
+      }
+      if (covered) break;
+    }
+    if (!covered) return true;
   }
 }
 
@@ -443,20 +480,27 @@ function attachmentFoldDecision(
   block: SystemBlock,
   lastSpeechIdx: number,
   userIdxs: readonly number[],
+  attachmentNames: readonly string[],
 ): AttachmentFoldState {
   if (idx >= lastSpeechIdx) return "verbatim";
   // Anchor: the most recent user message after the block that REFERENCES the
-  // file (boundary-checked — see mentionsFile), else the block itself.
+  // file (boundary + sibling-checked — see mentionsFile), else the block.
   const name =
     block.digest?.kind === "attachment" ? block.digest.name : undefined;
   let anchor = idx;
   if (name !== undefined && name.length > 0) {
     const needle = name.toLowerCase();
+    const longerSiblings = attachmentNames.filter(
+      (n) => n.length > needle.length && n.includes(needle),
+    );
     for (let k = userIdxs.length - 1; k >= 0; k--) {
       const ui = userIdxs[k];
       if (ui === undefined || ui <= idx) break;
       const ub = record[ui];
-      if (ub?.kind === "user" && mentionsFile(ub.text.toLowerCase(), needle)) {
+      if (
+        ub?.kind === "user" &&
+        mentionsFile(ub.text.toLowerCase(), needle, longerSiblings)
+      ) {
         anchor = ui;
         break;
       }
@@ -534,6 +578,16 @@ export function compactRecordForPrompt(
   record.forEach((b, k) => {
     if (b.kind === "user") userIdxs.push(k);
   });
+
+  // Every attachment display name in the record (lowercased) — the sibling
+  // set mentionsFile uses to keep a short name from matching inside a longer
+  // sibling's occurrence (the CJK-flank collision the boundary class cannot
+  // see).
+  const attachmentNames = record
+    .filter(isAttachmentBlock)
+    .map((b) => (b.digest?.kind === "attachment" ? b.digest.name : ""))
+    .filter((n) => n.length > 0)
+    .map((n) => n.toLowerCase());
 
   // Done-marker two-state lifecycle: find the last done-marker; the verdict
   // is "spoken" if any herta block appears after it. In State 1 (verdict turn,
@@ -613,7 +667,14 @@ export function compactRecordForPrompt(
         output.push(
           foldAttachmentForPrompt(
             current,
-            attachmentFoldDecision(record, i, current, lastSpeechIdx, userIdxs),
+            attachmentFoldDecision(
+              record,
+              i,
+              current,
+              lastSpeechIdx,
+              userIdxs,
+              attachmentNames,
+            ),
             lang,
           ),
         );

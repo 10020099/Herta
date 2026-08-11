@@ -85,7 +85,10 @@ const RUNTIME_TEXT = {
 } as const;
 
 /**
- * Join a roll's backstory and addendum under a HARD length bound.
+ * Join a roll's backstory and addendum under a length bound that is hard in
+ * every case but one: a single addendum paragraph larger than the cap passes
+ * through (bounded by validation at ≤ its stated budget +400 — always under
+ * the read path's 2× discard threshold, which is the cliff that matters).
  *
  * The mechanical roll (ADR 0035) made the stored recap `prior + addendum`,
  * which can exceed `maxRecapChars` — and `distrustCachedRecapText` below
@@ -115,9 +118,9 @@ function boundRolledRecap(
   if (joined.length <= maxChars) return { text: joined, trimmed: false };
   const note = RUNTIME_TEXT[lang].recapHeadElided;
   const paras = prev.split("\n\n");
-  // Drop leading paragraphs until the whole thing fits (the last paragraph
-  // of the backstory is never dropped here — if even that does not fit, the
-  // fallback below keeps the addendum alone).
+  // Drop leading backstory paragraphs until the whole thing fits (the last
+  // backstory paragraph is never dropped in THIS loop — if even that does
+  // not fit, the addendum-side trim below takes over).
   while (paras.length > 1) {
     paras.shift();
     const kept = paras.join("\n\n");
@@ -125,7 +128,23 @@ function boundRolledRecap(
       return { text: `${note}\n\n${kept}\n\n${addendum}`, trimmed: true };
     }
   }
-  return { text: `${note}\n\n${addendum}`, trimmed: true };
+  // Backstory exhausted and the addendum alone still does not fit beside the
+  // note (reachable: validation admits an addendum up to its stated budget
+  // +400, and the budget can be ~the whole cap when the backstory was tiny).
+  // Round-2 review: the first cut returned the over-cap join here while the
+  // function's own doc claimed a hard bound. Trim the addendum's LEADING
+  // paragraphs — the same oldest-goes-first rule as the backstory trim, so
+  // what survives is the newest tail. The single-paragraph residual below is
+  // the one soft spot left, and it is bounded by validation at ≤ budget+400
+  // — always < 2× maxChars, so the read path's discard threshold stays
+  // unreachable either way.
+  const aParas = addendum.split("\n\n");
+  while (aParas.length > 1) {
+    aParas.shift();
+    const kept = `${note}\n\n${aParas.join("\n\n")}`;
+    if (kept.length <= maxChars) return { text: kept, trimmed: true };
+  }
+  return { text: `${note}\n\n${aParas[0] ?? ""}`, trimmed: true };
 }
 
 function placeholder(droppedTurns: number, lang: PromptLang): string {

@@ -1351,6 +1351,66 @@ describe("attachment blocks — per-block two-state fold (ADR 0033)", () => {
     expect(JSON.stringify(real)).toContain("TINY-HEAD");
   });
 
+  it("a CJK filename inside a longer SIBLING attachment's name does not re-open it (round-2 review)", () => {
+    // The boundary class [A-Za-z0-9._-] carries Latin names only: 报告.md
+    // inside 年度报告.md has flank 度 — not a "filename character" — so the
+    // round-1 fix passed it. The class cannot grow CJK (回到报告.md is a
+    // legitimate spaceless reference with the same local shape); what
+    // disambiguates is the record's OWN attachment list — a match covered by
+    // a longer sibling's occurrence belongs to the sibling.
+    const short: SystemBlock = {
+      ...attachment,
+      body: "附件 报告.md · 10 行",
+      evidenceDetail: "↳ 附件 报告.md\nCJK-SHORT-HEAD",
+      digest: {
+        kind: "attachment",
+        name: "报告.md",
+        path: ".herta/attachments/s1/报告.md",
+        lines: 10,
+        chars: 200,
+      },
+    };
+    const long: SystemBlock = {
+      ...attachment,
+      body: "附件 年度报告.md · 10 行",
+      evidenceDetail: "↳ 附件 年度报告.md\nCJK-LONG-HEAD",
+      digest: {
+        kind: "attachment",
+        name: "年度报告.md",
+        path: ".herta/attachments/s1/年度报告.md",
+        lines: 10,
+        chars: 200,
+      },
+    };
+    const drift: TerminalRecordBlock[] = [
+      { kind: "user", text: "都看看" },
+      { kind: "herta", surface: "speech", text: "看了。" },
+      { kind: "user", text: "嗯" },
+      { kind: "herta", surface: "speech", text: "。" },
+      { kind: "user", text: "好" },
+      { kind: "herta", surface: "speech", text: "。" },
+    ];
+    const named = compactRecordForPrompt([
+      short,
+      long,
+      ...drift,
+      { kind: "user", text: "年度报告.md 第三条再说说" },
+    ]);
+    const s = JSON.stringify(named);
+    expect(s).toContain("CJK-LONG-HEAD"); // the sibling that was named
+    expect(s).not.toContain("CJK-SHORT-HEAD"); // not the name inside it
+
+    // …while a spaceless CJK prose reference to the SHORT name still lands —
+    // the sibling only covers matches at ITS OWN occurrences.
+    const prose = compactRecordForPrompt([
+      short,
+      long,
+      ...drift,
+      { kind: "user", text: "回到报告.md，第二段怎么说" },
+    ]);
+    expect(JSON.stringify(prose)).toContain("CJK-SHORT-HEAD");
+  });
+
   it("a reference re-opens only ITS file's window", () => {
     const second: SystemBlock = {
       ...attachment,

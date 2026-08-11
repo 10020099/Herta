@@ -244,6 +244,34 @@ describe("prepareTurnRecap", () => {
     expect(getCache()).toMatchObject({ advancesSinceRederive: 2 });
   });
 
+  it("an oversized multi-paragraph addendum against a one-paragraph backstory still lands under the cap (round-2)", async () => {
+    // Round-1's fallback returned note+addendum UNTRIMMED here — over the cap
+    // while the function's doc claimed a hard bound. The addendum's leading
+    // paragraphs now trim like the backstory's did: oldest first, newest tail
+    // survives.
+    const { rt } = makeRT({
+      cache: {
+        boundaryIndex: 2,
+        recapText: "唯一的一段旧回忆",
+        lang: "zh",
+        advancesSinceRederive: 1,
+      },
+      // Three addendum paragraphs, ~900 chars total — over the 800 cap even
+      // with the backstory fully dropped.
+      summarizeText: [
+        `旧段${"甲".repeat(280)}`,
+        `中段${"乙".repeat(280)}`,
+        `新段${"丙".repeat(280)}`,
+      ].join("\n\n"),
+    });
+    const res = await prepareTurnRecap(manyTurns(5), PREFIX, rt, false, SIGNAL);
+    const stored = res.recap ?? "";
+    expect(stored.length).toBeLessThanOrEqual(TIGHT.maxRecapChars);
+    expect(stored).toContain("更早的回忆因篇幅略去");
+    expect(stored).toContain("新段"); // newest tail survives
+    expect(stored).not.toContain("旧段"); // oldest addendum paragraph went
+  });
+
   it("the stored recap never crosses the read path's discard threshold", async () => {
     // The failure this bounds: distrustCachedRecapText drops the ENTIRE cache
     // over 2× the cap. Roll repeatedly against a cache that keeps growing and
