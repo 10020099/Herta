@@ -328,6 +328,26 @@ export type EvidenceSection =
       readonly items: readonly string[];
     }
   | {
+      /** The done-marker's evidence roll-up (`↳ 依据:`) — the backend's own
+       *  structured findings (`AgentExecutionReport.evidence`), one summary
+       *  line per item.
+       *
+       *  Added because their ABSENCE was a fabrication site (persona re-test
+       *  2026-08-11, finding R-1): a run that ended `部分完成` with no
+       *  changed files, no risks and no todos put a marker in the record that
+       *  said a dispatch happened and nothing whatsoever about what it found.
+       *  Asked what 板砖 concluded, Herta narrated a detailed critique that
+       *  appears nowhere — the same geometry as the announce-without-dispatch
+       *  gateway: an expectation the record leaves unanswered gets filled by
+       *  fluency. These summaries are harness-collected facts, not a
+       *  model-authored précis, so projecting them keeps D6 intact (the
+       *  report has structured artifacts and deliberately NO Summary field —
+       *  Herta must not paraphrase the agent, but she must be able to SEE
+       *  it). */
+      readonly kind: "evidence";
+      readonly items: readonly string[];
+    }
+  | {
       /** An attached document's head excerpt (`↳ 附件 <name>`). Verbatim from
        *  disk — the harness cut it, so nothing paraphrased it on the way in
        *  (ADR 0033, the same reflex as `show_excerpt`). */

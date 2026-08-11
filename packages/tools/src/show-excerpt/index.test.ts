@@ -8,6 +8,8 @@ import type {
   ToolResult,
 } from "@herta/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { listFilesTool } from "../list-files/index.js";
+import { searchTextTool } from "../search-text/index.js";
 import {
   MAX_EXCERPT_CHARS,
   MAX_EXCERPT_LINES,
@@ -29,6 +31,8 @@ function ctx(): ToolContext {
     reads: {
       record: (p: string, sha: string) => recorded.push({ path: p, sha }),
     },
+    // search_text (used by the discovery test below) checks this per file.
+    signal: new AbortController().signal,
   } as unknown as ToolContext;
 }
 
@@ -191,6 +195,73 @@ describe("show_excerpt", () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.data?.excerpt).toContain("4.21e-22");
+  });
+
+  it("the log dir is LISTABLE and SEARCHABLE, so a receipt can be found before it is read", async () => {
+    // ADR 0036 opened .herta/logs to reads BY FULL PATH, which is enough only
+    // if you already know the filename — they are `<uuid>-call_NN_<op>.log`.
+    // Both persona re-test arcs watched the backend guess and fail, and one
+    // filled the gap by reciting the line from memory.
+    mkdirSync(join(root, ".herta", "logs"), { recursive: true });
+    writeFileSync(
+      join(root, ".herta", "logs", "abc-call_00_xyz.log"),
+      "exit 0\np = 4.21e-22\n",
+    );
+    const listed = (await listFilesTool().run(
+      {
+        id: "l1",
+        tool: "list_files",
+        input: { path: ".herta/logs" },
+      } as ToolCallRequest,
+      ctx(),
+      noopProgress,
+    )) as ToolResult<{ entries: Array<{ path: string }> }>;
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+    expect(listed.data?.entries.some((e) => e.path.includes("call_00"))).toBe(
+      true,
+    );
+
+    const found = (await searchTextTool().run(
+      {
+        id: "s1",
+        tool: "search_text",
+        input: { pattern: "4\\.21e-22", path: ".herta/logs" },
+      } as ToolCallRequest,
+      ctx(),
+      noopProgress,
+    )) as ToolResult<{ matches: Array<{ path: string }> }>;
+    expect(found.ok).toBe(true);
+    if (!found.ok) return;
+    expect(found.data?.matches.length).toBeGreaterThan(0);
+  });
+
+  it("discovery stops at the log dir — .herta itself and tool-results stay denied", async () => {
+    mkdirSync(join(root, ".herta", "tool-results"), { recursive: true });
+    writeFileSync(join(root, ".herta", "tool-results", "c.json"), "{}\n");
+    const listRoot = (await listFilesTool().run(
+      {
+        id: "l2",
+        tool: "list_files",
+        input: { path: ".herta" },
+      } as ToolCallRequest,
+      ctx(),
+      noopProgress,
+    )) as ToolResult<unknown>;
+    expect(listRoot.ok).toBe(false);
+    if (listRoot.ok) return;
+    expect(listRoot.error?.code).toBe("path_denied");
+
+    const listResults = (await listFilesTool().run(
+      {
+        id: "l3",
+        tool: "list_files",
+        input: { path: ".herta/tool-results" },
+      } as ToolCallRequest,
+      ctx(),
+      noopProgress,
+    )) as ToolResult<unknown>;
+    expect(listResults.ok).toBe(false);
   });
 
   it("still does NOT present tool-results — the unredacted subtree (ADR 0027 §5 residue)", async () => {

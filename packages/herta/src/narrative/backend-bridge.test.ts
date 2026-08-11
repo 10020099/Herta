@@ -1049,6 +1049,63 @@ describe("invokeBanzhuanBridge", () => {
     expect(out).toHaveLength(initial.length + 1);
   });
 
+  it("a 部分完成 run with no files/risks/todos still carries what it FOUND (R-1, 2026-08-11)", async () => {
+    // The persona re-test caught the fabrication site: a survey-shaped run
+    // ends 部分完成 with nothing changed, nothing risked, nothing left to do,
+    // and the marker then said a dispatch happened and NOTHING about its
+    // findings. Asked what 板砖 concluded, Herta narrated a critique that
+    // appears nowhere. report.evidence was the one part of the report the
+    // record never carried.
+    const bus = new InMemoryEventBus<AgentEvent>();
+    // Faithful to the observed run: it READ things (so the record gets work
+    // rows and a real done-marker) but changed nothing.
+    const runtime: CodingAgentRuntime = {
+      runBrief: async (brief: HertaToAgentBrief) => {
+        publishWithLayer(bus, "backend", {
+          type: "tool.call.started",
+          id: "t1",
+          tool: "read_file",
+          inputSummary: "docs/x.md",
+        });
+        return {
+          taskId: brief.taskId,
+          status: "partial",
+          evidence: [
+            {
+              kind: "file",
+              summary: "需求文档只覆盖正常流程",
+              source: "docs/x.md",
+            },
+            { kind: "search", summary: "未找到异常退出的定义" },
+          ],
+          changedFiles: [],
+          tests: [],
+          permissions: [],
+          residualRisks: [],
+          nextActions: [],
+        } as AgentExecutionReport;
+      },
+    } as unknown as CodingAgentRuntime;
+    const deps = mkBridgeDeps({ bus, runtime: () => runtime });
+    const out = await invokeBanzhuanBridge(
+      [{ kind: "herta", surface: "speech", text: "@板砖 检查这份需求。" }],
+      [],
+      deps,
+    );
+    const marker = out.find(
+      (b) =>
+        b.kind === "system" && (b as { role?: string }).role === "done-marker",
+    ) as { evidenceDetail?: string; evidence?: Array<{ kind: string }> };
+    expect(marker).toBeDefined();
+    // The findings reach Herta's prompt…
+    expect(marker.evidenceDetail).toContain("↳ 依据:");
+    expect(marker.evidenceDetail).toContain("需求文档只覆盖正常流程");
+    expect(marker.evidenceDetail).toContain("docs/x.md"); // source rides along
+    expect(marker.evidenceDetail).toContain("未找到异常退出的定义");
+    // …and the localizing detail pane gets the same data, so they can't drift.
+    expect(marker.evidence?.some((s) => s.kind === "evidence")).toBe(true);
+  });
+
   it("appends a → 差分协处理器 block for each backend tool.call.started during runBrief", async () => {
     const bus = new InMemoryEventBus<AgentEvent>();
     const runtime: CodingAgentRuntime = {

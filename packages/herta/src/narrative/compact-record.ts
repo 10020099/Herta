@@ -543,11 +543,24 @@ function attachmentFoldDecision(
 function foldStrandedDetail(
   block: TerminalRecordBlock,
   spokenSince: boolean,
+  lang: PromptLang = "zh",
 ): TerminalRecordBlock {
   if (!spokenSince || block.kind !== "system") return block;
   if (block.evidenceDetail === undefined) return block;
   const { evidenceDetail: _dropped, ...rest } = block;
-  return rest;
+  // Say that the body went, exactly as the attachment fold and the excerpt
+  // digest do ("The elision is stated, not left implicit"). Dropping it
+  // SILENTLY leaves a row like `↳ exit 0 · 14 lines` that reads as the whole
+  // of what that block ever said — so a later turn quotes figures from a span
+  // no longer in front of her, and nothing in the record contradicts it. The
+  // R-2 probe (2026-08-12) measured the cost: asked to read back a folded
+  // result, reciting it from memory was caught only 1/3 of the time, because
+  // the judge could not tell the content had ever been there. With the note,
+  // both she and the supervisor can see that the receipt is gone.
+  return {
+    ...rest,
+    body: `${block.body} · ${COMPACTION_TEXT[lang].excerptElided}`,
+  };
 }
 
 export function compactRecordForPrompt(
@@ -718,7 +731,7 @@ export function compactRecordForPrompt(
           for (let k = 0; k < runBlocks.length; k++) {
             const b = runBlocks[k];
             if (b !== undefined) {
-              output.push(foldStrandedDetail(b, i + k < lastSpeechIdx));
+              output.push(foldStrandedDetail(b, i + k < lastSpeechIdx, lang));
             }
           }
         }
@@ -729,7 +742,7 @@ export function compactRecordForPrompt(
         for (let k = i; k < compactEnd; k++) {
           const b = record[k];
           if (b === undefined) continue;
-          const folded = foldStrandedDetail(b, k < lastSpeechIdx);
+          const folded = foldStrandedDetail(b, k < lastSpeechIdx, lang);
           output.push(
             k === diffHintIdx && folded.kind === "system"
               ? {

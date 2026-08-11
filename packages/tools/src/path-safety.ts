@@ -116,6 +116,27 @@ const ATTACHMENT_READ_PREFIXES = [".herta/attachments/"];
  */
 const EVIDENCE_EXCERPT_PREFIXES = [".herta/logs/"];
 
+/**
+ * The one harness directory a DISCOVERY tool may enter (persona re-test
+ * 2026-08-11 residual).
+ *
+ * ADR 0036 opened `.herta/logs/` to `read_file`/`show_excerpt` by full path,
+ * which is enough only if you already know the filename — and the names are
+ * `<uuid>-call_NN_<opaque>.log`. Both re-test arcs watched the backend burn
+ * calls guessing (`.herta/logs/*call_00*`, then `.herta/logs/*`, then
+ * `.herta` itself → path_denied), and in one of them Herta filled the gap by
+ * reciting the log line from memory. A receipt you cannot FIND is barely a
+ * receipt.
+ *
+ * Deliberately its own constant, not a member of the prefix lists above,
+ * because it is the only carve-out that must also match the directory ITSELF
+ * (`.herta/logs`, no trailing slash) — the others are strictly-beneath file
+ * reads. `.herta` stays denied (its siblings are keys, memory, transcripts),
+ * and `.herta/tool-results` stays denied for discovery exactly as it is for
+ * excerpting: it is written unredacted.
+ */
+const EVIDENCE_DISCOVERY_ROOT = ".herta/logs";
+
 function isWindows(): boolean {
   return process.platform === "win32";
 }
@@ -179,6 +200,14 @@ export interface ResolveSafePathOpts {
    * back verbatim. See EVIDENCE_EXCERPT_PREFIXES.
    */
   allowEvidenceExcerptPaths?: boolean;
+  /**
+   * Allow DISCOVERY (listing / searching) of the redacted log directory
+   * itself — `.herta/logs` and anything beneath it, nothing else under
+   * `.herta`. Passed by list_files and search_text so the backend can find
+   * the receipt it is about to read; without it the log filenames are
+   * unguessable. See EVIDENCE_DISCOVERY_ROOT.
+   */
+  allowEvidenceDiscoveryPaths?: boolean;
 }
 
 export async function resolveSafePath(
@@ -241,13 +270,23 @@ export async function resolveSafePath(
           caseNormalize(canonicalRel).startsWith(caseNormalize(p)) &&
           canonicalRel.length > p.length,
       );
+    // Discovery matches the log ROOT itself as well as anything beneath it —
+    // the one carve-out that has to, since `list_files .herta/logs` names a
+    // directory rather than a file strictly inside one.
+    const atOrBeneath = (root: string): boolean => {
+      const rel = caseNormalize(canonicalRel);
+      const r = caseNormalize(root);
+      return rel === r || rel.startsWith(`${r}/`);
+    };
     const inReadCarveOut =
       (opts.allowHarnessReadPaths === true &&
         beneathAny(HARNESS_READ_PREFIXES)) ||
       (opts.allowAttachmentPaths === true &&
         beneathAny(ATTACHMENT_READ_PREFIXES)) ||
       (opts.allowEvidenceExcerptPaths === true &&
-        beneathAny(EVIDENCE_EXCERPT_PREFIXES));
+        beneathAny(EVIDENCE_EXCERPT_PREFIXES)) ||
+      (opts.allowEvidenceDiscoveryPaths === true &&
+        atOrBeneath(EVIDENCE_DISCOVERY_ROOT));
 
     for (let i = 0; i < segments.length; i++) {
       const seg = segments[i] as string;

@@ -244,6 +244,7 @@ export const en = {
   "evidence.files": "changed files",
   "evidence.risks": "risks",
   "evidence.todos": "to do",
+  "evidence.evidence": "findings",
   "evidence.error": "error",
   "activity.detail.show": "show detail",
   "activity.detail.hide": "hide detail",

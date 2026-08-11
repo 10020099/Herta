@@ -40,10 +40,31 @@ const SNIFF_BYTES = 4096;
 const ATTACHMENT_PREFIX = ".herta/attachments/";
 export const ATTACHMENT_SEARCH_MAX_BYTES = 64 * 1024 * 1024;
 
+/** The redacted command-log subtree, searchable since the ADR 0036 residual
+ *  fix. It inherits reason 1 above and NOT reason 2: log files are bounded by
+ *  the run_command capture cap, so the ordinary size gate applies. */
+const EVIDENCE_LOG_ROOT = ".herta/logs";
+
 /** Whether a canonical workspace-relative search root is inside the
  *  attachment subtree. Exported for the lockstep test. */
 export function isAttachmentSearchRoot(rel: string): boolean {
   return rel.startsWith(ATTACHMENT_PREFIX);
+}
+
+/** Whether a search root sits in ANY `.herta` subtree the guard now admits.
+ *  Every one of them needs the JS engine for the same reason: rg's arg list
+ *  mirrors SKIP_DIR_NAMES as `-g !.herta/**` and rg honours the BL6
+ *  `.herta/.gitignore` (`*`), so an rg-backed search rooted inside `.herta`
+ *  returns zero candidates while the JS scanner finds matches — engine
+ *  divergence, which slice 3 forbids. The attachment carve-out learned this
+ *  in review; the log carve-out would have re-learned it live (searching a
+ *  receipt would have silently found nothing). */
+export function isHertaCarveOutSearchRoot(rel: string): boolean {
+  return (
+    isAttachmentSearchRoot(rel) ||
+    rel === EVIDENCE_LOG_ROOT ||
+    rel.startsWith(`${EVIDENCE_LOG_ROOT}/`)
+  );
 }
 /** Wall-clock budget for one search (audit 2026-07-13 T2.3): the backstop
  *  for slow-but-not-rejected patterns — polynomial backtracking, huge trees.
@@ -105,6 +126,7 @@ function makeFileLoader(
       // silently skip every file it walked.
       const safeEntry = await resolveSafePath(ctx.workspaceRoot, relPath, {
         allowAttachmentPaths: true,
+        allowEvidenceDiscoveryPaths: true,
       });
       if (!safeEntry.ok) return null;
       let fileInfo: Stats;
@@ -346,6 +368,7 @@ export function searchTextTool(opts: SearchTextToolOpts = {}): HertaTool {
       // directory it meets, so a workspace-root search never descends here.
       const safe = await resolveSafePath(ctx.workspaceRoot, path, {
         allowAttachmentPaths: true,
+        allowEvidenceDiscoveryPaths: true,
       });
       if (!safe.ok) {
         return {
@@ -402,7 +425,7 @@ export function searchTextTool(opts: SearchTextToolOpts = {}): HertaTool {
       let outcome: ScanOutcome | null = null;
       const engine =
         process.env.HERTA_SEARCH_ENGINE === "js" ||
-        isAttachmentSearchRoot(safe.relative)
+        isHertaCarveOutSearchRoot(safe.relative)
           ? "js"
           : (opts.engine ?? "auto");
       if (engine === "auto") {

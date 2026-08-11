@@ -226,6 +226,7 @@ export const zh = {
   "evidence.files": "改动文件",
   "evidence.risks": "风险",
   "evidence.todos": "待办",
+  "evidence.evidence": "依据",
   "evidence.error": "错误",
   "activity.detail.show": "展开明细",
   "activity.detail.hide": "收起明细",

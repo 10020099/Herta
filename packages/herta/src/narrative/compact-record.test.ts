@@ -937,7 +937,13 @@ describe("stranded evidenceDetail — the run-of-one hole (self-review 2026-08-1
     );
     expect(kept).toBeDefined();
     expect(kept?.kind === "system" && kept.evidenceDetail).toBeUndefined();
-    expect(kept?.kind === "system" && kept.body).toBe(excerpt.body);
+    // The citation stays AND says the body went (R-2 probe, 2026-08-12).
+    // Dropping it silently left a row that read as the whole of what the
+    // block ever said, so a later turn quoted figures from a span no longer
+    // in front of her with nothing in the record to contradict it.
+    expect(kept?.kind === "system" && kept.body).toBe(
+      `${excerpt.body} · 正文已略去`,
+    );
     expect(JSON.stringify(out)).not.toContain("LEAKED");
   });
 

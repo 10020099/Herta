@@ -49,7 +49,17 @@ export function listFilesTool(): HertaTool {
       }
       const { path = ".", recursive = false, maxEntries = 1000 } = parsed.data;
 
-      const safe = await resolveSafePath(ctx.workspaceRoot, path);
+      // Discovery inside `.herta/logs` only (ADR 0036 residual): the log
+      // filenames are `<uuid>-call_NN_<opaque>.log`, so a receipt the backend
+      // may READ by full path is still unfindable without listing the
+      // directory — both persona re-test arcs watched it guess and fail. The
+      // flag matches that one directory and its contents; `.herta` itself and
+      // `.herta/tool-results` stay denied, and the walker still skips every
+      // `.herta` it meets from above, so this opens nothing except a listing
+      // pointed AT the log dir.
+      const safe = await resolveSafePath(ctx.workspaceRoot, path, {
+        allowEvidenceDiscoveryPaths: true,
+      });
       if (!safe.ok) {
         return {
           ok: false,
@@ -118,8 +128,13 @@ export function listFilesTool(): HertaTool {
           walked++;
           // Same per-entry gate as search_text (2026-07-10 audit, finding 1)
           // at name granularity: credential basenames and symlinks resolving
-          // outside the workspace don't appear in listings.
-          const safeEntry = await resolveSafePath(ctx.workspaceRoot, e.path);
+          // outside the workspace don't appear in listings. Carries the same
+          // discovery flag as the root check — otherwise a listing the root
+          // check just allowed would drop every entry it walked (the exact
+          // shape of the attachments bug search_text's comment records).
+          const safeEntry = await resolveSafePath(ctx.workspaceRoot, e.path, {
+            allowEvidenceDiscoveryPaths: true,
+          });
           if (!safeEntry.ok) continue;
           entries.push(e);
         }

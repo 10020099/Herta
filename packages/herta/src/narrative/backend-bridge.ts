@@ -113,6 +113,7 @@ function sanitizeSection(s: EvidenceSection): EvidenceSection {
       return { ...s, paths: s.paths.map(cleanBody) };
     case "risks":
     case "todos":
+    case "evidence":
       return { ...s, items: s.items.map(cleanBody) };
     case "attachment":
       // `text` is the head of a document the user supplied, so this is the
@@ -572,6 +573,28 @@ function buildDoneMarker(
     const items = report.nextActions.slice(0, 5);
     detailParts.push(`↳ 待办: ${items.join("; ")}`);
     sections.push({ kind: "todos", items });
+  }
+  // The backend's own findings (R-1, persona re-test 2026-08-11). Everything
+  // above is a BY-PRODUCT of the run — files touched, risks left, work
+  // outstanding — and a run can legitimately produce none of them: a survey,
+  // a read-only check, a search that came back empty, anything ending
+  // `部分完成`. The marker then said a dispatch happened and nothing about
+  // what it FOUND, and the hole got filled: asked what 板砖 concluded, Herta
+  // narrated a critique of its output that appears nowhere in the record.
+  // `report.evidence` is exactly "what it found", already structured by the
+  // harness, and it was the one part of the report the record never carried.
+  // Bounded like its siblings; `source` rides along when present because a
+  // finding worth naming is worth locating.
+  if (report.evidence.length > 0) {
+    const items = report.evidence
+      .slice(0, 6)
+      .map((e) =>
+        e.source !== undefined && e.source.length > 0
+          ? `${e.summary}（${e.source}）`
+          : e.summary,
+      );
+    detailParts.push(`↳ 依据: ${items.join("; ")}`);
+    sections.push({ kind: "evidence", items });
   }
   const evidenceDetail =
     detailParts.length > 0 ? detailParts.join("\n") : undefined;

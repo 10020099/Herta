@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkTmpWorkspace, type TmpWorkspace } from "../testing/tmp-workspace.js";
 import {
   isAttachmentSearchRoot,
+  isHertaCarveOutSearchRoot,
   type SearchTextData,
   searchTextTool,
 } from "./index.js";
@@ -541,7 +542,21 @@ describe("searchTextTool — attachments (ADR 0033, amended 2026-08-10)", () => 
     expect(isAttachmentSearchRoot(".herta/attachments/s1")).toBe(true);
     expect(isAttachmentSearchRoot(".herta/attachments/s1/big.log")).toBe(true);
     expect(isAttachmentSearchRoot("src")).toBe(false);
-    expect(isAttachmentSearchRoot(".herta/logs/run.log")).toBe(false);
     expect(isAttachmentSearchRoot("")).toBe(false);
+  });
+
+  it("EVERY .herta carve-out root takes the JS engine, logs included", () => {
+    // The size rule differs between the carve-outs but the engine rule does
+    // not: rg cannot see inside `.herta` at all. When `.herta/logs` became
+    // searchable (ADR 0036 residual) this predicate had to grow with it —
+    // otherwise searching a receipt would have silently found nothing, the
+    // same divergence the attachment carve-out hit in review.
+    expect(isHertaCarveOutSearchRoot(".herta/logs")).toBe(true);
+    expect(isHertaCarveOutSearchRoot(".herta/logs/run-abc.log")).toBe(true);
+    expect(isHertaCarveOutSearchRoot(".herta/attachments/s1")).toBe(true);
+    // Not a carve-out: still denied by the guard, and never rg-searchable.
+    expect(isHertaCarveOutSearchRoot(".herta/tool-results")).toBe(false);
+    expect(isHertaCarveOutSearchRoot("src")).toBe(false);
+    expect(isHertaCarveOutSearchRoot("")).toBe(false);
   });
 });

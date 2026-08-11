@@ -676,12 +676,19 @@ describe("serializeTerminalRecord — long-record equivalence vs naive reference
             const b = record[k];
             if (b === undefined) continue;
             // Stranded-detail fold (2026-08-11), naive form: a verbatim
-            // pass-through drops its evidenceDetail once a speech follows.
+            // pass-through drops its evidenceDetail once a speech follows,
+            // and SAYS SO on the citation line (2026-08-12) so the row can't
+            // be read as the whole of what the block said.
             const folded =
               b.kind === "system" &&
               b.evidenceDetail !== undefined &&
               k < lastSpeechIdx
-                ? { ...b, evidenceDetail: undefined }
+                ? {
+                    ...b,
+                    evidenceDetail: undefined,
+                    // The reference only ever runs the zh projection.
+                    body: `${b.body} · 正文已略去`,
+                  }
                 : b;
             output.push(
               k === diffHintIdx && folded.kind === "system"

@@ -76,6 +76,7 @@ export type { SearchMatch, SearchTextData } from "./search-text/index.js";
 export {
   ATTACHMENT_SEARCH_MAX_BYTES,
   isAttachmentSearchRoot,
+  isHertaCarveOutSearchRoot,
   searchTextTool,
 } from "./search-text/index.js";
 export type { SearchTextInput } from "./search-text/schema.js";

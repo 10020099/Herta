@@ -187,6 +187,8 @@ export function stepDisplayDetail(
           return `↳ ${t("evidence.risks")}: ${s.items.join("; ")}`;
         case "todos":
           return `↳ ${t("evidence.todos")}: ${s.items.join("; ")}`;
+        case "evidence":
+          return `↳ ${t("evidence.evidence")}: ${s.items.join("; ")}`;
         case "attachment": {
           // The clipped note is part of the evidence, not decoration: without
           // it a head excerpt reads as the entire document, to the user and
