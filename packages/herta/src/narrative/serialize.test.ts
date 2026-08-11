@@ -5,7 +5,11 @@ import {
   type TerminalRecordBlock,
 } from "@herta/core";
 import { describe, expect, it } from "vitest";
-import { buildCompactionBody } from "./compact-record.js";
+import {
+  buildCompactionBody,
+  DIFF_REREAD_HINT_USER_TURNS,
+} from "./compact-record.js";
+import { COMPACTION_TEXT } from "./compaction-text.js";
 import { serializeBlock, serializeTerminalRecord } from "./serialize.js";
 
 const ZWSP = "​";
@@ -614,6 +618,20 @@ describe("serializeTerminalRecord — long-record equivalence vs naive reference
     const passThroughIdx =
       lastDoneMarkerIdx >= 0 && !verdictSpoken ? lastDoneMarkerIdx : -1;
 
+    // Diff re-read hint (2026-08-11), naive forward form: the newest marker,
+    // once FOLDED (verdict spoken), hints while ≤ N user turns follow it.
+    let diffHintIdx = -1;
+    if (passThroughIdx === -1 && lastDoneMarkerIdx >= 0) {
+      let turnsAfter = 0;
+      for (let k = lastDoneMarkerIdx + 1; k < record.length; k++) {
+        if (record[k]?.kind === "user") turnsAfter += 1;
+      }
+      if (turnsAfter <= DIFF_REREAD_HINT_USER_TURNS) {
+        diffHintIdx = lastDoneMarkerIdx;
+      }
+    }
+    const hint = COMPACTION_TEXT.zh.diffRereadHint;
+
     const output: TerminalRecordBlock[] = [];
     let i = 0;
     while (i < record.length) {
@@ -630,6 +648,7 @@ describe("serializeTerminalRecord — long-record equivalence vs naive reference
         const hasPassThrough = passThroughIdx >= i && passThroughIdx < j;
         const compactEnd = hasPassThrough ? passThroughIdx : j;
         const runLength = compactEnd - i;
+        const hintInRun = diffHintIdx >= i && diffHintIdx < compactEnd;
         if (runLength >= minRunSize) {
           const runBlocks = record.slice(
             i,
@@ -637,14 +656,23 @@ describe("serializeTerminalRecord — long-record equivalence vs naive reference
           ) as readonly SystemBlock[];
           const body = buildCompactionBody(runBlocks);
           if (body.length > 0) {
-            output.push({ kind: "system", label: "系统", body });
+            output.push({
+              kind: "system",
+              label: "系统",
+              body: hintInRun ? `${body}\n${hint}` : body,
+            });
           } else {
             for (const b of runBlocks) output.push(b);
           }
         } else {
           for (let k = i; k < compactEnd; k++) {
             const b = record[k];
-            if (b !== undefined) output.push(b);
+            if (b === undefined) continue;
+            output.push(
+              k === diffHintIdx && b.kind === "system"
+                ? { ...b, body: `${b.body}\n${hint}` }
+                : b,
+            );
           }
         }
         if (hasPassThrough) {

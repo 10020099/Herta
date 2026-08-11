@@ -19,8 +19,8 @@ const RECAP_TEXT = {
       `规则：不要逐句复述；不要编造；不要加标题或章节号，直接写正文；绝不使用（我 说）/（开拓者 说）对话格式——只写连贯的叙事散文；用过去/回忆时态；控制在 ${maxChars} 字以内。`,
     ],
     rollRule:
-      "输出格式：先一字不改地原样抄录『已有的回忆』，然后另起一段，把新对话压缩成克制的接续——是补记，不是续写小说，接续部分必须明显短于新对话本身。",
-    prevRecapHeader: "【已有的回忆（保留，不要改写）】",
+      "输出格式：只写新增的补记本身。『已有的回忆』已经在册，会自动衔接在你的补记之前——绝不要抄录、复述或改写它，一个字都不要重复；补记接着它写下去即可，是补记，不是续写小说，必须明显短于新对话本身。",
+    prevRecapHeader: "【已有的回忆（已在册——衔接的上文，勿抄录）】",
     rawHeader: "【原始对话（权威事实）】",
   },
   en: {
@@ -35,11 +35,17 @@ const RECAP_TEXT = {
       "Treat the [raw conversation] as authoritative fact; treat the [existing recollection] as fixed backstory to preserve as-is — do not rewrite it, only continue after it.",
       "The recollection ends where the conversation actually stopped: anything not yet happened, not yet received, not yet delivered must stay unresolved — never narrate it as done.",
       "Do not invent scenes, mediums, or quotes absent from the conversation (emails, calls, screenshots, bystanders); when unsure of a detail, omit it rather than fill it in.",
-      `Rules: do not restate line by line; do not invent anything; no headings or chapter numbers — body prose only; NEVER use the （我 说）/（开拓者 说） dialogue format — write continuous narrative prose only; use past/recollective tense; stay within ${maxChars} characters.`,
+      // "Write in English" is EXPLICIT (2026-08-11): the output language
+      // originally rode on the instruction language alone, and a live
+      // recap-lab round showed flash narrating an all-English session's
+      // recap in Chinese anyway. zh needs no mirror clause — zh instructions
+      // over zh content have never flipped, and zh stays byte-identical.
+      `Rules: do not restate line by line; do not invent anything; no headings or chapter numbers — body prose only; NEVER use the （我 说）/（开拓者 说） dialogue format — write continuous narrative prose only; use past/recollective tense; write the recollection in English; stay within ${maxChars} characters.`,
     ],
     rollRule:
-      "Output format: first copy the [existing recollection] verbatim, unchanged, then start a new paragraph that compresses the new conversation into a restrained continuation — an addendum, not a sequel; the continuation must be clearly shorter than the new conversation itself.",
-    prevRecapHeader: "[existing recollection (preserve — do not rewrite)]",
+      "Output format: write ONLY the new addendum. The [existing recollection] is already on file and will be joined ahead of your addendum automatically — never copy, restate, or rewrite it, not one repeated sentence; simply continue after it: an addendum, not a sequel, clearly shorter than the new conversation itself.",
+    prevRecapHeader:
+      "[existing recollection (on file — the text your addendum continues; do not copy)]",
     rawHeader: "[raw conversation (authoritative facts)]",
   },
 } as const;
@@ -67,10 +73,16 @@ export function buildRecapPrompt(input: BuildRecapPromptInput): {
   user: string;
 } {
   const text = RECAP_TEXT[input.lang ?? "zh"];
-  // A roll continues a prior recap: the output contract (verbatim backstory
-  // + restrained addendum) only applies then. The live lab (2026-07-17)
-  // showed rolls drifting into sequel-writing — resolving still-open
-  // threads, inventing scenes — without this explicit shape.
+  // A roll continues a prior recap: the addendum-only output contract applies
+  // then. The live lab (2026-07-17) showed rolls drifting into sequel-writing
+  // — resolving still-open threads, inventing scenes — without an explicit
+  // shape; the E2E lab (2026-08-11) then showed the original shape ("copy the
+  // backstory verbatim, then continue") being VIOLATED: flash compressed the
+  // backstory instead of copying it, and the harness stored the loss. The
+  // model now writes ONLY the addendum and the RUNTIME concatenates
+  // (prepareTurnRecap) — the backstory can no longer be lost to a model that
+  // declines to copy, and rolls stop paying output tokens to re-type it.
+  // `maxChars` on a roll is therefore the ADDENDUM budget, not the total.
   const isRoll =
     !input.isRederive &&
     input.prevRecap !== null &&

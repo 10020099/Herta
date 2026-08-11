@@ -908,6 +908,106 @@ describe("compaction markers — session language", () => {
   });
 });
 
+describe("done-marker diff re-read hint (E2E 2026-08-11)", () => {
+  // Patch previews are prompt-skipped once their run compacts, so "which
+  // lines changed?" one turn after a dispatch found nothing to quote and got
+  // invented detail — which then fossilized into recap and dream. For a few
+  // turns after the newest FOLDED marker, the summary says the diff is
+  // re-readable; then the nudge expires.
+  const dispatch = (marker: string): TerminalRecordBlock[] => [
+    { kind: "system", label: "差分协处理器", body: 'Reading {"path":"a.ts"}' },
+    { kind: "system", label: "差分协处理器", body: 'Writing {"path":"a.ts"}' },
+    {
+      kind: "system",
+      label: "差分协处理器",
+      body: marker,
+      role: "done-marker",
+      evidenceDetail: "↳ 改动文件: a.ts",
+    },
+  ];
+
+  it("the verdict turn (State 1) carries the verbatim roll-up, no hint", () => {
+    const out = compactRecordForPrompt([
+      { kind: "user", text: "修一下" },
+      { kind: "herta", surface: "speech", text: "@板砖 去。" },
+      ...dispatch("完成 · 1 个文件"),
+    ]);
+    expect(JSON.stringify(out)).not.toContain("git diff");
+  });
+
+  it("a follow-up turn after the verdict sees the hint on the compacted summary", () => {
+    const out = compactRecordForPrompt([
+      { kind: "user", text: "修一下" },
+      { kind: "herta", surface: "speech", text: "@板砖 去。" },
+      ...dispatch("完成 · 1 个文件"),
+      { kind: "herta", surface: "speech", text: "修完了。" },
+      { kind: "user", text: "改了哪几行？" },
+    ]);
+    const summary = out.find(
+      (b) => b.kind === "system" && b.body.includes("历史已压缩"),
+    );
+    expect(summary?.kind === "system" && summary.body).toContain(
+      "派板砖用 git diff 重读",
+    );
+  });
+
+  it("the hint expires after the window; the summary stays", () => {
+    const out = compactRecordForPrompt([
+      { kind: "user", text: "修一下" },
+      { kind: "herta", surface: "speech", text: "@板砖 去。" },
+      ...dispatch("完成 · 1 个文件"),
+      { kind: "herta", surface: "speech", text: "修完了。" },
+      { kind: "user", text: "改了哪几行？" },
+      { kind: "herta", surface: "speech", text: "一行。" },
+      { kind: "user", text: "哦" },
+      { kind: "herta", surface: "speech", text: "。" },
+      { kind: "user", text: "嗯" },
+      { kind: "herta", surface: "speech", text: "。" },
+      { kind: "user", text: "换个话题" },
+    ]);
+    const s = JSON.stringify(out);
+    expect(s).toContain("历史已压缩");
+    expect(s).not.toContain("git diff");
+  });
+
+  it("only the NEWEST folded marker hints — an older dispatch stays quiet", () => {
+    const out = compactRecordForPrompt([
+      { kind: "user", text: "修 a" },
+      { kind: "herta", surface: "speech", text: "@板砖 去。" },
+      ...dispatch("完成 · 1 个文件"),
+      { kind: "herta", surface: "speech", text: "修完了。" },
+      { kind: "user", text: "再修 b" },
+      { kind: "herta", surface: "speech", text: "@板砖 去。" },
+      ...dispatch("完成 · 2 个文件"),
+      { kind: "herta", surface: "speech", text: "也修完了。" },
+      { kind: "user", text: "b 改了哪几行？" },
+    ]);
+    const hinted = out.filter(
+      (b) => b.kind === "system" && b.body.includes("git diff"),
+    );
+    expect(hinted).toHaveLength(1);
+    expect(hinted[0]?.kind === "system" && hinted[0].body).toContain(
+      "2 个文件",
+    );
+  });
+
+  it("localizes by session language", () => {
+    const out = compactRecordForPrompt(
+      [
+        { kind: "user", text: "fix it" },
+        { kind: "herta", surface: "speech", text: "@板砖 go." },
+        ...dispatch("完成 · 1 个文件"),
+        { kind: "herta", surface: "speech", text: "done." },
+        { kind: "user", text: "which lines changed?" },
+      ],
+      { lang: "en" },
+    );
+    expect(JSON.stringify(out)).toContain(
+      "re-read it via git diff before quoting details",
+    );
+  });
+});
+
 describe("attachment blocks — per-block two-state fold (ADR 0033)", () => {
   // The run-compaction above never reaches these: an attachment block sits
   // ALONE between a herta block and the user's next message, and a run of one

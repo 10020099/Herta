@@ -312,6 +312,16 @@ export const ATTACHMENT_HINT_USER_TURNS = 3;
 type AttachmentFoldState = "verbatim" | "citation-hint" | "citation";
 
 /**
+ * How many user turns after the newest FOLDED done-marker the compaction
+ * summary carries the diff re-read hint (`diffRereadHint`). Patch previews
+ * are prompt-skipped once their run compacts, so a follow-up question about
+ * the changed lines has nothing to quote — the E2E lab (2026-08-11) caught
+ * the resulting invented detail fossilizing into recap and dream. Same
+ * decay rationale as ATTACHMENT_HINT_USER_TURNS.
+ */
+export const DIFF_REREAD_HINT_USER_TURNS = 3;
+
+/**
  * Per-block two-state fold for attachment blocks (ADR 0033, amended §6g).
  *
  * The run-compaction below CANNOT give attachments the "verbatim in its own
@@ -494,6 +504,30 @@ export function compactRecordForPrompt(
     }
   }
 
+  // Diff re-read hint (E2E lab 2026-08-11). Patch previews are prompt-SKIPPED
+  // once their run compacts, so "改了哪几行?" one turn after a dispatch found
+  // nothing to quote and got invented detail — which then fossilized into
+  // recap and dream. Same prescription as the attachment fold's hint, same
+  // decay: for DIFF_REREAD_HINT_USER_TURNS user turns after the newest
+  // FOLDED done-marker (State 2 — the verdict was spoken; a State-1 marker
+  // still carries its verbatim roll-up and needs no nudge), the projection
+  // appends one line saying the diff is re-readable via 板砖. Then it stops
+  // nudging. Prompt-only; the record never changes.
+  let diffHintIdx = -1;
+  if (passThroughIdx === -1) {
+    for (let k = record.length - 1; k >= 0; k--) {
+      const b = record[k];
+      if (b?.kind === "system" && b.role === "done-marker") {
+        let turnsAfter = 0;
+        for (const ui of userIdxs) {
+          if (ui > k) turnsAfter += 1;
+        }
+        if (turnsAfter <= DIFF_REREAD_HINT_USER_TURNS) diffHintIdx = k;
+        break;
+      }
+    }
+  }
+
   const output: TerminalRecordBlock[] = [];
   let i = 0;
   while (i < record.length) {
@@ -531,11 +565,21 @@ export function compactRecordForPrompt(
       const compactEnd = hasPassThrough ? passThroughIdx : j;
       const runLength = compactEnd - i;
 
+      // The hinted done-marker rides in this run: the hint line lands on the
+      // summary that swallowed it (or on the marker itself when the run
+      // passes through verbatim, below).
+      const hintInRun = diffHintIdx >= i && diffHintIdx < compactEnd;
       if (runLength >= minRunSize) {
         const runBlocks = record.slice(i, compactEnd) as readonly SystemBlock[];
         const body = buildCompactionBody(runBlocks, lang);
         if (body.length > 0) {
-          output.push({ kind: "system", label: "系统", body });
+          output.push({
+            kind: "system",
+            label: "系统",
+            body: hintInRun
+              ? `${body}\n${COMPACTION_TEXT[lang].diffRereadHint}`
+              : body,
+          });
         } else {
           // All entries in the run hit a skip rule — pass them
           // through verbatim rather than emitting an empty-header
@@ -543,10 +587,19 @@ export function compactRecordForPrompt(
           for (const b of runBlocks) output.push(b);
         }
       } else {
-        // Run shorter than minRunSize — pass through verbatim.
+        // Run shorter than minRunSize — pass through verbatim (the hinted
+        // marker, if here, gains its hint line without losing anything).
         for (let k = i; k < compactEnd; k++) {
           const b = record[k];
-          if (b !== undefined) output.push(b);
+          if (b === undefined) continue;
+          output.push(
+            k === diffHintIdx && b.kind === "system"
+              ? {
+                  ...b,
+                  body: `${b.body}\n${COMPACTION_TEXT[lang].diffRereadHint}`,
+                }
+              : b,
+          );
         }
       }
       // Emit the pass-through done-marker verbatim (State 1).

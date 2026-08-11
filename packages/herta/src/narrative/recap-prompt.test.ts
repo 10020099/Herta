@@ -106,7 +106,7 @@ describe("buildRecapPrompt lang (EN interaction slice 3b)", () => {
     expect(system).toContain("authoritative fact");
     expect(system).toContain("800");
     expect(user).toContain(
-      "[existing recollection (preserve — do not rewrite)]",
+      "[existing recollection (on file — the text your addendum continues; do not copy)]",
     );
     expect(user).toContain("[raw conversation (authoritative facts)]");
     // no CN instruction prose leaks

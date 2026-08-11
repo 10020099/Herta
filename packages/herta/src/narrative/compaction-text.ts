@@ -52,6 +52,14 @@ export const COMPACTION_TEXT = {
      *  scaffolding, same register as the meta-think anchors; it expires so an
      *  old attachment does not carry a standing nudge forever. */
     attachmentRereadHint: "（正文仍在磁盘上，需要时可派板砖重读）",
+    /** Second line under the newest FOLDED done-marker (E2E 2026-08-11):
+     *  patch previews are prompt-skipped after their turn, so a follow-up
+     *  question about "which lines changed" found nothing to quote and got
+     *  invented detail instead — which then fossilized into recap and dream.
+     *  Same prescription as the attachment hint: for a few turns, say the
+     *  diff is re-readable, then stop nudging. */
+    diffRereadHint:
+      "（改动的 diff 已不在眼前，引用细节前可派板砖用 git diff 重读）",
     /** Digest of a `role: "noop-marker"` block. */
     noOutput: "（板砖无产出）",
     /** Footer replacing the tail of an over-long ```diff fence. */
@@ -71,6 +79,8 @@ export const COMPACTION_TEXT = {
     },
     attachmentRereadHint:
       "(the full text is still on disk — send 板砖 to re-read it if needed)",
+    diffRereadHint:
+      "(the diff is no longer in view — have 板砖 re-read it via git diff before quoting details)",
     noOutput: "(板砖 produced nothing)",
     diffSuppressed: (suppressed: number) =>
       `… (${suppressed} more lines suppressed — full diff in evidence)`,

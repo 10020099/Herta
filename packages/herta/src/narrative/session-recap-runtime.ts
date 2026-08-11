@@ -303,12 +303,26 @@ export async function prepareTurnRecap(
         ? `${RUNTIME_TEXT[lang].elided(bounded.droppedBlocks)}\n\n${serializeTerminalRecord(bounded.blocks, { lang })}`
         : serializeTerminalRecord(bounded.blocks, { lang });
     const prevRecap = isRederive ? null : (cache?.recapText ?? null);
+    // Mechanical roll (E2E lab 2026-08-11): on a roll the model writes ONLY
+    // the addendum and the runtime concatenates prior + addendum. The
+    // previous contract asked the model to copy the backstory verbatim and
+    // continue — prompt-enforced only, and flash violated it live (boundary
+    // 90→103 roll compressed the whole backstory into carry-lines; the
+    // harness stored the loss). Concatenation makes the failure mode
+    // unrepresentable: the backstory never passes through the model at all.
+    const isRoll = prevRecap !== null && prevRecap.trim().length > 0;
+    // Addendum budget: what's left of the recap cap after the backstory,
+    // floored so a near-full recap still records SOMETHING (the overflow is
+    // handled below by forcing the next crossing to re-derive).
+    const addendumBudget = isRoll
+      ? Math.max(600, cfg.maxRecapChars - prevRecap.length)
+      : cfg.maxRecapChars;
     const { system, user } = buildRecapPrompt({
       prevRecap,
       agedTurnsText,
       guide: rt.guide,
       bio: rt.bio,
-      maxChars: cfg.maxRecapChars,
+      maxChars: addendumBudget,
       isRederive,
       lang,
     });
@@ -316,25 +330,46 @@ export async function prepareTurnRecap(
     notify?.("start");
     try {
       const text = (await rt.summarize({ system, user, signal })).trim();
-      const v = validateRecap(text, cfg.maxRecapChars);
+      // Slack over the stated budget (rolls only): models overshoot char
+      // counts, and a hard fail here costs a whole crossing (the failure
+      // path keeps the prior recap). The concatenated total is bounded
+      // regardless — see the forced re-derive below.
+      const v = validateRecap(
+        text,
+        isRoll ? addendumBudget + 400 : cfg.maxRecapChars,
+      );
       if (!v.ok) throw new Error(v.reason);
       // Sanitize AFTER validation (the ZWSP break would blind the
       // dialogue-fence reject) and BEFORE caching: the recap is prepended
       // to every future prompt, so a summarizer-laundered forged label
       // must be neutralized here, at its last construction point.
       const safe = sanitizeActorText(text, { role: "system-body" });
+      const stored = isRoll ? `${prevRecap}\n\n${safe}` : safe;
       rt.consecutiveFailures = 0;
       rt.skippedWhileOpen = 0;
-      const advancesSinceRederive = isRederive
+      let advancesSinceRederive = isRederive
         ? 0
         : (cache?.advancesSinceRederive ?? 0) + 1;
+      // A concatenated recap can exceed maxRecapChars by up to one addendum
+      // (the floor above). Force the NEXT crossing to re-derive — it
+      // recompresses the whole span back under the cap. (If that re-derive
+      // is itself over the summarizer input budget it downgrades back to a
+      // roll, and the recap grows by ≤ one floored addendum per crossing —
+      // a pathological span, and even there growth stays slow and bounded
+      // per crossing.)
+      if (isRoll && stored.length > cfg.maxRecapChars) {
+        advancesSinceRederive = Math.max(
+          advancesSinceRederive,
+          cfg.rederiveEveryNAdvances,
+        );
+      }
       rt.cacheWrite({
         boundaryIndex,
-        recapText: safe,
+        recapText: stored,
         lang,
         advancesSinceRederive,
       });
-      return { recap: safe, recapBoundaryIndex: boundaryIndex };
+      return { recap: stored, recapBoundaryIndex: boundaryIndex };
     } catch {
       // A user interrupt is not a summarizer failure: the call runs on the
       // TURN's abort signal, so ESC mid-compaction rejects it. Counting that

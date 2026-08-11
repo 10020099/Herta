@@ -147,7 +147,7 @@ describe("prepareTurnRecap", () => {
     expect(summarize).not.toHaveBeenCalled();
   });
 
-  it("rolls from an aged cache: summarizes with the prior recap and bumps advancesSinceRederive", async () => {
+  it("rolls from an aged cache: the model writes the ADDENDUM, the runtime concatenates (2026-08-11)", async () => {
     const rec = manyTurns(5);
     const boundary = selectBoundary(rec, TIGHT);
     expect(boundary).toBeGreaterThan(2); // sanity: an older cached boundary is possible
@@ -162,10 +162,60 @@ describe("prepareTurnRecap", () => {
     const res = await prepareTurnRecap(rec, PREFIX, rt, false, SIGNAL);
     expect(res.recapBoundaryIndex).toBe(boundary);
     expect(summarize).toHaveBeenCalledTimes(1);
-    // the roll threads the prior recap into the user payload as fixed backstory
-    expect(summarize.mock.calls[0]?.[0].user).toContain("旧回忆");
+    // the roll threads the prior recap into the user payload as backstory
+    // context — and instructs addendum-only output.
+    const call = summarize.mock.calls[0]?.[0];
+    expect(call?.user).toContain("旧回忆");
+    expect(call?.system).toContain("只写新增的补记本身");
+    // The backstory is preserved MECHANICALLY: stored = prior + "\n\n" +
+    // addendum. The live E2E (boundary 90→103) showed the previous
+    // copy-it-verbatim prompt contract being violated — flash compressed the
+    // backstory and the harness stored the loss.
+    expect(res.recap).toBe("旧回忆\n\n我记得之前的对话。");
     // advancesSinceRederive bumps 1 → 2 (a roll, not a re-derive)
-    expect(getCache()).toMatchObject({ advancesSinceRederive: 2 });
+    expect(getCache()).toMatchObject({
+      recapText: "旧回忆\n\n我记得之前的对话。",
+      advancesSinceRederive: 2,
+    });
+  });
+
+  it("a roll addendum's stated budget is what remains under maxRecapChars, not the full cap", async () => {
+    const prev = `旧${"忆".repeat(499)}`; // 500 chars of backstory, cap 800
+    const { rt, summarize } = makeRT({
+      cache: {
+        boundaryIndex: 2,
+        recapText: prev,
+        lang: "zh",
+        advancesSinceRederive: 1,
+      },
+    });
+    await prepareTurnRecap(manyTurns(5), PREFIX, rt, false, SIGNAL);
+    const system = summarize.mock.calls[0]?.[0].system ?? "";
+    // 800 − 500 = 300 → floored to 600 (MIN addendum) — the budget the model
+    // is told must be the one the runtime computed.
+    expect(system).toContain("600");
+    expect(system).not.toContain("800 字");
+  });
+
+  it("a roll that overflows maxRecapChars forces the NEXT crossing to re-derive", async () => {
+    // Backstory already at the cap: the floored addendum pushes the concat
+    // over. The overflow is accepted THIS crossing (recording something beats
+    // dropping it) and the advance counter jumps to the re-derive threshold
+    // so the next crossing recompresses the whole span back under the cap.
+    const prev = "忆".repeat(800); // exactly maxRecapChars
+    const { rt, getCache } = makeRT({
+      cache: {
+        boundaryIndex: 2,
+        recapText: prev,
+        lang: "zh",
+        advancesSinceRederive: 1,
+      },
+    });
+    const res = await prepareTurnRecap(manyTurns(5), PREFIX, rt, false, SIGNAL);
+    expect(res.recap).toBe(`${prev}\n\n我记得之前的对话。`);
+    expect(getCache()).toMatchObject({
+      advancesSinceRederive: TIGHT.rederiveEveryNAdvances,
+    });
   });
 
   it("falls back to a placeholder when the summarizer throws, and increments the failure counter", async () => {
@@ -234,7 +284,8 @@ describe("prepareTurnRecap", () => {
     // The probe rolls from the LAST GOOD boundary — the frozen gap span is
     // folded in, healing the amnesia window.
     expect(summarize.mock.calls[0]?.[0].user).toContain("旧的回忆。");
-    expect(res.recap).toBe("补上断档之后的完整回忆。");
+    // Mechanical roll: the healed recap = prior backstory + the gap addendum.
+    expect(res.recap).toBe("旧的回忆。\n\n补上断档之后的完整回忆。");
     expect(rt.consecutiveFailures).toBe(0);
     expect(rt.skippedWhileOpen).toBe(0);
     expect(getCache()?.boundaryIndex).toBe(res.recapBoundaryIndex);
