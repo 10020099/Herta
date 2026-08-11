@@ -50,6 +50,7 @@ import {
   semanticizeEvictions,
 } from "./semanticize.js";
 import type { CritiqueScores, DreamConfig, DreamManifest } from "./types.js";
+import { validateUserLines } from "./user-line-gate.js";
 
 export interface DreamSessionInput {
   sessionId: string;
@@ -643,7 +644,27 @@ export async function runDreamPass(
           }
 
           let gen: { feian: string; situationTag: string } = genResult;
-          let valid = validateFeian(gen.feian);
+          // Format gate + user-line gate share the refine loop (ADR 0036):
+          // the 开拓者's quoted lines must be traceable to the episode's real
+          // user messages — the LLM faithfulness critique passed a page with
+          // four INVENTED user turns (persona E2E 2026-08-11), and a promoted
+          // counterfeit becomes prefix "memory" no later check can reach.
+          // Feeding the failures through buildRefinePrompt first gives the
+          // draft a chance to re-quote before it is archived.
+          const epUserTexts = ep.blocks
+            .filter((b) => b.kind === "user")
+            .map((b) => (b.kind === "user" ? b.text : ""));
+          const checkDraft = (
+            feian: string,
+          ): { ok: boolean; errors: string[] } => {
+            const v = validateFeian(feian);
+            const u = validateUserLines(feian, epUserTexts);
+            return {
+              ok: v.ok && u.ok,
+              errors: [...(v.ok ? [] : v.errors), ...u.errors],
+            };
+          };
+          let valid = checkDraft(gen.feian);
 
           for (let k = 0; !valid.ok && k < cfg.refineMaxRetries; k++) {
             const refined = await jsonCall<{
@@ -661,7 +682,7 @@ export async function runDreamPass(
               feian: refined.feian,
               situationTag: refined.situationTag ?? gen.situationTag,
             };
-            valid = validateFeian(gen.feian);
+            valid = checkDraft(gen.feian);
           }
 
           if (!valid.ok) {

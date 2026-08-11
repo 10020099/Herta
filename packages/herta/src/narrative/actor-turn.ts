@@ -49,6 +49,7 @@ import {
   buildSupervisorPrompt,
   formatSupervisorOutDump,
   isTriggerRelatedFinding,
+  judgeMissingDispatch,
   parseSupervisorVerdict,
   recheckTrigger,
   sessionMarkerReceipts,
@@ -1273,6 +1274,7 @@ export async function runActorCompletionTurn(
       // numbers. Runs before the veto branch below so the two never fight:
       // a blocked speech is being rewritten anyway, and its re-speak gets
       // its own pass at the bottom of that branch.
+      let triggerNeutralizedThisPass = false;
       if (
         supervisorVerdict.verdict !== "block" &&
         wouldDispatch(streamResult.text)
@@ -1298,12 +1300,115 @@ export async function runActorCompletionTurn(
           throw err;
         }
         if (judged.text !== streamResult.text) {
+          triggerNeutralizedThisPass = true;
           streamResult = { ...streamResult, text: judged.text };
           if (judged.reason !== undefined) {
             supervisorVetoReasonForRecord =
               supervisorVetoReasonForRecord !== undefined
                 ? `${supervisorVetoReasonForRecord}；${judged.reason}`
                 : judged.reason;
+          }
+        }
+      }
+
+      // Missing-dispatch judge (ADR 0036) — the trigger gate's mirror. A
+      // speech the supervisor PASSED can still PROMISE the 开拓者 present
+      // 板砖 work while dispatching nothing ("先去翻你代码……一会儿一起看
+      // 结果" — the persona E2E's fabrication cascade began exactly there:
+      // the user came back to collect on the promise, and the smoothest
+      // exit was an invented receipt). §8 step 3 covers the shape but sits
+      // buried in the long prompt (~1/3 on this class, the same reliability
+      // gap the trigger recheck was built for). Gated tightly: supervisor
+      // passed, the sanitized projection MENTIONS 板砖, and no live trigger
+      // (regardless of budget — a written `@` over budget is not a missing
+      // one). A BLOCK folds into the supervisor veto so the rethink-respeak
+      // machinery resolves it — she really dispatches or drops the promise;
+      // the harness never injects an `@` itself.
+      if (
+        supervisorVerdict.verdict !== "block" &&
+        !triggerNeutralizedThisPass
+      ) {
+        // A candidate whose `@` the trigger judge just STRIPPED is settled
+        // rhetoric, not an unbacked promise — re-judging the neutralized
+        // text would veto the very outcome the first judge chose.
+        const projectedForJudge = sanitizeActorText(
+          stripStrayOpenTags(streamResult.text, "speech"),
+          { role: "speech" },
+        );
+        if (
+          !parseHertaBlock(projectedForJudge).hasBanzhuanTrigger &&
+          projectedForJudge.includes("板砖")
+        ) {
+          const mdAbort = new AbortController();
+          const mdTimer = setTimeout(
+            () => mdAbort.abort(),
+            SUPERVISOR_DEADLINE_MS,
+          );
+          const onMdTurnAbort = (): void => mdAbort.abort();
+          if (signal.aborted) mdAbort.abort();
+          else signal.addEventListener("abort", onMdTurnAbort);
+          deps.bus.publish({
+            type: "supervisor.check",
+            layer: "actor",
+            phase: "start",
+          });
+          let mdPrompt = "";
+          try {
+            const md = await judgeMissingDispatch({
+              provider: supervisorProvider,
+              recentRecord: lastNTurnsForSupervisor(record, 8),
+              ...(currentTurnThought !== undefined
+                ? { currentTurnThought }
+                : {}),
+              candidateSpeech: streamResult.text,
+              lang: deps.lang ?? "zh",
+              signal: mdAbort.signal,
+              onPromptBuilt: (p) => {
+                mdPrompt = p;
+                // Shares the re-pass's dump channel (same rationale as the
+                // trigger judge): the prompt names itself in its first
+                // line, so a trace reader tells the judges apart by content.
+                deps.onPrompt?.("supervisor-retry", p);
+              },
+            });
+            deps.onPrompt?.(
+              "supervisor-retry-out",
+              formatSupervisorOutDump({
+                prompt: md.prompt,
+                reasoning: md.reasoning,
+                rawOutput: md.rawOutput,
+              }),
+            );
+            if (md.verdict === "block" && md.blockFindings.length > 0) {
+              supervisorVerdict = {
+                verdict: "block",
+                ...(md.reason !== undefined ? { reason: md.reason } : {}),
+                blockFindings: md.blockFindings,
+              };
+            }
+          } catch (err) {
+            if (signal.aborted) {
+              await abandonController(slowStreamController);
+              throw new ActorTurnAbortedError(record);
+            }
+            // Fail-soft: an unavailable judge must not block the commit.
+            const errorMsg = err instanceof Error ? err.message : String(err);
+            deps.onPrompt?.(
+              "supervisor-retry-out",
+              formatSupervisorOutDump({
+                prompt: mdPrompt,
+                reasoning: "",
+                rawOutput: `[missing-dispatch judge failed: ${errorMsg}]`,
+              }),
+            );
+          } finally {
+            clearTimeout(mdTimer);
+            signal.removeEventListener("abort", onMdTurnAbort);
+            deps.bus.publish({
+              type: "supervisor.check",
+              layer: "actor",
+              phase: "end",
+            });
           }
         }
       }

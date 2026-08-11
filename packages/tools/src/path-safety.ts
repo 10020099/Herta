@@ -96,6 +96,26 @@ const HARNESS_READ_PREFIXES = [".herta/logs/", ".herta/tool-results/"];
  */
 const ATTACHMENT_READ_PREFIXES = [".herta/attachments/"];
 
+/**
+ * Shell-output evidence the model may EXCERPT back to the user (ADR 0036,
+ * amending ADR 0027 §5's blanket exclusion — persona E2E 2026-08-11).
+ *
+ * A FOURTH class, and deliberately `.herta/logs/` ONLY — not
+ * `.herta/tool-results/`, though both are readable via the harness carve-out
+ * above. The asymmetry is the redaction boundary documented on
+ * HARNESS_READ_PREFIXES: `run_command` logs pass `redactSecrets` at capture
+ * time, so quoting them to the user surfaces nothing the redactor let
+ * through; `tool-results` is written VERBATIM (a deliberate choice — see
+ * that comment), so presenting it would turn an unredacted internal file
+ * into user-facing text. Quote-grade evidence is the redacted subtree alone.
+ *
+ * Why amend §5 at all: the E2E showed the one honest way to answer "念给我
+ * 听那行输出" is a bounded excerpt of the persisted log — the backend tried
+ * exactly that three times and was denied, leaving paraphrase (or worse) as
+ * the only path to a receipt the user asked to hear verbatim.
+ */
+const EVIDENCE_EXCERPT_PREFIXES = [".herta/logs/"];
+
 function isWindows(): boolean {
   return process.platform === "win32";
 }
@@ -152,6 +172,13 @@ export interface ResolveSafePathOpts {
    * is the whole point of there being two. See ATTACHMENT_READ_PREFIXES.
    */
   allowAttachmentPaths?: boolean;
+  /**
+   * Allow READ access to the secret-redacted shell-output logs
+   * (`.herta/logs/` only — never `tool-results/`, which is unredacted).
+   * Passed by show_excerpt so a persisted command receipt can be quoted
+   * back verbatim. See EVIDENCE_EXCERPT_PREFIXES.
+   */
+  allowEvidenceExcerptPaths?: boolean;
 }
 
 export async function resolveSafePath(
@@ -218,7 +245,9 @@ export async function resolveSafePath(
       (opts.allowHarnessReadPaths === true &&
         beneathAny(HARNESS_READ_PREFIXES)) ||
       (opts.allowAttachmentPaths === true &&
-        beneathAny(ATTACHMENT_READ_PREFIXES));
+        beneathAny(ATTACHMENT_READ_PREFIXES)) ||
+      (opts.allowEvidenceExcerptPaths === true &&
+        beneathAny(EVIDENCE_EXCERPT_PREFIXES));
 
     for (let i = 0; i < segments.length; i++) {
       const seg = segments[i] as string;

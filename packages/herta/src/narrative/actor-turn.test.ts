@@ -5542,13 +5542,51 @@ describe("runActorCompletionTurn — supervisor (Slice: supervisor)", () => {
       expect(out.text).not.toContain("@板砖");
     });
 
-    it("costs nothing when the speech carries no trigger", async () => {
-      // The gate must not add a round-trip to ordinary conversation — only
-      // a token that would really fire earns the second look.
-      const out = await runWith(["板砖救不了你的那种。"], ["OK"]);
-      expect(out.text).toContain("板砖救不了你");
+    it("costs nothing when the speech never mentions 板砖", async () => {
+      // The judges must not add a round-trip to ordinary conversation —
+      // only a live token (trigger judge) or a 板砖 mention with no token
+      // (missing-dispatch judge, ADR 0036) earns a second look.
+      const out = await runWith(["这道题你自己再瞪十分钟。"], ["OK"]);
+      expect(out.text).toContain("再瞪十分钟");
       expect(out.dispatches).toBe(0);
       expect(out.supervisorCalls).toBe(1);
+    });
+
+    it("a triggerless 板砖 mention earns the missing-dispatch judge; an OK commits unchanged (ADR 0036)", async () => {
+      // Rhetoric that merely mentions 板砖 costs one focused judge call now
+      // — the price of catching unbacked promises at their source. The
+      // judge's OK leaves the text byte-identical.
+      const out = await runWith(["板砖救不了你的那种。"], ["OK", "OK"]);
+      expect(out.text).toContain("板砖救不了你");
+      expect(out.dispatches).toBe(0);
+      // Supervisor, then the missing-dispatch judge.
+      expect(out.supervisorCalls).toBe(2);
+    });
+
+    it("converts an unbacked 板砖 promise into a veto → rethink → respeak (ADR 0036)", async () => {
+      // The persona E2E's fabrication cascade began with exactly this
+      // shape: present work promised to the 开拓者, no `@板砖`, nothing
+      // dispatched — and the user came back to collect. The judge's BLOCK
+      // folds into the supervisor veto, so the ordinary rethink-respeak
+      // machinery resolves it.
+      const promise =
+        "好——需求说清楚了。板砖就专门管这种事。先去翻你代码，一会儿一起看结果。";
+      // The respeak text appears twice so the assertion is independent of
+      // whether the two-stage rethink consumes a script slot or fail-softs
+      // to the single-stage respeak in this stub setup.
+      const respeak =
+        "改口：这题我现在看逻辑就够，先不动板砖。哪一步溢出你说，我听。";
+      const out = await runWith(
+        [promise, respeak, respeak],
+        [
+          "OK", // full supervisor passes the promise
+          "BLOCK：漏派：我刚才向他承诺了板砖会去翻代码，但这句话派不出任何活", // the judge
+          "OK", // supervisor passes the respeak
+        ],
+      );
+      expect(out.dispatches).toBe(0);
+      expect(out.text).not.toContain("一会儿一起看结果");
+      expect(out.text).toContain("改口");
     });
 
     it("does not judge a VETOED candidate's trigger — only the re-speak's", async () => {

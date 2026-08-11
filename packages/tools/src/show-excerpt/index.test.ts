@@ -170,12 +170,46 @@ describe("show_excerpt", () => {
     expect(r.ok).toBe(false);
   });
 
-  it("does NOT follow harness-internal read paths (unlike read_file)", async () => {
-    // read_file carries allowHarnessReadPaths so the backend can follow the
-    // harness's own `.herta/logs/…` pointers. PRESENTING harness internals to
-    // the user is a different act, and this tool has no such carve-out.
-    const r = await run({ path: ".herta/logs/whatever.log", fromLine: 1 });
+  it("DOES excerpt a redacted command log (ADR 0036, amending ADR 0027 §5)", async () => {
+    // §5 originally excluded ALL harness internals from this tool. The
+    // persona E2E (2026-08-11) showed the one honest answer to "念给我听那
+    // 行输出" is a bounded excerpt of the persisted receipt — the backend
+    // tried three times and was denied. `.herta/logs/` passes redactSecrets
+    // at capture, so quoting it surfaces nothing the redactor let through.
+    // The file must EXIST here: the old pin asserted denial on a nonexistent
+    // path, which not_found satisfied just as well — a vacuous pin.
+    mkdirSync(join(root, ".herta", "logs"), { recursive: true });
+    writeFileSync(
+      join(root, ".herta", "logs", "run-abc.log"),
+      "exit 0\np = 4.21e-22\nline three\n",
+    );
+    const r = await run({
+      path: ".herta/logs/run-abc.log",
+      fromLine: 2,
+      toLine: 2,
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.data?.excerpt).toContain("4.21e-22");
+  });
+
+  it("still does NOT present tool-results — the unredacted subtree (ADR 0027 §5 residue)", async () => {
+    // The asymmetry IS the redaction boundary: run_command logs are
+    // secret-redacted at capture; tool-results is written verbatim, so
+    // excerpting it would turn unredacted bytes into user-facing text.
+    // read_file keeps its navigation carve-out there; this tool does not.
+    mkdirSync(join(root, ".herta", "tool-results"), { recursive: true });
+    writeFileSync(
+      join(root, ".herta", "tool-results", "call-1.json"),
+      '{"raw": "verbatim"}\n',
+    );
+    const r = await run({
+      path: ".herta/tool-results/call-1.json",
+      fromLine: 1,
+    });
     expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error?.code).toBe("path_denied");
   });
 
   it("DOES present a session attachment (ADR 0033)", async () => {

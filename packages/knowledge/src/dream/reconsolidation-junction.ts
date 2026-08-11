@@ -27,6 +27,10 @@ import type {
   DreamManifest,
   Episode,
 } from "./types.js";
+import {
+  extractTrailblazerLines,
+  validateUserLines,
+} from "./user-line-gate.js";
 
 /** Everything the junction shares with the surrounding pass. The manifest is
  *  mutated in place (same contract as the orchestrator's own helpers); the
@@ -266,9 +270,27 @@ export async function runReconsolidationJunction(
       );
     }
 
-    // The candidate must clear the deterministic format gate (with refine).
+    // The candidate must clear the deterministic format gate AND the
+    // user-line gate (ADR 0036) — a merge weaves OLD + donor, so its
+    // 开拓者 lines must trace to the episode's real user messages or to
+    // lines the OLD record already carried (validated when IT promoted).
+    // Same refine loop, same corrective-first contract as the main path.
+    const mergeSources = [
+      ...ep.blocks
+        .filter((b) => b.kind === "user")
+        .map((b) => (b.kind === "user" ? b.text : "")),
+      ...extractTrailblazerLines(oldFeian),
+    ];
+    const checkMerged = (feian: string): { ok: boolean; errors: string[] } => {
+      const v = validateFeian(feian);
+      const u = validateUserLines(feian, mergeSources);
+      return {
+        ok: v.ok && u.ok,
+        errors: [...(v.ok ? [] : v.errors), ...u.errors],
+      };
+    };
     let candidate = mergedResult.feian;
-    let mValid = validateFeian(candidate);
+    let mValid = checkMerged(candidate);
     for (let k = 0; !mValid.ok && k < cfg.refineMaxRetries; k++) {
       const refined = await jsonCall<{ feian?: string }>(
         ctx.client,
@@ -278,7 +300,7 @@ export async function runReconsolidationJunction(
       );
       if (refined === undefined || typeof refined.feian !== "string") break;
       candidate = refined.feian;
-      mValid = validateFeian(candidate);
+      mValid = checkMerged(candidate);
     }
     if (!mValid.ok) {
       return reinforceOnly(`reinforce-fallback ${old.file}: merged invalid`);

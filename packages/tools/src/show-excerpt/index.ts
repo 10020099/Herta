@@ -59,14 +59,20 @@ function cutAtChar(text: string, max: number): string {
  * `readOnly` and the ordinary path guard: this is a read, and it is exempt
  * from almost nothing. It does NOT set `allowHarnessReadPaths` — read_file has
  * that carve-out so the backend can follow the harness's own
- * `.herta/logs/…` pointers, but PRESENTING harness internals to the user is
- * not what this tool is for.
+ * `.herta/tool-results/…` pointers, but PRESENTING unredacted harness
+ * internals to the user is not what this tool is for.
  *
- * It DOES set `allowAttachmentPaths` (ADR 0033). The distinction is the reason
- * those are two flags and not one: `.herta/attachments/` holds documents the
- * 开拓者 handed over, so they are user content stored under a harness
- * directory rather than harness internals, and showing one back is exactly
- * this tool's job.
+ * It DOES set `allowAttachmentPaths` (ADR 0033) and
+ * `allowEvidenceExcerptPaths` (ADR 0036, amending ADR 0027 §5's blanket
+ * exclusion). The distinctions are the reason those are separate flags:
+ * `.herta/attachments/` holds documents the 开拓者 handed over — user
+ * content stored under a harness directory — and showing one back is
+ * exactly this tool's job; `.herta/logs/` holds shell output that passed
+ * `redactSecrets` at capture, and the persona E2E (2026-08-11) showed the
+ * one honest answer to "念给我听那行输出" is a bounded excerpt of that
+ * receipt — the backend tried three times and was denied, leaving
+ * paraphrase as the only path. `tool-results/` stays excluded: it is
+ * written verbatim, so quoting it would surface unredacted bytes.
  */
 export function showExcerptTool(): HertaTool {
   return {
@@ -106,11 +112,14 @@ export function showExcerptTool(): HertaTool {
       }
       const { path, fromLine, toLine, match, context } = parsed.data;
 
-      // No harness-internals carve-out (see the header) — but attachments ARE
-      // presentable: a document the user handed over that Herta could read and
-      // never quote back would answer half the request (ADR 0033).
+      // No tool-results carve-out (see the header) — but attachments AND the
+      // redacted command logs ARE presentable: a document the user handed
+      // over, or a shell receipt they asked to hear verbatim, that Herta
+      // could read and never quote back would answer half the request
+      // (ADR 0033 / ADR 0036).
       const safe = await resolveSafePath(ctx.workspaceRoot, path, {
         allowAttachmentPaths: true,
+        allowEvidenceExcerptPaths: true,
       });
       if (!safe.ok) {
         return {

@@ -12,7 +12,10 @@ import {
   FEIAN_GROUNDING_SLOT,
   supervisorSystemPromptFor,
 } from "./supervisor-system-prompt.js";
-import { buildTriggerRecheckSystemPrompt } from "./trigger-recheck-system-prompt.js";
+import {
+  buildMissingDispatchSystemPrompt,
+  buildTriggerRecheckSystemPrompt,
+} from "./trigger-recheck-system-prompt.js";
 
 /**
  * Input to the supervisor's speech check. The supervisor evaluates
@@ -244,11 +247,19 @@ const TRIGGER_RECHECK_USER_MESSAGE_TAIL: Record<PromptLang, string> = {
   en: `Judge only whether the \`@板砖\` inside the \`### 我刚才要说出口的话\` code block above should really fire right now (the code fence itself is not part of the line), then output only the final verdict line(s) (OK, or one or more lines of BLOCK：<类别>：<one first-person sentence in English>).`,
 };
 
+/** Closing instruction of the missing-dispatch judge's user message
+ *  (ADR 0036) — same three-header body, opposite question. */
+const MISSING_DISPATCH_USER_MESSAGE_TAIL: Record<PromptLang, string> = {
+  zh: `只判断上面 \`### 我刚才要说出口的话\` 代码块里那段话是否在承诺板砖此刻执行一件具体活、却没有会真触发的 \`@板砖\`（代码块围栏本身不算话的一部分），然后只输出最终判定行（OK，或 BLOCK：漏派：<第一人称一句>）。`,
+  en: `Judge only whether the line inside the \`### 我刚才要说出口的话\` code block above promises present 板砖 work without a live \`@板砖\` (the code fence itself is not part of the line), then output only the final verdict line (OK, or BLOCK：漏派：<one first-person sentence in English>).`,
+};
+
 function buildTriggerRecheckUserMessage(
   input: Pick<
     TriggerRecheckInput,
     "recentRecord" | "currentTurnThought" | "candidateSpeech" | "lang"
   >,
+  tail: Record<PromptLang, string> = TRIGGER_RECHECK_USER_MESSAGE_TAIL,
 ): string {
   const lang = input.lang ?? "zh";
   const serializedRecord = serializeTerminalRecord(input.recentRecord, {
@@ -273,7 +284,7 @@ ${fenceModelText(candidateSafe)}
 
 ---
 
-${TRIGGER_RECHECK_USER_MESSAGE_TAIL[lang]}`;
+${tail[lang]}`;
 }
 
 /**
@@ -293,6 +304,42 @@ export function buildTriggerRecheckPrompt(
 ): { prompt: string; frame: ActorPromptFrame } {
   const systemMessage = buildTriggerRecheckSystemPrompt(input.lang ?? "zh");
   const userMessage = buildTriggerRecheckUserMessage(input);
+  const prompt = `${systemMessage}${USER_MESSAGE_SEPARATOR}${userMessage}`;
+  const frame: ActorPromptFrame = {
+    stableSystem: systemMessage,
+    repoInstructions: "",
+    memoryContext: "",
+    retrievedLore: "",
+    messages: [
+      {
+        role: "user",
+        text: userMessage,
+        ts: "1970-01-01T00:00:00.000Z",
+      },
+    ],
+    toolSchemas: [],
+    trace: EMPTY_PROMPT_TRACE,
+  };
+  return { prompt, frame };
+}
+
+/**
+ * Build the missing-dispatch judge's prompt + frame (ADR 0036) — the
+ * trigger recheck's mirror: same three-header user message, the opposite
+ * question in the system message ("did this line promise present 板砖 work
+ * with no live `@板砖`?"). Pure, like its sibling.
+ */
+export function buildMissingDispatchPrompt(
+  input: Pick<
+    TriggerRecheckInput,
+    "recentRecord" | "currentTurnThought" | "candidateSpeech" | "lang"
+  >,
+): { prompt: string; frame: ActorPromptFrame } {
+  const systemMessage = buildMissingDispatchSystemPrompt(input.lang ?? "zh");
+  const userMessage = buildTriggerRecheckUserMessage(
+    input,
+    MISSING_DISPATCH_USER_MESSAGE_TAIL,
+  );
   const prompt = `${systemMessage}${USER_MESSAGE_SEPARATOR}${userMessage}`;
   const frame: ActorPromptFrame = {
     stableSystem: systemMessage,
@@ -644,6 +691,50 @@ export async function recheckTrigger(
     }
     // tool-call-request events are deliberately ignored — the
     // supervisor never calls tools.
+  }
+  const parsed = parseSupervisorVerdict(buffered);
+  const base = {
+    verdict: parsed.verdict,
+    blockFindings: parsed.blockFindings,
+    prompt,
+    rawOutput: buffered,
+    reasoning,
+  };
+  return parsed.reason !== undefined
+    ? { ...base, reason: parsed.reason }
+    : base;
+}
+
+/**
+ * Run the missing-dispatch judge end-to-end (ADR 0036) — recheckTrigger's
+ * mirror. The call site (actor-turn) gates it on a candidate that MENTIONS
+ * 板砖 while carrying no dispatch-effective `@板砖`, and folds a BLOCK into
+ * the supervisor veto so the rethink-respeak machinery resolves it: she
+ * either really dispatches or takes the promise back. The harness never
+ * injects an `@` itself — a fabricated dispatch would be worse than a
+ * missed one. Fail-soft is inherited from `parseSupervisorVerdict`
+ * (garbled / empty → `ok` → commit unchanged).
+ */
+export async function judgeMissingDispatch(
+  input: TriggerRecheckInput,
+): Promise<SupervisorCheckResult> {
+  const { prompt, frame } = buildMissingDispatchPrompt({
+    recentRecord: input.recentRecord,
+    currentTurnThought: input.currentTurnThought,
+    candidateSpeech: input.candidateSpeech,
+    lang: input.lang ?? "zh",
+  });
+  input.onPromptBuilt?.(prompt);
+  let buffered = "";
+  let reasoning = "";
+  for await (const ev of input.provider.streamChat(frame, input.signal)) {
+    if (ev.type === "text-delta") {
+      buffered += ev.text;
+    } else if (ev.type === "reasoning-delta") {
+      reasoning += ev.text;
+    } else if (ev.type === "finish") {
+      break;
+    }
   }
   const parsed = parseSupervisorVerdict(buffered);
   const base = {

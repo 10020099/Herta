@@ -352,6 +352,69 @@ describe("runDreamPass", () => {
 
   // Faithfulness gate (2026-07-19): a page that abandoned its source
   // episode's substance archives even with a perfect voice score.
+  it("archives a candidate whose （开拓者 说） lines are invented, feeding the gate error through refine first (ADR 0036)", async () => {
+    // The persona E2E (2026-08-11) caught the LLM faithfulness critique
+    // passing a counterfeit page with four user turns the 开拓者 never typed.
+    // The structural user-line gate shares the format-refine loop: the draft
+    // gets refine chances with the named error, and only then archives.
+    const inventedPage =
+      "### 废案_00：编出来的对话\n那天的记录我翻得很熟，熟到能背出他没说过的话。\n\n---\n\n（开拓者 说）\n这句台词是编出来的，记录里从来没有人打过这一行字。\n（/开拓者 说）\n\n（我 说）\n我的回答倒是无所谓，我的话本来就允许梦里重写。\n（/我 说）";
+    const refinePrompts: string[] = [];
+    const client = fakeClient();
+    (client.chatJson as ReturnType<typeof vi.fn>).mockImplementation(
+      async ({
+        systemPrompt,
+        userPayload,
+      }: {
+        systemPrompt: string;
+        userPayload: string;
+      }) => {
+        if (systemPrompt.includes("是否值得被收录"))
+          return {
+            rawJsonText: JSON.stringify({ worthy: true, reason: "x" }),
+            model: "m",
+          };
+        if (systemPrompt.includes("修复")) {
+          // The refine call — capture that it received the gate's error
+          // (errors ride the USER payload) and return the SAME invented
+          // page (unrepentant model).
+          refinePrompts.push(userPayload);
+          return {
+            rawJsonText: JSON.stringify({ feian: inventedPage }),
+            model: "m",
+          };
+        }
+        return {
+          rawJsonText: JSON.stringify({
+            feian: inventedPage,
+            situationTag: "counterfeit",
+          }),
+          model: "m",
+        };
+      },
+    );
+    const res = await runDreamPass({
+      workspaceRoot: ws,
+      sessions: [{ sessionId: "s1", record }],
+      client,
+      runId: "ul1",
+      config: testConfig,
+      now: () => new Date("2026-06-18T09:30:00Z"),
+    });
+    expect(res.promoted).toBe(0);
+    expect(res.archived).toBeGreaterThanOrEqual(1);
+    const m = readManifest(join(ws, ".herta", "dream"));
+    const entry = m.episodes.find((e) => e.outcome === "archived");
+    expect(entry?.reason).toContain("不存在的开拓者台词");
+    // The gate error reached the refine prompt — corrective before terminal.
+    expect(refinePrompts.some((p) => p.includes("不存在的开拓者台词"))).toBe(
+      true,
+    );
+    // Nothing invented reached the corpus.
+    const files = readdirSync(join(ws, ".herta", "narrative"));
+    expect(files.some((f) => f.includes("编出来的对话"))).toBe(false);
+  });
+
   it("archives a candidate below minFaithfulnessScore even when voice passes", async () => {
     const client = fakeClient();
     (client.chatJson as ReturnType<typeof vi.fn>).mockImplementation(

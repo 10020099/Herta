@@ -161,8 +161,10 @@ export type {
   SlowStreamController,
 } from "./narrative/streaming-sink.js";
 export {
+  buildMissingDispatchPrompt,
   buildSupervisorPrompt,
   isTriggerRelatedFinding,
+  judgeMissingDispatch,
   parseSupervisorVerdict,
   SUPERVISOR_ENABLED_MARKER,
   type SupervisorCheckInput,
