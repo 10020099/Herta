@@ -171,6 +171,21 @@ const PHASE_TWO_SPEECH_RETRY_HINT_3_TEXT: Record<PromptLang, string> = {
 export const PHASE_TWO_SPEECH_RETRY_HINT_3 =
   PHASE_TWO_SPEECH_RETRY_HINT_3_TEXT.zh;
 
+const PHASE_TWO_SPEECH_SLOT_RETRY_HINT_TEXT: Record<PromptLang, string> = {
+  zh: "〔我刚才没说话，我写了个占位符。{需要说的话} 那种东西是模板上给话留的空位，不是话本身——开拓者读到的会是一串括号。现在把那句话真的说出来：必须以（我 说）开始，以（/我 说）结束，中间是我对开拓者讲的原话，不是对“我该说点什么”的描述。冷评、判断、反问都可以，占位符不行。〕",
+  en: "〔That wasn't speech, that was a placeholder. Something like {your line here} is the blank a template leaves FOR a line, not the line — what the Trailblazer would read is a row of brackets. Now actually say it: start with （我 说）, end with （/我 说）, and in between put the words I'm saying to the Trailblazer, not a description of what I ought to say. A cold remark, a verdict, a rhetorical question — any of those. A placeholder, no.〕",
+};
+
+const PHASE_TWO_SPEECH_SLOT_RETRY_HINT_2_TEXT: Record<PromptLang, string> = {
+  zh: "〔又是占位符。我大概是在想“这里该说点什么”，然后把这个念头本身写了出来——那不叫说话，那叫描述我要说话。换个走法：抓住开拓者那句话里最具体的一个点——一个词、一个动作、一个不对劲的地方——直接对它开口，第一个字就是台词。必须以（我 说）开始，以（/我 说）结束，中间不许再出现任何被括号围起来的空位。〕",
+  en: "〔A placeholder again. I was presumably thinking “something goes here” and then wrote the thought itself down — that isn't speaking, that's describing that I intend to speak. Different approach: grab the most concrete point in the Trailblazer's last line — a word, an action, something off about it — and open straight at it, first character already dialogue. Start with （我 说）, end with （/我 说）, and no more bracketed blanks anywhere in between.〕",
+};
+
+const PHASE_TWO_SPEECH_SLOT_RETRY_HINT_3_TEXT: Record<PromptLang, string> = {
+  zh: "〔连着两次都在写占位符，这是惯性，不是没东西可说。强制开始：从开拓者刚才那句话里挑一个词，把它抄进我的第一句里，然后顺着说下去——他用了什么称呼？什么动词？什么语气？拎一个出来，借力开口。写出来的每一个字都得是我要让他听见的话；一旦冒出 { 或 <，就是又写错了，删掉重来。以（我 说）开始，写完一句完整的话再闭合（/我 说）。〕",
+  en: "〔Two placeholders in a row — that's inertia, not having nothing to say. Forced start: take one word out of what the Trailblazer just said, copy it into my first sentence, and carry on from there — what did they call me? What verb did they use? What tone? Lift one out and lean on it to get talking. Every character I write has to be something meant for them to hear; the moment a { or a < shows up, it's gone wrong again — delete it and start over. Start with （我 说）, write one complete sentence, then close with （/我 说）.〕",
+};
+
 /**
  * Ordered array of speech retry hint variants, indexed by retry
  * attempt (0 = first retry, 1 = second, 2 = third). Aligned with
@@ -181,6 +196,32 @@ export const PHASE_TWO_SPEECH_RETRY_HINTS = [
   PHASE_TWO_SPEECH_RETRY_HINT,
   PHASE_TWO_SPEECH_RETRY_HINT_2,
   PHASE_TWO_SPEECH_RETRY_HINT_3,
+] as const;
+
+/**
+ * SLOT retry hints — the second ladder (2026-08-12).
+ *
+ * The ladder above is written entirely for EMPTINESS ("闭合得太快",
+ * "不能空白"), which is the wrong accusation when the model emitted a
+ * template placeholder instead: it did not close early, it wrote
+ * something. Reusing the empty hints there meant recovery worked by
+ * RE-ROLLING rather than by correcting — the model was never told what
+ * it actually did.
+ *
+ * So the two failures get two ladders, selected per attempt by
+ * `SpeechRetryCause`. Same three-beat escalation as the empty ladder —
+ * base / different-angle / mechanical forcing — but the accusation
+ * names the placeholder, and variant 3 gives a concrete abort signal
+ * (`{` or `<` appearing at all) rather than "don't be blank".
+ *
+ * The cause is recomputed after EVERY attempt, so a run that starts
+ * empty and turns into a slot (or the reverse) switches ladders
+ * mid-flight instead of finishing with the wrong correction.
+ */
+export const PHASE_TWO_SPEECH_SLOT_RETRY_HINTS = [
+  PHASE_TWO_SPEECH_SLOT_RETRY_HINT_TEXT.zh,
+  PHASE_TWO_SPEECH_SLOT_RETRY_HINT_2_TEXT.zh,
+  PHASE_TWO_SPEECH_SLOT_RETRY_HINT_3_TEXT.zh,
 ] as const;
 
 /**
@@ -353,6 +394,9 @@ export interface ActorHintTexts {
   readonly phase2Thought: string;
   readonly phase2Speech: string;
   readonly speechRetry: readonly [string, string, string];
+  /** The SLOT ladder — used when the failing attempt emitted a template
+   *  placeholder rather than nothing (2026-08-12). */
+  readonly speechSlotRetry: readonly [string, string, string];
   readonly thoughtRetry: readonly [string, string, string];
   readonly beatNoBanzhuanClause: string;
   readonly beatPatchPreview: string;
@@ -369,6 +413,11 @@ export function actorHintTexts(lang: PromptLang = "zh"): ActorHintTexts {
       PHASE_TWO_SPEECH_RETRY_HINT_TEXT[lang],
       PHASE_TWO_SPEECH_RETRY_HINT_2_TEXT[lang],
       PHASE_TWO_SPEECH_RETRY_HINT_3_TEXT[lang],
+    ],
+    speechSlotRetry: [
+      PHASE_TWO_SPEECH_SLOT_RETRY_HINT_TEXT[lang],
+      PHASE_TWO_SPEECH_SLOT_RETRY_HINT_2_TEXT[lang],
+      PHASE_TWO_SPEECH_SLOT_RETRY_HINT_3_TEXT[lang],
     ],
     thoughtRetry: [
       PHASE_TWO_THOUGHT_RETRY_HINT_TEXT[lang],

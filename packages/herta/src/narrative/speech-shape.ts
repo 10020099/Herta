@@ -75,3 +75,22 @@ export function isPlaceholderOnlySpeech(text: string): boolean {
 export function isUnusableSpeech(text: string): boolean {
   return text.trim().length === 0 || isPlaceholderOnlySpeech(text);
 }
+
+/**
+ * WHY a speech attempt was rejected — which retry ladder should correct it.
+ *
+ * The two failures need different accusations. The empty ladder says
+ * "闭合得太快 / 不能空白", which is simply FALSE when the model emitted a
+ * placeholder: it did not close early, it wrote something. Telling it the
+ * wrong thing means the retry recovers by re-rolling rather than by
+ * correcting, which is the same mistake the ADR 0036 refine loop avoids by
+ * feeding each gate's actual finding back into the prompt.
+ */
+export type SpeechRetryCause = "empty" | "slot";
+
+/** The cause, or `undefined` when the text is usable and no retry is due. */
+export function speechRetryCause(text: string): SpeechRetryCause | undefined {
+  if (text.trim().length === 0) return "empty";
+  if (isPlaceholderOnlySpeech(text)) return "slot";
+  return undefined;
+}

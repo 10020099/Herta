@@ -2769,6 +2769,103 @@ describe("runActorCompletionTurn — two-phase mood routing (Slice 13)", () => {
     expect(JSON.stringify(record)).not.toContain("需要说的话");
   });
 
+  it("a slot failure draws from the SLOT ladder, not the empty one (2026-08-12)", async () => {
+    // Two failures, two ladders. The empty ladder accuses the model of
+    // closing early and demands "not blank" — which is false and unhelpful
+    // when it emitted a placeholder, since a placeholder is not blank. Using
+    // it there meant the retry recovered by re-rolling rather than by
+    // correcting.
+    const speechPrompts: string[] = [];
+    let speechCallIdx = 0;
+    const actorProvider: CompletionProviderAdapter = {
+      streamCompletion(req: CompletionRequest): AsyncIterable<CompletionEvent> {
+        async function* gen(): AsyncGenerator<CompletionEvent> {
+          if (
+            req.prompt.endsWith("（我 想）\n") ||
+            req.prompt.endsWith("（我 想）\n……")
+          ) {
+            yield { type: "text-delta", text: "想好了。（/我 想）" };
+            yield { type: "finish", reason: "stop" };
+            return;
+          }
+          speechPrompts.push(req.prompt);
+          speechCallIdx += 1;
+          yield {
+            type: "text-delta",
+            text:
+              speechCallIdx <= 2
+                ? "{需要说的话}（/我 说）"
+                : "记不得了，你说。（/我 说）",
+          };
+          yield { type: "finish", reason: "stop" };
+        }
+        return gen();
+      },
+    };
+
+    const deps = mkDeps({ provider: actorProvider });
+    await runActorCompletionTurn({ record: [] as TerminalRecord }, "hi", {
+      ...deps,
+      intentState: "默认",
+      attachedMetaThink: mkAttachment({ preThinkText: "T", preSpeakText: "S" }),
+    });
+
+    expect(speechCallIdx).toBe(3);
+    // Retry 1 got slot-ladder variant 1, and NOT the empty ladder's wording.
+    expect(speechPrompts[1]).toContain("我写了个占位符");
+    expect(speechPrompts[1]).not.toContain("中间不能空白");
+    // Retry 2 escalated within the SAME ladder.
+    expect(speechPrompts[2]).toContain("又是占位符");
+  });
+
+  it("switches ladders mid-flight when the failure changes (2026-08-12)", async () => {
+    // The cause is recomputed after EVERY attempt, so a run that starts empty
+    // and turns into a slot gets the empty correction first and the slot
+    // correction second — rather than finishing with the wrong accusation
+    // because of how it happened to begin.
+    const speechPrompts: string[] = [];
+    let speechCallIdx = 0;
+    const actorProvider: CompletionProviderAdapter = {
+      streamCompletion(req: CompletionRequest): AsyncIterable<CompletionEvent> {
+        async function* gen(): AsyncGenerator<CompletionEvent> {
+          if (
+            req.prompt.endsWith("（我 想）\n") ||
+            req.prompt.endsWith("（我 想）\n……")
+          ) {
+            yield { type: "text-delta", text: "想好了。（/我 想）" };
+            yield { type: "finish", reason: "stop" };
+            return;
+          }
+          speechPrompts.push(req.prompt);
+          speechCallIdx += 1;
+          let text: string;
+          if (speechCallIdx === 1)
+            text = "（/我 说）"; // empty
+          else if (speechCallIdx === 2)
+            text = "{需要说的话}（/我 说）"; // slot
+          else text = "记不得了，你说。（/我 说）";
+          yield { type: "text-delta", text };
+          yield { type: "finish", reason: "stop" };
+        }
+        return gen();
+      },
+    };
+
+    const deps = mkDeps({ provider: actorProvider });
+    await runActorCompletionTurn({ record: [] as TerminalRecord }, "hi", {
+      ...deps,
+      intentState: "默认",
+      attachedMetaThink: mkAttachment({ preThinkText: "T", preSpeakText: "S" }),
+    });
+
+    expect(speechCallIdx).toBe(3);
+    // Attempt 1 was EMPTY → retry 1 uses the empty ladder.
+    expect(speechPrompts[1]).toContain("中间不能空白");
+    expect(speechPrompts[1]).not.toContain("占位符");
+    // Attempt 2 was a SLOT → retry 2 switches to the slot ladder.
+    expect(speechPrompts[2]).toContain("又是占位符");
+  });
+
   it("a slot on the FINAL ladder attempt falls back to ……, not ……{slot} (2026-08-12)", async () => {
     // The seed is prepended unconditionally on the last attempt, so a slot
     // there would become `……{需要说的话}` — no longer whole-string

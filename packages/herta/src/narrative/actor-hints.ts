@@ -7,6 +7,7 @@ import {
   BEAT_HINT_VERIFICATION_FINISHED,
   PHASE_TWO_SPEECH_HINT,
   PHASE_TWO_SPEECH_RETRY_HINTS,
+  PHASE_TWO_SPEECH_SLOT_RETRY_HINTS,
   PHASE_TWO_THOUGHT_HINT,
   PHASE_TWO_THOUGHT_RETRY_HINTS,
   THOUGHT_HINT_LINE,
@@ -27,6 +28,11 @@ export interface ActorHints {
   readonly phase2Thought: string;
   readonly phase2Speech: string;
   readonly speechRetry: readonly [string, string, string];
+  /** The SLOT ladder (2026-08-12): used when the failing attempt emitted a
+   *  template placeholder rather than nothing. The empty ladder's accusation
+   *  ("闭合得太快" / "不能空白") is simply false in that case, so recovery
+   *  was re-rolling rather than correcting. */
+  readonly speechSlotRetry: readonly [string, string, string];
   readonly thoughtRetry: readonly [string, string, string];
   readonly beatPatchPreview: string;
   readonly beatVerification: string;
@@ -75,6 +81,7 @@ export const DEFAULT_ACTOR_HINTS: ActorHints = {
   phase2Thought: PHASE_TWO_THOUGHT_HINT,
   phase2Speech: PHASE_TWO_SPEECH_HINT,
   speechRetry: PHASE_TWO_SPEECH_RETRY_HINTS,
+  speechSlotRetry: PHASE_TWO_SPEECH_SLOT_RETRY_HINTS,
   thoughtRetry: PHASE_TWO_THOUGHT_RETRY_HINTS,
   beatPatchPreview: BEAT_HINT_PATCH_PREVIEW,
   beatVerification: BEAT_HINT_VERIFICATION_FINISHED,
@@ -99,6 +106,7 @@ export function defaultActorHintsFor(lang: PromptLang = "zh"): ActorHints {
     phase2Thought: t.phase2Thought,
     phase2Speech: t.phase2Speech,
     speechRetry: t.speechRetry,
+    speechSlotRetry: t.speechSlotRetry,
     thoughtRetry: t.thoughtRetry,
     beatPatchPreview: t.beatPatchPreview,
     beatVerification: t.beatVerification,
@@ -165,6 +173,11 @@ export function loadActorHints(lang: PromptLang = "zh"): ActorHints {
       asset(hints, "speech_retry_1") ?? defaults.speechRetry[0],
       asset(hints, "speech_retry_2") ?? defaults.speechRetry[1],
       asset(hints, "speech_retry_3") ?? defaults.speechRetry[2],
+    ],
+    speechSlotRetry: [
+      asset(hints, "speech_slot_retry_1") ?? defaults.speechSlotRetry[0],
+      asset(hints, "speech_slot_retry_2") ?? defaults.speechSlotRetry[1],
+      asset(hints, "speech_slot_retry_3") ?? defaults.speechSlotRetry[2],
     ],
     thoughtRetry: [
       asset(hints, "thought_retry_1") ?? defaults.thoughtRetry[0],

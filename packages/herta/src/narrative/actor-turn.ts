@@ -35,7 +35,12 @@ import {
   prepareTurnRecap,
   type RecapRuntime,
 } from "./session-recap-runtime.js";
-import { isPlaceholderOnlySpeech, isUnusableSpeech } from "./speech-shape.js";
+import {
+  isPlaceholderOnlySpeech,
+  isUnusableSpeech,
+  type SpeechRetryCause,
+  speechRetryCause,
+} from "./speech-shape.js";
 import type {
   ActorStreamingSink,
   LiveSlowStreamController,
@@ -878,7 +883,9 @@ export async function runActorCompletionTurn(
       // supervisor would otherwise commit it verbatim.
       isUnusableSpeech(streamResult.text)
     ) {
+      const cause = speechRetryCause(streamResult.text);
       streamResult = await recoverEmptySpeech({
+        ...(cause !== undefined ? { cause } : {}),
         deps,
         record,
         priorTurnLength,
@@ -1629,7 +1636,9 @@ export async function runActorCompletionTurn(
           // The live re-speak was empty; abandon its controller (it pushed
           // nothing) and render the recovered text via the old replay path.
           retryLive = undefined;
+          const vetoRetryCause = speechRetryCause(streamResult.text);
           streamResult = await recoverEmptySpeech({
+            ...(vetoRetryCause !== undefined ? { cause: vetoRetryCause } : {}),
             deps,
             record,
             priorTurnLength,
@@ -2335,7 +2344,12 @@ async function recoverEmptySpeech(opts: {
   signal: AbortSignal;
   recap?: string;
   recapBoundaryIndex?: number;
+  /** What the attempt that sent us here did wrong. Recomputed after every
+   *  ladder attempt, so the correction always matches the LAST failure
+   *  rather than the first one. */
+  cause?: SpeechRetryCause;
 }): Promise<{ surface: Surface; text: string }> {
+  let cause: SpeechRetryCause = opts.cause ?? "empty";
   let result: { surface: Surface; text: string } = {
     surface: "speech",
     text: "",
@@ -2360,6 +2374,7 @@ async function recoverEmptySpeech(opts: {
       //   idx 1 → specific-point anchor
       //   idx 2 → mechanical first-character forcing
       retryAttemptIndex: attempt,
+      retryCause: cause,
       // Defer sink streaming — caller drives rendering once the
       // recovery returns (typically via the supervisor block's
       // slowStreamSpeech path).
@@ -2371,7 +2386,9 @@ async function recoverEmptySpeech(opts: {
     result = await runPhaseTwo(phaseTwoOpts);
     // Keep climbing the ladder on a slot-only completion too — accepting the
     // first `{需要说的话}` would spend the retries and still commit garbage.
-    if (!isUnusableSpeech(result.text)) break;
+    const next = speechRetryCause(result.text);
+    if (next === undefined) break;
+    cause = next;
   }
   return result;
 }
@@ -2554,6 +2571,13 @@ async function runPhaseTwo(opts: {
    */
   retryAttemptIndex?: number;
   /**
+   * Which speech-retry ladder to draw the hint from — i.e. what the
+   * attempt that triggered this retry actually did wrong. Only consulted
+   * when `isSpeechRetry === true`; defaults to the empty ladder, which is
+   * the historical behaviour and the far more common failure.
+   */
+  retryCause?: SpeechRetryCause;
+  /**
    * Live-feed sink for the supervised first-pass speech (SPEC §4). When set,
    * safe-boundary chunks stream to it as they generate (instead of
    * `deferStreaming` buffering silently). Mutually exclusive with
@@ -2594,7 +2618,15 @@ async function runPhaseTwo(opts: {
   } else if (opts.isPostRethinkRespeak === true) {
     formatHint = hints.supervisorRespeak;
   } else if (opts.isSpeechRetry === true) {
-    formatHint = hints.speechRetry[retryIdx] ?? hints.speechRetry[0];
+    // Two ladders, picked by WHAT WENT WRONG on the attempt that triggered
+    // this retry (2026-08-12). The empty ladder accuses the model of closing
+    // early and demands "not blank"; that is the wrong correction for a
+    // placeholder, which is not blank at all. `recoverEmptySpeech`
+    // recomputes the cause after every attempt, so a run that starts empty
+    // and turns into a slot switches ladders mid-flight.
+    const ladder =
+      opts.retryCause === "slot" ? hints.speechSlotRetry : hints.speechRetry;
+    formatHint = ladder[retryIdx] ?? ladder[0];
   } else {
     formatHint = hints.phase2Speech;
   }
