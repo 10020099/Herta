@@ -35,6 +35,7 @@ import {
   prepareTurnRecap,
   type RecapRuntime,
 } from "./session-recap-runtime.js";
+import { isPlaceholderOnlySpeech, isUnusableSpeech } from "./speech-shape.js";
 import type {
   ActorStreamingSink,
   LiveSlowStreamController,
@@ -872,7 +873,10 @@ export async function runActorCompletionTurn(
     if (
       !needsDetect &&
       streamResult.surface === "speech" &&
-      streamResult.text.trim().length === 0
+      // Slot-only counts as empty (2026-08-12): a completion that emits
+      // `{需要说的话}` produced no content, and every path that skips the
+      // supervisor would otherwise commit it verbatim.
+      isUnusableSpeech(streamResult.text)
     ) {
       streamResult = await recoverEmptySpeech({
         deps,
@@ -1616,7 +1620,12 @@ export async function runActorCompletionTurn(
         // Defer streaming + render via the unified-replay step below
         // — the live-stream sink path already missed its chance
         // (streamResult was reassigned twice, the cursor isn't sync'd).
-        if (streamResult.text.trim().length === 0) {
+        // Slot-only counts as empty here too, and this site is the one that
+        // matters most: the veto respeak commits WITHOUT a second supervisor
+        // pass, so a degenerate `{需要说的话}` has no other guard. The
+        // corrective veto hint is itself instruction-dense — exactly the
+        // input that pushes a model toward emitting the slot.
+        if (isUnusableSpeech(streamResult.text)) {
           // The live re-speak was empty; abandon its controller (it pushed
           // nothing) and render the recovered text via the old replay path.
           retryLive = undefined;
@@ -1821,9 +1830,17 @@ export async function runActorCompletionTurn(
     }
 
     // surface === "speech"
-    if (streamResult.text.trim().length === 0) {
-      // Empty speech (e.g. provider returned only a stop sequence or finish).
-      // Don't commit an empty block; terminate the turn gracefully.
+    //
+    // THE COMMIT BOUNDARY. Every path converges here — first pass, veto
+    // respeak, empty-speech ladder, and every supervisor-skipping path
+    // (deadline fail-soft, provider error, `config.supervisor.enabled =
+    // false`). This is therefore the one place a deterministic shape guard
+    // covers all of them, which an LLM judge by construction cannot.
+    if (isUnusableSpeech(streamResult.text)) {
+      // Empty speech (e.g. provider returned only a stop sequence or finish),
+      // or a slot-only completion that survived the retry ladder. Don't commit
+      // it; terminate the turn gracefully. Silence is recoverable — the user
+      // can just speak again — whereas `{需要说的话}` on screen is not.
       deps.sink?.flushBlocks(record);
       return { record };
     }
@@ -2352,7 +2369,9 @@ async function recoverEmptySpeech(opts: {
       phaseTwoOpts.temperature = temperature;
     }
     result = await runPhaseTwo(phaseTwoOpts);
-    if (result.text.trim().length > 0) break;
+    // Keep climbing the ladder on a slot-only completion too — accepting the
+    // first `{需要说的话}` would spend the retries and still commit garbage.
+    if (!isUnusableSpeech(result.text)) break;
   }
   return result;
 }
@@ -2635,7 +2654,14 @@ async function runPhaseTwo(opts: {
   // slow-stream / unified-replay consume `result.text` which now
   // includes the seed at the start.
   if (bodySeed !== undefined) {
-    return { surface: result.surface, text: `${bodySeed}${result.text}` };
+    // A slot-only body is DISCARDED rather than prefixed (2026-08-12).
+    // `……{需要说的话}` is no longer whole-string slot-shaped, so it would
+    // sail past the commit-boundary guard and put the placeholder on screen
+    // with an ellipsis in front of it. Dropping it lets the seed stand alone
+    // — which is exactly the graceful non-empty fallback this seed exists to
+    // provide, and a better end-of-ladder outcome than a dropped turn.
+    const body = isPlaceholderOnlySpeech(result.text) ? "" : result.text;
+    return { surface: result.surface, text: `${bodySeed}${body}` };
   }
   return result;
 }
@@ -3028,6 +3054,23 @@ function makeFireBeat(
         ? beatBuffered.slice(0, beatStopIdx)
         : stripDanglingStopPrefix(beatBuffered, beatStops);
     deps.onPrompt?.("beat-out", `${beatPrompt}${beatText}`);
+
+    // Slot-only beat (2026-08-12). This lane bypasses the supervisor BY
+    // DESIGN (see the commit comment below), so the deterministic guards are
+    // the only thing standing between a degenerate completion and the record
+    // — exactly the argument that already justifies sanitize and trigger
+    // neutralization here.
+    //
+    // Guarded on `!beginCalled`: beats stream LIVE, so once tokens have
+    // reached the sink the cursor has advanced and a block MUST be committed
+    // at that position — dropping it then would desync screen from record,
+    // which is the worse bug the salvage path above exists to prevent. When
+    // nothing has been emitted yet (the safe-emit gate held the whole short
+    // beat, the common case) the beat can be dropped cleanly, same as the
+    // empty case below.
+    if (!beginCalled && isPlaceholderOnlySpeech(beatText)) {
+      return null;
+    }
 
     if (deps.sink !== undefined && beatEmittedTail < beatText.length) {
       // Flush any tail that wasn't emitted during the streaming loop.

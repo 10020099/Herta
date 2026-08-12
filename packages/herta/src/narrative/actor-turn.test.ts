@@ -2704,6 +2704,121 @@ describe("runActorCompletionTurn — two-phase mood routing (Slice 13)", () => {
     expect(record.filter((b) => b.kind === "herta")).toHaveLength(2);
   });
 
+  it("a slot-only completion never reaches the record — it takes the empty-speech ladder (2026-08-12)", async () => {
+    // Reported from a user's session: the visible reply was the literal
+    // template placeholder `{需要说的话}`. The model emitted the SLOT instead
+    // of filling it, and it reached the screen because every guard on
+    // committed speech was an LLM judge — and the supervisor is skipped on
+    // the veto respeak, on a deadline/provider fail-soft, and entirely when
+    // `config.supervisor.enabled` is false.
+    //
+    // A slot-only body is now treated as the same class of failure as an
+    // empty one: no content. It takes the same rising-temperature ladder,
+    // and the placeholder never lands in the record.
+    let speechCallIdx = 0;
+    const actorProvider: CompletionProviderAdapter = {
+      streamCompletion(req: CompletionRequest): AsyncIterable<CompletionEvent> {
+        async function* gen(): AsyncGenerator<CompletionEvent> {
+          if (
+            req.prompt.endsWith("（我 想）\n") ||
+            req.prompt.endsWith("（我 想）\n……")
+          ) {
+            yield { type: "text-delta", text: "想好了。（/我 想）" };
+            yield { type: "finish", reason: "stop" };
+            return;
+          }
+          speechCallIdx += 1;
+          // First two speech attempts emit the slot; the third writes real
+          // dialogue — so the ladder must not accept the slot and stop.
+          yield {
+            type: "text-delta",
+            text:
+              speechCallIdx <= 2
+                ? "{需要说的话}（/我 说）"
+                : "记不得了，你说。（/我 说）",
+          };
+          yield { type: "finish", reason: "stop" };
+        }
+        return gen();
+      },
+    };
+
+    const deps = mkDeps({ provider: actorProvider });
+    const { record } = await runActorCompletionTurn(
+      { record: [] as TerminalRecord },
+      "hi",
+      {
+        ...deps,
+        intentState: "默认",
+        attachedMetaThink: mkAttachment({
+          preThinkText: "T",
+          preSpeakText: "S",
+        }),
+      },
+    );
+
+    // It kept climbing rather than committing the first slot.
+    expect(speechCallIdx).toBe(3);
+    const speechBlocks = record.filter(
+      (b) => b.kind === "herta" && b.surface === "speech",
+    );
+    expect(speechBlocks).toHaveLength(1);
+    expect((speechBlocks[0] as { text: string }).text).toBe("记不得了，你说。");
+    // The placeholder is nowhere in the record — not as a block, not
+    // smuggled into one.
+    expect(JSON.stringify(record)).not.toContain("需要说的话");
+  });
+
+  it("a slot on the FINAL ladder attempt falls back to ……, not ……{slot} (2026-08-12)", async () => {
+    // The seed is prepended unconditionally on the last attempt, so a slot
+    // there would become `……{需要说的话}` — no longer whole-string
+    // slot-shaped, and therefore past the commit guard with the placeholder
+    // still on screen. The slot body is discarded so the seed stands alone.
+    let speechCallIdx = 0;
+    const actorProvider: CompletionProviderAdapter = {
+      streamCompletion(req: CompletionRequest): AsyncIterable<CompletionEvent> {
+        async function* gen(): AsyncGenerator<CompletionEvent> {
+          if (
+            req.prompt.endsWith("（我 想）\n") ||
+            req.prompt.endsWith("（我 想）\n……")
+          ) {
+            yield { type: "text-delta", text: "想好了。（/我 想）" };
+            yield { type: "finish", reason: "stop" };
+            return;
+          }
+          speechCallIdx += 1;
+          // Hopelessly stuck on the slot, every single attempt.
+          yield { type: "text-delta", text: "{需要说的话}（/我 说）" };
+          yield { type: "finish", reason: "stop" };
+        }
+        return gen();
+      },
+    };
+
+    const deps = mkDeps({ provider: actorProvider });
+    const { record } = await runActorCompletionTurn(
+      { record: [] as TerminalRecord },
+      "hi",
+      {
+        ...deps,
+        intentState: "默认",
+        attachedMetaThink: mkAttachment({
+          preThinkText: "T",
+          preSpeakText: "S",
+        }),
+      },
+    );
+
+    expect(speechCallIdx).toBe(4); // initial + 3 ladder attempts
+    const speechBlocks = record.filter(
+      (b) => b.kind === "herta" && b.surface === "speech",
+    );
+    // The in-voice fallback commits, NOT the placeholder.
+    expect(speechBlocks).toHaveLength(1);
+    expect((speechBlocks[0] as { text: string }).text).toBe("……");
+    expect(JSON.stringify(record)).not.toContain("需要说的话");
+  });
+
   it("attaches meta-think before （我 想） and meta-speak AFTER the thought block (two distinct positions)", async () => {
     // The bug this test guards against: a previous design used one
     // splice point for both surfaces, which put `preSpeakText` BEFORE
