@@ -92,14 +92,22 @@ describe("mapStream", () => {
     ]);
   });
 
-  it("malformed-args.sse throws ProviderError{tool-args}", async () => {
-    await expect(eventsFromFixture("malformed-args.sse")).rejects.toMatchObject(
-      {
-        name: "ProviderError",
-        code: "tool-args",
-        retryable: false,
-      },
-    );
+  // Was: "throws ProviderError{tool-args}". Changed 2026-08-13 — throwing
+  // killed the whole brief on the first mis-escaped argument and discarded
+  // every tool call already run in it. The failure now travels as data and
+  // the turn loop hands it back to the model as a result it can act on.
+  it("malformed-args.sse marks the call instead of throwing", async () => {
+    const events = await eventsFromFixture("malformed-args.sse");
+    expect(events).toHaveLength(2);
+    const [first, second] = events;
+    if (first?.type !== "tool-call-request") throw new Error("no call");
+    expect(first.call.id).toBe("call_1");
+    expect(first.call.tool).toBe("read_file");
+    // input is inert: nothing was recoverable, so it must not look usable.
+    expect(first.call.input).toEqual({});
+    expect(first.call.malformedArgs?.raw).toBe("{not json");
+    expect(first.call.malformedArgs?.parseError).toBeTruthy();
+    expect(second).toEqual({ type: "finish", reason: "tool_calls" });
   });
 
   it("truncated-stream.sse throws ProviderError{sse}", async () => {

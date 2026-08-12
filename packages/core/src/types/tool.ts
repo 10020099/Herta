@@ -2,6 +2,26 @@ export interface ToolCallRequest {
   id: string;
   tool: string;
   input: unknown;
+  /**
+   * Set when the model's `arguments` string was not valid JSON, so `input`
+   * could not be recovered (it is `{}` in that case — never trust it).
+   *
+   * The provider used to THROW here, which killed the whole turn
+   * non-retryably and discarded every tool call already executed in it. That
+   * is the wrong shape for this failure: unlike a dead socket, a mis-escaped
+   * argument is something the model can see and fix, and the loop already
+   * contains the neighbouring case — an uncaught tool crash comes back as a
+   * `tool_crashed` result the model reads and works around (ADR 0025 slice
+   * 5). The live trigger was `grep -o ".\{0,40\}checksum.\{0,60\}"`: `\{` is
+   * a legal BRE escape and an illegal JSON one, and the class is wide — `\d`,
+   * `\w`, `\s`, `\+`, `\(` are all invalid JSON escapes, so any regex written
+   * into a string argument could end a brief (measured 1/12 on prompts that
+   * invite one, 2026-08-13).
+   *
+   * A call carrying this MUST NOT be executed and MUST NOT be sent to the
+   * permission engine — there is no parsed input to check.
+   */
+  malformedArgs?: { raw: string; parseError: string };
 }
 
 export interface ToolResult<O = unknown> {

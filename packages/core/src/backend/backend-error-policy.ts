@@ -106,6 +106,12 @@ export function classifyBackendInferenceError(err: unknown): BackendErrorClass {
       }
       case "missing-key":
         return terminal("missing-key");
+      // Defensive fallback only. The OpenAI-compatible stream no longer
+      // THROWS on unparseable tool arguments — it marks the call
+      // (`ToolCallRequest.malformedArgs`) and the turn loop answers it with a
+      // model-visible result, because killing the brief discarded work the
+      // model could have recovered from. Kept terminal for any other provider
+      // that still raises it: never blind-retry a call we could not read.
       case "tool-args":
         return terminal("malformed-tool-args");
       case "http": {

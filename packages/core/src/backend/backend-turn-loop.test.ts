@@ -660,6 +660,179 @@ describe("partitionToolCalls (ADR 0025 slice 5)", () => {
   });
 });
 
+describe("malformed tool-args containment (2026-08-13)", () => {
+  /** A call the provider could not parse — the shape stream.ts now yields
+   *  instead of throwing ProviderError{code:"tool-args"}. */
+  const badCall = (id: string, tool = "run_command") => ({
+    type: "tool-call-request" as const,
+    call: {
+      id,
+      tool,
+      input: {},
+      malformedArgs: {
+        raw: '{"argv": ["grep", "-o", ".\\{0,40\\}checksum", "f.json"]}',
+        parseError: "Bad escaped character in JSON at position 34",
+      },
+    },
+  });
+
+  it("answers the model instead of killing the turn, and never runs the tool", async () => {
+    // Pre-fix this threw out of the provider, backend-error-policy classified
+    // it terminal, and the whole brief died on the FIRST occurrence — with
+    // every tool call already executed in that turn discarded.
+    const provider = new FakeProvider({
+      turns: [
+        [badCall("c1"), { type: "finish", reason: "tool_calls" }],
+        [
+          { type: "text-delta", text: "recovered" },
+          { type: "finish", reason: "stop" },
+        ],
+      ],
+    });
+    const deps = buildDeps(provider);
+    let ran = 0;
+    deps.tools.register({
+      name: "run_command",
+      schema: () => ({ name: "run_command", description: "", inputSchema: {} }),
+      run: async () => {
+        ran += 1;
+        return { ok: true, summary: "ran" };
+      },
+    });
+
+    const events: AgentEvent[] = [];
+    for await (const e of runBackendTurnLoop(deps, sampleBrief, {
+      signal: new AbortController().signal,
+      userMessages: sampleUserMessages,
+    })) {
+      events.push(e);
+    }
+
+    expect(events.some((e) => e.type === "turn.failed")).toBe(false);
+    expect(events.some((e) => e.type === "turn.finished")).toBe(true);
+    // The tool must NOT have run: there was no parsed input to run it with.
+    expect(ran).toBe(0);
+
+    const fin = events.find((e) => e.type === "tool.call.finished");
+    if (fin?.type !== "tool.call.finished") throw new Error("no finish");
+    expect(fin.result.ok).toBe(false);
+    expect(fin.result.error?.code).toBe("malformed_tool_args");
+    // The suggestion has to name the real mechanism — a model told only
+    // "invalid JSON" re-sends the same string.
+    expect(fin.result.suggestion).toContain("backslash");
+    // And it must say the tool did not run, or the model may assume it did.
+    expect(fin.result.suggestion).toContain("did NOT run");
+
+    // It reached the transcript: every tool_call_id needs a matching tool
+    // message or the NEXT provider request 400s.
+    const toolMsg = deps.transcript.all().find((m) => m.role === "tool");
+    if (toolMsg?.role !== "tool") throw new Error("no tool msg");
+    expect(toolMsg.result.error?.code).toBe("malformed_tool_args");
+  });
+
+  it("never asks the permission engine about a call it could not parse", async () => {
+    const provider = new FakeProvider({
+      turns: [
+        [badCall("c1"), { type: "finish", reason: "tool_calls" }],
+        [
+          { type: "text-delta", text: "ok" },
+          { type: "finish", reason: "stop" },
+        ],
+      ],
+    });
+    const deps = buildDeps(provider);
+    let checked = 0;
+    const inner = deps.permissions;
+    deps.permissions = {
+      check: async (call, ctx) => {
+        checked += 1;
+        return inner.check(call, ctx);
+      },
+    } as typeof deps.permissions;
+
+    for await (const _ of runBackendTurnLoop(deps, sampleBrief, {
+      signal: new AbortController().signal,
+      userMessages: sampleUserMessages,
+    })) {
+      // drain
+    }
+    expect(checked).toBe(0);
+  });
+
+  it("a good call in the same iteration still runs", async () => {
+    const provider = new FakeProvider({
+      turns: [
+        [
+          badCall("c1"),
+          {
+            type: "tool-call-request",
+            call: { id: "c2", tool: "fine", input: {} },
+          },
+          { type: "finish", reason: "tool_calls" },
+        ],
+        [
+          { type: "text-delta", text: "done" },
+          { type: "finish", reason: "stop" },
+        ],
+      ],
+    });
+    const deps = buildDeps(provider);
+    let ran = 0;
+    deps.tools.register({
+      name: "fine",
+      schema: () => ({ name: "fine", description: "", inputSchema: {} }),
+      run: async () => {
+        ran += 1;
+        return { ok: true, summary: "fine ok" };
+      },
+    });
+
+    for await (const _ of runBackendTurnLoop(deps, sampleBrief, {
+      signal: new AbortController().signal,
+      userMessages: sampleUserMessages,
+    })) {
+      // drain
+    }
+    expect(ran).toBe(1);
+    const toolMsgs = deps.transcript.all().filter((m) => m.role === "tool");
+    // Both ids answered — the malformed one and the executed one.
+    expect(toolMsgs).toHaveLength(2);
+  });
+
+  it("gives up after repeated malformed args instead of spinning", async () => {
+    // Containment must not become an infinite loop when the model cannot
+    // correct itself.
+    const provider = new FakeProvider({
+      turns: [
+        [badCall("c1"), { type: "finish", reason: "tool_calls" }],
+        [badCall("c2"), { type: "finish", reason: "tool_calls" }],
+        [badCall("c3"), { type: "finish", reason: "tool_calls" }],
+        [badCall("c4"), { type: "finish", reason: "tool_calls" }],
+        [
+          { type: "text-delta", text: "never reached" },
+          { type: "finish", reason: "stop" },
+        ],
+      ],
+    });
+    const deps = buildDeps(provider);
+
+    const events: AgentEvent[] = [];
+    for await (const e of runBackendTurnLoop(deps, sampleBrief, {
+      signal: new AbortController().signal,
+      userMessages: sampleUserMessages,
+    })) {
+      events.push(e);
+    }
+
+    const failed = events.find((e) => e.type === "turn.failed");
+    if (failed?.type !== "turn.failed") throw new Error("expected turn.failed");
+    expect(failed.error.message).toContain("malformed tool arguments");
+    // It failed AFTER telling the model, not on the first occurrence.
+    const finished = events.filter((e) => e.type === "tool.call.finished");
+    expect(finished.length).toBeGreaterThanOrEqual(3);
+  });
+});
+
 describe("tool-crash containment + parallel read-only batches (ADR 0025 slice 5)", () => {
   it("an uncaught tool throw becomes a model-visible tool_crashed result; the turn continues", async () => {
     const provider = new FakeProvider({

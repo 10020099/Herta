@@ -123,6 +123,8 @@ export async function* runBackendTurnLoop(
 ): AsyncGenerator<AgentEvent> {
   const startedAt = deps.clock().getTime();
   let toolCallCount = 0;
+  /** Malformed-argument calls contained so far this turn (see the cap). */
+  let malformedArgsCount = 0;
 
   // Distributive Omit so each variant of the union has its `layer` removed
   // independently. Plain `Omit<AgentEvent, "layer">` collapses the union and
@@ -310,8 +312,55 @@ export async function* runBackendTurnLoop(
             message: progress.message,
           });
         };
+      // Malformed-argument containment. A call whose `arguments` were not
+      // valid JSON has no input to check or run, so it never reaches the
+      // permission engine or the tool — it is answered directly with a
+      // model-visible result, exactly as an uncaught tool crash is. Handled
+      // BEFORE partitioning so a read-only tool with broken args cannot be
+      // scheduled into a concurrent batch.
+      //
+      // Every id still gets a result: the assistant message above already
+      // recorded the call, and a tool_call_id with no matching tool message
+      // makes the NEXT provider request 400.
+      const parseableCalls: ToolCallRequest[] = [];
+      for (const call of accToolCalls) {
+        if (call.malformedArgs === undefined) {
+          parseableCalls.push(call);
+          continue;
+        }
+        toolCallCount += 1;
+        malformedArgsCount += 1;
+        const result = malformedArgsResult(call.tool, call.malformedArgs);
+        yield* emit({
+          type: "tool.call.started",
+          id: call.id,
+          tool: call.tool,
+          inputSummary: "(unparseable arguments)",
+        });
+        yield* emit({
+          type: "tool.call.finished",
+          id: call.id,
+          tool: call.tool,
+          result,
+        });
+        deps.transcript.appendTool(call.id, result, deps.clock());
+      }
+      if (malformedArgsCount >= MAX_MALFORMED_TOOL_ARGS) {
+        // Terminal, but only after the model was told and given a chance —
+        // the pre-fix behavior was this failure on the FIRST occurrence.
+        const error: AgentError = {
+          kind: "provider_failed",
+          message: `model produced malformed tool arguments ${malformedArgsCount} times in one turn`,
+        };
+        yield* emit({ type: "turn.failed", error });
+        return;
+      }
+      // Every call this iteration was malformed: nothing to execute, but the
+      // results are in the transcript, so loop back and let the model retry.
+      if (parseableCalls.length === 0) continue;
+
       const groups = partitionToolCalls(
-        accToolCalls,
+        parseableCalls,
         (name) => deps.tools.get(name)?.readOnly === true,
       );
       for (const group of groups) {
@@ -693,6 +742,45 @@ export function partitionToolCalls(
   }
   flush();
   return batches;
+}
+
+/**
+ * How many malformed-argument calls one turn tolerates before it gives up.
+ *
+ * Containment must not become a spin: the model is told exactly what broke,
+ * so a model that can recover does it on the next iteration, and one that
+ * cannot would otherwise burn the full MAX_TURN_ITERATIONS re-emitting the
+ * same broken escape. Three is "one slip, one bad correction, stop".
+ */
+const MAX_MALFORMED_TOOL_ARGS = 3;
+
+/**
+ * Containment result for a tool call whose arguments were not valid JSON.
+ *
+ * Mirrors `crashedResult`: the model sees what it did wrong and keeps the
+ * turn. The suggestion names the actual mechanism because the failure is
+ * almost always regex backslashes — a model told only "invalid JSON" tends to
+ * re-send the same string.
+ */
+function malformedArgsResult(
+  toolName: string,
+  malformed: { raw: string; parseError: string },
+): ToolResult {
+  return {
+    ok: false,
+    error: {
+      code: "malformed_tool_args",
+      message: `arguments for ${toolName} were not valid JSON (${malformed.parseError}); received: ${malformed.raw.slice(0, 200)}`,
+      retryable: false,
+    },
+    suggestion:
+      "The tool did NOT run — nothing changed. Your arguments were not valid JSON, " +
+      "so they could not be read. This is usually a regex: a backslash inside a " +
+      'JSON string must be doubled, so `.\\{0,40\\}` has to be written "\\\\{0,40\\\\}", ' +
+      "and \\d \\w \\s \\+ \\( are invalid JSON escapes for the same reason. " +
+      "Re-issue the call with the backslashes escaped, or use a pattern that needs none.",
+    summary: `failed: malformed arguments for ${toolName}`,
+  };
 }
 
 /** Containment result for an uncaught tool throw (ADR 0025 slice 5). */

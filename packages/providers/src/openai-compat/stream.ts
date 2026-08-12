@@ -159,12 +159,22 @@ function parseCall(entry: {
   try {
     input = entry.argsBuf.length > 0 ? JSON.parse(entry.argsBuf) : {};
   } catch (cause) {
-    throw new ProviderError({
-      code: "tool-args",
-      retryable: false,
-      message: `invalid JSON in tool arguments for ${entry.name}: ${entry.argsBuf.slice(0, 80)}`,
-      cause,
-    });
+    // Do NOT throw. This used to raise ProviderError{code:"tool-args",
+    // retryable:false}, which backend-error-policy maps to terminal — one
+    // mis-escaped argument ended the brief and threw away every tool call
+    // already run in it (measured: a real brief died 256s and five calls in).
+    // The model can fix its own escaping when told, so the failure travels
+    // as data and the turn loop hands it back as a tool result. See the
+    // `malformedArgs` doc on ToolCallRequest.
+    return {
+      id: entry.id,
+      tool: entry.name,
+      input: {},
+      malformedArgs: {
+        raw: entry.argsBuf,
+        parseError: cause instanceof Error ? cause.message : String(cause),
+      },
+    };
   }
   return { id: entry.id, tool: entry.name, input };
 }

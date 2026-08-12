@@ -6,6 +6,72 @@ describe("isTestCommand", () => {
     expect(isTestCommand(["pnpm", "test"])).toBe(true);
   });
 
+  // ── widened 2026-08-13 ────────────────────────────────────────────────
+  // Everything below returned FALSE before the widening, so a green suite
+  // left report.tests empty and Herta had no test evidence to cite. Found by
+  // the ADR 0025 lab, whose planted project runs `node --test`.
+  it("detects node's built-in runner", () => {
+    expect(isTestCommand(["node", "--test"])).toBe(true);
+    expect(isTestCommand(["node", "--test", "test/"])).toBe(true);
+    expect(
+      isTestCommand(["node", "--experimental-strip-types", "--test"]),
+    ).toBe(true);
+  });
+
+  it("does NOT treat a plain node script as a test, even a test-ish name", () => {
+    // `node <file>` is "run a script". Trusting the filename would log
+    // `node test-server.mjs` as a passing suite — a fabricated green.
+    expect(isTestCommand(["node", "test.mjs"])).toBe(false);
+    expect(isTestCommand(["node", "test-server.mjs"])).toBe(false);
+    // …and a script that takes its own --test flag is still not a test run.
+    expect(isTestCommand(["node", "server.mjs", "--test"])).toBe(false);
+  });
+
+  it("detects the common JS runners, bare or wrapped", () => {
+    expect(isTestCommand(["vitest", "run"])).toBe(true);
+    expect(isTestCommand(["jest"])).toBe(true);
+    expect(isTestCommand(["mocha", "spec/"])).toBe(true);
+    expect(isTestCommand(["npx", "vitest", "run"])).toBe(true);
+    expect(isTestCommand(["pnpm", "exec", "jest"])).toBe(true);
+    expect(isTestCommand(["bunx", "ava"])).toBe(true);
+  });
+
+  it("detects a runner behind a path or a Windows shim", () => {
+    expect(isTestCommand(["./node_modules/.bin/vitest", "run"])).toBe(true);
+    expect(isTestCommand(["jest.cmd"])).toBe(true);
+  });
+
+  it("detects yarn / bun / deno test", () => {
+    expect(isTestCommand(["yarn", "test"])).toBe(true);
+    expect(isTestCommand(["bun", "test"])).toBe(true);
+    expect(isTestCommand(["deno", "test"])).toBe(true);
+  });
+
+  it("detects the test:unit script convention", () => {
+    expect(isTestCommand(["pnpm", "test:unit"])).toBe(true);
+    expect(isTestCommand(["npm", "run", "test:e2e"])).toBe(true);
+  });
+
+  it("detects other toolchains' test subcommands", () => {
+    expect(isTestCommand(["dotnet", "test"])).toBe(true);
+    expect(isTestCommand(["mvn", "test"])).toBe(true);
+    expect(isTestCommand(["gradle", "test"])).toBe(true);
+    expect(isTestCommand(["cargo", "nextest", "run"])).toBe(true);
+    expect(isTestCommand(["python", "-m", "pytest"])).toBe(true);
+    expect(isTestCommand(["python3", "-m", "unittest"])).toBe(true);
+  });
+
+  it("still refuses non-test work that the widening could have swept in", () => {
+    expect(isTestCommand(["npx", "eslint", "."])).toBe(false);
+    expect(isTestCommand(["pnpm", "exec", "tsc"])).toBe(false);
+    expect(isTestCommand(["yarn", "build"])).toBe(false);
+    expect(isTestCommand(["bun", "run", "dev"])).toBe(false);
+    expect(isTestCommand(["deno", "run", "main.ts"])).toBe(false);
+    expect(isTestCommand(["dotnet", "build"])).toBe(false);
+    expect(isTestCommand(["python", "-m", "http.server"])).toBe(false);
+    expect(isTestCommand(["python", "manage.py", "test"])).toBe(false);
+  });
+
   it("detects npm test", () => {
     expect(isTestCommand(["npm", "test"])).toBe(true);
   });
