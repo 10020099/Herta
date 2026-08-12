@@ -172,8 +172,8 @@ export const PHASE_TWO_SPEECH_RETRY_HINT_3 =
   PHASE_TWO_SPEECH_RETRY_HINT_3_TEXT.zh;
 
 const PHASE_TWO_SPEECH_SLOT_RETRY_HINT_TEXT: Record<PromptLang, string> = {
-  zh: "〔我刚才没说话，我写了个占位符。{需要说的话} 那种东西是模板上给话留的空位，不是话本身——开拓者读到的会是一串括号。现在把那句话真的说出来：必须以（我 说）开始，以（/我 说）结束，中间是我对开拓者讲的原话，不是对“我该说点什么”的描述。冷评、判断、反问都可以，占位符不行。〕",
-  en: "〔That wasn't speech, that was a placeholder. Something like {your line here} is the blank a template leaves FOR a line, not the line — what the Trailblazer would read is a row of brackets. Now actually say it: start with （我 说）, end with （/我 说）, and in between put the words I'm saying to the Trailblazer, not a description of what I ought to say. A cold remark, a verdict, a rhetorical question — any of those. A placeholder, no.〕",
+  zh: "〔我刚才没说话，我写了个占位符——括号夹着一句“这儿该说什么”的说明。那是模板上给话留的空位，不是话本身；开拓者读到的会是一行括号。现在把那句话真的说出来：必须以（我 说）开始，以（/我 说）结束，中间是我对开拓者讲的原话，不是对“我该说点什么”的描述。冷评、判断、反问都可以，占位符不行。〕",
+  en: "〔That wasn't speech, that was a placeholder — brackets wrapped around a note about what ought to go there. That is the blank a template leaves FOR a line, not the line; what the Trailblazer would read is a row of brackets. Now actually say it: start with （我 说）, end with （/我 说）, and in between put the words I'm saying to the Trailblazer, not a description of what I ought to say. A cold remark, a verdict, a rhetorical question — any of those. A placeholder, no.〕",
 };
 
 const PHASE_TWO_SPEECH_SLOT_RETRY_HINT_2_TEXT: Record<PromptLang, string> = {
@@ -182,8 +182,8 @@ const PHASE_TWO_SPEECH_SLOT_RETRY_HINT_2_TEXT: Record<PromptLang, string> = {
 };
 
 const PHASE_TWO_SPEECH_SLOT_RETRY_HINT_3_TEXT: Record<PromptLang, string> = {
-  zh: "〔连着两次都在写占位符，这是惯性，不是没东西可说。强制开始：从开拓者刚才那句话里挑一个词，把它抄进我的第一句里，然后顺着说下去——他用了什么称呼？什么动词？什么语气？拎一个出来，借力开口。写出来的每一个字都得是我要让他听见的话；一旦冒出 { 或 <，就是又写错了，删掉重来。以（我 说）开始，写完一句完整的话再闭合（/我 说）。〕",
-  en: "〔Two placeholders in a row — that's inertia, not having nothing to say. Forced start: take one word out of what the Trailblazer just said, copy it into my first sentence, and carry on from there — what did they call me? What verb did they use? What tone? Lift one out and lean on it to get talking. Every character I write has to be something meant for them to hear; the moment a { or a < shows up, it's gone wrong again — delete it and start over. Start with （我 说）, write one complete sentence, then close with （/我 说）.〕",
+  zh: "〔连着两次都在写占位符，这是惯性，不是没东西可说。强制开始：从开拓者刚才那句话里挑一个词，把它抄进我的第一句里，然后顺着说下去——他用了什么称呼？什么动词？什么语气？拎一个出来，借力开口。写出来的每一个字都得是我要让他听见的话；只要开口又是个括号——大括号、尖括号、方括号都算——就是又写错了，删掉重来。以（我 说）开始，写完一句完整的话再闭合（/我 说）。〕",
+  en: "〔Two placeholders in a row — that's inertia, not having nothing to say. Forced start: take one word out of what the Trailblazer just said, copy it into my first sentence, and carry on from there — what did they call me? What verb did they use? What tone? Lift one out and lean on it to get talking. Every character I write has to be something meant for them to hear; if it opens with a bracket again — curly, angle, square, any of them — it's gone wrong once more, so delete it and start over. Start with （我 说）, write one complete sentence, then close with （/我 说）.〕",
 };
 
 /**
@@ -209,7 +209,7 @@ export const PHASE_TWO_SPEECH_RETRY_HINTS = [
  * it actually did.
  *
  * So the two failures get two ladders, selected per attempt by
- * `SpeechRetryCause`. Same three-beat escalation as the empty ladder —
+ * `RetryCause`. Same three-beat escalation as the empty ladder —
  * base / different-angle / mechanical forcing — but the accusation
  * names the placeholder, and variant 3 gives a concrete abort signal
  * (`{` or `<` appearing at all) rather than "don't be blank".
@@ -284,6 +284,37 @@ export const PHASE_TWO_THOUGHT_RETRY_HINTS = [
   PHASE_TWO_THOUGHT_RETRY_HINT,
   PHASE_TWO_THOUGHT_RETRY_HINT_2,
   PHASE_TWO_THOUGHT_RETRY_HINT_3,
+] as const;
+
+const PHASE_TWO_THOUGHT_SLOT_RETRY_HINT_TEXT: Record<PromptLang, string> = {
+  zh: "〔我刚才没在想，我写了个占位符——括号夹着一句“这儿该想点什么”的说明。那是模板给念头留的空位，不是念头本身。现在真的过一遍脑子：以（我 想）开始，以（/我 想）结束，中间是我对开拓者刚才那句话的具体判断，不是对“我该想点什么”的描述。短可以，占位符不行。〕",
+  en: "〔That wasn't thinking, that was a placeholder — brackets wrapped around a note about what ought to go there. That is the blank a template leaves FOR a thought, not the thought. Now actually run the brain: start with （我 想）, end with （/我 想）, and in between put a concrete judgment about what the Trailblazer just said, not a description of what I ought to be thinking. Short is fine. A placeholder is not.〕",
+};
+
+const PHASE_TWO_THOUGHT_SLOT_RETRY_HINT_2_TEXT: Record<PromptLang, string> = {
+  zh: "〔又是占位符。我大概是在想“这里该有个判断”，然后把这个念头本身写了下来——那不叫想，那叫描述我要想。换个走法：挑开拓者那句话里最具体的一个点——一个词、一个语气、一个不对劲的地方——直接对它下一句判断，第一个字就是想法本身。以（我 想）开始，以（/我 想）结束，中间不许再出现被括号围起来的空位。〕",
+  en: "〔A placeholder again. I was presumably thinking “a judgment goes here” and then wrote that thought down instead of having one — that isn't thinking, that's describing that I intend to think. Different approach: pick the most concrete point in the Trailblazer's last line — a word, a tone, something off about it — and land a judgment directly on it, first character already the thought itself. Start with （我 想）, end with （/我 想）, and no more bracketed blanks anywhere in between.〕",
+};
+
+const PHASE_TWO_THOUGHT_SLOT_RETRY_HINT_3_TEXT: Record<PromptLang, string> = {
+  zh: "〔连着两次都在写占位符，这是惯性，不是没东西可想。强制开始：从开拓者刚才那句话里挑一个词，把它抄进我的第一句里，然后顺着想下去——他用了什么称呼？什么动词？什么语气？拎一个出来，借力起念。写出来的每一个字都得是我真在过的念头；只要开口又是个括号——大括号、尖括号、方括号都算——就是又写错了，删掉重来。以（我 想）开始，写完一句完整的判断再闭合（/我 想）。〕",
+  en: "〔Two placeholders in a row — that's inertia, not having nothing to think. Forced start: take one word out of what the Trailblazer just said, copy it into my first sentence, and think onward from there — what did they call me? What verb did they use? What tone? Lift one out and lean on it. Every character I write has to be a thought I am actually having; if it opens with a bracket again — curly, angle, square, any of them — it's gone wrong once more, so delete it and start over. Start with （我 想）, write one complete judgment, then close with （/我 想）.〕",
+};
+
+/**
+ * The THOUGHT slot ladder (2026-08-12) — the thought-lane mirror of
+ * `PHASE_TWO_SPEECH_SLOT_RETRY_HINTS`, and it exists for the same reason:
+ * the empty thought hints accuse the model of closing the block with
+ * nothing in it, which is false when it wrote a placeholder instead.
+ *
+ * A slot-only thought never reaches the user, but it is NOT harmless — it
+ * lands in the record and therefore in next turn's prompt, where it reads
+ * as something Herta actually thought.
+ */
+export const PHASE_TWO_THOUGHT_SLOT_RETRY_HINTS = [
+  PHASE_TWO_THOUGHT_SLOT_RETRY_HINT_TEXT.zh,
+  PHASE_TWO_THOUGHT_SLOT_RETRY_HINT_2_TEXT.zh,
+  PHASE_TWO_THOUGHT_SLOT_RETRY_HINT_3_TEXT.zh,
 ] as const;
 
 /**
@@ -398,6 +429,8 @@ export interface ActorHintTexts {
    *  placeholder rather than nothing (2026-08-12). */
   readonly speechSlotRetry: readonly [string, string, string];
   readonly thoughtRetry: readonly [string, string, string];
+  /** The thought-lane SLOT ladder — same split, same reason (2026-08-12). */
+  readonly thoughtSlotRetry: readonly [string, string, string];
   readonly beatNoBanzhuanClause: string;
   readonly beatPatchPreview: string;
   readonly beatVerification: string;
@@ -423,6 +456,11 @@ export function actorHintTexts(lang: PromptLang = "zh"): ActorHintTexts {
       PHASE_TWO_THOUGHT_RETRY_HINT_TEXT[lang],
       PHASE_TWO_THOUGHT_RETRY_HINT_2_TEXT[lang],
       PHASE_TWO_THOUGHT_RETRY_HINT_3_TEXT[lang],
+    ],
+    thoughtSlotRetry: [
+      PHASE_TWO_THOUGHT_SLOT_RETRY_HINT_TEXT[lang],
+      PHASE_TWO_THOUGHT_SLOT_RETRY_HINT_2_TEXT[lang],
+      PHASE_TWO_THOUGHT_SLOT_RETRY_HINT_3_TEXT[lang],
     ],
     beatNoBanzhuanClause: BEAT_NO_BANZHUAN_CLAUSE_TEXT[lang],
     beatPatchPreview: BEAT_HINT_PATCH_PREVIEW_TEXT[lang],

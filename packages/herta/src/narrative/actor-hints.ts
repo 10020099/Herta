@@ -10,6 +10,7 @@ import {
   PHASE_TWO_SPEECH_SLOT_RETRY_HINTS,
   PHASE_TWO_THOUGHT_HINT,
   PHASE_TWO_THOUGHT_RETRY_HINTS,
+  PHASE_TWO_THOUGHT_SLOT_RETRY_HINTS,
   THOUGHT_HINT_LINE,
 } from "./thought-hint.js";
 
@@ -34,6 +35,10 @@ export interface ActorHints {
    *  was re-rolling rather than correcting. */
   readonly speechSlotRetry: readonly [string, string, string];
   readonly thoughtRetry: readonly [string, string, string];
+  /** The thought-lane SLOT ladder (2026-08-12). A slot-only thought never
+   *  reaches the user, but it enters the record and next turn's prompt,
+   *  where it reads as something she actually thought. */
+  readonly thoughtSlotRetry: readonly [string, string, string];
   readonly beatPatchPreview: string;
   readonly beatVerification: string;
   readonly beatToolFail: string;
@@ -83,6 +88,7 @@ export const DEFAULT_ACTOR_HINTS: ActorHints = {
   speechRetry: PHASE_TWO_SPEECH_RETRY_HINTS,
   speechSlotRetry: PHASE_TWO_SPEECH_SLOT_RETRY_HINTS,
   thoughtRetry: PHASE_TWO_THOUGHT_RETRY_HINTS,
+  thoughtSlotRetry: PHASE_TWO_THOUGHT_SLOT_RETRY_HINTS,
   beatPatchPreview: BEAT_HINT_PATCH_PREVIEW,
   beatVerification: BEAT_HINT_VERIFICATION_FINISHED,
   beatToolFail: BEAT_HINT_TOOL_FAIL,
@@ -108,6 +114,7 @@ export function defaultActorHintsFor(lang: PromptLang = "zh"): ActorHints {
     speechRetry: t.speechRetry,
     speechSlotRetry: t.speechSlotRetry,
     thoughtRetry: t.thoughtRetry,
+    thoughtSlotRetry: t.thoughtSlotRetry,
     beatPatchPreview: t.beatPatchPreview,
     beatVerification: t.beatVerification,
     beatToolFail: t.beatToolFail,
@@ -183,6 +190,11 @@ export function loadActorHints(lang: PromptLang = "zh"): ActorHints {
       asset(hints, "thought_retry_1") ?? defaults.thoughtRetry[0],
       asset(hints, "thought_retry_2") ?? defaults.thoughtRetry[1],
       asset(hints, "thought_retry_3") ?? defaults.thoughtRetry[2],
+    ],
+    thoughtSlotRetry: [
+      asset(hints, "thought_slot_retry_1") ?? defaults.thoughtSlotRetry[0],
+      asset(hints, "thought_slot_retry_2") ?? defaults.thoughtSlotRetry[1],
+      asset(hints, "thought_slot_retry_3") ?? defaults.thoughtSlotRetry[2],
     ],
     beatPatchPreview: splice(
       asset(hints, "beat_patch_preview"),

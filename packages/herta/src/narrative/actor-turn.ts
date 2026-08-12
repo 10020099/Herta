@@ -20,6 +20,12 @@ import {
 import type { BeatFirer } from "./backend-bridge.js";
 import { invokeBanzhuanBridge } from "./backend-bridge.js";
 import { BeatPolicy } from "./beat-policy.js";
+import {
+  isPlaceholderOnly,
+  isUnusableBlock,
+  type RetryCause,
+  retryCause,
+} from "./block-shape.js";
 import { commonPrefixLen } from "./common-prefix.js";
 import { sanitizeActorText } from "./escape.js";
 import { lastNTurnsForSupervisor } from "./intent-router.js";
@@ -35,12 +41,6 @@ import {
   prepareTurnRecap,
   type RecapRuntime,
 } from "./session-recap-runtime.js";
-import {
-  isPlaceholderOnlySpeech,
-  isUnusableSpeech,
-  type SpeechRetryCause,
-  speechRetryCause,
-} from "./speech-shape.js";
 import type {
   ActorStreamingSink,
   LiveSlowStreamController,
@@ -798,9 +798,11 @@ export async function runActorCompletionTurn(
     if (
       !needsDetect &&
       streamResult.surface === "thought" &&
-      streamResult.text.trim().length === 0
+      isUnusableBlock(streamResult.text)
     ) {
+      const thoughtCause = retryCause(streamResult.text);
       streamResult = await recoverEmptyThought({
+        ...(thoughtCause !== undefined ? { cause: thoughtCause } : {}),
         deps,
         record,
         priorTurnLength,
@@ -881,9 +883,9 @@ export async function runActorCompletionTurn(
       // Slot-only counts as empty (2026-08-12): a completion that emits
       // `{需要说的话}` produced no content, and every path that skips the
       // supervisor would otherwise commit it verbatim.
-      isUnusableSpeech(streamResult.text)
+      isUnusableBlock(streamResult.text)
     ) {
-      const cause = speechRetryCause(streamResult.text);
+      const cause = retryCause(streamResult.text);
       streamResult = await recoverEmptySpeech({
         ...(cause !== undefined ? { cause } : {}),
         deps,
@@ -1632,11 +1634,11 @@ export async function runActorCompletionTurn(
         // pass, so a degenerate `{需要说的话}` has no other guard. The
         // corrective veto hint is itself instruction-dense — exactly the
         // input that pushes a model toward emitting the slot.
-        if (isUnusableSpeech(streamResult.text)) {
+        if (isUnusableBlock(streamResult.text)) {
           // The live re-speak was empty; abandon its controller (it pushed
           // nothing) and render the recovered text via the old replay path.
           retryLive = undefined;
-          const vetoRetryCause = speechRetryCause(streamResult.text);
+          const vetoRetryCause = retryCause(streamResult.text);
           streamResult = await recoverEmptySpeech({
             ...(vetoRetryCause !== undefined ? { cause: vetoRetryCause } : {}),
             deps,
@@ -1792,7 +1794,11 @@ export async function runActorCompletionTurn(
     };
 
     if (streamResult.surface === "thought") {
-      if (streamResult.text.trim().length === 0) {
+      // Slot-only lands here as well (2026-08-12): a placeholder that
+      // survived the ladder must not be committed as a thought, or next
+      // turn's prompt shows a row of brackets where a judgement should be
+      // and she reads it back as her own reasoning.
+      if (isUnusableBlock(streamResult.text)) {
         // Empty thought after the inline retry too — record this
         // iteration as an empty-thought iteration. The next iteration's
         // `forceSpeech` will be true (see counter check at the top of
@@ -1845,7 +1851,7 @@ export async function runActorCompletionTurn(
     // (deadline fail-soft, provider error, `config.supervisor.enabled =
     // false`). This is therefore the one place a deterministic shape guard
     // covers all of them, which an LLM judge by construction cannot.
-    if (isUnusableSpeech(streamResult.text)) {
+    if (isUnusableBlock(streamResult.text)) {
       // Empty speech (e.g. provider returned only a stop sequence or finish),
       // or a slot-only completion that survived the retry ladder. Don't commit
       // it; terminate the turn gracefully. Silence is recoverable — the user
@@ -2347,9 +2353,9 @@ async function recoverEmptySpeech(opts: {
   /** What the attempt that sent us here did wrong. Recomputed after every
    *  ladder attempt, so the correction always matches the LAST failure
    *  rather than the first one. */
-  cause?: SpeechRetryCause;
+  cause?: RetryCause;
 }): Promise<{ surface: Surface; text: string }> {
-  let cause: SpeechRetryCause = opts.cause ?? "empty";
+  let cause: RetryCause = opts.cause ?? "empty";
   let result: { surface: Surface; text: string } = {
     surface: "speech",
     text: "",
@@ -2386,7 +2392,7 @@ async function recoverEmptySpeech(opts: {
     result = await runPhaseTwo(phaseTwoOpts);
     // Keep climbing the ladder on a slot-only completion too — accepting the
     // first `{需要说的话}` would spend the retries and still commit garbage.
-    const next = speechRetryCause(result.text);
+    const next = retryCause(result.text);
     if (next === undefined) break;
     cause = next;
   }
@@ -2420,7 +2426,11 @@ async function recoverEmptyThought(opts: {
   signal: AbortSignal;
   recap?: string;
   recapBoundaryIndex?: number;
+  /** What the attempt that sent us here did wrong; recomputed after every
+   *  attempt, exactly as on the speech ladder. */
+  cause?: RetryCause;
 }): Promise<{ surface: Surface; text: string }> {
+  let cause: RetryCause = opts.cause ?? "empty";
   let result: { surface: Surface; text: string } = {
     surface: "thought",
     text: "",
@@ -2439,6 +2449,7 @@ async function recoverEmptyThought(opts: {
       signal: opts.signal,
       isThoughtRetry: true,
       retryAttemptIndex: attempt,
+      retryCause: cause,
       ...(opts.recap !== undefined ? { recap: opts.recap } : {}),
       recapBoundaryIndex: opts.recapBoundaryIndex ?? 0,
       // Thought streams write the "(思考中…)" indicator via the sink
@@ -2450,7 +2461,12 @@ async function recoverEmptyThought(opts: {
       phaseTwoOpts.temperature = temperature;
     }
     result = await runPhaseTwo(phaseTwoOpts);
-    if (result.text.trim().length > 0) break;
+    // Slot-only counts as unusable here too: a placeholder thought never
+    // reaches the user, but it lands in the record and therefore in next
+    // turn's prompt, where it reads as something she actually thought.
+    const next = retryCause(result.text);
+    if (next === undefined) break;
+    cause = next;
   }
   return result;
 }
@@ -2576,7 +2592,7 @@ async function runPhaseTwo(opts: {
    * when `isSpeechRetry === true`; defaults to the empty ladder, which is
    * the historical behaviour and the far more common failure.
    */
-  retryCause?: SpeechRetryCause;
+  retryCause?: RetryCause;
   /**
    * Live-feed sink for the supervised first-pass speech (SPEC §4). When set,
    * safe-boundary chunks stream to it as they generate (instead of
@@ -2604,11 +2620,17 @@ async function runPhaseTwo(opts: {
         hints.supervisorRethinkTemplate,
         opts.supervisorRethinkReason,
       );
+    } else if (opts.isThoughtRetry === true) {
+      // Two ladders here as well — see the speech branch below. A thought
+      // that came back as a placeholder did not "close with nothing in it",
+      // so the empty ladder's accusation would be wrong in the same way.
+      const ladder =
+        opts.retryCause === "slot"
+          ? hints.thoughtSlotRetry
+          : hints.thoughtRetry;
+      formatHint = ladder[retryIdx] ?? ladder[0];
     } else {
-      formatHint =
-        opts.isThoughtRetry === true
-          ? (hints.thoughtRetry[retryIdx] ?? hints.thoughtRetry[0])
-          : hints.phase2Thought;
+      formatHint = hints.phase2Thought;
     }
   } else if (opts.supervisorVetoReason !== undefined) {
     formatHint = buildSupervisorVetoHint(
@@ -2692,7 +2714,7 @@ async function runPhaseTwo(opts: {
     // with an ellipsis in front of it. Dropping it lets the seed stand alone
     // — which is exactly the graceful non-empty fallback this seed exists to
     // provide, and a better end-of-ladder outcome than a dropped turn.
-    const body = isPlaceholderOnlySpeech(result.text) ? "" : result.text;
+    const body = isPlaceholderOnly(result.text) ? "" : result.text;
     return { surface: result.surface, text: `${bodySeed}${body}` };
   }
   return result;
@@ -3100,7 +3122,7 @@ function makeFireBeat(
     // nothing has been emitted yet (the safe-emit gate held the whole short
     // beat, the common case) the beat can be dropped cleanly, same as the
     // empty case below.
-    if (!beginCalled && isPlaceholderOnlySpeech(beatText)) {
+    if (!beginCalled && isPlaceholderOnly(beatText)) {
       return null;
     }
 

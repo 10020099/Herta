@@ -2769,6 +2769,67 @@ describe("runActorCompletionTurn — two-phase mood routing (Slice 13)", () => {
     expect(JSON.stringify(record)).not.toContain("需要说的话");
   });
 
+  it("a slot-only THOUGHT takes the thought slot ladder and never commits (2026-08-12)", async () => {
+    // A placeholder thought is invisible to the user, which is exactly why it
+    // was easy to miss — but it lands in the record and therefore in next
+    // turn's prompt, where she reads a row of brackets back as her own
+    // reasoning.
+    const thoughtPrompts: string[] = [];
+    let thoughtCallIdx = 0;
+    const actorProvider: CompletionProviderAdapter = {
+      streamCompletion(req: CompletionRequest): AsyncIterable<CompletionEvent> {
+        async function* gen(): AsyncGenerator<CompletionEvent> {
+          if (
+            req.prompt.endsWith("（我 想）\n") ||
+            req.prompt.endsWith("（我 想）\n……")
+          ) {
+            thoughtPrompts.push(req.prompt);
+            thoughtCallIdx += 1;
+            yield {
+              type: "text-delta",
+              text:
+                thoughtCallIdx <= 2
+                  ? "{这里该想点什么}（/我 想）"
+                  : "他这句话里有个坑。（/我 想）",
+            };
+            yield { type: "finish", reason: "stop" };
+            return;
+          }
+          yield { type: "text-delta", text: "就这样。（/我 说）" };
+          yield { type: "finish", reason: "stop" };
+        }
+        return gen();
+      },
+    };
+
+    const deps = mkDeps({ provider: actorProvider });
+    const { record } = await runActorCompletionTurn(
+      { record: [] as TerminalRecord },
+      "hi",
+      {
+        ...deps,
+        intentState: "默认",
+        attachedMetaThink: mkAttachment({
+          preThinkText: "T",
+          preSpeakText: "S",
+        }),
+      },
+    );
+
+    // It climbed rather than accepting the first placeholder.
+    expect(thoughtCallIdx).toBe(3);
+    // Retry 1 drew the THOUGHT slot ladder, not the empty one.
+    expect(thoughtPrompts[1]).toContain("我写了个占位符");
+    expect(thoughtPrompts[1]).not.toContain("一句心里话都没写出来");
+    // The placeholder is nowhere in the record.
+    expect(JSON.stringify(record)).not.toContain("这里该想点什么");
+    const thoughts = record.filter(
+      (b) => b.kind === "herta" && b.surface === "thought",
+    );
+    expect(thoughts).toHaveLength(1);
+    expect((thoughts[0] as { text: string }).text).toBe("他这句话里有个坑。");
+  });
+
   it("a slot failure draws from the SLOT ladder, not the empty one (2026-08-12)", async () => {
     // Two failures, two ladders. The empty ladder accuses the model of
     // closing early and demands "not blank" — which is false and unhelpful
