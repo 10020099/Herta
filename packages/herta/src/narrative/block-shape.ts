@@ -77,6 +77,51 @@ export function isUnusableBlock(text: string): boolean {
 }
 
 /**
+ * Remove echoed HINT SCAFFOLDING from a generation (live lab, 2026-08-12).
+ *
+ * Every actor hint is wrapped in `〔…〕` and appended to the prompt directly
+ * before the open tag, so the model's last few hundred tokens of context are
+ * a bracketed instruction. It sometimes continues in that format — writing
+ * its own `〔…〕` aside before (or instead of) the real block. Measured at
+ * 2 of 96 real generations, both on the longest, most instructional retry
+ * variants; never on short first-pass hints.
+ *
+ * Two observed shapes, and they want opposite repairs:
+ *
+ *   `〔instruction〕\n真正的台词`  — the model restated the hint, then
+ *       answered. The answer is what follows; drop the bracket line.
+ *   `〔完整的一段思考〕`          — the content is GOOD, only the wrapper is
+ *       wrong. Unwrap it rather than discard a usable block.
+ *
+ * Safe because `〔…〕` is reserved: it appears in hint files and nowhere in
+ * her corpus (Bio, Guide, EnvSet, openings, 废案 seeds all verified clean),
+ * so a leading or whole-wrap bracket is never her voice. A bracket appearing
+ * mid-sentence is left alone — only a LEADING pair is scaffolding.
+ *
+ * Runs BEFORE the usability check, which is what makes the nested case work:
+ * `〔{需要说的话}〕` unwraps to `{需要说的话}`, which `isPlaceholderOnly`
+ * then catches, so it takes the slot ladder instead of committing. Stripping
+ * never rescues junk — it just stops the wrapper from hiding it.
+ */
+export function stripHintScaffolding(text: string): string {
+  // Fast path: the overwhelming majority of generations carry no bracket at
+  // all and must come back byte-identical.
+  if (!text.includes("〔")) return text;
+  let out = text;
+  // Leading echoed hint lines that PRECEDE real content. Bounded — a model
+  // stuck emitting brackets forever is the ladder's problem, not ours.
+  for (let i = 0; i < 3; i += 1) {
+    const m = /^\s*〔[^〔〕]*〕\s*/.exec(out);
+    if (m === null) break;
+    const rest = out.slice(m[0].length);
+    if (rest.trim().length === 0) break; // whole-wrap — handled just below
+    out = rest;
+  }
+  const whole = /^\s*〔([^〔〕]*)〕\s*$/.exec(out);
+  return whole !== null ? (whole[1] ?? "").trim() : out.trim();
+}
+
+/**
  * WHY an attempt was rejected — which retry ladder should correct it.
  * Applies to BOTH surfaces: speech and thought fail the same two ways.
  *

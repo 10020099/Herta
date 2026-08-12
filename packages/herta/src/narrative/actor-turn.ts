@@ -25,6 +25,7 @@ import {
   isUnusableBlock,
   type RetryCause,
   retryCause,
+  stripHintScaffolding,
 } from "./block-shape.js";
 import { commonPrefixLen } from "./common-prefix.js";
 import { sanitizeActorText } from "./escape.js";
@@ -2680,7 +2681,7 @@ async function runPhaseTwo(opts: {
       ? undefined
       : opts.deps.sink;
 
-  const result = await consumePhaseTwoStream({
+  let result = await consumePhaseTwoStream({
     provider: opts.deps.provider,
     model: opts.deps.model,
     prompt,
@@ -2696,7 +2697,21 @@ async function runPhaseTwo(opts: {
   // any) + the model's RAW response. The seed is NOT in result.text
   // yet at this point — the consumer only sees the model's text-
   // delta bytes, not the prompt's open-tag-suffix.
+  // Raw output goes to the trace BEFORE any repair, so a hint echo stays
+  // visible in the dump rather than being silently cleaned up.
   opts.deps.onPrompt?.("phase2-out", `${prompt}${result.text}`);
+  // Hint-echo repair (live lab 2026-08-12). runPhaseTwo is the single funnel
+  // for every actor generation — first pass, both ladders, rethink, respeak —
+  // so repairing here means the usability checks, the ladders and the commit
+  // guards downstream all see de-scaffolded text. Ordering is load-bearing in
+  // both directions: BEFORE the body seed below (which would otherwise prefix
+  // `……` onto a bracket and stop it matching), and before the callers'
+  // isUnusableBlock checks (so `〔{需要说的话}〕` unwraps and is then caught
+  // as a slot instead of committing).
+  const repaired = stripHintScaffolding(result.text);
+  if (repaired !== result.text) {
+    result = { surface: result.surface, text: repaired };
+  }
   // Final-retry body seed: prepend the seed to the committed body
   // so:
   //   - If the model continued after `……`: body is `……{continuation}`.
@@ -3103,11 +3118,16 @@ function makeFireBeat(
     // still possible even at `maxTokens: 220`; the `.trim()` at commit
     // removes only whitespace, not the leaked prefix).
     const beatStopIdx = firstStopIndex(beatBuffered, beatStops);
-    const beatText =
+    let beatText =
       beatStopIdx < beatBuffered.length
         ? beatBuffered.slice(0, beatStopIdx)
         : stripDanglingStopPrefix(beatBuffered, beatStops);
     deps.onPrompt?.("beat-out", `${beatPrompt}${beatText}`);
+
+    // Beats carry bracketed hints too (beat_verification / beat_patch_preview
+    // / beat_tool_fail), so the same echo is possible here. Repair before the
+    // slot check below, for the same ordering reason as runPhaseTwo.
+    beatText = stripHintScaffolding(beatText);
 
     // Slot-only beat (2026-08-12). This lane bypasses the supervisor BY
     // DESIGN (see the commit comment below), so the deterministic guards are

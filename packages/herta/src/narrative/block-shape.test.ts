@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { isPlaceholderOnly, isUnusableBlock } from "./block-shape.js";
+import {
+  isPlaceholderOnly,
+  isUnusableBlock,
+  retryCause,
+  stripHintScaffolding,
+} from "./block-shape.js";
 
 describe("isPlaceholderOnly — the reported shape", () => {
   it("catches the line that reached a user verbatim (2026-08-12)", () => {
@@ -67,6 +72,58 @@ describe("isPlaceholderOnly — what it must NOT catch", () => {
     ]) {
       expect(isPlaceholderOnly(s), s).toBe(false);
     }
+  });
+});
+
+describe("stripHintScaffolding — echoed 〔hint〕 wrappers (live lab 2026-08-12)", () => {
+  it("drops a leading echoed hint line and keeps the real answer", () => {
+    // Verbatim from the lab: zh/speech/empty ladder, variant 3.
+    const raw =
+      '〔从头开始写，选一个词——他叫的是"黑塔女士"，用这个。〕\n黑塔女士？什么时候学会这么客气的叫法了。';
+    expect(stripHintScaffolding(raw)).toBe(
+      "黑塔女士？什么时候学会这么客气的叫法了。",
+    );
+  });
+
+  it("unwraps a wholly-bracketed block rather than discarding good content", () => {
+    // Verbatim from the lab: zh/thought/empty ladder, variant 2. The thinking
+    // inside is genuinely fine — only the wrapper is wrong.
+    const raw =
+      "〔问死了也没真死。答辩评委提第三问通常是在压好奇心——他手里握着一个他觉得很重要的破绽。〕";
+    expect(stripHintScaffolding(raw)).toBe(
+      "问死了也没真死。答辩评委提第三问通常是在压好奇心——他手里握着一个他觉得很重要的破绽。",
+    );
+  });
+
+  it("does NOT rescue junk: a wrapped placeholder still reads as unusable", () => {
+    // The composition that matters — stripping runs BEFORE the usability
+    // check, so the wrapper cannot hide a slot from the guard.
+    expect(stripHintScaffolding("〔{需要说的话}〕")).toBe("{需要说的话}");
+    expect(isUnusableBlock(stripHintScaffolding("〔{需要说的话}〕"))).toBe(
+      true,
+    );
+    expect(retryCause(stripHintScaffolding("〔{需要说的话}〕"))).toBe("slot");
+    // Hint line first, placeholder as the "answer".
+    expect(
+      isUnusableBlock(stripHintScaffolding("〔说点什么〕\n{需要说的话}")),
+    ).toBe(true);
+    // Wrapped emptiness stays empty, not slot.
+    expect(retryCause(stripHintScaffolding("〔〕"))).toBe("empty");
+  });
+
+  it("leaves ordinary speech untouched, byte for byte", () => {
+    for (const s of [
+      "记不得了，你说。",
+      "@板砖 把那次运行的日志重新翻出来。",
+      "他说〔这样〕不行——中间的括号不是脚手架。",
+      "……",
+    ]) {
+      expect(stripHintScaffolding(s), s).toBe(s);
+    }
+  });
+
+  it("handles more than one stacked hint line", () => {
+    expect(stripHintScaffolding("〔一〕\n〔二〕\n真话。")).toBe("真话。");
   });
 });
 
