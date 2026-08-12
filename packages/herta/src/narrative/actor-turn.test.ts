@@ -662,6 +662,64 @@ describe("runActorCompletionTurn — in-turn beats", () => {
     expect(beat?.text ?? "").not.toContain("（/");
   });
 
+  it("strips an echoed 〔hint〕 line from an unstreamed beat (review 2026-08-12)", async () => {
+    // Beat hints are bracketed like every other hint, so the format-contagion
+    // echo the live lab measured (2/96) can land here too. With no sink,
+    // nothing has streamed (beginCalled === false), so the repair applies and
+    // the committed beat is the real line, not the scaffolding. When tokens
+    // HAVE streamed the strip is skipped by design — beatEmittedTail indexes
+    // into the raw text, and screen == record wins over de-scaffolding.
+    const { provider } = mkProvider([
+      [
+        { type: "text-delta", text: "说）改一下。@板砖（/我 说）" },
+        { type: "finish", reason: "stop" },
+      ],
+      [
+        {
+          type: "text-delta",
+          text: "〔丢一句：diff 干净还是脏？短，有态度。〕\n在改？（/我 说）",
+        },
+        { type: "finish", reason: "stop" },
+      ],
+      [
+        { type: "text-delta", text: "说）好,处理完了。（/我 说）" },
+        { type: "finish", reason: "stop" },
+      ],
+    ]);
+    const bus = new InMemoryEventBus<AgentEvent>();
+    const runtime: CodingAgentRuntime = {
+      runBrief: async (brief: HertaToAgentBrief) => {
+        publishWithLayer(bus, "backend", {
+          type: "patch.preview",
+          diff: "--- a\n+++ b\n@@ ... @@",
+          files: ["foo.ts"],
+        });
+        return {
+          taskId: brief.taskId,
+          status: "completed",
+          evidence: [],
+          changedFiles: [],
+          tests: [],
+          permissions: [],
+          residualRisks: [],
+          nextActions: [],
+        } as never;
+      },
+    } as unknown as CodingAgentRuntime;
+    const deps = mkDeps({ provider, bus, runtimeFactory: () => runtime });
+    const state = { record: [] as TerminalRecord };
+    const { record } = await runActorCompletionTurn(state, "改 foo.ts", deps);
+
+    const hertaBlocks = record.filter((b) => b.kind === "herta") as Array<{
+      surface: string;
+      text: string;
+    }>;
+    const beat = hertaBlocks[1];
+    expect(beat?.text).toBe("在改？");
+    // The scaffolding is nowhere in the record.
+    expect(JSON.stringify(record)).not.toContain("〔");
+  });
+
   it("caps the beat completion at maxTokens 220 (backstop with close-marker headroom)", async () => {
     // The beat is a short reactive one/two-liner; the cap is a backstop above
     // where a well-behaved beat ends (the （/我 说） stop sequence), leaving room
@@ -6528,6 +6586,64 @@ describe("runActorCompletionTurn — live-feed supervised reveal (LFR T4)", () =
       (b) => b.kind === "herta" && b.surface === "speech",
     );
     expect((speech as { text: string }).text).toBe("好，明白了。");
+  });
+
+  it("live-feed slot: retracts the streamed placeholder before the recovery replays (review 2026-08-12)", async () => {
+    // The empty-speech branch's controller handling assumed "empty ⇒ zero
+    // tokens pushed ⇒ the controller drained on its own". A SLOT first pass
+    // breaks that premise: its characters streamed live at TTFT, so without a
+    // terminal call the placeholder stays on screen (controller parked in its
+    // verdict hold) while the recovered speech replays next to it. The branch
+    // must cancelAndBackspace the live controller, veto-style.
+    const { provider: actorProvider } = mkProvider([
+      // Iter 1: thought.
+      [
+        { type: "text-delta", text: "想想看。（/我 想）" },
+        { type: "finish", reason: "stop" },
+      ],
+      // Iter 2: supervised first-pass speech — the SLOT, streamed live.
+      [
+        { type: "text-delta", text: "{需要说的话}（/我 说）" },
+        { type: "finish", reason: "stop" },
+      ],
+      // Iter 3: empty-speech ladder attempt 1 — real speech.
+      [
+        { type: "text-delta", text: "记不得了，你说。（/我 说）" },
+        { type: "finish", reason: "stop" },
+      ],
+    ]);
+    const liveSink = mkLiveSink();
+    const deps = mkDeps({
+      provider: actorProvider,
+      supervisorProvider: mkSupervisorProvider("OK"),
+      supervisorReference: "REF",
+    });
+    const { record } = await runActorCompletionTurn(
+      { record: [] as TerminalRecord },
+      "hi",
+      {
+        ...deps,
+        sink: liveSink.sink,
+        intentState: "默认",
+        attachedMetaThink: mkAttachment({
+          preThinkText: "T",
+          preSpeakText: "S",
+        }),
+      },
+    );
+
+    // The slot's characters really did stream live...
+    expect(liveSink.order.some((o) => o.startsWith("push:"))).toBe(true);
+    // ...and were retracted before the recovery rendered.
+    expect(liveSink.order).toContain("cancel");
+    // The recovered speech replays via the non-live paced path.
+    expect(liveSink.slowCalls).toEqual(["记不得了，你说。"]);
+    // The record holds the recovery, not the placeholder.
+    const speech = record.find(
+      (b) => b.kind === "herta" && b.surface === "speech",
+    );
+    expect((speech as { text: string }).text).toBe("记不得了，你说。");
+    expect(JSON.stringify(record)).not.toContain("需要说的话");
   });
 
   it("live-feed particle: onPrimarySpeechStart fires from the first revealed chars, before finishInput", async () => {

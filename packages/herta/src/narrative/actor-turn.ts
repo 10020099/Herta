@@ -887,6 +887,17 @@ export async function runActorCompletionTurn(
       isUnusableBlock(streamResult.text)
     ) {
       const cause = retryCause(streamResult.text);
+      // This branch's live-controller handling was built on "empty ⇒ zero
+      // tokens pushed ⇒ the controller drained on its own". A SLOT first
+      // pass breaks that premise (review 2026-08-12): its characters WERE
+      // pushed and are being revealed on screen, and without a terminal call
+      // the controller parks in its verdict hold while the replay below
+      // renders the recovered speech next to the placeholder. Retract it,
+      // veto-style, before recovering. Empty keeps the drain path untouched;
+      // abandonController tolerates an undefined (non-live) controller.
+      if (cause === "slot") {
+        await abandonController(liveController);
+      }
       streamResult = await recoverEmptySpeech({
         ...(cause !== undefined ? { cause } : {}),
         deps,
@@ -907,9 +918,10 @@ export async function runActorCompletionTurn(
       // rendered via the unified-replay or slow-stream path, not
       // bypassed.
       speechSinkPending = true;
-      // The live first-pass produced no body; its controller has finished empty.
-      // Render the recovered speech via the non-live paced replay below.
-      // (the hoisted verdict gate is now moot — the empty controller already drained.)
+      // Render the recovered speech via the non-live paced replay below. The
+      // live controller is settled either way: an EMPTY first pass pushed
+      // nothing and drained on its own; a SLOT first pass was retracted via
+      // abandonController above. The hoisted verdict gate is moot for both.
       liveFeedActive = false;
     }
 
@@ -3126,8 +3138,17 @@ function makeFireBeat(
 
     // Beats carry bracketed hints too (beat_verification / beat_patch_preview
     // / beat_tool_fail), so the same echo is possible here. Repair before the
-    // slot check below, for the same ordering reason as runPhaseTwo.
-    beatText = stripHintScaffolding(beatText);
+    // slot check below, for the same ordering reason as runPhaseTwo — but
+    // ONLY while nothing has streamed (review 2026-08-12): `beatEmittedTail`
+    // indexes into the RAW text, so shortening beatText after live emission
+    // would make the tail-flush below slice the wrong substring (or skip a
+    // tail it still owes) and desync screen from record — the exact
+    // invariant the `!beginCalled` guard on the slot check protects. An
+    // echoing beat that already streamed keeps today's behaviour: committed
+    // exactly as shown, brackets and all — screen == record wins.
+    // (beginCalled === false implies beatEmittedTail === 0: the streaming
+    // loop sets beginCalled before its first emit.)
+    if (!beginCalled) beatText = stripHintScaffolding(beatText);
 
     // Slot-only beat (2026-08-12). This lane bypasses the supervisor BY
     // DESIGN (see the commit comment below), so the deterministic guards are
