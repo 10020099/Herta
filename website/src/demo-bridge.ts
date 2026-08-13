@@ -488,19 +488,27 @@ const ZH: DemoContent = {
           ),
         ],
       },
-      // A document handed over (ADR 0033). The attachment block precedes the
-      // message because `attachFiles` runs at DROP time and is refused while a
-      // turn is in progress — you cannot attach mid-turn, so the ingest row can
-      // never land after the line it belongs to.
+      // A document handed over (ADR 0033). The demo's paperclip is inert (no
+      // filesystem in a browser), so this replay is the only place a visitor
+      // sees the attachment lane.
       //
-      // The demo's paperclip is inert (no filesystem in a browser), so this
-      // replay is the only place a visitor sees the attachment lane. Same rule
-      // as every other row: she cites the head excerpt and nothing else, and
-      // says outright where her reading stops.
+      // The block order is constrained from BOTH ends and only one shape
+      // satisfies both. `attachFiles` runs at DROP time and is REFUSED while a
+      // turn is in progress, so an ingest row can never sit between a user
+      // line and the reply it triggered — the drop has to land while she is
+      // idle. And makeShowcase requires a topic to OPEN with a user block (it
+      // is the rail anchor). Hence: he says it, she answers, he drops the
+      // file, he asks about it. Putting the row first threw at boot and left
+      // the demo blank.
+      //
+      // Same rule as every other row: she cites the head excerpt and nothing
+      // else, and says outright where her reading stops.
       {
         title: "运维发来的崩溃日志",
         minutesAgo: 168,
         blocks: [
+          ask("黑塔女士，运维说凌晨挂了，日志我这就发你。"),
+          say("发。"),
           attachmentRow({
             name: "crash-2026-08-02.log",
             path: ".herta/attachments/s-4f1c/crash-2026-08-02-3f9c1a20.log",
@@ -514,7 +522,7 @@ const ZH: DemoContent = {
               "2026-08-02T03:14:09Z INFO   supervisor  worker-3 restarted",
             clipped: true,
           }),
-          ask("运维发来的，说凌晨挂了。四百多行，我看不出重点。"),
+          ask("四百多行，我看不出重点。"),
           say(
             "重点在前五行，剩下四百行是它反复重启的回声。\nheap out of memory，栈顶是 TelemetryBuffer.flush——缓冲区在定时器里刷，没刷动。",
           ),
@@ -650,13 +658,18 @@ const EN: DemoContent = {
           ),
         ],
       },
-      // The attachment twin. The system row's body stays CN by contract (the
-      // GUI localizes it from the digest, exactly as with the op rows above),
-      // so only the dialogue is in her English register.
+      // The attachment twin — same block order and the same reason for it (see
+      // the zh comment). The system row's body stays CN by contract (the GUI
+      // localizes it from the digest, exactly as with the op rows above), so
+      // only the dialogue is in her English register.
       {
         title: "The crash log they sent over",
         minutesAgo: 168,
         blocks: [
+          ask(
+            "Madam Herta — ops says it died overnight. Sending you the log now.",
+          ),
+          say("Send it."),
           attachmentRow({
             name: "crash-2026-08-02.log",
             path: ".herta/attachments/s-4f1c/crash-2026-08-02-3f9c1a20.log",
@@ -670,9 +683,7 @@ const EN: DemoContent = {
               "2026-08-02T03:14:09Z INFO   supervisor  worker-3 restarted",
             clipped: true,
           }),
-          ask(
-            "Ops sent this over — said it died overnight. Four hundred lines and I can't tell what matters.",
-          ),
+          ask("Four hundred lines, and I can't tell what matters."),
           say(
             "What matters is the first five lines. The other four hundred are the echo of it restarting.\nHeap out of memory, and the top of the stack is TelemetryBuffer.flush — the buffer flushes on a timer, and it couldn't.",
           ),
