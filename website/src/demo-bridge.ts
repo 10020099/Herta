@@ -201,6 +201,54 @@ const excerptRow = (
   evidenceDetail: `↳ 摘录 ${path}:${from}-${to}\n${excerpt}`,
   evidence: [{ kind: "excerpt", path, from, to, text: excerpt }],
 });
+/**
+ * A document handed over (ADR 0033). Mirrors `buildBlock` in
+ * app-server/attachments.ts field for field: label 系统 (the INGEST is the
+ * app's, not the coprocessor's), body `附件 <name> · N 行 · N 字 · <path>`,
+ * and the head excerpt on both evidence lanes — the CN string Herta's prompt
+ * reads and the structured section the pane localizes from.
+ *
+ * The demo's paperclip stays inert (a browser page has no filesystem to
+ * ingest from — see the bridge stubs), so this is the only way a visitor sees
+ * what an attachment actually looks like in the record. It is a REPLAY of a
+ * real shape, not a mock-up of an imagined one.
+ */
+const attachmentRow = (a: {
+  readonly name: string;
+  readonly path: string;
+  readonly lines: number;
+  readonly chars: number;
+  readonly head: string;
+  readonly clipped?: boolean;
+}): SystemBlock => {
+  const count = (n: number): string =>
+    n >= 1000 ? `${Math.round(n / 100) / 10}K` : String(n);
+  const clipped = a.clipped ?? false;
+  return {
+    kind: "system",
+    label: "系统",
+    body: `附件 ${a.name} · ${count(a.lines)} 行 · ${count(a.chars)} 字 · ${a.path}`,
+    evidenceDetail: `↳ 附件 ${a.name}\n${a.head}${
+      clipped ? "\n（仅开头部分，正文更长）" : ""
+    }`,
+    evidence: [
+      {
+        kind: "attachment",
+        name: a.name,
+        path: a.path,
+        text: a.head,
+        clipped,
+      },
+    ],
+    digest: {
+      kind: "attachment",
+      name: a.name,
+      path: a.path,
+      lines: a.lines,
+      chars: a.chars,
+    },
+  };
+};
 /** The dispatch's FIRST todo_write projects the full layout; every later one a
  *  compact progress row. Item text is backend-authored and stays verbatim. */
 const todoRow = (items: readonly TodoItem[], layout: boolean): SystemBlock => {
@@ -440,6 +488,41 @@ const ZH: DemoContent = {
           ),
         ],
       },
+      // A document handed over (ADR 0033). The attachment block precedes the
+      // message because `attachFiles` runs at DROP time and is refused while a
+      // turn is in progress — you cannot attach mid-turn, so the ingest row can
+      // never land after the line it belongs to.
+      //
+      // The demo's paperclip is inert (no filesystem in a browser), so this
+      // replay is the only place a visitor sees the attachment lane. Same rule
+      // as every other row: she cites the head excerpt and nothing else, and
+      // says outright where her reading stops.
+      {
+        title: "运维发来的崩溃日志",
+        minutesAgo: 168,
+        blocks: [
+          attachmentRow({
+            name: "crash-2026-08-02.log",
+            path: ".herta/attachments/s-4f1c/crash-2026-08-02-3f9c1a20.log",
+            lines: 412,
+            chars: 18700,
+            head:
+              "2026-08-02T03:14:07Z FATAL  worker-3    heap out of memory\n" +
+              "  at TelemetryBuffer.flush (telemetry/buffer.ts:88)\n" +
+              "  at Timeout._onTimeout (telemetry/buffer.ts:31)\n" +
+              "2026-08-02T03:14:07Z INFO   supervisor  worker-3 exited (code 134)\n" +
+              "2026-08-02T03:14:09Z INFO   supervisor  worker-3 restarted",
+            clipped: true,
+          }),
+          ask("运维发来的，说凌晨挂了。四百多行，我看不出重点。"),
+          say(
+            "重点在前五行，剩下四百行是它反复重启的回声。\nheap out of memory，栈顶是 TelemetryBuffer.flush——缓冲区在定时器里刷，没刷动。",
+          ),
+          say(
+            "我读到的只到第一次重启为止。是泄漏还是一次性尖峰，得看后面还有没有第二次——要查，我让板砖把整份的 FATAL 摘出来。",
+          ),
+        ],
+      },
       // No backend, no task. She refuses the consolation and gives the reason
       // as arithmetic — which is the closest thing she has to saying it.
       {
@@ -564,6 +647,37 @@ const EN: DemoContent = {
           ),
           say(
             "Raise the threshold 5% and put a 2-second dwell gate on it. If it cries again after that, it's genuinely broken — replace it.",
+          ),
+        ],
+      },
+      // The attachment twin. The system row's body stays CN by contract (the
+      // GUI localizes it from the digest, exactly as with the op rows above),
+      // so only the dialogue is in her English register.
+      {
+        title: "The crash log they sent over",
+        minutesAgo: 168,
+        blocks: [
+          attachmentRow({
+            name: "crash-2026-08-02.log",
+            path: ".herta/attachments/s-4f1c/crash-2026-08-02-3f9c1a20.log",
+            lines: 412,
+            chars: 18700,
+            head:
+              "2026-08-02T03:14:07Z FATAL  worker-3    heap out of memory\n" +
+              "  at TelemetryBuffer.flush (telemetry/buffer.ts:88)\n" +
+              "  at Timeout._onTimeout (telemetry/buffer.ts:31)\n" +
+              "2026-08-02T03:14:07Z INFO   supervisor  worker-3 exited (code 134)\n" +
+              "2026-08-02T03:14:09Z INFO   supervisor  worker-3 restarted",
+            clipped: true,
+          }),
+          ask(
+            "Ops sent this over — said it died overnight. Four hundred lines and I can't tell what matters.",
+          ),
+          say(
+            "What matters is the first five lines. The other four hundred are the echo of it restarting.\nHeap out of memory, and the top of the stack is TelemetryBuffer.flush — the buffer flushes on a timer, and it couldn't.",
+          ),
+          say(
+            "I've only read as far as the first restart. Whether that's a leak or a one-off spike depends on there being a second one further down — if you want to know, I'll have Brick pull every FATAL out of the file.",
           ),
         ],
       },

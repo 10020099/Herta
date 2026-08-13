@@ -333,7 +333,7 @@ const ZH: SiteCopy = {
   whyKicker: "为什么 · why a self",
   whyH2: "扮演与自我。",
   whyLead:
-    "角色扮演的问题不在效果，在姿态：无论提示词写得多好，聊天协议都在暗示「助手在扮演一个角色」。风格可以服从，自我无法累积。",
+    "角色扮演的问题不在效果，在姿态：无论提示词写得多好，聊天协议都在暗示「模型在扮演一个角色」。风格可以服从，自我难以累积。",
   flips: [
     { no: "「关于她」的说明书", yes: "「由她写」的自传" },
     { no: "扮演一个角色", yes: "续写同一个说话者" },
@@ -352,7 +352,7 @@ const ZH: SiteCopy = {
         "同一性不系于身体或某种实体，而系于意识与记忆的连续。更进一步：自我不是先存在、" +
         "再讲故事——人是在把经验编入自己那个故事的过程中，成为自己的。",
       impl:
-        "她的提示词就是那份自述：身份、记忆、世界、正在发生的现在。推理即叙述的继续——" +
+        "她的提示词就是那份自述：身份、记忆、世界、正在发生的现在。推理即叙述的延续——" +
         "同一性不靠声明维持，靠续写维持。",
     },
     {
@@ -362,8 +362,8 @@ const ZH: SiteCopy = {
         "回忆不是录像回放，而是按意义的重构；每一次被唤起，记忆都会短暂变得可塑，" +
         "再被重新写入。",
       impl:
-        "超长会话不做截断，由她第一人称重述旧章节，承诺与事实原样保留；被新经验唤起的" +
-        "旧记忆会被重新蒸馏，而不是简单追加一条新的。",
+        "超长会话由她以第一人称重述旧章节，保留事实；而被新经验唤起的旧记忆，" +
+        "会被重新蒸馏，而不是简单追加一条新的记录。",
     },
     {
       title: "自我为记忆把关",
@@ -372,9 +372,9 @@ const ZH: SiteCopy = {
         "什么会被记住，由当下的自我参与决定：与自我一致的经验才被编码保留，而积累下来的" +
         "记忆又反过来约束自我——两者互相塑造。",
       impl:
-        "入梦的门控就是这道关：「值得记吗」的判定与声音评审把守——不像她的记忆，进不了她的过去。" +
-        "动情的经历刻得更深：收录时一并估计情绪强度，强烈的记忆衰减更慢。" +
-        "记忆与人格互相塑造，而非单向堆积。",
+        "通过入梦的门控实现：「值得记吗」的判定与语言特征同时评审——不像她的记忆，不会被记录。" +
+        "令人印象深刻的经历记忆更久：收录时估计情绪强度，强烈的记忆衰减更慢。" +
+        "记忆与人格互相塑造，而非单向堆叠。",
     },
     {
       title: "遗忘是记忆的功能",
@@ -384,7 +384,7 @@ const ZH: SiteCopy = {
         "没有遗忘的记忆，没有轻重。",
       impl:
         "记忆会随时间变淡；被再次讲起、或她再次用上其中说法的记忆会得到巩固。写满时，" +
-        "与其他记忆重复的先让位，其次才是最淡的。无限追加的记忆流没有轻重；" +
+        "与其他记忆重复的先被遗忘，其次才是最久远的。无限追加的记忆流没有轻重；" +
         "有选择的记忆，才构成一个可辨认的人。",
     },
     {
@@ -397,7 +397,7 @@ const ZH: SiteCopy = {
       impl:
         "记忆被遗忘之前，其中关于你的认识会先蒸馏进她的自传：" +
         "几句话，整页重写而非追加。被反复印证而趋于稳固的记忆不必等到淡去" +
-        "——其中的认识会提前沉淀。具体的夜晚会被忘掉，对你的认识则留下来。",
+        "——其中的认识会提前沉淀。具体的情节会被忘掉，沉淀出对你的认识。",
     },
   ],
   mechKicker: "机制 · how it runs",
@@ -406,7 +406,7 @@ const ZH: SiteCopy = {
   turnSub: " · one turn",
   turnCaption: (
     <>
-      你和黑塔通过终端交流；要动代码时，她会在台词里
+      你和黑塔通过终端交流；把文件拖进会话栏，她直接读原文。要动代码时，她会在台词里
       <b className="banzhuan-ink">@板砖</b>
       ——那是她给编码协处理器起的名字。执行的每一步都回到同一份终端记录：
       黑塔和你一起监督任务，最后由她陈述结论。
@@ -430,8 +430,8 @@ const ZH: SiteCopy = {
       title: "叙事补全基座",
       sub: "completion as identity",
       body:
-        "聊天模板携带非中立的先验：角色信封持续提示「助手在扮演」。本系统里说话的是她这个自我，" +
-        "不读 system/assistant 信封，而是在她自己的终端记录上做补全，推理目标是作为同一说话者" +
+        "聊天模板携带非中立的先验：角色模板持续提示「在扮演」。本系统里说话的是她这个自我，" +
+        "没有 system/assistant 模板，而是在她自己的终端记录上做补全，推理目标是作为同一说话者" +
         "继续该记录。人格由此来自延续性，而非指令服从。",
     },
     {
@@ -446,19 +446,19 @@ const ZH: SiteCopy = {
       sub: "self–agent separation",
       body:
         "人的阅读、理解速度是不变量。编码后端与「她」之间的非对称边界，正是铺设在这条" +
-        "不变量上：后端不产生面向用户的话语，报告中不设供她复述的摘要字段；她不预处理任务。" +
-        "二者共享同一份记录——人与「她」交流，「她」审查智能体，于同一空间中协同。",
+        "不变量上：后端智能体不直接面向你会话；她不预处理任务。" +
+        "二者共享同一份记录——你与「她」交流，「她」审查智能体，同一空间中协同交互。",
     },
     {
       title: "记忆的三个出口",
       sub: "a three-exit memory economy",
       body:
-        "记忆架上的记录有三种去向：被重复情节唤起时再固化，磨利后替换原记录；因容量或衰减" +
+        "记忆架上的记录有三种去向：被重复情节唤起时再固化，锐化后替换原记录；因容量或衰减" +
         "被遗忘时，关于你的认识先沉淀为一页整页重写、有硬性篇幅上限的语义记录；其余归档休眠。" +
-        "语义页没有半衰期，因此每次入梦都由在世记忆校对它——只修订被清楚驳斥的句子。",
+        "语义页没有半衰期，因此每次入梦都由活跃的记忆校对它——只修订被清楚驳斥的句子。",
     },
   ],
-  dlH2: "把她装回你的桌面",
+  dlH2: "装回你的桌面",
   dlBody: "Windows / macOS 安装包，配好 DeepSeek API 密钥，开始旅程。",
   dlBtnWin: "Windows 版",
   dlBtnMac: "macOS 版",
@@ -503,7 +503,7 @@ const EN: SiteCopy = {
   whyKicker: "why a self · 自我，而非扮演",
   whyH2: "Role-play, versus a self.",
   whyLead:
-    "The problem with role-play is not quality but posture: however good the prompt, the chat protocol keeps whispering that an assistant is playing a part. Style can comply; a self cannot accumulate.",
+    "The problem with role-play is not quality but posture: however good the prompt, the chat protocol keeps whispering that a model is playing a part. Style can comply; a self struggles to accumulate.",
   flips: [
     { no: "a manual about her", yes: "an autobiography by her" },
     { no: "playing a role", yes: "continuing as the same speaker" },
@@ -548,9 +548,10 @@ const EN: SiteCopy = {
         "the self is encoded and kept, and the accumulated store constrains the self in turn — " +
         "the two shape each other.",
       impl:
-        "The dream gates are that checkpoint: worthiness judgment and voice review stand guard — " +
-        "a memory that doesn't sound like her cannot enter her past. Charged experiences cut " +
-        "deeper: emotional intensity is estimated at encoding, and intense memories decay more slowly.",
+        "Implemented as the dream gates: a worthiness judgment and a linguistic review run " +
+        "together — a memory that doesn't sound like her is not recorded. Memorable experiences " +
+        "last longer: emotional intensity is estimated at encoding, and intense memories decay " +
+        "more slowly. Memory and persona shape each other, rather than simply stacking up.",
     },
     {
       title: "Forgetting is functional",
@@ -560,7 +561,7 @@ const EN: SiteCopy = {
         "what matters stays reachable. Memory without forgetting has no weight.",
       impl:
         "Memories fade with time; a memory retold — or whose words she reaches for again — grows " +
-        "firmer. When the shelf is full, redundant memories yield first, the faintest after. An " +
+        "firmer. When the shelf is full, redundant memories are forgotten first, the oldest after. An " +
         "endlessly appended stream has no weight — selective memory is what makes a recognizable person.",
     },
     {
@@ -573,8 +574,8 @@ const EN: SiteCopy = {
       impl:
         "Before a memory is forgotten, what it says about you is distilled into her autobiography: " +
         "a few sentences, rewritten whole rather than appended. A memory confirmed " +
-        "often enough settles its knowledge early, without waiting to fade. The night is " +
-        "forgotten; the knowledge of you stays.",
+        "often enough settles its knowledge early, without waiting to fade. The episode is " +
+        "forgotten; what settles out is the knowledge of you.",
     },
   ],
   mechKicker: "how it runs · 机制",
@@ -584,11 +585,12 @@ const EN: SiteCopy = {
   turnSub: " · 一次回合",
   turnCaption: (
     <>
-      You and Herta talk through the terminal; when code needs touching, she
-      writes <b className="banzhuan-ink">@Brick</b> in her line — her name for
-      the coding coprocessor. Every step of execution returns to the same
-      terminal record: Herta supervises the task with you, and states the
-      conclusion herself.
+      You and Herta talk through the terminal; drop a file into the composer and
+      she reads the original. When code needs touching, she writes{" "}
+      <b className="banzhuan-ink">@Brick</b> in her line — her name for the
+      coding coprocessor. Every step of execution returns to the same terminal
+      record: Herta supervises the task with you, and states the conclusion
+      herself.
     </>
   ),
   turnAlt:
@@ -613,8 +615,8 @@ const EN: SiteCopy = {
       title: "Narrative completion substrate",
       sub: "叙事补全基座",
       body:
-        "Chat templates carry a non-neutral prior: the role envelope keeps suggesting an " +
-        "assistant playing a part. The self here reads no system/assistant envelopes — " +
+        "Chat templates carry a non-neutral prior: the role template keeps suggesting " +
+        "something playing a part. The self here has no system/assistant templates — " +
         "she completes her own terminal record, with the objective of continuing it as the same " +
         "speaker. Persona arises from continuity, not compliance.",
     },
@@ -633,9 +635,8 @@ const EN: SiteCopy = {
       body:
         "A person's reading and comprehension speed is the invariant. The asymmetric boundary " +
         "between the coding backend and her is laid down precisely on that invariant: the backend " +
-        "produces no user-facing speech, and its report has no summary field for her to recite; " +
-        "she does not pre-digest tasks. Both share one record — you talk with her, and she " +
-        "reviews the agent, collaborating in one space.",
+        "agent never talks to you directly; she does not pre-digest tasks. Both share one " +
+        "record — you talk with her, and she reviews the agent, collaborating in one space.",
     },
     {
       title: "A three-exit memory economy",
@@ -644,11 +645,11 @@ const EN: SiteCopy = {
         "A record on the shelf leaves one of three ways: reconsolidated when a recurring episode " +
         "sharpens it; distilled — before being forgotten under capacity or decay — into a " +
         "whole-rewritten, hard-capped semantic page about you; or archived dormant. The " +
-        "semantic page has no half-life, so each dream pass lets living memories audit it, " +
+        "semantic page has no half-life, so each dream pass lets active memories audit it, " +
         "revising only clearly refuted sentences.",
     },
   ],
-  dlH2: "Bring her back to your desktop",
+  dlH2: "Back to your desktop",
   dlBody:
     "Installers for Windows and macOS. Add a DeepSeek API key — and the journey begins.",
   dlBtnWin: "For Windows",
