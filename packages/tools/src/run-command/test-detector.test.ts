@@ -41,6 +41,23 @@ describe("isTestCommand", () => {
     expect(isTestCommand(["jest.cmd"])).toBe(true);
   });
 
+  it("detects the pm direct-binary form (pnpm/yarn/bun fall through to exec)", () => {
+    // Found in the post-ship re-check: `pnpm vitest run` was undetected —
+    // the exact form a model most plausibly emits in a pnpm repo.
+    expect(isTestCommand(["pnpm", "vitest", "run"])).toBe(true);
+    expect(isTestCommand(["yarn", "jest"])).toBe(true);
+    expect(isTestCommand(["bun", "vitest"])).toBe(true);
+    // npm does NOT fall through to exec — `npm vitest` never runs tests, and
+    // detecting it would record a failed suite for a command that ran nothing.
+    expect(isTestCommand(["npm", "vitest"])).toBe(false);
+  });
+
+  it("normalizes argv[0] shims and paths for wrappers and toolchains too", () => {
+    expect(isTestCommand(["npx.cmd", "vitest"])).toBe(true);
+    expect(isTestCommand(["node.exe", "--test"])).toBe(true);
+    expect(isTestCommand(["/usr/bin/python3", "-m", "pytest"])).toBe(true);
+  });
+
   it("detects yarn / bun / deno test", () => {
     expect(isTestCommand(["yarn", "test"])).toBe(true);
     expect(isTestCommand(["bun", "test"])).toBe(true);

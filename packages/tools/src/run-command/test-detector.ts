@@ -60,8 +60,11 @@ function isTestScriptName(name: string | undefined): boolean {
  */
 export function isTestCommand(argv: readonly string[]): boolean {
   if (argv.length === 0) return false;
-  const a0 = argv[0];
-  if (a0 === undefined) return false;
+  const raw0 = argv[0];
+  if (raw0 === undefined) return false;
+  // Normalize argv[0] the way isRunnerBinary does — a path-qualified or
+  // .cmd-shimmed program (`C:\...\node.exe`, `npx.cmd`) is the same program.
+  const a0 = normalizeBinary(raw0);
 
   // `npx vitest`, `bunx jest`, `pnpm exec mocha`, `yarn dlx ava`
   if (EXEC_WRAPPERS.has(a0)) return isRunnerBinary(argv[1]);
@@ -71,12 +74,22 @@ export function isTestCommand(argv: readonly string[]): boolean {
   ) {
     return isRunnerBinary(argv[2]);
   }
+  // Direct-binary form: `pnpm vitest run`, `yarn jest`, `bun vitest` — these
+  // three fall through to exec for an unknown script name. npm does NOT
+  // (`npm vitest` is just an unknown-command error), and detecting it would
+  // record a command that never ran tests as a failed suite.
+  if (
+    (a0 === "pnpm" || a0 === "yarn" || a0 === "bun") &&
+    isRunnerBinary(argv[1])
+  ) {
+    return true;
+  }
 
-  if (isRunnerBinary(a0)) return true;
+  if (isRunnerBinary(raw0)) return true;
 
   // Node's built-in runner. Only among LEADING flags, so a script that
   // happens to take a `--test` argument of its own is not misread.
-  if (a0 === "node" || a0 === "node.exe") {
+  if (a0 === "node") {
     for (let i = 1; i < argv.length; i += 1) {
       const arg = argv[i];
       if (arg === undefined || !arg.startsWith("-")) break;
@@ -118,12 +131,17 @@ export function isTestCommand(argv: readonly string[]): boolean {
   return false;
 }
 
+/** Basename + Windows-shim suffix strip: a path-qualified or .cmd-shimmed
+ *  program (`./node_modules/.bin/vitest`, `npx.cmd`, `node.exe`) is the same
+ *  program. Evidence-only leniency — permission tiering never uses this. */
+function normalizeBinary(name: string): string {
+  const base = name.split(/[\\/]/).pop() ?? name;
+  return base.replace(/\.(cmd|exe|bat|ps1)$/, "");
+}
+
 function isRunnerBinary(name: string | undefined): boolean {
   if (name === undefined) return false;
-  // Tolerate a path-qualified or .cmd-suffixed binary (`./node_modules/.bin/
-  // vitest`, `jest.cmd` on Windows) — the same runner either way.
-  const base = name.split(/[\\/]/).pop() ?? name;
-  return RUNNER_BINARIES.has(base.replace(/\.(cmd|exe|bat|ps1)$/, ""));
+  return RUNNER_BINARIES.has(normalizeBinary(name));
 }
 
 export interface TestRunInput {
