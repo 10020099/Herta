@@ -17,3 +17,12 @@ onlyBuiltDependencies:
 peerDependencyRules:
   ignoreMissing:
     - electron-builder-squirrel-windows
+
+# ADR 0038: pdfjs-dist lists @napi-rs/canvas as an optional NATIVE dependency
+# for rendering. Text extraction never uses it, the packaged app ships no
+# node_modules so it could never load it — and its presence in dev only would
+# have hidden that pdfjs needs a DOMMatrix stub (works on every dev machine,
+# throws in every installed copy). "-" removes it from the graph. Duplicated in
+# package.json's pnpm.overrides for pnpm 9, which ignores this file's key.
+overrides:
+  "@napi-rs/canvas": "-"
