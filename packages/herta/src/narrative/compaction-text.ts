@@ -44,6 +44,8 @@ export const COMPACTION_TEXT = {
       read_error: "读取失败",
       denied: "涉及密钥或凭据，已拒收",
       removed: "开拓者已移除",
+      encrypted: "文档已加密，未取正文",
+      unsupported: "暂不支持的文档格式，未取正文",
     },
     /** Second line under a freshly folded attachment citation (ADR 0033
      *  §6g): the user's follow-up may not name the file, so for a few turns
@@ -76,6 +78,8 @@ export const COMPACTION_TEXT = {
       read_error: "could not be read",
       denied: "credential-shaped, refused",
       removed: "withdrawn by the Trailblazer",
+      encrypted: "password-protected, no body taken",
+      unsupported: "unsupported document format, no body taken",
     },
     attachmentRereadHint:
       "(the full text is still on disk — send 板砖 to re-read it if needed)",

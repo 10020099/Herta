@@ -2894,4 +2894,133 @@ describe("task context — attachments reach 板砖 (ADR 0033)", () => {
     expect(joined).toContain("The Trailblazer provided a file");
     expect(joined).not.toContain("开拓者");
   });
+
+  // ───── ADR 0038: PDF / Word documents ─────
+
+  const taskLine = async (
+    over: Record<string, unknown>,
+    lang: "zh" | "en" = "zh",
+  ): Promise<string> => {
+    const { runtime, seen } = capturingRuntime();
+    await invokeBanzhuanBridge(
+      [attachment(over), { kind: "user", text: "看看" }],
+      [],
+      {
+        bus: new InMemoryEventBus<AgentEvent>(),
+        runtimeFactory: () => runtime,
+        signal: new AbortController().signal,
+        lang,
+      },
+    );
+    return (seen()?.userMessages ?? []).map((m) => m.text).join("\n");
+  };
+
+  it("a PDF is named as a PDF with its page count, and the .pdf.txt path is explained as the extracted text", async () => {
+    // Without this a `.pdf.txt` path beside a `report.pdf` name reads as a
+    // puzzle, and a coprocessor that goes looking for the "real" PDF finds
+    // nothing.
+    const line = await taskLine({
+      name: "report.pdf",
+      path: ".herta/attachments/s1/report-ab12cd34.pdf.txt",
+      format: "pdf",
+      pages: 12,
+    });
+    expect(line).toContain("report.pdf（PDF，12 页）");
+    expect(line).toContain("提取为纯文本");
+    expect(line).toContain(".herta/attachments/s1/report-ab12cd34.pdf.txt");
+    expect(line).toContain("没有另外的 PDF 文件");
+  });
+
+  it("a Word document is named as such, without a page count", async () => {
+    const line = await taskLine({
+      name: "spec.docx",
+      path: ".herta/attachments/s1/spec-ab12cd34.docx.txt",
+      format: "docx",
+    });
+    expect(line).toContain("spec.docx（Word 文档）");
+    expect(line).not.toContain("页");
+    expect(line).toContain("没有另外的 docx 文件");
+  });
+
+  it("a scanned PDF (empty, nothing stored) says so and tells 板砖 not to look", async () => {
+    // ADR 0033 §5's named hazard, one step upstream: 板砖 must not go hunting
+    // for a file that was never stored, and must be able to tell the user WHY.
+    const line = await taskLine({
+      name: "scan.pdf",
+      path: "",
+      format: "pdf",
+      pages: 3,
+      unreadable: "empty",
+    });
+    expect(line).toContain("scan.pdf（PDF，3 页）");
+    expect(line).toContain("扫描件");
+    expect(line).toContain("不要去找它");
+    expect(line).not.toContain("读取失败");
+  });
+
+  it("encrypted / unsupported / over-the-page-cap each carry their own reason", async () => {
+    const enc = await taskLine({
+      name: "locked.pdf",
+      path: "",
+      format: "pdf",
+      unreadable: "encrypted",
+    });
+    expect(enc).toContain("已加密");
+    const unsup = await taskLine({
+      name: "old.doc",
+      path: "",
+      unreadable: "unsupported",
+    });
+    // No format on an unsupported source (the sniff refused before decoding),
+    // so it takes the plain not-on-disk shape — still "do not look for it".
+    expect(unsup).toContain("不要去找它");
+    const cap = await taskLine({
+      name: "book.pdf",
+      path: "",
+      format: "pdf",
+      pages: 1400,
+      unreadable: "too_large",
+    });
+    expect(cap).toContain("页数超过上限");
+    expect(cap).toContain("1400 页");
+  });
+
+  it("an extracted document over the char cap is stored: 板砖 is told the full text is on disk", async () => {
+    const line = await taskLine({
+      name: "long.pdf",
+      path: ".herta/attachments/s1/long-ab12cd34.pdf.txt",
+      format: "pdf",
+      pages: 80,
+      unreadable: "too_large",
+    });
+    expect(line).toContain("全文在磁盘上");
+    expect(line).toContain(".herta/attachments/s1/long-ab12cd34.pdf.txt");
+  });
+
+  it("the document shapes localize for EN", async () => {
+    const ok = await taskLine(
+      {
+        name: "report.pdf",
+        path: ".herta/attachments/s1/report-ab12cd34.pdf.txt",
+        format: "pdf",
+        pages: 12,
+      },
+      "en",
+    );
+    expect(ok).toContain("report.pdf (PDF, 12 pages)");
+    expect(ok).toContain("that path IS the document, as plain text");
+    expect(ok).not.toContain("开拓者");
+    const scan = await taskLine(
+      {
+        name: "scan.pdf",
+        path: "",
+        format: "pdf",
+        pages: 3,
+        unreadable: "empty",
+      },
+      "en",
+    );
+    expect(scan).toContain("scanned or image-only");
+    expect(scan).toContain("do not look for it");
+  });
 });

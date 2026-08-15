@@ -21,7 +21,9 @@
     "@herta/knowledge": "workspace:*",
     "@herta/memory": "workspace:*",
     "@herta/providers": "workspace:*",
-    "@herta/tools": "workspace:*"
+    "@herta/tools": "workspace:*",
+    "fflate": "^0.8.3",
+    "pdfjs-dist": "^6.2.108"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

@@ -257,6 +257,150 @@ describe("stepDisplayBody (display-only localization from digests, D7)", () => {
   });
 });
 
+describe("stepDisplayBody — attachment rows, incl. PDF / Word (ADR 0038)", () => {
+  // The row is composed WHOLLY from the digest (never the canonical body), so
+  // a fake catalog with only the attachment keys is enough. Every key here is
+  // a real MessageKey — the fallback `?? key` would otherwise mask a typo as
+  // a passing test.
+  const A: Partial<Record<MessageKey, string>> = {
+    "activity.attachment.label": "附件",
+    "activity.attachment.chars": "字",
+    "activity.result.lines": "行",
+    "activity.attachment.pages": "页",
+    "activity.attachment.extracted": "已提取文本",
+    "activity.attachment.format.pdf": "PDF",
+    "activity.attachment.format.docx": "Word 文档",
+    "activity.attachment.unreadable.tooLarge": "文件过大，未取正文",
+    "activity.attachment.unreadable.tooManyPages": "页数过多，未提取",
+    "activity.attachment.unreadable.textTooLong": "正文过长，未取正文",
+    "activity.attachment.unreadable.empty": "未提取到文本",
+    "activity.attachment.unreadable.scanned": "未提取到文本，可能是扫描件",
+    "activity.attachment.unreadable.encrypted": "文档已加密，未取正文",
+    "activity.attachment.unreadable.unsupported": "暂不支持的文档格式",
+    "activity.attachment.unreadable.readError": "读取失败",
+  };
+  const ta = (key: MessageKey): string => A[key] ?? `MISSING:${key}`;
+  const att = (digest: Record<string, unknown>): SystemBlock =>
+    sys("附件 …", {
+      kind: "attachment",
+      name: "x",
+      path: ".herta/attachments/s/x",
+      lines: 0,
+      chars: 0,
+      ...digest,
+    } as SystemBlock["digest"]);
+
+  it("a plain text attachment reads as before — no format, no pages", () => {
+    expect(
+      stepDisplayBody(att({ name: "spec.md", lines: 120, chars: 4800 }), ta),
+    ).toBe("附件 spec.md · 120 行 · 4,800 字");
+  });
+
+  it("a PDF names its format and page count first, then says the text was extracted", () => {
+    expect(
+      stepDisplayBody(
+        att({
+          name: "report.pdf",
+          path: ".herta/attachments/s/report-ab12cd34.pdf.txt",
+          format: "pdf",
+          pages: 12,
+          lines: 340,
+          chars: 18000,
+        }),
+        ta,
+      ),
+    ).toBe("附件 report.pdf · PDF · 12 页 · 已提取文本 · 340 行 · 18,000 字");
+  });
+
+  it("a Word document has no page count", () => {
+    expect(
+      stepDisplayBody(
+        att({ name: "spec.docx", format: "docx", lines: 20, chars: 900 }),
+        ta,
+      ),
+    ).toBe("附件 spec.docx · Word 文档 · 已提取文本 · 20 行 · 900 字");
+  });
+
+  it("`too_large` reads three ways by context — text file / page cap / long extraction", () => {
+    // Text file over the excerpt cap: stored, no head.
+    expect(
+      stepDisplayBody(att({ name: "huge.log", unreadable: "too_large" }), ta),
+    ).toBe("附件 huge.log · 文件过大，未取正文");
+    // PDF over the page cap: refused whole, nothing on disk.
+    expect(
+      stepDisplayBody(
+        att({
+          name: "book.pdf",
+          path: "",
+          format: "pdf",
+          pages: 1400,
+          unreadable: "too_large",
+        }),
+        ta,
+      ),
+    ).toBe("附件 book.pdf · PDF · 1,400 页 · 页数过多，未提取");
+    // Extracted text over the char cap: stored in full, no head.
+    expect(
+      stepDisplayBody(
+        att({
+          name: "long.pdf",
+          path: ".herta/attachments/s/long-ab12cd34.pdf.txt",
+          format: "pdf",
+          pages: 80,
+          unreadable: "too_large",
+        }),
+        ta,
+      ),
+    ).toBe("附件 long.pdf · PDF · 80 页 · 正文过长，未取正文");
+  });
+
+  it("an empty PDF is called a probable scan; an empty docx is just empty", () => {
+    expect(
+      stepDisplayBody(
+        att({
+          name: "scan.pdf",
+          path: "",
+          format: "pdf",
+          pages: 3,
+          unreadable: "empty",
+        }),
+        ta,
+      ),
+    ).toBe("附件 scan.pdf · PDF · 3 页 · 未提取到文本，可能是扫描件");
+    expect(
+      stepDisplayBody(
+        att({
+          name: "blank.docx",
+          path: "",
+          format: "docx",
+          unreadable: "empty",
+        }),
+        ta,
+      ),
+    ).toBe("附件 blank.docx · Word 文档 · 未提取到文本");
+  });
+
+  it("encrypted and unsupported carry their own reasons", () => {
+    expect(
+      stepDisplayBody(
+        att({
+          name: "locked.pdf",
+          path: "",
+          format: "pdf",
+          unreadable: "encrypted",
+        }),
+        ta,
+      ),
+    ).toBe("附件 locked.pdf · PDF · 文档已加密，未取正文");
+    expect(
+      stepDisplayBody(
+        att({ name: "old.doc", path: "", unreadable: "unsupported" }),
+        ta,
+      ),
+    ).toBe("附件 old.doc · 暂不支持的文档格式");
+  });
+});
+
 describe("stepDisplayDetail — the evidence pane localizes (2026-08-01)", () => {
   /** A block whose canonical detail is the Chinese the bridge composes, with
    *  the structured mirror alongside it — exactly what projectBackendEvent

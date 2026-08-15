@@ -1324,12 +1324,39 @@ export interface ExtractedUserMessages {
  * Three shapes, because the three states need different things from 板砖:
  * a readable file it should open, a stored-but-unexcerpted file it can still
  * search (binary / oversized), and a file that never landed at all.
+ *
+ * A PDF / Word document (ADR 0038) is named as such, with its page count, and
+ * the line says the path holds EXTRACTED TEXT — otherwise a `.pdf.txt` path
+ * beside a `report.pdf` name reads as a puzzle, and a coprocessor that goes
+ * looking for the "real" PDF finds nothing. The not-on-disk shapes carry the
+ * specific reason (scanned, encrypted, unsupported, over the page cap) so
+ * 板砖 can tell the user what to do rather than diagnosing a read failure.
  */
 function attachmentTaskLine(
-  d: { name: string; path: string; unreadable?: string },
+  d: {
+    name: string;
+    path: string;
+    unreadable?: string;
+    format?: "pdf" | "docx";
+    pages?: number;
+  },
   lang: PromptLang,
 ): string {
   const en = lang === "en";
+  const kind = d.format === "pdf" ? "PDF" : en ? "Word document" : "Word 文档";
+  const pagesNote =
+    d.pages !== undefined
+      ? en
+        ? `, ${d.pages} pages`
+        : `，${d.pages} 页`
+      : "";
+  // "(PDF, 12 pages)" / "（PDF，12 页）" — empty for a plain text file.
+  const docNote =
+    d.format !== undefined
+      ? en
+        ? ` (${kind}${pagesNote})`
+        : `（${kind}${pagesNote}）`
+      : "";
   if (d.unreadable === "removed") {
     // Withdrawn on purpose. 板砖 must neither look for the file nor treat its
     // absence as a fault — and must not act on a document the user took back.
@@ -1345,9 +1372,33 @@ function attachmentTaskLine(
       : `〔附件〕开拓者尝试提供文件（${d.name}），但框架拒收了它——密钥/凭据形状的文件一律不收。文件不在磁盘上——不要去找它。`;
   }
   if (d.path.length === 0) {
+    if (d.format !== undefined) {
+      // A document that never made it to disk, with the reason the user can
+      // act on. `too_large` with no path is the page cap (ADR 0038 §4);
+      // `read_error` here is a parse failure, not an I/O one.
+      const why = documentFailureReason(d.unreadable, en);
+      return en
+        ? `[attachment] The Trailblazer tried to provide a document (${d.name}${docNote}) but ${why}. Nothing was stored — do not look for it.`
+        : `〔附件〕开拓者尝试提供文档（${d.name}${docNote}），但${why}。未存盘——不要去找它。`;
+    }
     return en
       ? `[attachment] The Trailblazer tried to provide a file (${d.name}) but it could not be read. It is NOT on disk — do not look for it.`
       : `〔附件〕开拓者尝试提供文件（${d.name}），但读取失败，文件不在磁盘上——不要去找它。`;
+  }
+  if (d.format !== undefined) {
+    // Stored as extracted text. Say so, and say what "took no excerpt" means
+    // for a document — over the char cap, still readable/searchable in full.
+    const noHead =
+      d.unreadable !== undefined
+        ? en
+          ? " The harness took no head excerpt from it (the text is long); the full text is on disk and you may still read or search it."
+          : "框架未取其开头（正文过长）；全文在磁盘上，仍可读取或检索。"
+        : en
+          ? " Read it with your file tools if the task needs it."
+          : "任务需要时用文件工具自行读取。";
+    return en
+      ? `[attachment] The Trailblazer provided a document: ${d.name}${docNote}. The harness extracted its text to ${d.path} — that path IS the document, as plain text; there is no separate ${d.format} file.${noHead}`
+      : `〔附件〕开拓者提供了文档：${d.name}${docNote}。框架已将其正文提取为纯文本，存于 ${d.path}——该路径就是这份文档的文本版，没有另外的 ${d.format === "pdf" ? "PDF" : "docx"} 文件。${noHead}`;
   }
   if (d.unreadable !== undefined) {
     return en
@@ -1357,6 +1408,30 @@ function attachmentTaskLine(
   return en
     ? `[attachment] The Trailblazer provided a file: ${d.name} — at ${d.path}. Read it with your file tools if the task needs it.`
     : `〔附件〕开拓者提供了文件：${d.name}，位于 ${d.path}。任务需要时用文件工具自行读取。`;
+}
+
+/** Why a document (ADR 0038) never reached disk, in words 板砖 can relay. */
+function documentFailureReason(unreadable: string | undefined, en: boolean) {
+  switch (unreadable) {
+    case "empty":
+      return en
+        ? "no text could be extracted (it is probably a scanned or image-only file)"
+        : "未提取到文本（很可能是扫描件或纯图片）";
+    case "encrypted":
+      return en
+        ? "it is password-protected and could not be opened"
+        : "文档已加密，无法打开";
+    case "unsupported":
+      return en
+        ? "its format is not supported (legacy .doc/.xls/.ppt, .xlsx/.pptx, or an encrypted package)"
+        : "暂不支持该文档格式（旧版 .doc/.xls/.ppt、.xlsx/.pptx，或加密的文档包）";
+    case "too_large":
+      return en
+        ? "it exceeds the page limit and was refused whole"
+        : "页数超过上限，整份未提取";
+    default:
+      return en ? "it could not be parsed" : "解析失败";
+  }
 }
 
 /**

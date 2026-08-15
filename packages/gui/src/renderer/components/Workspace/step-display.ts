@@ -117,24 +117,56 @@ export function stepDisplayBody(
       // (see middleTruncateName); the record keeps it whole.
       const label = t("activity.attachment.label");
       const name = middleTruncateName(d.name);
+      // A PDF / Word document (ADR 0038) is named as such, with its page
+      // count, before anything else — the same order as the canonical body,
+      // and for the same reason: the stored path ends in `.pdf.txt` and must
+      // never read as a text file the user typed.
+      const doc: string[] = [];
+      if (d.format !== undefined) {
+        doc.push(t(`activity.attachment.format.${d.format}`));
+        if (d.pages !== undefined) {
+          doc.push(
+            `${d.pages.toLocaleString()} ${t("activity.attachment.pages")}`,
+          );
+        }
+      }
+      const head = [`${label} ${name}`, ...doc].join(" · ");
       if (d.unreadable !== undefined) {
+        const isDoc = d.format !== undefined;
+        const stored = d.path.length > 0;
         const why =
           d.unreadable === "binary"
             ? t("activity.attachment.unreadable.binary")
             : d.unreadable === "too_large"
-              ? t("activity.attachment.unreadable.tooLarge")
+              ? // Three meanings by context (mirrors app-server's reasonFor):
+                // a stored text file over the excerpt cap; a PDF over the
+                // page cap, refused whole; an extracted document whose text
+                // is over the char cap, stored in full.
+                !isDoc
+                ? t("activity.attachment.unreadable.tooLarge")
+                : stored
+                  ? t("activity.attachment.unreadable.textTooLong")
+                  : t("activity.attachment.unreadable.tooManyPages")
               : d.unreadable === "empty"
-                ? t("activity.attachment.unreadable.empty")
+                ? d.format === "pdf"
+                  ? t("activity.attachment.unreadable.scanned")
+                  : t("activity.attachment.unreadable.empty")
                 : d.unreadable === "denied"
                   ? t("activity.attachment.unreadable.denied")
                   : d.unreadable === "removed"
                     ? t("activity.attachment.unreadable.removed")
-                    : t("activity.attachment.unreadable.readError");
-        return `${label} ${name} · ${why}`;
+                    : d.unreadable === "encrypted"
+                      ? t("activity.attachment.unreadable.encrypted")
+                      : d.unreadable === "unsupported"
+                        ? t("activity.attachment.unreadable.unsupported")
+                        : t("activity.attachment.unreadable.readError");
+        return `${head} · ${why}`;
       }
       const lines = `${d.lines.toLocaleString()} ${t("activity.result.lines")}`;
       const chars = `${d.chars.toLocaleString()} ${t("activity.attachment.chars")}`;
-      return `${label} ${name} · ${lines} · ${chars}`;
+      const extracted =
+        d.format !== undefined ? [t("activity.attachment.extracted")] : [];
+      return [head, ...extracted, lines, chars].join(" · ");
     }
     case "skip":
       // The patch-preview block (the only skip-digest producer): localize

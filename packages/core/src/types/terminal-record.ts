@@ -243,6 +243,16 @@ export type SystemBlockDigest =
       readonly path: string;
       readonly lines: number;
       readonly chars: number;
+      /** Set when the stored file is TEXT EXTRACTED from a PDF or Word
+       *  document (ADR 0038): `path` then ends in `.pdf.txt` / `.docx.txt`,
+       *  and the row and 板砖's citation say the text was extracted rather
+       *  than letting a `.txt` path imply the user typed it. Absent for a
+       *  plain text attachment and on records persisted before ADR 0038. */
+      readonly format?: "pdf" | "docx";
+      /** PDF page count, when the document opened far enough to know it —
+       *  present on the ordinary path and on `too_large` (page cap) /
+       *  `empty` (scanned) outcomes. */
+      readonly pages?: number;
       /** Why no excerpt was taken, when none was. Absent on the ordinary path.
        *  Present means the block's body SAYS the file could not be read as
        *  text — never silence, because Herta speaking about a document she was
@@ -260,14 +270,23 @@ export type SystemBlockDigest =
        *  anchors and the sink cursor, and — the real reason — if Herta has
        *  already spoken about the document, erasing its citation would leave
        *  her own words referring to something that never happened. The file
-       *  is gone from disk; the record still says one arrived and then went. */
+       *  is gone from disk; the record still says one arrived and then went.
+       *
+       *  `encrypted` and `unsupported` arrived with ADR 0038: a
+       *  password-protected PDF, and a document format we recognize but do
+       *  not decode (legacy .doc/.xls/.ppt, .xlsx/.pptx, an OLE package named
+       *  .docx). Both are actionable by the user in a way `read_error` /
+       *  `binary` are not, which is why they are named. Nothing is stored for
+       *  either. */
       readonly unreadable?:
         | "binary"
         | "too_large"
         | "empty"
         | "read_error"
         | "denied"
-        | "removed";
+        | "removed"
+        | "encrypted"
+        | "unsupported";
     }
   | {
       /** No richer structure — digest to the text's first line, truncated. */

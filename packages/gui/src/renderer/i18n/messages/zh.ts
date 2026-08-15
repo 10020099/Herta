@@ -154,8 +154,10 @@ export const zh = {
   /** The tooltip's muted second line. Extensions, not kinds (owner
    *  2026-08-10): a reader scans `.md .txt .csv` faster than a sentence about
    *  categories. The trailing 等 keeps it honest — the sniff accepts any text
-   *  file, so the list is representative, not exhaustive. */
-  "composer.attach.formats": ".md .txt .csv .json .log .py .ts 等文本文件",
+   *  file, so the list is representative, not exhaustive. `.pdf .docx` lead
+   *  since ADR 0038: they are the two formats people actually hand over. */
+  "composer.attach.formats":
+    ".pdf .docx .md .txt .csv .json .log .py .ts 等文本文件",
   "composer.attach.busy": "这一回合还没结束，等她说完再放文件。",
   "composer.attach.tooMany": "一次最多十个文件。",
   "composer.attach.failed": "文件没能加进来。",
@@ -210,6 +212,18 @@ export const zh = {
   "activity.attachment.unreadable.readError": "读取失败",
   "activity.attachment.unreadable.denied": "涉及密钥或凭据，已拒收",
   "activity.attachment.unreadable.removed": "已移除",
+  // ADR 0038 — PDF / Word. Two more reasons the user can act on (unlock the
+  // file; re-save as .docx/.pdf), plus the extraction facts the row shows so
+  // a `.pdf.txt` path never reads as a text file the user typed.
+  "activity.attachment.unreadable.encrypted": "文档已加密，未取正文",
+  "activity.attachment.unreadable.unsupported": "暂不支持的文档格式",
+  "activity.attachment.unreadable.scanned": "未提取到文本，可能是扫描件",
+  "activity.attachment.unreadable.tooManyPages": "页数过多，未提取",
+  "activity.attachment.unreadable.textTooLong": "正文过长，未取正文",
+  "activity.attachment.format.pdf": "PDF",
+  "activity.attachment.format.docx": "Word 文档",
+  "activity.attachment.pages": "页",
+  "activity.attachment.extracted": "已提取文本",
   "activity.attachment.remove": "移除这个附件",
   "activity.attachment.removeFailed": "没能移除这个附件。",
   "activity.plan.more": "还有 {n} 项",

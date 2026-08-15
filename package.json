@@ -32,6 +32,9 @@
       "ignoreMissing": [
         "electron-builder-squirrel-windows"
       ]
+    },
+    "overrides": {
+      "@napi-rs/canvas": "-"
     }
   }
 }

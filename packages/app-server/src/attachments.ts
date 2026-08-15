@@ -13,6 +13,11 @@ import {
   MAX_EXCERPT_LINES,
   redactSecrets,
 } from "@herta/tools";
+import {
+  type DocumentFormat,
+  extractDocumentText,
+  sniffDocumentFormat,
+} from "./document-text.js";
 
 /**
  * Ingest a document the 开拓者 handed over (ADR 0033).
@@ -23,6 +28,10 @@ import {
  * `search_text`, `glob` and `show_excerpt` handle documents of any size
  * already, and ADR 0025 slice 2's persistence layer survived a 347K-char read.
  * A 200-page document is a file.
+ *
+ * PDF and Word (ADR 0038) keep that shape by being decoded ONCE, here: what
+ * lands on disk is the extracted text (`report-<hash>.pdf.txt`), so the tools
+ * still only ever read text. See `document-text.ts`.
  *
  * All I/O is async: this runs on the Electron MAIN process, and a synchronous
  * multi-megabyte copy there freezes the whole window for its duration.
@@ -104,13 +113,16 @@ export type AttachmentUnreadable =
   | "too_large"
   | "empty"
   | "read_error"
-  | "denied";
+  | "denied"
+  | "encrypted"
+  | "unsupported";
 
 export interface IngestedAttachment {
   /** The record block to append. Already sanitized. */
   readonly block: SystemBlock;
   /** Workspace-relative path the file was stored at. Empty when nothing was
-   *  stored (read_error, denied, over the storage ceiling). */
+   *  stored (read_error, denied, over the storage ceiling, and every
+   *  document-extraction failure — there is no text to store). */
   readonly relPath: string;
   /** Set when no excerpt was taken. */
   readonly unreadable?: AttachmentUnreadable;
@@ -210,11 +222,47 @@ function formatCount(n: number): string {
   return n >= 1000 ? `${Math.round(n / 100) / 10}K` : String(n);
 }
 
+/**
+ * The reason phrase for an unreadable state. Two states read differently for
+ * an extracted document than for a text file, and the difference is the
+ * point: `too_large` on a stored text file means "no head, still searchable",
+ * on a PDF over the page cap it means "refused, nothing on disk"; `empty` on
+ * a PDF is almost always a scan, which the user can act on (OCR it, find the
+ * source) — "未提取到文本" alone would send them checking the file.
+ */
+function reasonFor(
+  unreadable: AttachmentUnreadable,
+  ctx: { readonly format?: DocumentFormat; readonly relPath: string | null },
+): string {
+  switch (unreadable) {
+    case "binary":
+      return "非文本文件，未取正文";
+    case "too_large":
+      if (ctx.format === undefined) return "文件过大，未取正文";
+      return ctx.relPath === null ? "页数过多，未提取" : "正文过长，未取正文";
+    case "empty":
+      return ctx.format === "pdf"
+        ? "未提取到文本，可能是扫描件"
+        : "未提取到文本";
+    case "read_error":
+      return ctx.format === undefined ? "读取失败" : "解析失败";
+    case "denied":
+      return "涉及密钥或凭据，已拒收";
+    case "encrypted":
+      return "文档已加密，未取正文";
+    case "unsupported":
+      return "暂不支持的文档格式，未取正文";
+  }
+}
+
 /** The not-stored result shapes share one constructor so `relPath: ""` and
- *  the block's empty digest path can never drift apart. */
+ *  the block's empty digest path can never drift apart. `format`/`pages`
+ *  ride along for a document that failed extraction, so the block can still
+ *  say "this was a 40-page PDF" about a file it did not keep. */
 function notStored(
   displayName: string,
   unreadable: AttachmentUnreadable,
+  doc: { readonly format?: DocumentFormat; readonly pages?: number } = {},
 ): IngestedAttachment {
   return {
     block: buildBlock({
@@ -223,9 +271,115 @@ function notStored(
       lines: 0,
       chars: 0,
       unreadable,
+      ...doc,
     }),
     relPath: "",
     unreadable,
+  };
+}
+
+/** Write the (possibly extracted) bytes under the session's attachment
+ *  directory. Returns the workspace-relative path, or null when the write
+ *  failed — the caller maps that to `read_error` (not on disk, do not cite a
+ *  location). Shared by the text path and the document path so the .herta
+ *  gitignore reflex (audit BL6) lives in one place. */
+async function storeBytes(opts: {
+  readonly workspaceRoot: string;
+  readonly sessionId: string;
+  readonly storedName: string;
+  readonly bytes: Uint8Array;
+}): Promise<string | null> {
+  const dir = attachmentDirFor(opts.sessionId);
+  try {
+    const absDir = join(opts.workspaceRoot, ...dir.split("/"));
+    await mkdir(absDir, { recursive: true });
+    await writeFile(join(absDir, opts.storedName), opts.bytes);
+    // Same reason as every other `.herta` writer (audit BL6): in a real repo,
+    // the first `git add -A` after an attach would otherwise sweep the user's
+    // own documents into a commit. Best-effort by its own contract.
+    ensureHertaGitignore(opts.workspaceRoot);
+  } catch {
+    return null;
+  }
+  return `${dir}/${opts.storedName}`;
+}
+
+/**
+ * The PDF / Word path (ADR 0038): decode once, store the TEXT. The stored
+ * name keeps the source extension visible (`report-<hash>.pdf.txt`), hashed
+ * over the ORIGINAL bytes so re-attaching the same document is idempotent.
+ * Every failure is a not-stored block that says which failure — there is no
+ * text to store, and storing the binary would cite a file no tool can read.
+ */
+async function ingestDocument(opts: {
+  readonly format: DocumentFormat;
+  readonly displayName: string;
+  readonly bytes: Buffer;
+  readonly workspaceRoot: string;
+  readonly sessionId: string;
+}): Promise<IngestedAttachment> {
+  const { format, displayName } = opts;
+  const extracted = await extractDocumentText(format, opts.bytes);
+  if (!extracted.ok) {
+    const doc = {
+      format,
+      ...(extracted.pages !== undefined ? { pages: extracted.pages } : {}),
+    };
+    switch (extracted.reason) {
+      case "empty":
+        return notStored(displayName, "empty", doc);
+      case "encrypted":
+        return notStored(displayName, "encrypted", doc);
+      case "too_many_pages":
+        return notStored(displayName, "too_large", doc);
+      case "unsupported":
+        return notStored(displayName, "unsupported", doc);
+      case "parse_error":
+        return notStored(displayName, "read_error", doc);
+    }
+  }
+  const text = extracted.text;
+  const doc = {
+    format,
+    ...(extracted.pages !== undefined ? { pages: extracted.pages } : {}),
+  };
+  const storedName = `${safeStoredName(displayName, opts.bytes)}.txt`;
+  const relPath = await storeBytes({
+    workspaceRoot: opts.workspaceRoot,
+    sessionId: opts.sessionId,
+    storedName,
+    bytes: Buffer.from(text, "utf8"),
+  });
+  if (relPath === null) return notStored(displayName, "read_error", doc);
+
+  const lines = text.split("\n").length;
+  // The char cap applies to the EXTRACTED text — the source-byte excerpt cap
+  // does not, because a PDF's bytes are mostly fonts and images (ADR 0038 §4).
+  // Same rule as a 5 MB log: stored and searchable, no head excerpt.
+  if (text.length > MAX_ATTACHMENT_CHARS) {
+    return {
+      block: buildBlock({
+        displayName,
+        relPath,
+        lines,
+        chars: text.length,
+        unreadable: "too_large",
+        ...doc,
+      }),
+      relPath,
+      unreadable: "too_large",
+    };
+  }
+  return {
+    block: buildBlock({
+      displayName,
+      relPath,
+      lines,
+      chars: text.length,
+      head: headExcerpt(text),
+      ...doc,
+    }),
+    relPath,
   };
 }
 
@@ -282,18 +436,29 @@ export async function ingestAttachment(opts: {
     return notStored(displayName, "read_error");
   }
 
-  const dir = attachmentDirFor(opts.sessionId);
-  const storedName = safeStoredName(displayName, bytes);
-  const relPath = `${dir}/${storedName}`;
-  try {
-    const absDir = join(opts.workspaceRoot, ...dir.split("/"));
-    await mkdir(absDir, { recursive: true });
-    await writeFile(join(absDir, storedName), bytes);
-    // Same reason as every other `.herta` writer (audit BL6): in a real repo,
-    // the first `git add -A` after an attach would otherwise sweep the user's
-    // own documents into a commit. Best-effort by its own contract.
-    ensureHertaGitignore(opts.workspaceRoot);
-  } catch {
+  // PDF / Word go through extraction (ADR 0038); a recognized-but-undecodable
+  // document format gets its own answer; everything else is the text path.
+  const sniff = sniffDocumentFormat(displayName, bytes);
+  if (sniff.kind === "unsupported") {
+    return notStored(displayName, "unsupported");
+  }
+  if (sniff.kind !== "none") {
+    return ingestDocument({
+      format: sniff.kind,
+      displayName,
+      bytes,
+      workspaceRoot: opts.workspaceRoot,
+      sessionId: opts.sessionId,
+    });
+  }
+
+  const relPath = await storeBytes({
+    workspaceRoot: opts.workspaceRoot,
+    sessionId: opts.sessionId,
+    storedName: safeStoredName(displayName, bytes),
+    bytes,
+  });
+  if (relPath === null) {
     // The write failed, so nothing is at the path — same truth as read_error:
     // not on disk, do not cite a location.
     return notStored(displayName, "read_error");
@@ -381,20 +546,24 @@ function buildBlock(a: {
   chars: number;
   unreadable?: AttachmentUnreadable;
   head?: { text: string; clipped: boolean };
+  format?: DocumentFormat;
+  pages?: number;
 }): SystemBlock {
-  const REASON: Record<AttachmentUnreadable, string> = {
-    binary: "非文本文件，未取正文",
-    too_large: "文件过大，未取正文",
-    empty: "未提取到文本",
-    read_error: "读取失败",
-    denied: "涉及密钥或凭据，已拒收",
-  };
-
   const parts = [`附件 ${a.displayName}`];
+  // A document is named as such up front, so the `.pdf.txt` path further
+  // along never reads as a text file the user typed (ADR 0038 §1). The page
+  // count sits with it: "a 40-page PDF" is what the user knows the file as.
+  if (a.format !== undefined) {
+    parts.push(a.format === "pdf" ? "PDF" : "Word 文档");
+    if (a.pages !== undefined) parts.push(`${formatCount(a.pages)} 页`);
+  }
   if (a.unreadable !== undefined) {
-    parts.push(REASON[a.unreadable]);
+    parts.push(
+      reasonFor(a.unreadable, { format: a.format, relPath: a.relPath }),
+    );
     if (a.relPath !== null) parts.push(a.relPath);
   } else {
+    if (a.format !== undefined) parts.push("已提取文本");
     parts.push(`${formatCount(a.lines)} 行`, `${formatCount(a.chars)} 字`);
     if (a.relPath !== null) parts.push(a.relPath);
   }
@@ -425,6 +594,8 @@ function buildBlock(a: {
       path: a.relPath ?? "",
       lines: a.lines,
       chars: a.chars,
+      ...(a.format !== undefined ? { format: a.format } : {}),
+      ...(a.pages !== undefined ? { pages: a.pages } : {}),
       ...(a.unreadable !== undefined ? { unreadable: a.unreadable } : {}),
     },
   };

@@ -172,7 +172,8 @@ export const en = {
   "composer.send": "Send message",
   "composer.stop": "Interrupt the current turn",
   "composer.attach": "Add documents",
-  "composer.attach.formats": ".md .txt .csv .json .log .py .ts and other text",
+  "composer.attach.formats":
+    ".pdf .docx .md .txt .csv .json .log .py .ts and other text",
   "composer.attach.busy":
     "This turn isn't finished — wait for her, then drop the file.",
   "composer.attach.tooMany": "Ten files at a time, at most.",
@@ -231,6 +232,18 @@ export const en = {
   "activity.attachment.unreadable.readError": "could not be read",
   "activity.attachment.unreadable.denied": "credential-shaped — refused",
   "activity.attachment.unreadable.removed": "removed",
+  "activity.attachment.unreadable.encrypted":
+    "password-protected, no body taken",
+  "activity.attachment.unreadable.unsupported": "unsupported document format",
+  "activity.attachment.unreadable.scanned":
+    "no text extracted — probably a scan",
+  "activity.attachment.unreadable.tooManyPages":
+    "too many pages, not extracted",
+  "activity.attachment.unreadable.textTooLong": "text too long, no head taken",
+  "activity.attachment.format.pdf": "PDF",
+  "activity.attachment.format.docx": "Word document",
+  "activity.attachment.pages": "pages",
+  "activity.attachment.extracted": "text extracted",
   "activity.attachment.remove": "Remove this attachment",
   "activity.attachment.removeFailed": "Couldn't remove that attachment.",
   "activity.plan.more": "+{n} more",
