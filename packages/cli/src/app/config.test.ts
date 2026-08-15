@@ -1,6 +1,29 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { MockWritable } from "../testing/mock-streams.js";
-import { parseArgs, parseThinking } from "./config.js";
+import { parseArgs, parseThinking, printVersion } from "./config.js";
+
+describe("printVersion", () => {
+  it("prints the shipped version — the GUI manifest is the release's source of truth, so the CLI manifest must match it", () => {
+    // packages/gui/package.json is the only manifest a release bump edits
+    // (electron-builder + app.getVersion() read it). The CLI prints its own
+    // manifest, so the two drift silently unless something pins them: v0.1.1
+    // shipped with `herta --version` printing v0.0.0. This test is that pin.
+    const guiManifest = fileURLToPath(
+      new URL("../../../gui/package.json", import.meta.url),
+    );
+    const guiVersion = (
+      JSON.parse(readFileSync(guiManifest, "utf8")) as { version: string }
+    ).version;
+    expect(guiVersion).toMatch(/^\d+\.\d+\.\d+/);
+    expect(guiVersion).not.toBe("0.0.0");
+
+    const out = new MockWritable();
+    printVersion(out);
+    expect(out.full()).toBe(`Herta v${guiVersion}\n`);
+  });
+});
 
 describe("parseArgs", () => {
   it("--resume with empty string value falls back to latest", () => {
