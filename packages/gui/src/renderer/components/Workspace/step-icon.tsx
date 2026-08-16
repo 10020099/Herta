@@ -25,8 +25,12 @@ export function stepIcon(body: string): StepIconKey {
     case "Writing":
       return "write";
     case "Running":
+    // A stop is still a process-lifecycle row; the run glyph is what the
+    // background pair (`Running node …` / `Stopping bg-1`) shares.
+    case "Stopping":
       return "run";
     case "Inspecting":
+    case "Searching":
       return "search";
     case "Saving":
       return "save";

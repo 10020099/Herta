@@ -7,6 +7,7 @@ import type {
   TestRunSummary,
 } from "../bridge/types.js";
 import type { EventBus } from "../event-bus.js";
+import { FindingsLedger } from "../findings-ledger.js";
 import type { MemoryManager } from "../memory-manager.js";
 import type { PermissionEngine, RiskLevel } from "../permission-engine.js";
 import { ReadLedger } from "../read-ledger.js";
@@ -120,6 +121,7 @@ export class CodingAgentRuntime {
       const todos = new TodoStore();
       const reads = new ReadLedger();
       const bg = new BackgroundHost();
+      const findings = new FindingsLedger();
 
       const builder = new ExecutionReportBuilder(brief.taskId);
       const pendingPermissions = new Map<string, PendingPermission>();
@@ -155,6 +157,31 @@ export class CodingAgentRuntime {
         type WithTestRun = { testRun?: TestRunSummary };
         switch (event.type) {
           case "tool.call.finished": {
+            // A recorded finding is the backend's own conclusion, not a tool
+            // receipt (ADR 0039): its own evidence kind, so the done marker
+            // can list conclusions apart from receipts — and it argues for
+            // 完成 on a brief whose deliverable IS the conclusion (the 1.2
+            // rule below excludes read-only tools because they only prove
+            // execution; a cited finding is a delivered result).
+            if (event.tool === "report_finding" && event.result.ok) {
+              const data = event.result.data as unknown as
+                | { claim?: unknown; cites?: unknown }
+                | undefined;
+              const claim =
+                typeof data?.claim === "string"
+                  ? data.claim
+                  : event.result.summary;
+              const cites = Array.isArray(data?.cites)
+                ? data.cites.filter((c): c is string => typeof c === "string")
+                : [];
+              builder.addEvidence({
+                kind: "finding",
+                summary: claim,
+                source: cites.join(", "),
+              });
+              okEvidence += 1;
+              break;
+            }
             builder.addEvidence({
               kind: "tool",
               summary: event.result.summary,
@@ -270,6 +297,7 @@ export class CodingAgentRuntime {
         transcript,
         todos,
         bg,
+        findings,
         bus: this.deps.bus,
         clock: this.deps.clock,
         workspaceRoot: this.deps.workspaceRoot,

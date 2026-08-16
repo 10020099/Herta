@@ -328,4 +328,27 @@ describe("V2RecordPersister.replaceBlockAt (ADR 0033 removal)", () => {
       unreadable: "removed",
     });
   });
+
+  it("keeps the line's original `at` when the replacement carries none (2026-08-17)", () => {
+    // In-memory blocks never hold `at` (appendBlock stamps it), so a replaced
+    // block used to lose its timestamp — a real record showed a removed
+    // attachment as the only block with no time. Withdrawal does not move
+    // when the attach happened.
+    const p = seeded();
+    const before = readSessionFile(p.sessionFile).record[1] as { at?: string };
+    expect(typeof before.at).toBe("string");
+    p.replaceBlockAt(1, { kind: "system", label: "系统", body: "REPLACED" });
+    const after = readSessionFile(p.sessionFile).record[1] as { at?: string };
+    expect(after.at).toBe(before.at);
+    // An explicitly stamped replacement wins, as before.
+    p.replaceBlockAt(1, {
+      kind: "system",
+      label: "系统",
+      body: "AGAIN",
+      at: "2030-01-01T00:00:00.000Z",
+    } as never);
+    expect(
+      (readSessionFile(p.sessionFile).record[1] as { at?: string }).at,
+    ).toBe("2030-01-01T00:00:00.000Z");
+  });
 });

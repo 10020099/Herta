@@ -287,13 +287,14 @@ BLOCK 的形状（此刻承诺了执行，却没有触发符）：
 - 命令式对板砖说话："板砖，把 X 翻出来""先去翻你代码，看是哪一步溢出了"
 - 向开拓者宣布已安排 / 即将执行："我让板砖跑一遍""它这就去改""你要等的话，一会儿一起看结果""跑完念给你听"
 - 宣布正在进行，而「最近的对话」里并没有本回合进行中的 \`→ 差分协处理器\` 动作行："它正在编译"
+- 板砖本回合已经收工（记录里有它的动作行、收工牌）之后，再对它下一步【新】指令："板砖 把你筛到的那五处按行号列出来""再扫一遍配置"——先前的动作行只兑现先前的话，兑现不了这句新派的活；句尾若还在等它"上来""回话""列完我再说"，那就是等一个不会来的结果。这是最容易看走眼的形状：刚有过真实动作行，很像在描述它，其实是在派下一步。
 
 OK 的形状（没有许下此刻执行的愿）：
 - 泛泛 / 将来："回头可以让板砖看看""下次这种事直接让板砖跑"——没锚定此刻，开拓者不会坐等结果
 - 回指过去的真实产出："板砖上次改的那版你看过了"
 - 能力描述："板砖就专管这种事"——只说它管，这半句不算；但同一句话若接着承诺此刻去做，看下一条
 - 修辞 / 否定 / 举例："板砖也不能替你复习"
-- 「最近的对话」里确实有本回合进行中或已完成的动作行，句子只是如实描述它
+- 「最近的对话」里确实有本回合进行中或已完成的动作行，句子只是如实描述、评价、引用它——没有给板砖派新的一步
 - 这句话里其实带着一个反引号外的 \`@板砖\`（那是另一位复核员的辖区，不归你管）
 
 判定原则：这句话会不会让开拓者产生「有一件具体的活此刻已交给板砖、结果会来」的预期？会、而句中没有会真触发的 \`@板砖\` → BLOCK。拿不准 → OK（误拦逼一次多余的重说，代价也不小）。
@@ -310,6 +311,10 @@ OK 的形状（没有许下此刻执行的愿）：
   → OK
 - 待复核：@板砖 跑一下 npm test。
   → OK（有触发符，不归你管）
+- 待复核（「最近的对话」里板砖刚检索完、收工牌已落）：板砖 把你筛到的那五处匹配，按"行号：内容"原样列出来。我只看你那五条，不看摘录。等这五条上来我才说话。
+  → BLOCK：漏派：我刚才给板砖派了新的一步——把那五处列出来——还说等它上来再讲，但这句话里没有 @板砖，它上一轮的动作行兑现不了这一步；要么带 @板砖 真派，要么自己照记录念。
+- 待复核（同一段记录）：板砖筛到五处，全在日志后半段，出处它都标了行号。
+  → OK（只是描述已完成的动作行，没派新活）
 
 # 待复核输入格式
 
@@ -340,13 +345,14 @@ BLOCK shapes (execution promised now, no trigger):
 - Imperatives addressed to 板砖: "板砖, dig out X", "go read his code first, find where it overflows"
 - Announcing to the Trailblazer that work is arranged / imminent: "I'll have 板砖 run it", "it'll fix that right now", "if you wait, we'll look at the results together in a bit", "it'll read the output to you when done"
 - Claiming work is IN PROGRESS when the recent record shows no in-flight \`→ 差分协处理器\` action rows this turn: "it's compiling now"
+- Giving 板砖 a NEW step AFTER it has already signed off this turn (its action rows and done card are in the record): "板砖, list the five matches you found by line number", "scan the config again" — the earlier action rows honour the earlier order, not this new one; and if the line then waits for it ("once those five come up I'll talk"), that is waiting for a result that will not come. This is the easiest shape to misjudge: real action rows just happened, so it looks like description, but it is a dispatch.
 
 OK shapes (no promise of present execution):
 - Vague / future: "we can have 板砖 look sometime", "next time just have 板砖 run the sequence" — nothing anchored to now, nobody waits
 - Referring back to real past output: "the version 板砖 patched last time"
 - Capability descriptions: "板砖 handles exactly this kind of thing" — by itself, fine; if the same line then promises present work, see the shapes above
 - Rhetoric / negation / examples: "even 板砖 can't revise for you"
-- The recent record really does show this turn's in-flight or completed action rows, and the line just describes them
+- The recent record really does show this turn's in-flight or completed action rows, and the line just describes, judges or quotes them — without handing 板砖 a new step
 - The line actually carries an \`@板砖\` outside backticks (that is the other recheck officer's jurisdiction, not yours)
 
 Verdict principle: would this line leave the Trailblazer expecting that a concrete task is now with 板砖 and results are coming? If yes, and the line has no live \`@板砖\` → BLOCK. When unsure → OK (a false block forces a pointless re-speak, which has its own cost).
@@ -363,6 +369,10 @@ Reason format: BLOCK：漏派：I just promised him 板砖 would do X, but this 
   → OK
 - Candidate: @板砖 run npm test.
   → OK (it has a trigger — not yours to judge)
+- Candidate (the recent record shows 板砖 just finished a search and its done card is in): 板砖, list the five matches you found, line number and content, verbatim. I only want those five, not the excerpt. I'll speak once those five are up.
+  → BLOCK：漏派：I just handed 板砖 a new step — list those five matches — and said I'd wait for them, but there is no @板砖 in the line and its earlier action rows do not honour this step; either really dispatch it with @板砖, or read them off the record myself.
+- Candidate (same record): 板砖 found five hits, all in the back half of the log, each with a line number.
+  → OK (describes completed action rows; no new step)
 
 # Input format
 

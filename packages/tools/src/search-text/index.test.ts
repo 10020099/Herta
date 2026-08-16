@@ -249,20 +249,68 @@ describe("searchTextTool", () => {
     expect(r.error?.code).toBe("not_found");
   });
 
-  it("returns invalid_input when path is a file", async () => {
-    ws = await mkTmpWorkspace({ "a.ts": "foo\n" });
+  it("searches a single FILE when path names one (2026-08-17; was invalid_input)", async () => {
+    // Same pipeline as a walked file — loader, size cap, sniff, redaction,
+    // context — so the shape equals a directory search that matched only it.
+    ws = await mkTmpWorkspace({
+      "a.ts": "line one\nfoo here\nline three\nfoo again\n",
+      "b.ts": "foo elsewhere\n",
+    });
     const tool = searchTextTool();
     const r = await tool.run(
       {
         id: "1",
         tool: "search_text",
-        input: { pattern: "foo", path: "a.ts" },
+        input: { pattern: "foo", path: "a.ts", contextLines: 1 },
       },
       ctx(ws.root),
       noopProgress,
     );
-    expect(r.ok).toBe(false);
-    expect(r.error?.code).toBe("invalid_input");
+    expect(r.ok).toBe(true);
+    const data = r.data as SearchTextData;
+    // Only a.ts — b.ts is not searched.
+    expect(data.matches.map((m) => `${m.path}:${m.line}`)).toEqual([
+      "a.ts:2",
+      "a.ts:4",
+    ]);
+    expect(data.matches[0]?.contextBefore).toEqual(["line one"]);
+    expect(data.matches[0]?.contextAfter).toEqual(["line three"]);
+    expect(data.truncated).toBe(false);
+  });
+
+  it("a single-file search honours maxMatches, the size cap and the binary sniff", async () => {
+    ws = await mkTmpWorkspace({
+      "many.txt": Array.from({ length: 10 }, () => "foo").join("\n"),
+      "bin.dat": Buffer.from([
+        0x66, 0x6f, 0x6f, 0x00, 0x66, 0x6f, 0x6f,
+      ]).toString("latin1"),
+    });
+    const tool = searchTextTool();
+    const capped = await tool.run(
+      {
+        id: "1",
+        tool: "search_text",
+        input: { pattern: "foo", path: "many.txt", maxMatches: 3 },
+      },
+      ctx(ws.root),
+      noopProgress,
+    );
+    expect(capped.ok).toBe(true);
+    expect((capped.data as SearchTextData).matches).toHaveLength(3);
+    expect((capped.data as SearchTextData).truncated).toBe(true);
+    // A binary file named directly is skipped, not errored — same as when
+    // the walker meets it.
+    const bin = await tool.run(
+      {
+        id: "2",
+        tool: "search_text",
+        input: { pattern: "foo", path: "bin.dat" },
+      },
+      ctx(ws.root),
+      noopProgress,
+    );
+    expect(bin.ok).toBe(true);
+    expect((bin.data as SearchTextData).matches).toHaveLength(0);
   });
 
   it("denies path outside workspace", async () => {
@@ -533,6 +581,61 @@ describe("searchTextTool — attachments (ADR 0033, amended 2026-08-10)", () => 
     );
     expect(r.ok).toBe(true);
     expect((r.data as SearchTextData).matches.length).toBeGreaterThan(0);
+  });
+
+  it("`path` may name the attachment FILE itself (real session 2026-08-16)", async () => {
+    // The bridge's citation hands 板砖 the file path and says it is
+    // searchable; §6a says "point `path` AT it". 板砖 did — and got
+    // `not a directory`. A single file is the natural target for "which lines
+    // of this log mention X".
+    ws = await mkTmpWorkspace({
+      ".herta/attachments/s1/log-a1e18c1b.txt":
+        "warning: amplitude\nTraceback\ntorch.OutOfMemoryError: CUDA out of memory\nCUDA_VISIBLE_DEVICES=0\n",
+    });
+    const r = await searchTextTool().run(
+      {
+        id: "1",
+        tool: "search_text",
+        input: {
+          pattern: "CUDA|world_size",
+          path: ".herta/attachments/s1/log-a1e18c1b.txt",
+        },
+      },
+      ctx(ws.root),
+      noopProgress,
+    );
+    expect(r.ok).toBe(true);
+    const data = r.data as SearchTextData;
+    expect(data.matches.map((m) => m.line)).toEqual([3, 4]);
+    expect(data.matches[0]?.path).toBe(
+      ".herta/attachments/s1/log-a1e18c1b.txt",
+    );
+    // The receipt names WHERE — this string is what the done-marker roll-up
+    // carries, and "found 5 matches in 1 files" gave Herta nothing to cite.
+    expect((r as { summary: string }).summary).toBe(
+      "found 2 matches in 1 files for /CUDA|world_size/ — .herta/attachments/s1/log-a1e18c1b.txt:3,4",
+    );
+    // The data echoes the pattern so the record row can name it.
+    expect(data.pattern).toBe("CUDA|world_size");
+  });
+
+  it("the receipt's location list is bounded (3 files × 6 lines, then …)", async () => {
+    const files: Record<string, string> = {};
+    for (const f of ["a.txt", "b.txt", "c.txt", "d.txt"]) {
+      files[f] = Array.from({ length: 8 }, () => "needle").join("\n");
+    }
+    ws = await mkTmpWorkspace(files);
+    const r = await searchTextTool().run(
+      { id: "1", tool: "search_text", input: { pattern: "needle" } },
+      ctx(ws.root),
+      noopProgress,
+    );
+    expect(r.ok).toBe(true);
+    const summary = (r as { summary: string }).summary;
+    expect(summary).toContain("a.txt:1,2,3,4,5,6,…");
+    expect(summary).toContain("c.txt:");
+    expect(summary).not.toContain("d.txt");
+    expect(summary.endsWith("; …")).toBe(true);
   });
 
   it("an attachment root always takes the JS engine (engine-independence)", () => {

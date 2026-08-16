@@ -61,6 +61,11 @@ export type { ContextBuilder } from "./context-builder.js";
 export { StubContextBuilder } from "./context-builder.js";
 export type { EventBus } from "./event-bus.js";
 export { InMemoryEventBus, publishWithLayer } from "./event-bus.js";
+export {
+  type Finding,
+  FindingsLedger,
+  MAX_FINDINGS,
+} from "./findings-ledger.js";
 export { ensureHertaGitignore } from "./herta-dir-gitignore.js";
 export type {
   MemoryItem,

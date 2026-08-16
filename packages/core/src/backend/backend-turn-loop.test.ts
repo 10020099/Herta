@@ -1146,9 +1146,48 @@ describe("summarizeInput (tool-aware working-state argument)", () => {
     expect(summarizeInput("list_files", { path: "src" })).toBe("src");
   });
 
-  it("returns the quoted pattern for search_text", () => {
+  it("returns the quoted pattern for search_text, plus `in <path>` when scoped (2026-08-17)", () => {
     expect(summarizeInput("search_text", { pattern: "mergesort" })).toBe(
       '"mergesort"',
+    );
+    expect(summarizeInput("search_text", { pattern: "x", path: "." })).toBe(
+      '"x"',
+    );
+    expect(
+      summarizeInput("search_text", {
+        pattern: "CUDA|world_size",
+        path: ".herta/attachments/s1/log.txt",
+      }),
+    ).toBe('"CUDA|world_size" in .herta/attachments/s1/log.txt');
+  });
+
+  it('cites show_excerpt as path:from-to / path ~"match" — not its raw JSON (real session 2026-08-16)', () => {
+    expect(
+      summarizeInput("show_excerpt", {
+        path: "log.txt",
+        fromLine: 33,
+        toLine: 44,
+      }),
+    ).toBe("log.txt:33-44");
+    expect(
+      summarizeInput("show_excerpt", { path: "log.txt", fromLine: 33 }),
+    ).toBe("log.txt:33-");
+    expect(
+      summarizeInput("show_excerpt", { path: "log.txt", match: "OutOfMemory" }),
+    ).toBe('log.txt ~"OutOfMemory"');
+    expect(summarizeInput("show_excerpt", { path: "log.txt" })).toBe("log.txt");
+    // Malformed (no path) still falls to the JSON fallback rather than throwing.
+    expect(summarizeInput("show_excerpt", { fromLine: 1 })).toContain(
+      "fromLine",
+    );
+  });
+
+  it("names the background id for command_output (as `… output`) and command_stop", () => {
+    expect(summarizeInput("command_output", { backgroundId: "bg-1" })).toBe(
+      "bg-1 output",
+    );
+    expect(summarizeInput("command_stop", { backgroundId: "bg-1" })).toBe(
+      "bg-1",
     );
   });
 

@@ -597,6 +597,72 @@ describe("compactRecordForPrompt — done-marker two-state lifecycle", () => {
     expect(text).toContain("Excerpt src/a.ts:120-121");
   });
 
+  it("a search-hit row folds to its citation with the lines elided (2026-08-17)", () => {
+    // Third member of the excerpt/attachment family: the hit list is prompt
+    // -visible in its own turn and a counted citation afterwards — never a
+    // bare line that invites quoting matches no longer in view.
+    const hits = (): TerminalRecordBlock => ({
+      kind: "system",
+      label: "差分协处理器",
+      body: "↳ 2 matches in 1 files",
+      digest: {
+        kind: "search",
+        pattern: "CUDA",
+        matches: 2,
+        files: 1,
+        truncated: false,
+      },
+      evidenceDetail:
+        "↳ 匹配 /CUDA/:\nlog.txt:33: torch.OutOfMemoryError: CUDA out of memory\nlog.txt:40: CUDA_VISIBLE_DEVICES=0",
+    });
+    const live: TerminalRecord = [
+      { kind: "user", text: "哪几行提到 CUDA" },
+      { kind: "herta", surface: "speech", text: "@板砖 去。" },
+      hits(),
+    ];
+    expect(JSON.stringify(compactRecordForPrompt(live))).toContain(
+      "CUDA_VISIBLE_DEVICES=0",
+    );
+    const later: TerminalRecord = [
+      { kind: "user", text: "哪几行提到 CUDA" },
+      { kind: "herta", surface: "speech", text: "@板砖 去。" },
+      { kind: "system", label: "差分协处理器", body: "Reading log.txt" },
+      hits(),
+      { kind: "system", label: "差分协处理器", body: "Reading run.sh" },
+      { kind: "herta", surface: "speech", text: "两处。" },
+      { kind: "user", text: "下一件事" },
+    ];
+    const text = JSON.stringify(compactRecordForPrompt(later));
+    expect(text).not.toContain("CUDA_VISIBLE_DEVICES=0");
+    expect(text).toContain(
+      "Search /CUDA/ · 2 matches in 1 files · 匹配行已略去",
+    );
+  });
+
+  it("a finding row survives compaction WHOLE — the claim is the deliverable (ADR 0039)", () => {
+    const finding = (): TerminalRecordBlock => ({
+      kind: "system",
+      label: "差分协处理器",
+      body: "↳ finding: 崩在显存超限。 — log.txt:33",
+      digest: {
+        kind: "finding",
+        claim: "崩在显存超限。",
+        cites: ["log.txt:33"],
+      },
+    });
+    const later: TerminalRecord = [
+      { kind: "user", text: "分析一下" },
+      { kind: "herta", surface: "speech", text: "@板砖 去。" },
+      { kind: "system", label: "差分协处理器", body: "Reading log.txt" },
+      finding(),
+      { kind: "system", label: "差分协处理器", body: "Reading run.sh" },
+      { kind: "herta", surface: "speech", text: "看到了。" },
+      { kind: "user", text: "下一件事" },
+    ];
+    const text = JSON.stringify(compactRecordForPrompt(later));
+    expect(text).toContain("Finding: 崩在显存超限。 (log.txt:33)");
+  });
+
   it("State 1 (verdict turn): passes the done-marker through verbatim with evidenceDetail", () => {
     const record: TerminalRecord = [
       { kind: "system", label: "差分协处理器", body: "Writing a.ts" },

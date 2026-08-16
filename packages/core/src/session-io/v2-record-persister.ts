@@ -307,15 +307,24 @@ export class V2RecordPersister {
     for (let i = 1; i < lines.length; i++) {
       const line = lines[i];
       if (line === undefined || line.length === 0) continue;
-      let parsed: { _kind?: string };
+      let parsed: { _kind?: string; at?: unknown };
       try {
-        parsed = JSON.parse(line) as { _kind?: string };
+        parsed = JSON.parse(line) as { _kind?: string; at?: unknown };
       } catch {
         break; // corrupt/partial tail — never rewrite past a bad line
       }
       if (parsed._kind !== undefined) continue; // meta line, not a block
       if (blockCount === blockIndex) {
-        lines[i] = JSON.stringify(block);
+        // Keep the line's original timestamp when the replacement carries
+        // none (2026-08-17): the in-memory record never holds `at` (it is
+        // stamped here on append), so a replaced block used to lose it and
+        // a removed attachment reloaded with no time. The event happened
+        // when it happened; withdrawal does not move it.
+        const stamped =
+          block.at === undefined && typeof parsed.at === "string"
+            ? { ...block, at: parsed.at }
+            : block;
+        lines[i] = JSON.stringify(stamped);
         replaced = true;
         break;
       }

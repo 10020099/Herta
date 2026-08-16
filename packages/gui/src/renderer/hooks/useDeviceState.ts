@@ -52,11 +52,14 @@ function fineWorkingState(record: TerminalRecord): BanzhuanDeviceState {
     switch (d.verb) {
       case "Reading":
       case "Inspecting":
+      case "Searching":
         return "reading";
       case "Writing":
         return "writing";
       case "Running":
         return TEST_ARG.test(d.arg) ? "verifying" : "runningCommand";
+      case "Stopping":
+        return "runningCommand";
       default:
         // Planning / Saving memory — no fine state defined; coarse working.
         return "delegated";

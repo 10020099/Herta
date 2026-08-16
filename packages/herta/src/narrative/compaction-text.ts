@@ -33,6 +33,9 @@ export const COMPACTION_TEXT = {
      *  front of you"), and two phrasings for one fact would only invite the
      *  model to read a distinction into them. */
     excerptElided: "正文已略去",
+    /** Appended to a folded search citation (2026-08-17): the matched lines
+     *  are no longer in front of her; the counts survive. */
+    searchElided: "匹配行已略去",
     /** Why an attachment carries no text at all. Distinct from the elision
      *  above, and the distinction is load-bearing: elided means she WAS shown
      *  it and no longer is; these mean it was never readable, so there is
@@ -71,6 +74,7 @@ export const COMPACTION_TEXT = {
   en: {
     header: "[history compacted · 板砖]",
     excerptElided: "body elided",
+    searchElided: "matched lines elided",
     attachmentUnreadable: {
       binary: "not a text file, no body taken",
       too_large: "file too large, no body taken",

@@ -2,6 +2,8 @@ import type { Stats } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import type {
   HertaTool,
+  SearchMatch,
+  SearchTextData,
   ToolCallRequest,
   ToolContext,
   ToolResult,
@@ -78,18 +80,10 @@ const SCAN_DEADLINE_MS = 10_000;
  *  in minified one-liners are lost — acceptable for a code-search tool. */
 const LINE_TEST_CAP = 32 * 1024;
 
-export interface SearchMatch {
-  path: string;
-  line: number;
-  content: string;
-  contextBefore?: string[];
-  contextAfter?: string[];
-}
-
-export interface SearchTextData {
-  matches: SearchMatch[];
-  truncated: boolean;
-}
+// The result shapes live in @herta/core (bridge/types.ts) since 2026-08-17 —
+// the bridge projects search hits into the record and must not depend on
+// this package. Re-exported here so existing consumers keep their import.
+export type { SearchMatch, SearchTextData };
 
 export interface SearchTextToolOpts {
   /**
@@ -163,6 +157,27 @@ function makeFileLoader(
   };
 }
 
+/** ` — a.ts:3,12,40; b.ts:7` for the summary receipt: at most 3 files, at
+ *  most 6 line numbers each, `…` when either bound clips. Empty for none. */
+const SUMMARY_MAX_FILES = 3;
+const SUMMARY_MAX_LINES_PER_FILE = 6;
+function summarizeLocations(matches: readonly SearchMatch[]): string {
+  if (matches.length === 0) return "";
+  const byFile = new Map<string, number[]>();
+  for (const m of matches) {
+    const lines = byFile.get(m.path) ?? [];
+    lines.push(m.line);
+    byFile.set(m.path, lines);
+  }
+  const files = [...byFile.entries()];
+  const parts = files.slice(0, SUMMARY_MAX_FILES).map(([path, lines]) => {
+    const shown = lines.slice(0, SUMMARY_MAX_LINES_PER_FILE).join(",");
+    return `${path}:${shown}${lines.length > SUMMARY_MAX_LINES_PER_FILE ? ",…" : ""}`;
+  });
+  const more = files.length > SUMMARY_MAX_FILES ? "; …" : "";
+  return ` — ${parts.join("; ")}${more}`;
+}
+
 function probeLine(regex: RegExp, lineContent: string): boolean {
   const probe =
     lineContent.length > LINE_TEST_CAP
@@ -233,6 +248,49 @@ async function verifyRgCandidates(opts: {
   return { matches, truncated, timedOut };
 }
 
+/**
+ * `path` names ONE FILE (2026-08-17). Found in a real session: the bridge's
+ * attachment citation hands 板砖 a file path and says it is searchable, ADR
+ * 0033 §6a says "point `path` AT it" — and this tool answered
+ * `not a directory`. Pointing at the file is the natural call for "which
+ * lines of this log mention X"; it goes through the same loader (path guard,
+ * size cap, binary sniff, redaction) and the same probe as a walked file, so
+ * the result shape is identical to a directory search that happened to
+ * match only that file. Always the JS engine — one file needs no finder.
+ */
+async function searchSingleFile(opts: {
+  regex: RegExp;
+  relPath: string;
+  contextLines: number;
+  maxMatches: number;
+  deadline: number;
+  ctx: ToolContext;
+}): Promise<ScanOutcome> {
+  const { regex, relPath, contextLines, maxMatches, deadline, ctx } = opts;
+  const load = makeFileLoader(ctx);
+  const matches: SearchMatch[] = [];
+  const lines = await load(relPath);
+  if (lines === null) return { matches, truncated: false, timedOut: false };
+  let truncated = false;
+  let timedOut = false;
+  for (let i = 0; i < lines.length; i++) {
+    ctx.signal.throwIfAborted();
+    if (Date.now() > deadline) {
+      timedOut = true;
+      truncated = true;
+      break;
+    }
+    if (probeLine(regex, lines[i] ?? "")) {
+      matches.push(buildMatch(relPath, lines, i, contextLines));
+      if (matches.length >= maxMatches) {
+        truncated = true;
+        break;
+      }
+    }
+  }
+  return { matches, truncated, timedOut };
+}
+
 /** The original walk-everything JS scanner — the fallback engine and the
  *  behavior baseline the rg path must agree with. */
 async function searchWithJs(opts: {
@@ -294,7 +352,7 @@ export function searchTextTool(opts: SearchTextToolOpts = {}): HertaTool {
       return {
         name: "search_text",
         description:
-          "Search workspace files for a JS RegExp pattern. Returns matches sorted by path then line. Skips binary files (NUL byte sniff) and files >1MB. Uses ripgrep when available (respects .gitignore); falls back to a JS scanner.",
+          "Search workspace files for a JS RegExp pattern. `path` may be a directory (searched recursively) or a single file (only that file). Returns matches sorted by path then line. Skips binary files (NUL byte sniff) and files >1MB. Uses ripgrep when available (respects .gitignore); falls back to a JS scanner.",
         inputSchema: searchTextJsonSchema,
       };
     },
@@ -405,15 +463,15 @@ export function searchTextTool(opts: SearchTextToolOpts = {}): HertaTool {
         };
       }
 
-      if (!info.isDirectory()) {
+      if (!info.isDirectory() && !info.isFile()) {
         return {
           ok: false,
           error: {
             code: "invalid_input",
-            message: `not a directory: ${safe.relative || path}`,
+            message: `not a file or directory: ${safe.relative || path}`,
             retryable: false,
           },
-          summary: "not a directory",
+          summary: "not a file or directory",
         };
       }
 
@@ -422,13 +480,24 @@ export function searchTextTool(opts: SearchTextToolOpts = {}): HertaTool {
       // Engine selection (ADR 0025 slice 3): rg as fast finder when
       // available; JS scanner as baseline/fallback. null from the finder
       // (no binary, pattern dialect rejected, spawn failure) falls through.
+      // A single FILE takes its own path — no finder, no walk.
       let outcome: ScanOutcome | null = null;
-      const engine =
-        process.env.HERTA_SEARCH_ENGINE === "js" ||
-        isHertaCarveOutSearchRoot(safe.relative)
+      const engine = info.isFile()
+        ? "file"
+        : process.env.HERTA_SEARCH_ENGINE === "js" ||
+            isHertaCarveOutSearchRoot(safe.relative)
           ? "js"
           : (opts.engine ?? "auto");
-      if (engine === "auto") {
+      if (engine === "file") {
+        outcome = await searchSingleFile({
+          regex,
+          relPath: safe.relative,
+          contextLines,
+          maxMatches,
+          deadline,
+          ctx,
+        });
+      } else if (engine === "auto") {
         const rgBin = await detectRg();
         if (rgBin !== null) {
           const findings = await runRgFinder({
@@ -473,15 +542,21 @@ export function searchTextTool(opts: SearchTextToolOpts = {}): HertaTool {
 
       const fileCount = new Set(matches.map((m) => m.path)).size;
       const flags = caseSensitive ? "" : "i";
+      // The receipt names WHERE the hits are, not just how many (2026-08-17):
+      // this summary is what the done-marker's `↳ 依据` roll-up carries, and
+      // "found 5 matches in 1 files" told Herta nothing she could cite.
+      // Bounded — a few files, a few lines each — because it is a receipt,
+      // not the result; the result rides the record row the bridge projects.
+      const where = summarizeLocations(matches);
       const summary = timedOut
-        ? `found ${matches.length} matches (stopped at the ${SCAN_DEADLINE_MS / 1000}s scan budget; narrow scope or simplify the pattern) for /${pattern}/${flags}`
+        ? `found ${matches.length} matches (stopped at the ${SCAN_DEADLINE_MS / 1000}s scan budget; narrow scope or simplify the pattern) for /${pattern}/${flags}${where}`
         : truncated
-          ? `found ${matches.length} matches (truncated; narrow scope) for /${pattern}/${flags}`
+          ? `found ${matches.length} matches (truncated; narrow scope) for /${pattern}/${flags}${where}`
           : matches.length === 0
             ? `found 0 matches for /${pattern}/${flags}`
-            : `found ${matches.length} matches in ${fileCount} files for /${pattern}/${flags}`;
+            : `found ${matches.length} matches in ${fileCount} files for /${pattern}/${flags}${where}`;
 
-      return { ok: true, data: { matches, truncated }, summary };
+      return { ok: true, data: { pattern, matches, truncated }, summary };
     },
   };
 }

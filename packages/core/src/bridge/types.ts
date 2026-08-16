@@ -23,7 +23,10 @@ export interface ChangedFileSummary {
 }
 
 export interface EvidenceItem {
-  kind: "file" | "search" | "command" | "test" | "git" | "tool";
+  /** `finding` (ADR 0039): the backend's own cited conclusion, recorded via
+   *  `report_finding` — `summary` is the claim, `source` the citations. The
+   *  done marker lists these under `↳ 结论`, apart from tool receipts. */
+  kind: "file" | "search" | "command" | "test" | "git" | "tool" | "finding";
   summary: string;
   source?: string;
 }
@@ -91,6 +94,33 @@ export interface ShowExcerptData {
   /** The requested span was clipped by the presentation bounds. */
   truncated: boolean;
   relPath: string;
+}
+
+/**
+ * Result-data shape of the `search_text` tool. Here for the same reason as
+ * the two above: since 2026-08-17 the bridge projects a search's hits into
+ * the record (a bounded `↳ N matches` row with the matched lines in the
+ * two-state evidence lane) — before that, a search's ONLY visible trace was
+ * its op row, and 板砖's answer to "which lines mention X" reached nobody
+ * unless it re-presented the lines with show_excerpt. Found in a real
+ * session where it found 5 matches and Herta had to ask for them by name.
+ */
+export interface SearchMatch {
+  path: string;
+  line: number;
+  /** The matched line, already secret-redacted (the tool redacts before
+   *  matching, so context and match lines both come from redacted text). */
+  content: string;
+  contextBefore?: string[];
+  contextAfter?: string[];
+}
+
+export interface SearchTextData {
+  /** The pattern as the model wrote it — echoed so the record row can name
+   *  what was searched without parsing the summary string. */
+  pattern: string;
+  matches: SearchMatch[];
+  truncated: boolean;
 }
 
 export interface PermissionEventSummary {

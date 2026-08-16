@@ -8,6 +8,7 @@ import type {
   EventBus,
   EvidenceSection,
   RunCommandData,
+  SearchTextData,
   ShowExcerptData,
   SystemBlock,
   SystemBlockDigest,
@@ -63,6 +64,17 @@ function sanitizeDigest(digest: SystemBlockDigest): SystemBlockDigest {
       // `path` is backend-derived like every other string field; the line
       // numbers are harness-computed and pass through.
       return { ...digest, path: cleanBody(digest.path) };
+    case "search":
+      // The pattern is model-authored; the counts are harness-computed.
+      return { ...digest, pattern: cleanBody(digest.pattern) };
+    case "finding":
+      // Claim AND cites are model-authored (the cites were verified to
+      // exist, not to be free of markers).
+      return {
+        ...digest,
+        claim: cleanBody(digest.claim),
+        cites: digest.cites.map(cleanBody),
+      };
     case "todo":
       // Every string here is backend-authored item text: `current` (the
       // in-flight step) and each `items[].content` (the full list both todo
@@ -114,7 +126,16 @@ function sanitizeSection(s: EvidenceSection): EvidenceSection {
     case "risks":
     case "todos":
     case "evidence":
+    case "findings":
       return { ...s, items: s.items.map(cleanBody) };
+    case "matches":
+      // Matched lines come from files a hostile repo (or document) can shape;
+      // the pattern from the model. Both ride the cleaner.
+      return {
+        ...s,
+        pattern: cleanBody(s.pattern),
+        items: s.items.map(cleanBody),
+      };
     case "attachment":
       // `text` is the head of a document the user supplied, so this is the
       // one section whose content never passed through the repo or the
@@ -128,6 +149,10 @@ function sanitizeSection(s: EvidenceSection): EvidenceSection {
       };
     case "error":
       return { ...s, message: cleanBody(s.message) };
+    case "hint":
+      // Harness-authored in every shipped tool, but a tool is a plugin
+      // seam — clean it like the rest.
+      return { ...s, text: cleanBody(s.text) };
   }
 }
 
@@ -169,6 +194,61 @@ export function sanitizeSystemBlock(block: SystemBlock): SystemBlock {
     ...(block.digest !== undefined
       ? { digest: sanitizeDigest(block.digest) }
       : {}),
+  };
+}
+
+/** Presentation bounds for a projected search-hit list. Lines/chars match
+ *  show_excerpt's presentation lane (this is reading, not a log tail); the
+ *  per-line clip keeps a minified one-liner from eating the whole budget. */
+const SEARCH_ROW_MAX_ITEMS = 40;
+const SEARCH_ROW_MAX_CHARS = 4000;
+const SEARCH_ROW_MAX_LINE_CHARS = 200;
+
+/**
+ * `↳ N matches in M files` with the hit list in the two-state evidence lane.
+ * Item shape `path:line: content` — the citation form 板砖 and Herta both
+ * already use for excerpts, so a later "show me line 33" is one hop away.
+ */
+function projectSearchResult(data: SearchTextData): SystemBlock {
+  const total = data.matches.length;
+  const files = new Set(data.matches.map((m) => m.path)).size;
+  const body =
+    total === 0
+      ? `↳ 0 matches${data.truncated ? " (truncated)" : ""}`
+      : `↳ ${total} matches in ${files} files${data.truncated ? " (truncated)" : ""}`;
+  const items: string[] = [];
+  let chars = 0;
+  for (const m of data.matches) {
+    if (items.length >= SEARCH_ROW_MAX_ITEMS) break;
+    const content =
+      m.content.length > SEARCH_ROW_MAX_LINE_CHARS
+        ? `${m.content.slice(0, SEARCH_ROW_MAX_LINE_CHARS)}…`
+        : m.content;
+    const item = `${m.path}:${m.line}: ${content}`;
+    if (chars + item.length > SEARCH_ROW_MAX_CHARS && items.length > 0) break;
+    items.push(item);
+    chars += item.length + 1;
+  }
+  const omitted = total - items.length;
+  const block: SystemBlock = {
+    kind: "system",
+    label: "差分协处理器",
+    body,
+    digest: {
+      kind: "search",
+      pattern: data.pattern,
+      matches: total,
+      files,
+      truncated: data.truncated,
+    },
+  };
+  if (items.length === 0) return block;
+  const detailLines = [`↳ 匹配 /${data.pattern}/:`, ...items];
+  if (omitted > 0) detailLines.push(`（另有 ${omitted} 处未列出）`);
+  return {
+    ...block,
+    evidenceDetail: detailLines.join("\n"),
+    evidence: [{ kind: "matches", pattern: data.pattern, items, omitted }],
   };
 }
 
@@ -251,6 +331,34 @@ function projectBackendEventUnsanitized(event: AgentEvent): SystemBlock | null {
               },
             ],
           };
+        }
+        // A recorded conclusion (ADR 0039). The claim is the deliverable of
+        // an analysis brief, so it is the BODY — short by schema, kept whole
+        // through compaction — with its citations, so the reader can check.
+        if (event.tool === "report_finding") {
+          const data = event.result.data as
+            | { claim?: unknown; cites?: unknown }
+            | undefined;
+          if (typeof data?.claim !== "string") return null;
+          const cites = Array.isArray(data.cites)
+            ? data.cites.filter((c): c is string => typeof c === "string")
+            : [];
+          return {
+            kind: "system",
+            label: "差分协处理器",
+            body: `↳ finding: ${data.claim}${cites.length > 0 ? ` — ${cites.join(", ")}` : ""}`,
+            digest: { kind: "finding", claim: data.claim, cites },
+          };
+        }
+        // search_text surfaces its hits (2026-08-17). Same reasoning as
+        // show_excerpt and for the same lane: a search's op row said only that
+        // a search happened, so "which lines mention X" — the answer 板砖 was
+        // sent for — reached nobody unless it re-presented the lines. Bounded
+        // hard: this is a hit list, not the files.
+        if (event.tool === "search_text") {
+          const data = event.result.data as SearchTextData | undefined;
+          if (data === undefined || !Array.isArray(data.matches)) return null;
+          return projectSearchResult(data);
         }
         // Success: run_command (incl. the background trio) surfaces a result
         // block — its output is otherwise invisible. Other tools' successes
@@ -385,11 +493,29 @@ function projectBackendEventUnsanitized(event: AgentEvent): SystemBlock | null {
         return null;
       }
       const message = err?.message ?? "(no message)";
+      // The tool's own `suggestion` rides the two-state lane (2026-08-17).
+      // Herta reads failure rows and comments on them; with only `code:
+      // message` in front of her she diagnosed a search_text refusal as
+      // 板砖 "confusing a file with a folder" when the tool had demanded a
+      // directory (real session 2026-08-16). The model-facing hint says
+      // what actually went wrong and what fixes it — she should read the
+      // same sentence 板砖 does, for the turn it happens in.
+      const suggestion =
+        typeof event.result.suggestion === "string" &&
+        event.result.suggestion.trim().length > 0
+          ? event.result.suggestion.trim()
+          : undefined;
       return {
         kind: "system",
         label: "系统",
         body: `↳ ${event.tool} failed: ${code}: ${message}`,
         digest: { kind: "tool-fail", tool: event.tool, code, message },
+        ...(suggestion !== undefined
+          ? {
+              evidenceDetail: `↳ 提示: ${suggestion}`,
+              evidence: [{ kind: "hint", text: suggestion }] as const,
+            }
+          : {}),
       };
     }
 
@@ -453,19 +579,25 @@ function workflowLabel(
   switch (tool) {
     case "read_file":
     case "list_files":
-    case "search_text":
     case "glob":
     // show_excerpt starts as a Reading row like any other read; what makes
     // it different is its FINISHED row, which carries the excerpt.
     case "show_excerpt":
+    // command_output reads a background process's output; the arg says
+    // `bg-N output` (2026-08-17 — was `Running bg-N`).
+    case "command_output":
       return "Reading";
+    case "search_text":
+      return "Searching";
     case "edit_file":
     case "write_new_file":
       return "Writing";
     case "run_command":
-    case "command_output":
-    case "command_stop":
       return "Running";
+    case "command_stop":
+      // Not a run. Herta reads these rows, and `Running bg-1` on the stop
+      // call read as a second launch (real session 2026-08-16).
+      return "Stopping";
     case "todo_write":
       return "Planning";
     case "git_status":
@@ -585,8 +717,26 @@ function buildDoneMarker(
   // harness, and it was the one part of the report the record never carried.
   // Bounded like its siblings; `source` rides along when present because a
   // finding worth naming is worth locating.
-  if (report.evidence.length > 0) {
-    const items = report.evidence
+  // Conclusions FIRST (ADR 0039): the backend's own cited findings are the
+  // deliverable of an analysis brief and read before the receipts that
+  // produced them. Listed apart from `↳ 依据` because a claim and a receipt
+  // are different kinds of fact — Herta must be able to tell "板砖 concluded
+  // X (see log.txt:33)" from "板砖 read log.txt".
+  const findings = report.evidence.filter((e) => e.kind === "finding");
+  const receipts = report.evidence.filter((e) => e.kind !== "finding");
+  if (findings.length > 0) {
+    const items = findings
+      .slice(0, 8)
+      .map((e) =>
+        e.source !== undefined && e.source.length > 0
+          ? `${e.summary}（${e.source}）`
+          : e.summary,
+      );
+    detailParts.push(`↳ 结论: ${items.join("; ")}`);
+    sections.push({ kind: "findings", items });
+  }
+  if (receipts.length > 0) {
+    const items = receipts
       .slice(0, 6)
       .map((e) =>
         e.source !== undefined && e.source.length > 0

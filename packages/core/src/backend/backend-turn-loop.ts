@@ -1,5 +1,6 @@
 import type { HertaToAgentBrief } from "../bridge/types.js";
 import type { EventBus } from "../event-bus.js";
+import type { FindingsLedger } from "../findings-ledger.js";
 import type { MemoryManager } from "../memory-manager.js";
 import type { PermissionEngine } from "../permission-engine.js";
 import type { ReadLedger } from "../read-ledger.js";
@@ -48,6 +49,9 @@ export interface BackendTurnDeps {
   workspaceRoot: string;
   reads: ReadLedger;
   memory: MemoryManager;
+  /** Per-brief conclusions (ADR 0039). Optional so existing callers and
+   *  tests keep working; the runtime always supplies one. */
+  findings?: FindingsLedger;
   /**
    * Working-set prompt budget (ADR 0025 slice 2). Defaults to
    * DEFAULT_BACKEND_PROMPT_BUDGET; labs/tests override to force the trim
@@ -301,6 +305,7 @@ export async function* runBackendTurnLoop(
         bg: deps.bg,
         bus: deps.bus,
         memory: deps.memory,
+        ...(deps.findings !== undefined ? { findings: deps.findings } : {}),
       };
       const progressFor =
         (callId: string) =>
@@ -844,7 +849,37 @@ export function summarizeInput(tool: string, input: unknown): string {
         const path = str(obj.path);
         return cap(path ?? ".");
       }
-      case "search_text":
+      case "show_excerpt": {
+        // Was the JSON fallback until 2026-08-17 — the record read
+        // `Reading {"path":".herta/attachments/…` (real session). Cite it
+        // the way its own result row does: `path:from-to`, or `path ~"match"`
+        // for the match+context form.
+        const path = str(obj.path);
+        if (path === null) break;
+        const from = typeof obj.fromLine === "number" ? obj.fromLine : null;
+        const to = typeof obj.toLine === "number" ? obj.toLine : null;
+        if (from !== null) {
+          return cap(
+            to !== null ? `${path}:${from}-${to}` : `${path}:${from}-`,
+          );
+        }
+        const match = str(obj.match);
+        return cap(match !== null ? `${path} ~"${match}"` : path);
+      }
+      case "search_text": {
+        // `"pattern" in path` when a path was given (2026-08-17): the verb
+        // became Searching, and where it looked is half of what a reader
+        // wants — a search into one attached file reads differently from a
+        // whole-workspace one.
+        const pattern = str(obj.pattern);
+        if (pattern === null) break;
+        const path = str(obj.path);
+        return cap(
+          path !== null && path !== "."
+            ? `"${pattern}" in ${path}`
+            : `"${pattern}"`,
+        );
+      }
       case "glob": {
         const pattern = str(obj.pattern);
         if (pattern !== null) return cap(`"${pattern}"`);
@@ -865,7 +900,12 @@ export function summarizeInput(tool: string, input: unknown): string {
         }
         break;
       }
-      case "command_output":
+      case "command_output": {
+        // "Reading bg-1 output" (2026-08-17): both background follow-ups used
+        // to render as `Running bg-1`, which reads as a second launch.
+        const id = str(obj.backgroundId);
+        return id !== null ? cap(`${id} output`) : "";
+      }
       case "command_stop": {
         const id = str(obj.backgroundId);
         return id !== null ? cap(id) : "";

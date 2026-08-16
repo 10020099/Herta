@@ -6,6 +6,7 @@ import { globTool } from "./glob/index.js";
 import { listFilesTool } from "./list-files/index.js";
 import { memorySaveTool } from "./memory-save/index.js";
 import { readFileTool } from "./read-file/index.js";
+import { reportFindingTool } from "./report-finding/index.js";
 import {
   commandOutputTool,
   commandStopTool,
@@ -58,6 +59,13 @@ export { resolveSafePath } from "./path-safety.js";
 export type { ReadFileData } from "./read-file/index.js";
 export { readFileTool } from "./read-file/index.js";
 export type { ReadFileInput } from "./read-file/schema.js";
+export {
+  MAX_FINDING_CITES,
+  MAX_FINDING_CLAIM_CHARS,
+  type ReportFindingData,
+  type ReportFindingInput,
+  reportFindingTool,
+} from "./report-finding/index.js";
 export type { RunCommandData } from "./run-command/index.js";
 export {
   commandOutputTool,
@@ -124,6 +132,9 @@ export function createMvpTools(): HertaTool[] {
     gitStatusTool(),
     gitDiffTool(),
     memorySaveTool(),
+    // The backend's channel for CONCLUSIONS (ADR 0039): its final prose has
+    // none by design, so an analysis brief needs this or it delivers nothing.
+    reportFindingTool(),
   ];
 }
 

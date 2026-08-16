@@ -255,6 +255,69 @@ describe("stepDisplayBody (display-only localization from digests, D7)", () => {
   it("renders records without a digest verbatim", () => {
     expect(stepDisplayBody(sys("Reading a.ts"), t)).toBe("Reading a.ts");
   });
+
+  it("localizes a search-hit row from its counts (2026-08-17)", () => {
+    const S: Partial<Record<MessageKey, string>> = {
+      "activity.result.matches": "处匹配",
+      "activity.result.files": "个文件",
+      "activity.result.truncated": "已截断",
+    };
+    const ts = (key: MessageKey): string => S[key] ?? `MISSING:${key}`;
+    expect(
+      stepDisplayBody(
+        sys("↳ 5 matches in 1 files", {
+          kind: "search",
+          pattern: "CUDA",
+          matches: 5,
+          files: 1,
+          truncated: false,
+        }),
+        ts,
+      ),
+    ).toBe("↳ 5 处匹配 · 1 个文件");
+    expect(
+      stepDisplayBody(
+        sys("↳ 0 matches", {
+          kind: "search",
+          pattern: "x",
+          matches: 0,
+          files: 0,
+          truncated: true,
+        }),
+        ts,
+      ),
+    ).toBe("↳ 0 处匹配 (已截断)");
+  });
+
+  it("composes the search-hit detail pane from the structured section, with the omitted count", () => {
+    const S: Partial<Record<MessageKey, string>> = {
+      "evidence.matches": "matches",
+      "evidence.matches.omitted": "({n} more not listed)",
+    };
+    const ts = (key: MessageKey): string => S[key] ?? `MISSING:${key}`;
+    const block: SystemBlock = {
+      ...sys("↳ 3 matches in 1 files", {
+        kind: "search",
+        pattern: "CUDA",
+        matches: 3,
+        files: 1,
+        truncated: false,
+      }),
+      evidenceDetail:
+        "↳ 匹配 /CUDA/:\nlog.txt:33: a\nlog.txt:40: b\n（另有 1 处未列出）",
+      evidence: [
+        {
+          kind: "matches",
+          pattern: "CUDA",
+          items: ["log.txt:33: a", "log.txt:40: b"],
+          omitted: 1,
+        },
+      ],
+    };
+    expect(stepDisplayDetail(block, ts)).toBe(
+      "↳ matches /CUDA/:\nlog.txt:33: a\nlog.txt:40: b\n(1 more not listed)",
+    );
+  });
 });
 
 describe("stepDisplayBody — attachment rows, incl. PDF / Word (ADR 0038)", () => {

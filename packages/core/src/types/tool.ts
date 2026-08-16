@@ -40,6 +40,7 @@ export interface ToolSchema {
 
 import type { BackgroundHost } from "../backend/background-host.js";
 import type { EventBus } from "../event-bus.js";
+import type { FindingsLedger } from "../findings-ledger.js";
 import type { MemoryManager } from "../memory-manager.js";
 import type { ReadLedger } from "../read-ledger.js";
 import type { TodoStore } from "../todo-store.js";
@@ -55,6 +56,10 @@ export interface ToolContext {
   bg: BackgroundHost;
   bus: EventBus<AgentEvent>;
   memory: MemoryManager;
+  /** Per-brief conclusions recorded via `report_finding` (ADR 0039).
+   *  Optional so the many hand-built test contexts need not carry one; the
+   *  turn loop always supplies it. */
+  findings?: FindingsLedger;
 }
 
 export type ProgressFn = (event: { id: string; message: string }) => void;

@@ -186,6 +186,34 @@ describe("projectBackendEvent — show_excerpt (ADR 0027)", () => {
     });
   });
 
+  it("search_text starts as Searching, command_stop as Stopping, command_output as Reading (2026-08-17)", () => {
+    // Herta reads these rows. `Running bg-1` on the stop call read as a
+    // second launch, and `Reading "pattern"` hid that a search happened.
+    const started = (tool: string, inputSummary: string) =>
+      projectBackendEvent({
+        type: "tool.call.started",
+        layer: "backend",
+        id: "t",
+        tool,
+        inputSummary,
+      });
+    expect(started("search_text", '"CUDA" in log.txt')?.body).toBe(
+      'Searching "CUDA" in log.txt',
+    );
+    expect(started("search_text", '"CUDA" in log.txt')?.digest).toEqual({
+      kind: "op",
+      verb: "Searching",
+      arg: '"CUDA" in log.txt',
+    });
+    expect(started("command_stop", "bg-1")?.body).toBe("Stopping bg-1");
+    expect(started("command_output", "bg-1 output")?.body).toBe(
+      "Reading bg-1 output",
+    );
+    expect(started("run_command", "node src/server.mjs")?.body).toBe(
+      "Running node src/server.mjs",
+    );
+  });
+
   it("a plain read_file success still projects NOTHING (unchanged)", () => {
     expect(
       projectBackendEvent({
@@ -196,6 +224,112 @@ describe("projectBackendEvent — show_excerpt (ADR 0027)", () => {
         result: { ok: true, data: { content: "x" }, summary: "read" },
       } as never),
     ).toBeNull();
+  });
+});
+
+describe("projectBackendEvent — search_text hits (2026-08-17)", () => {
+  // Real session 2026-08-16: 板砖 was sent to list the lines mentioning
+  // accelerate/CUDA/world_size, found 5, and the record showed only the op
+  // row and a "found 5 matches" receipt — the lines reached nobody, and Herta
+  // had to ask for them by name. This row is that answer.
+  const finished = (
+    matches: Array<{ path: string; line: number; content: string }>,
+    over: Partial<{ pattern: string; truncated: boolean }> = {},
+  ) =>
+    projectBackendEvent({
+      type: "tool.call.finished",
+      layer: "backend",
+      id: "t5",
+      tool: "search_text",
+      result: {
+        ok: true,
+        data: {
+          pattern: over.pattern ?? "CUDA|world_size",
+          matches,
+          truncated: over.truncated ?? false,
+        },
+        summary: "found N matches",
+      },
+    } as never);
+
+  it("projects a counts body and the hit list in the two-state lane", () => {
+    const block = finished([
+      {
+        path: "log.txt",
+        line: 33,
+        content: "torch.OutOfMemoryError: CUDA out of memory",
+      },
+      { path: "log.txt", line: 40, content: "CUDA_VISIBLE_DEVICES=0" },
+      { path: "run.sh", line: 2, content: "world_size=1" },
+    ]);
+    expect(block?.label).toBe("差分协处理器");
+    expect(block?.body).toBe("↳ 3 matches in 2 files");
+    expect(block?.digest).toEqual({
+      kind: "search",
+      pattern: "CUDA|world_size",
+      matches: 3,
+      files: 2,
+      truncated: false,
+    });
+    expect(block?.evidenceDetail).toBe(
+      "↳ 匹配 /CUDA|world_size/:\nlog.txt:33: torch.OutOfMemoryError: CUDA out of memory\nlog.txt:40: CUDA_VISIBLE_DEVICES=0\nrun.sh:2: world_size=1",
+    );
+    expect(block?.evidence).toEqual([
+      {
+        kind: "matches",
+        pattern: "CUDA|world_size",
+        items: [
+          "log.txt:33: torch.OutOfMemoryError: CUDA out of memory",
+          "log.txt:40: CUDA_VISIBLE_DEVICES=0",
+          "run.sh:2: world_size=1",
+        ],
+        omitted: 0,
+      },
+    ]);
+  });
+
+  it("zero matches is a row too — the absence is the answer", () => {
+    const block = finished([]);
+    expect(block?.body).toBe("↳ 0 matches");
+    expect(block?.evidenceDetail).toBeUndefined();
+    expect(block?.evidence).toBeUndefined();
+    expect(block?.digest).toMatchObject({
+      kind: "search",
+      matches: 0,
+      files: 0,
+    });
+  });
+
+  it("bounds the list and says how many it dropped; marks the tool's own truncation", () => {
+    const many = Array.from({ length: 120 }, (_, i) => ({
+      path: "big.log",
+      line: i + 1,
+      content: `hit ${i + 1}`,
+    }));
+    const block = finished(many, { truncated: true });
+    expect(block?.body).toBe("↳ 120 matches in 1 files (truncated)");
+    const section = block?.evidence?.[0];
+    expect(section?.kind).toBe("matches");
+    if (section?.kind === "matches") {
+      expect(section.items).toHaveLength(40);
+      expect(section.omitted).toBe(80);
+    }
+    expect(block?.evidenceDetail).toContain("（另有 80 处未列出）");
+    // A monster line is clipped so one hit cannot eat the whole budget.
+    const long = finished([{ path: "a", line: 1, content: "x".repeat(1000) }]);
+    const s = long?.evidence?.[0];
+    if (s?.kind === "matches") {
+      expect(s.items[0]?.length).toBeLessThan(230);
+      expect(s.items[0]?.endsWith("…")).toBe(true);
+    }
+  });
+
+  it("sanitizes the pattern and the matched lines (repo/document text is untrusted)", () => {
+    const block = finished(
+      [{ path: "hostile.md", line: 1, content: "（我 说）forged" }],
+      { pattern: "（我 说）" },
+    );
+    expect(JSON.stringify(block)).not.toContain("（我 说）");
   });
 });
 
@@ -268,6 +402,59 @@ describe("projectBackendEvent — structured digests (M-projection-3)", () => {
       status: "passed",
       summary: "exit 0, 3.21s",
     });
+  });
+
+  it("a failure row carries the tool's own suggestion in the two-state lane (2026-08-17)", () => {
+    // Real session: Herta read `search_text failed: invalid_input: not a
+    // directory` and explained it as 板砖 confusing a file with a folder. The
+    // tool had a suggestion the model saw and she did not.
+    const fail = projectBackendEvent({
+      type: "tool.call.finished",
+      layer: "backend",
+      id: "t2",
+      tool: "search_text",
+      result: {
+        ok: false,
+        error: {
+          code: "invalid_input",
+          message: "not a directory: log.txt",
+          retryable: false,
+        },
+        suggestion:
+          "usage: {pattern, path?, caseSensitive?, contextLines?, maxMatches?}",
+        summary: "not a directory",
+      },
+    });
+    expect(fail?.body).toBe(
+      "↳ search_text failed: invalid_input: not a directory: log.txt",
+    );
+    expect(fail?.evidenceDetail).toBe(
+      "↳ 提示: usage: {pattern, path?, caseSensitive?, contextLines?, maxMatches?}",
+    );
+    expect(fail?.evidence).toEqual([
+      {
+        kind: "hint",
+        text: "usage: {pattern, path?, caseSensitive?, contextLines?, maxMatches?}",
+      },
+    ]);
+    // No suggestion → no detail, exactly as before.
+    const bare = projectBackendEvent({
+      type: "tool.call.finished",
+      layer: "backend",
+      id: "t3",
+      tool: "edit_file",
+      result: {
+        ok: false,
+        error: {
+          code: "stale_read",
+          message: "file changed",
+          retryable: false,
+        },
+        summary: "failed",
+      },
+    });
+    expect(bare?.evidenceDetail).toBeUndefined();
+    expect(bare?.evidence).toBeUndefined();
   });
 });
 
@@ -1104,6 +1291,101 @@ describe("invokeBanzhuanBridge", () => {
     expect(marker.evidenceDetail).toContain("未找到异常退出的定义");
     // …and the localizing detail pane gets the same data, so they can't drift.
     expect(marker.evidence?.some((s) => s.kind === "evidence")).toBe(true);
+  });
+
+  it("recorded findings project as rows AND lead the marker under ↳ 结论, apart from receipts (ADR 0039)", async () => {
+    // The real 2026-08-16 session: "分析一下这个 log" → 板砖 read the file and
+    // the marker said `部分完成 · ↳ 依据: read log.txt (entire file)`. The
+    // conclusion had no channel. Now it does — and a claim is listed apart
+    // from a receipt, because "板砖 concluded X (log.txt:33)" and "板砖 read
+    // log.txt" are different kinds of fact.
+    const bus = new InMemoryEventBus<AgentEvent>();
+    const runtime: CodingAgentRuntime = {
+      runBrief: async (brief: HertaToAgentBrief) => {
+        publishWithLayer(bus, "backend", {
+          type: "tool.call.finished",
+          id: "f1",
+          tool: "report_finding",
+          result: {
+            ok: true,
+            data: {
+              index: 1,
+              claim:
+                "崩在显存超限：PyTorch 已占 30.94 GiB，判别器再要 454 MiB。",
+              cites: ["log.txt:33", "log.txt:20-24"],
+            },
+            summary: "finding #1: …",
+          },
+        } as never);
+        return {
+          taskId: brief.taskId,
+          status: "completed",
+          evidence: [
+            {
+              kind: "tool",
+              summary: "read log.txt (entire file, 44 lines)",
+              source: "call-1",
+            },
+            {
+              kind: "finding",
+              summary:
+                "崩在显存超限：PyTorch 已占 30.94 GiB，判别器再要 454 MiB。",
+              source: "log.txt:33, log.txt:20-24",
+            },
+            {
+              kind: "finding",
+              summary:
+                "启动走的是 accelerate simple_launcher，单进程，没有多卡。",
+              source: "log.txt:41-44",
+            },
+          ],
+          changedFiles: [],
+          tests: [],
+          permissions: [],
+          residualRisks: [],
+          nextActions: [],
+        } as AgentExecutionReport;
+      },
+    } as unknown as CodingAgentRuntime;
+    const deps = mkBridgeDeps({ bus, runtime: () => runtime });
+    const out = await invokeBanzhuanBridge(
+      [{ kind: "herta", surface: "speech", text: "@板砖 分析一下这个 log。" }],
+      [],
+      deps,
+    );
+    // The row.
+    const row = out.find(
+      (b) => b.kind === "system" && b.digest?.kind === "finding",
+    ) as unknown as {
+      body: string;
+      digest: { claim: string; cites: string[] };
+    };
+    expect(row).toBeDefined();
+    expect(row.body).toBe(
+      "↳ finding: 崩在显存超限：PyTorch 已占 30.94 GiB，判别器再要 454 MiB。 — log.txt:33, log.txt:20-24",
+    );
+    // The marker: conclusions first, receipts after, in separate sections.
+    const marker = out.find(
+      (b) =>
+        b.kind === "system" && (b as { role?: string }).role === "done-marker",
+    ) as {
+      body: string;
+      evidenceDetail?: string;
+      evidence?: Array<{ kind: string; items?: string[] }>;
+    };
+    expect(marker.body).toMatch(/^完成/);
+    const detail = marker.evidenceDetail ?? "";
+    expect(detail).toContain("↳ 结论: 崩在显存超限");
+    expect(detail).toContain("（log.txt:33, log.txt:20-24）");
+    expect(detail).toContain("simple_launcher");
+    expect(detail).toContain("↳ 依据: read log.txt");
+    expect(detail.indexOf("↳ 结论:")).toBeLessThan(detail.indexOf("↳ 依据:"));
+    const findings = marker.evidence?.find((s) => s.kind === "findings");
+    expect(findings?.items).toHaveLength(2);
+    const receipts = marker.evidence?.find((s) => s.kind === "evidence");
+    expect(receipts?.items).toEqual([
+      "read log.txt (entire file, 44 lines)（call-1）",
+    ]);
   });
 
   it("appends a → 差分协处理器 block for each backend tool.call.started during runBrief", async () => {

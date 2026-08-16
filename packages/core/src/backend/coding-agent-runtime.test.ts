@@ -167,6 +167,82 @@ describe("CodingAgentRuntime.runBrief", () => {
     expect(report.status).toBe("completed");
   });
 
+  it("a recorded FINDING is its own evidence kind and argues for completed (ADR 0039)", async () => {
+    // The 1.2 rule keeps read-only tools from claiming 完成 because they only
+    // prove execution. A cited finding is the DELIVERABLE of an analysis
+    // brief — the thing that used to evaporate — so it counts, and it lands
+    // under its own kind so the marker can list conclusions apart from
+    // receipts.
+    const provider = new FakeProvider({
+      turns: [
+        [
+          {
+            type: "tool-call-request",
+            call: {
+              id: "call-1",
+              tool: "read_file",
+              input: { path: "log.txt" },
+            },
+          },
+          { type: "finish", reason: "tool_calls" },
+        ],
+        [
+          {
+            type: "tool-call-request",
+            call: {
+              id: "call-2",
+              tool: "report_finding",
+              input: {
+                claim: "The run died of CUDA OOM.",
+                cites: ["log.txt:33"],
+              },
+            },
+          },
+          { type: "finish", reason: "tool_calls" },
+        ],
+        [{ type: "finish", reason: "stop" }],
+      ],
+    });
+    const { runtime, tools } = makeRuntime(provider);
+    tools.register({
+      name: "read_file",
+      schema: () => ({ name: "read_file", description: "r", inputSchema: {} }),
+      run: async () => ({
+        ok: true,
+        data: { content: "x" },
+        summary: "read 1 file",
+      }),
+    });
+    tools.register({
+      name: "report_finding",
+      schema: () => ({
+        name: "report_finding",
+        description: "f",
+        inputSchema: {},
+      }),
+      run: async () => ({
+        ok: true,
+        data: {
+          index: 1,
+          claim: "The run died of CUDA OOM.",
+          cites: ["log.txt:33"],
+        },
+        summary: "finding #1: The run died of CUDA OOM. — log.txt:33",
+      }),
+    });
+
+    const report = await runtime.runBrief(sampleBrief);
+    expect(report.status).toBe("completed");
+    expect(report.evidence).toEqual([
+      { kind: "tool", summary: "read 1 file", source: "call-1" },
+      {
+        kind: "finding",
+        summary: "The run died of CUDA OOM.",
+        source: "log.txt:33",
+      },
+    ]);
+  });
+
   it("a FAILING command is not completion evidence (audit 2026-07-24, 1.2)", async () => {
     // run_command returns ok:true for every exit code — running the command
     // is what succeeded. A run whose only action is a failing build must not

@@ -39,6 +39,8 @@ const VERB_KEY: Record<string, MessageKey> = {
   Planning: "activity.verb.planning",
   Inspecting: "activity.verb.inspecting",
   "Saving memory": "activity.verb.savingMemory",
+  Searching: "activity.verb.searching",
+  Stopping: "activity.verb.stopping",
 };
 
 /**
@@ -99,6 +101,23 @@ export function stepDisplayBody(
       const nl = block.body.indexOf("\n");
       const items = nl >= 0 ? block.body.slice(nl) : "";
       return `${t("activity.todo.list")} (${d.completed}/${d.total}):${items}`;
+    }
+    case "finding":
+      // "↳ finding: <claim> — cites" → "↳ 结论: <claim> — cites" (ADR 0039).
+      // The claim and cites are backend-authored data, verbatim.
+      return `↳ ${t("activity.result.finding")}: ${d.claim}${
+        d.cites.length > 0 ? ` — ${d.cites.join(", ")}` : ""
+      }`;
+    case "search": {
+      // "↳ 5 matches in 1 files" → "↳ 5 处匹配 · 1 个文件" (2026-08-17). The
+      // pattern is data and stays out of the row (it is in the detail pane).
+      const trunc = d.truncated ? ` (${t("activity.result.truncated")})` : "";
+      if (d.matches === 0) {
+        return `↳ 0 ${t("activity.result.matches")}${trunc}`;
+      }
+      return `↳ ${d.matches} ${t("activity.result.matches")} · ${d.files} ${t(
+        "activity.result.files",
+      )}${trunc}`;
     }
     case "text":
       // Exit rows carry structured numbers since 2026-07-10; other text
@@ -221,6 +240,8 @@ export function stepDisplayDetail(
           return `↳ ${t("evidence.todos")}: ${s.items.join("; ")}`;
         case "evidence":
           return `↳ ${t("evidence.evidence")}: ${s.items.join("; ")}`;
+        case "findings":
+          return `↳ ${t("evidence.findings")}: ${s.items.join("; ")}`;
         case "attachment": {
           // The clipped note is part of the evidence, not decoration: without
           // it a head excerpt reads as the entire document, to the user and
@@ -228,8 +249,19 @@ export function stepDisplayDetail(
           const note = s.clipped ? `\n${t("evidence.attachment.clipped")}` : "";
           return `↳ ${t("evidence.attachment")} ${s.name}\n${s.text}${note}`;
         }
+        case "matches": {
+          // Same stance as the clipped note above: an omitted count is part
+          // of the evidence, or the list reads as the whole result.
+          const more =
+            s.omitted > 0
+              ? `\n${t("evidence.matches.omitted").replace("{n}", String(s.omitted))}`
+              : "";
+          return `↳ ${t("evidence.matches")} /${s.pattern}/:\n${s.items.join("\n")}${more}`;
+        }
         case "error":
           return `↳ ${t("evidence.error")}: ${s.message}`;
+        case "hint":
+          return `↳ ${t("evidence.hint")}: ${s.text}`;
         default:
           // A section kind this renderer predates: fall back rather than drop
           // evidence on the floor.

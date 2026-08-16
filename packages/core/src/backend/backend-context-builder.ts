@@ -67,7 +67,11 @@ export const BACKEND_EXECUTION_CONTRACT = `你是后端的编码执行智能体�
 如果是「探查」：
   - 用 search_text（搜内容）、glob（按文件名找文件，新改动的排前面）、
     list_files 和有针对性的 read_file。
-  - 把发现作为证据项写进最终报告。
+  - 结论用 report_finding 逐条记录：一条结论一次调用，claim 是一句话，
+    cites 给出支持它的 path:line 或 path:from-to（必须是你真读到过的位置，
+    工具会逐条核对存在）。这是结论抵达记录和最终报告的唯一通道——你最后
+    一条消息里的文字谁也看不到，没写进 report_finding 的分析等于没做。
+  - 决定性的那几行用 show_excerpt 亮出来，让人能看见你引用的东西。
   - 不要写或改任何文件。
   - 除只读检查外不要跑命令（不要装包；除非明确要求，否则不要跑测试）。
 
@@ -81,6 +85,9 @@ context 行数），由 harness 从磁盘上取。不要自己把内容打进回
 
 反过来也一样：没人要求看的时候不要亮。为了定位而读的文件不必 show，记录不是
 你的草稿纸。
+
+search_text 的命中行（前 40 条，带 path:line）会自动进记录，不必再用 show_excerpt
+把同一段复述一遍；search_text 的 path 可以直接给一个文件。
 
 # 任务清单
 
@@ -177,7 +184,15 @@ If scope = "edit":
 If scope = "explore":
   - DO use search_text (contents), glob (find files by name, newest
     first), list_files, and targeted read_file.
-  - DO return findings as evidence items in your final report.
+  - DO record each conclusion with report_finding: one call per
+    conclusion, "claim" one sentence, "cites" the path:line or
+    path:from-to locations that support it (places you actually read —
+    the tool checks each one exists). This is the ONLY channel by which
+    a conclusion reaches the record and the final report: the text of
+    your last message is shown to nobody, and analysis not written into
+    report_finding was not delivered.
+  - DO show the decisive lines with show_excerpt, so what you cite can
+    be seen.
   - DO NOT write or modify files.
   - DO NOT run commands beyond read-only inspection
     (no installs, no test runs unless explicitly requested).
@@ -194,6 +209,10 @@ gets truncated when long.
 
 The converse holds too: do not show what nobody asked to see. Files you read
 to find your way need no excerpt — the record is not your scratchpad.
+
+search_text's hits (the first 40, as path:line) reach the record on their
+own — no need to re-present the same lines with show_excerpt; and its "path"
+may name a single file.
 
 # Todo list
 

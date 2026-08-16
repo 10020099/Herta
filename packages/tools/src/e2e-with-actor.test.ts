@@ -174,12 +174,15 @@ describe("MVP tools end-to-end with CodingAgentRuntime", () => {
       "command_stop",
       "todo_write",
       "memory_save",
+      // Appends to the per-brief findings ledger (ADR 0039) — harness state,
+      // same class as todo_write; serial keeps finding indices in order.
+      "report_finding",
     ]) {
       expect(flags.get(mutator), mutator).toBe(false);
     }
   });
 
-  it("registers all fourteen MVP tools via createMvpTools", () => {
+  it("registers all fifteen MVP tools via createMvpTools", () => {
     const tools = createMvpTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
       "command_output",
@@ -191,6 +194,7 @@ describe("MVP tools end-to-end with CodingAgentRuntime", () => {
       "list_files",
       "memory_save",
       "read_file",
+      "report_finding",
       "run_command",
       "search_text",
       "show_excerpt",

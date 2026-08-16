@@ -152,7 +152,12 @@ export type SystemBlockDigest =
         | "Running"
         | "Planning"
         | "Inspecting"
-        | "Saving memory";
+        | "Saving memory"
+        /** search_text (2026-08-17; was `Reading "pattern"`). */
+        | "Searching"
+        /** command_stop (2026-08-17; was `Running bg-N`, which read as a
+         *  second launch — Herta reads these rows). */
+        | "Stopping";
       readonly arg: string;
     }
   | {
@@ -289,6 +294,31 @@ export type SystemBlockDigest =
         | "unsupported";
     }
   | {
+      /** A search_text result (2026-08-17). Same lifecycle split as `excerpt`:
+       *  the matched lines ride `evidenceDetail` (verbatim this turn, dropped
+       *  on fold); the digest keeps the CITATION — what was searched and how
+       *  much it found — so a later turn knows a search happened without
+       *  re-paying for the lines. Before this row existed a search's only
+       *  trace was its op row, and 板砖's "found 5 matches" reached nobody. */
+      readonly kind: "search";
+      /** The pattern as the model wrote it (backend-derived; sanitized). */
+      readonly pattern: string;
+      readonly matches: number;
+      readonly files: number;
+      /** The tool clipped its own result (maxMatches / scan budget). */
+      readonly truncated: boolean;
+    }
+  | {
+      /** A conclusion the backend recorded via `report_finding` (ADR 0039).
+       *  Unlike excerpt/search this is NOT two-state: the claim IS the
+       *  deliverable, short by schema, and it survives compaction whole —
+       *  the citations make it checkable, and Herta may send 板砖 back to
+       *  any of them. */
+      readonly kind: "finding";
+      readonly claim: string;
+      readonly cites: readonly string[];
+    }
+  | {
       /** No richer structure — digest to the text's first line, truncated. */
       readonly kind: "text";
       readonly text: string;
@@ -378,6 +408,32 @@ export type EvidenceSection =
        *  Rendered as a note so neither reader mistakes the head for the whole
        *  document. */
       readonly clipped: boolean;
+    }
+  | {
+      /** The done-marker's conclusions (`↳ 结论:`) — the backend's own cited
+       *  findings (ADR 0039), one `claim（cites）` per item, listed apart from
+       *  the `evidence` receipts because a claim and a receipt are different
+       *  kinds of fact. */
+      readonly kind: "findings";
+      readonly items: readonly string[];
+    }
+  | {
+      /** A search_text hit list (`↳ 匹配 /pattern/:`), one `path:line: content`
+       *  item per match, bounded by the bridge (2026-08-17). `omitted` counts
+       *  the matches the bound dropped, so neither reader takes the list for
+       *  the whole result. Content is already secret-redacted by the tool. */
+      readonly kind: "matches";
+      readonly pattern: string;
+      readonly items: readonly string[];
+      readonly omitted: number;
+    }
+  | {
+      /** A failed tool call's own `suggestion` (`↳ 提示:`), 2026-08-17 — the
+       *  same sentence the model reads about what went wrong and how to
+       *  fix it, so Herta's commentary on a failure is grounded in the
+       *  tool's diagnosis rather than her guess at one. */
+      readonly kind: "hint";
+      readonly text: string;
     }
   | {
       /** The bridge-failure marker's raw error text (`↳ 错误:`). */

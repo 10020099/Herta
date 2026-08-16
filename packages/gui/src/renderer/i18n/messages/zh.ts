@@ -189,10 +189,18 @@ export const zh = {
   "activity.verb.planning": "规划",
   "activity.verb.inspecting": "检查",
   "activity.verb.savingMemory": "保存记忆",
+  "activity.verb.searching": "检索",
+  "activity.verb.stopping": "停止",
   "activity.result.tests": "测试",
   "activity.result.failed": "失败",
   "activity.result.exit": "退出",
   "activity.result.lines": "行",
+  // search_text result row (2026-08-17): "↳ 5 处匹配 · 1 个文件".
+  "activity.result.matches": "处匹配",
+  "activity.result.files": "个文件",
+  "activity.result.truncated": "已截断",
+  /** A recorded conclusion row (ADR 0039): "↳ 结论: <claim> — <cites>". */
+  "activity.result.finding": "结论",
   "activity.step.patchPreview": "补丁预览",
   "activity.bg.label": "后台",
   "activity.bg.running": "运行中",
@@ -237,6 +245,13 @@ export const zh = {
   "evidence.attachment": "附件",
   /** Noted under a head excerpt so neither reader takes it for the whole file. */
   "evidence.attachment.clipped": "（仅开头部分，正文更长）",
+  /** The search-hit pane (2026-08-17): `↳ 匹配 /pattern/:` + one line per hit. */
+  "evidence.matches": "匹配",
+  "evidence.matches.omitted": "（另有 {n} 处未列出）",
+  /** The done-marker's conclusions section (ADR 0039). */
+  "evidence.findings": "结论",
+  /** A failed tool call's own suggestion (2026-08-17). */
+  "evidence.hint": "提示",
   "evidence.files": "改动文件",
   "evidence.risks": "风险",
   "evidence.todos": "待办",

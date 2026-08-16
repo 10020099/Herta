@@ -165,6 +165,17 @@ function renderStructuredDigest(
       // costs four characters and makes "I was shown this" and "I can still
       // read this" two distinguishable states.
       return `Excerpt ${d.path}:${d.from}-${d.to} · ${COMPACTION_TEXT[lang].excerptElided}`;
+    case "finding":
+      // NOT elided (ADR 0039): the claim is the conclusion the brief was for,
+      // short by schema; dropping it would drop the one thing worth keeping.
+      // The cites travel so a later turn can send 板砖 back to them.
+      return `Finding: ${d.claim}${d.cites.length > 0 ? ` (${d.cites.join(", ")})` : ""}`;
+    case "search":
+      // Third member of the excerpt/attachment family (2026-08-17): the hit
+      // list rode `evidenceDetail` and is gone once this folds, so the
+      // citation says so — the counts stay, the lines do not. Same fabricated
+      // -quote hazard, same four-character remedy.
+      return `Search /${d.pattern}/ · ${d.matches} matches in ${d.files} files · ${COMPACTION_TEXT[lang].searchElided}`;
     case "attachment": {
       // Same two-state contract as `excerpt` above, and the same hazard for
       // the same reason: she really was shown the head of this document last
