@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   truncateSync,
   writeFileSync,
@@ -33,8 +34,14 @@ let ws: string;
 let src: string;
 
 beforeEach(() => {
-  ws = mkdtempSync(join(tmpdir(), "attach-ws-"));
-  src = mkdtempSync(join(tmpdir(), "attach-src-"));
+  // realpath, like tools/testing/tmp-workspace.ts does (audit S8): on macOS
+  // `tmpdir()` is /var/folders/… → /private/var/…, and resolveSafePath
+  // compares realpath'd candidates against the root as given, so an
+  // un-canonicalized root fails every carve-out assertion below. The real
+  // app canonicalizes the workspace root at set time; the test must too.
+  // Found the first time this file ran on a darwin runner (2026-08-16).
+  ws = realpathSync(mkdtempSync(join(tmpdir(), "attach-ws-")));
+  src = realpathSync(mkdtempSync(join(tmpdir(), "attach-src-")));
 });
 afterEach(() => {
   rmSync(ws, { recursive: true, force: true });
