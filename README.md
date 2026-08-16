@@ -141,7 +141,10 @@ repository.
 
 ## License
 
-Code is [MIT](./LICENSE).
+Code is [MIT](./LICENSE). Third-party libraries compiled into the installers
+(pdf.js, React, and the rest) keep their own licenses, reproduced in
+[THIRD-PARTY-NOTICES.md](./THIRD-PARTY-NOTICES.md) — generated from the
+actual bundle at build time, so it lists exactly what ships.
 
 Herta is a character from *Honkai: Star Rail*, © HoYoverse. This is an
 unofficial fan project, unaffiliated with and not endorsed by HoYoverse.
