@@ -28,6 +28,11 @@ commercial use by this license:
 If you fork or reuse this project, the code is yours to use under MIT — the
 character, artwork, dialogue, and voice are not ours to give.
 
+Third-party software compiled into the installers (pdf.js under Apache-2.0,
+React and the rest under MIT/ISC/BlueOak) is redistributed under its own
+licenses, reproduced in THIRD-PARTY-NOTICES.md; Electron's and Chromium's
+notices are placed beside the executable by the packager.
+
 ---
 
 Permission is hereby granted, free of charge, to any person obtaining a copy

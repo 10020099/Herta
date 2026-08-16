@@ -55,6 +55,12 @@ jobs:
       # here means the packaged app would be broken (or shipping native code).
       - name: assert no native refs in the main bundle
         run: "! grep -rqE 'better-sqlite3|node-gyp-build' packages/gui/out/main"
+      # Licensing invariant (audit BL26): THIRD-PARTY-NOTICES.md must match
+      # what the build above actually bundled. A new dependency that reached
+      # main without regenerating the notices lands red here, a day after
+      # merge, rather than at release.
+      - name: assert third-party notices match the bundle
+        run: node packages/gui/scripts/third-party-notices.mjs --check
       - run: pnpm --filter @herta/website build
       # NOTE: a windows-latest job was tried (2026-07-13 T3.3) but removed —
       # the app-server e2e scripted-turn test hangs only on that runner (the

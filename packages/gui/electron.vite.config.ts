@@ -1,6 +1,61 @@
-import { resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "electron-vite";
+import type { Plugin } from "vite";
+
+/**
+ * Where the bundle manifest lands. Under out/ (gitignored, and what
+ * electron-builder packages — so `electron-builder.yml` EXCLUDES this one file
+ * from `files:`), because writing anywhere else would need a .gitignore line
+ * in both repos, and the public one is hand-owned.
+ */
+const BUNDLE_MANIFEST = resolve(__dirname, "out/bundle-manifest.json");
+
+/**
+ * Record exactly which modules rollup wrote into each bundle (audit BL26 →
+ * THIRD-PARTY-NOTICES, 2026-08-16).
+ *
+ * The notices file has to describe what the INSTALLER ships, and the only
+ * honest source for that is the bundler: package.json manifests over-count
+ * (better-sqlite3 is a declared dependency and is tree-shaken clean out —
+ * that is the packaging invariant CI greps for), and grepping the output for
+ * package names under-counts (rollup keeps no names). `generateBundle` sees
+ * the truth: every chunk's `modules` map, with `renderedLength` telling a
+ * module that contributed code apart from one that survived only as an
+ * empty graph node. Modules at 0 are dropped for the same reason CI's grep
+ * exists — nothing of them ships.
+ *
+ * Runs on every build (dev included — harmless, ~ms) and merges per section,
+ * so main / preload / renderer each overwrite only their own key.
+ * `packages/gui/scripts/third-party-notices.mjs` turns this into the notices
+ * file and, with `--check`, fails a release build whose notices are stale.
+ */
+function bundleManifest(section: "main" | "preload" | "renderer"): Plugin {
+  return {
+    name: "herta-bundle-manifest",
+    generateBundle(_options, bundle) {
+      const modules = new Set<string>();
+      for (const output of Object.values(bundle)) {
+        if (output.type !== "chunk") continue;
+        for (const [id, info] of Object.entries(output.modules)) {
+          if (info.renderedLength > 0) modules.add(id);
+        }
+      }
+      let manifest: Record<string, string[]> = {};
+      if (existsSync(BUNDLE_MANIFEST)) {
+        try {
+          manifest = JSON.parse(readFileSync(BUNDLE_MANIFEST, "utf8"));
+        } catch {
+          manifest = {};
+        }
+      }
+      manifest[section] = [...modules].sort();
+      mkdirSync(dirname(BUNDLE_MANIFEST), { recursive: true });
+      writeFileSync(BUNDLE_MANIFEST, `${JSON.stringify(manifest, null, 2)}\n`);
+    },
+  };
+}
 
 export default defineConfig({
   // Main + preload BUNDLE their entire dependency graph (packaging strategy,
@@ -13,9 +68,11 @@ export default defineConfig({
   // app ships NO node_modules and NO native modules. electron + node
   // builtins stay external automatically.
   main: {
+    plugins: [bundleManifest("main")],
     build: { outDir: "out/main" },
   },
   preload: {
+    plugins: [bundleManifest("preload")],
     build: {
       outDir: "out/preload",
       // CJS, explicitly (audit T3.6): the package is type:module, so
@@ -28,7 +85,7 @@ export default defineConfig({
   },
   renderer: {
     root: resolve(__dirname, "src/renderer"),
-    plugins: [react()],
+    plugins: [react(), bundleManifest("renderer")],
     build: {
       outDir: "out/renderer",
       rollupOptions: {

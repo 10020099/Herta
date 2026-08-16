@@ -241,6 +241,10 @@ jobs:
             fi
           fi
           pnpm --filter @herta/gui exec electron-vite build
+          # Same gate the dist scripts run (audit BL26): the notices file must
+          # match the bundle just built, or a signed release ships a library
+          # without its license text.
+          node packages/gui/scripts/third-party-notices.mjs --check
           pnpm --filter @herta/gui exec electron-builder --mac $ARCH_FLAG \
             $SIGN_FLAGS --publish never
 

@@ -19,6 +19,9 @@ directories:
 # zero node_modules into the archive.
 files:
   - out/**
+  # The build-time module manifest electron.vite.config.ts writes for the
+  # third-party notices generator — build metadata, not app payload.
+  - "!out/bundle-manifest.json"
   - resources/**
 # The window icon is read from disk at runtime via the `?asset` import
 # (out/main resolves ../../resources/herta-icon.png); keep it as a real file
@@ -58,6 +61,14 @@ extraResources:
   # which parts of the payload are NOT ours to license.
   - from: ../../LICENSE
     to: LICENSE
+  # …and the notices for everything third-party compiled INTO the bundles
+  # (BL26's other half, closed 2026-08-16). Generated from the bundle manifest
+  # by scripts/third-party-notices.mjs; every dist script and CI runs its
+  # --check right after electron-vite build, so a new dependency cannot ship
+  # without its notice. Apache-2.0 (pdfjs-dist) made this mandatory rather
+  # than tidy: it requires the license text itself to accompany the code.
+  - from: ../../THIRD-PARTY-NOTICES.md
+    to: THIRD-PARTY-NOTICES.md
 
 # Auto-update feed (2026-07-10): the PUBLIC Herta repo's GitHub Releases.
 # electron-builder embeds this as app-update.yml in the packaged app (what
