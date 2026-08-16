@@ -71,6 +71,15 @@ jobs:
       - run: pnpm build
       - run: pnpm --filter @herta/gui typecheck
 
+      # ADR 0038: the PDF / Word extractors are pure JS, so the ubuntu suite
+      # covers their logic — but pdfjs is loaded under Node with our own
+      # DOMMatrix/Path2D stubs and no native canvas, and that runtime shape is
+      # worth one execution on darwin. ~1 minute; the packaged-app probe below
+      # is the real check, this is the cheap one that still reports if the app
+      # fails to boot for an unrelated reason.
+      - name: extractor tests under macOS Node (ADR 0038)
+        run: pnpm exec vitest run packages/app-server/src/document-text.test.ts packages/app-server/src/attachments.test.ts
+
       # The App Store Connect key has to be a FILE on disk — electron-builder
       # passes APPLE_API_KEY to notarytool as a path, not as key material. Kept
       # outside the workspace so no later step can sweep it into an artifact,
@@ -412,6 +421,14 @@ jobs:
           node packages/gui/scripts/mac-first-look.mjs /tmp/shots 9222 \
             >/tmp/shots/first-look.txt 2>&1 || true
           cat /tmp/shots/first-look.txt || true
+          # ADR 0038: attach a PDF, a Word file, a scanned-like PDF, an
+          # encrypted PDF and a legacy .doc INSIDE the packaged app — the one
+          # place the lazily-imported pdfjs chunk loads from within app.asar
+          # under Electron main. Prints MAC ATTACH PROBE: PASS/FAIL; the JSON
+          # + PNG land in the artifact.
+          node packages/gui/scripts/mac-attach-probe.mjs /tmp/shots 9222 \
+            >/tmp/shots/attach-probe.txt 2>&1 || true
+          cat /tmp/shots/attach-probe.txt || true
           screencapture -x /tmp/shots/desktop-settled.png || true
           echo "--- boot log ---"
           cat /tmp/shots/herta-boot.log || true
