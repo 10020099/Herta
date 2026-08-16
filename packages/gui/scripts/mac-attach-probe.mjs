@@ -190,8 +190,13 @@ try {
   report.attachMs = ms;
   await sleep(1500);
 
+  // The GUI localizes the row from the digest (zh: `附件 …`, en:
+  // `attachment …`) and the runner's OS locale decides which one renders —
+  // the first run (31947117338) came up English on an en-US runner while this
+  // probe looked for the Chinese prefix, and reported FAIL over five correct
+  // rows. Match either.
   const rows = await cdp.eval(
-    `(() => [...document.querySelectorAll('*')].map(e => e.childElementCount === 0 ? (e.textContent || '').trim() : '').filter(t => t.startsWith('附件 ')).filter((v, i, a) => a.indexOf(v) === i))()`,
+    `(() => [...document.querySelectorAll('*')].map(e => e.childElementCount === 0 ? (e.textContent || '').trim() : '').filter(t => t.startsWith('附件 ') || t.startsWith('attachment ')).filter((v, i, a) => a.indexOf(v) === i))()`,
   );
   report.rows = rows;
   console.log("  rendered rows:");
@@ -203,7 +208,7 @@ try {
   );
   await sleep(600);
   const detail = await cdp.eval(
-    `(() => [...document.querySelectorAll('*')].map(e => e.childElementCount === 0 ? (e.textContent || '') : '').filter(t => t.includes('↳ 附件')).slice(0, 4))()`,
+    `(() => [...document.querySelectorAll('*')].map(e => e.childElementCount === 0 ? (e.textContent || '') : '').filter(t => t.includes('↳ 附件') || t.includes('↳ attachment')).slice(0, 4))()`,
   );
   report.detail = detail;
   const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
@@ -212,27 +217,45 @@ try {
     Buffer.from(shot.data, "base64"),
   );
 
-  // Expectations — the same rows the Windows live check produced.
+  // Expectations — the same rows the Windows live check produced, in either
+  // catalog. Each is (file, one marker per language) so a wording change in
+  // one catalog fails loudly instead of matching by accident.
+  const rowFor = (name) => rows.find((r) => r.includes(` ${name} `)) ?? "";
+  const has = (name, zh, en) => {
+    const r = rowFor(name);
+    return r.length > 0 && (r.includes(zh) || r.includes(en));
+  };
   const expect = [
     [
       "pdf extracted",
-      (r) => r.startsWith("附件 report.pdf · PDF · 2 页 · 已提取文本"),
+      () =>
+        has(
+          "report.pdf",
+          "PDF · 2 页 · 已提取文本",
+          "PDF · 2 pages · text extracted",
+        ),
     ],
     [
       "docx extracted",
-      (r) => r.startsWith("附件 spec.docx · Word 文档 · 已提取文本"),
+      () =>
+        has(
+          "spec.docx",
+          "Word 文档 · 已提取文本",
+          "Word document · text extracted",
+        ),
     ],
     [
       "scan → empty",
-      (r) => r === "附件 scan.pdf · PDF · 2 页 · 未提取到文本，可能是扫描件",
+      () => has("scan.pdf", "未提取到文本，可能是扫描件", "probably a scan"),
     ],
     [
       "locked → encrypted",
-      (r) => r === "附件 locked.pdf · PDF · 文档已加密，未取正文",
+      () => has("locked.pdf", "文档已加密", "password-protected"),
     ],
     [
       "legacy .doc → unsupported",
-      (r) => r === "附件 legacy.doc · 暂不支持的文档格式",
+      () =>
+        has("legacy.doc", "暂不支持的文档格式", "unsupported document format"),
     ],
     [
       "pdf head excerpt visible",
@@ -241,7 +264,7 @@ try {
   ];
   report.checks = {};
   for (const [name, pred] of expect) {
-    const ok = name.includes("head") ? pred() : rows.some(pred);
+    const ok = pred();
     report.checks[name] = ok;
     if (!ok) failed = true;
     console.log(`  ${ok ? "✓" : "✗"} ${name}`);
