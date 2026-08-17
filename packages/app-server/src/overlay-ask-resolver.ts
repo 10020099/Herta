@@ -255,6 +255,14 @@ function extractCwd(request: PermissionRequest): string | undefined {
 }
 
 function extractArgv(request: PermissionRequest): string[] | null {
+  // Minimal contract (ADR 0040): the bash RULE derives the effective program
+  // argv (single program, after the `cd <workspace> &&` prefix) — the same
+  // argv shape run_command carries, so rule derivation / matching are one
+  // code path. Absent → not rule-eligible.
+  if (request.call.tool === "bash") {
+    const argv = request.argv;
+    return argv !== undefined && argv.length > 0 ? [...argv] : null;
+  }
   if (request.call.tool !== "run_command") return null;
   const input = request.call.input;
   if (typeof input !== "object" || input === null) return null;
@@ -265,14 +273,24 @@ function extractArgv(request: PermissionRequest): string[] | null {
 }
 
 /**
- * Build a display command string (argv joined with spaces) for a
- * run_command permission request. Returns undefined for other tools or
- * malformed input — the panel then shows only the summary.
+ * Build a display command string for a command permission request:
+ * run_command's argv joined with spaces, or the minimal contract's `bash`
+ * command line verbatim (ADR 0040 — the panel's console well wraps and
+ * scrolls, so a multi-line heredoc shows whole; a user must SEE what they
+ * approve, live GUI 2026-08-17 showed only "未识别的命令" with no command).
+ * Returns undefined for other tools or malformed input — the panel then
+ * shows only the summary.
  */
 function extractCommand(request: PermissionRequest): string | undefined {
-  if (request.call.tool !== "run_command") return undefined;
   const input = request.call.input;
   if (typeof input !== "object" || input === null) return undefined;
+  if (request.call.tool === "bash") {
+    const command = (input as { command?: unknown }).command;
+    return typeof command === "string" && command.trim().length > 0
+      ? command
+      : undefined;
+  }
+  if (request.call.tool !== "run_command") return undefined;
   const argv = (input as { argv?: unknown }).argv;
   if (!Array.isArray(argv) || argv.length === 0) return undefined;
   const parts = argv.filter((a): a is string => typeof a === "string");

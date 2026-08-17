@@ -85,6 +85,14 @@ const PATH_READER_CMDS = new Set([
   "rg",
   "ripgrep",
   "find",
+  // Text filters (textFilterVerdict): their non-flag operands that EXIST
+  // are files (a sed script / sort key / cut list resolves to nothing and
+  // is skipped by the existing-file check).
+  "sort",
+  "uniq",
+  "cut",
+  "nl",
+  "sed",
 ]);
 
 /** The non-flag path operands of a file-reading allow-listed command, or null
@@ -168,6 +176,100 @@ function recursiveContentRead(argv: readonly string[]): Verdict | null {
     code: "command_ask_recursive_read",
     reason: `${a0} recursive/unfiltered content read bypasses the credential denylist — prefer search_text`,
   };
+}
+
+/** Print-only sed scripts: a line/range print — `10,25p`, `5p`, `$p`,
+ *  `3,$p` — exactly the idiom the bash tool's description suggests. Any
+ *  other script (`s///`, `d`, `w file`, `e cmd`, …) is not classified here. */
+const SED_PRINT_SCRIPT = /^\s*(\d+|\$)?(\s*,\s*(\d+|\$))?\s*p\s*$/;
+const SED_READ_FLAGS = new Set([
+  "-n",
+  "--quiet",
+  "--silent",
+  "-E",
+  "-r",
+  "--regexp-extended",
+  "-s",
+  "--separate",
+  "-u",
+  "--unbuffered",
+  "-z",
+  "--null-data",
+  "--posix",
+]);
+
+/**
+ * Pure text filters (2026-08-17, minimal contract follow-up). The bash
+ * model composes pipelines — `find src -type f | sort`, `git log | head`,
+ * `sed -n 10,25p file` (the tool's own description suggests that idiom) —
+ * and every `sort` / `sed` segment prompted as "unrecognized command", so
+ * the 极简 mode asked several times per brief for reads the standard
+ * contract's tools do silently. These read stdin/files and print. The
+ * shapes that WRITE or EXECUTE stay on the ask path: `sort -o`/`--output`,
+ * `sort --compress-program`, `uniq IN OUT` (a second operand is the
+ * output), `sed -i`, `sed -f`, sed scripts other than a line-range print
+ * (`w`/`e` commands, `s///w`). Returns null when argv[0] is not one of
+ * these, or when the shape is not the read-only one — the caller's later
+ * phases (the generic ask) then apply.
+ */
+function textFilterVerdict(argv: readonly string[]): Verdict | null {
+  const a0 = argv[0] as string;
+  const writeAsk = (reason: string): Verdict => ({
+    kind: "ask",
+    risk: "workspace_write",
+    code: "command_ask_write",
+    reason,
+  });
+  if (a0 === "sort") {
+    for (const a of argv.slice(1)) {
+      if (a === "--output" || a.startsWith("--output=")) {
+        return writeAsk("sort --output writes a file");
+      }
+      if (a.startsWith("--compress-program")) {
+        return writeAsk("sort --compress-program runs a program");
+      }
+      // Bundled short flags: `-o FILE`, `-uo FILE`, `-oFILE`.
+      if (/^-[a-zA-Z]*o/.test(a)) return writeAsk("sort -o writes a file");
+    }
+    return readerArgvGuard(argv) ?? { kind: "allow" };
+  }
+  if (a0 === "uniq") {
+    let operands = 0;
+    for (const a of argv.slice(1)) if (!a.startsWith("-")) operands += 1;
+    if (operands >= 2) return writeAsk("uniq with an OUTPUT operand");
+    return readerArgvGuard(argv) ?? { kind: "allow" };
+  }
+  if (a0 === "cut" || a0 === "tr" || a0 === "nl") {
+    return readerArgvGuard(argv) ?? { kind: "allow" };
+  }
+  if (a0 === "sed") {
+    const scripts: string[] = [];
+    for (let i = 1; i < argv.length; i += 1) {
+      const a = argv[i] as string;
+      if (SED_READ_FLAGS.has(a)) continue;
+      if (a === "-e" || a === "--expression") {
+        const s = argv[i + 1];
+        if (s === undefined) return null;
+        scripts.push(s);
+        i += 1;
+        continue;
+      }
+      if (a.startsWith("--expression=")) {
+        scripts.push(a.slice("--expression=".length));
+        continue;
+      }
+      if (a === "--") break; // the rest are file operands
+      // -i / --in-place / -f / -ne bundles / anything else: not the read
+      // shape — the generic ask stays.
+      if (a.startsWith("-")) return null;
+      if (scripts.length === 0) scripts.push(a);
+      // later operands are files (guarded below)
+    }
+    if (scripts.length === 0) return null;
+    if (!scripts.every((s) => SED_PRINT_SCRIPT.test(s))) return null;
+    return readerArgvGuard(argv) ?? { kind: "allow" };
+  }
+  return null;
 }
 
 const SH_FAMILY = new Set(["sh", "bash", "zsh", "dash", "ksh"]);
@@ -655,6 +757,8 @@ export function classifyCommand(argv: readonly string[]): Verdict {
     }
     return readerArgvGuard(argv) ?? { kind: "allow" };
   }
+  const filter = textFilterVerdict(argv);
+  if (filter !== null) return filter;
   if (
     [
       "ls",
@@ -663,6 +767,7 @@ export function classifyCommand(argv: readonly string[]): Verdict {
       "tail",
       "wc",
       "echo",
+      "printf",
       "true",
       "false",
       "pwd",

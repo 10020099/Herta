@@ -10,8 +10,13 @@ import {
   TodoStore,
 } from "@herta/core";
 import { afterEach, describe, expect, it } from "vitest";
+import { makeMsysPaths } from "../bash/shell-paths.js";
 import { mkTmpWorkspace, type TmpWorkspace } from "../testing/tmp-workspace.js";
-import { registerStrReplaceEditorRule, strReplaceEditorTool } from "./index.js";
+import {
+  headerPath,
+  registerStrReplaceEditorRule,
+  strReplaceEditorTool,
+} from "./index.js";
 
 let ws: TmpWorkspace;
 afterEach(async () => {
@@ -306,6 +311,58 @@ describe("str_replace_editor tool", () => {
       noopProgress,
     );
     expect(r.ok).toBe(true);
+  });
+
+  it("summarize: the record header is `<command> <workspace-relative path>` for any spelling inside the workspace; outside paths stay verbatim", async () => {
+    ws = await mkTmpWorkspace({});
+    const ctx = { workspaceRoot: ws.root };
+    // Native, forward-slash, and (under MSYS) the shell's own spelling.
+    const forward = ws.root.replace(/\\/g, "/");
+    expect(
+      tool().summarize?.(
+        { command: "str_replace", path: abs("NOTES.md") },
+        ctx,
+      ),
+    ).toBe("str_replace NOTES.md");
+    expect(
+      tool().summarize?.(
+        { command: "view", path: `${forward}/src/a.ts`, view_range: [3, 9] },
+        ctx,
+      ),
+    ).toBe("view src/a.ts:3-9");
+    // MSYS `/tmp/…` — the case the loop's generic form cannot map (a
+    // Windows-only spelling: `C:\…` is not a path to POSIX `node:path`).
+    if (process.platform === "win32") {
+      const msys = makeMsysPaths("C:\\Users\\u\\AppData\\Local\\Temp");
+      expect(
+        headerPath(
+          "/tmp/lab/ws/src/a.ts",
+          "C:\\Users\\u\\AppData\\Local\\Temp\\lab\\ws",
+          msys,
+        ),
+      ).toBe("src/a.ts");
+      expect(
+        headerPath(
+          "/tmp/other/x.ts",
+          "C:\\Users\\u\\AppData\\Local\\Temp\\lab\\ws",
+          msys,
+        ),
+      ).toBe("/tmp/other/x.ts");
+    }
+    // A relative path is already the header form; the root itself is ".".
+    expect(tool().summarize?.({ command: "create", path: "b.txt" }, ctx)).toBe(
+      "create b.txt",
+    );
+    expect(tool().summarize?.({ command: "view", path: ws.root }, ctx)).toBe(
+      "view .",
+    );
+    // Outside the workspace: shown as written, never disguised as inside.
+    const outside = join(ws.root, "..", "elsewhere.txt");
+    expect(tool().summarize?.({ command: "view", path: outside }, ctx)).toBe(
+      `view ${outside}`,
+    );
+    // Not a str_replace_editor input → generic fallback.
+    expect(tool().summarize?.({ command: "create" }, ctx)).toBeUndefined();
   });
 });
 

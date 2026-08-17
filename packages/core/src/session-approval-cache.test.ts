@@ -299,6 +299,43 @@ describe("permissionCacheScope", () => {
     ).toBeUndefined();
   });
 
+  it("minimal contract (ADR 0040): str_replace_editor writes share the task scope; bash scopes by the RULE-derived argv[0], interpreters excluded", () => {
+    expect(
+      permissionCacheScope(req("str_replace_editor", { files: ["src/a.ts"] })),
+    ).toBe("task");
+    expect(permissionCacheScope(req("str_replace_editor"))).toBeUndefined();
+    // The editor joins the file-write identity: an edit_file remember covers
+    // the editor's writes and vice versa.
+    const c = new SessionApprovalCache();
+    c.add("edit_file", "workspace_write", "task");
+    expect(c.has("str_replace_editor", "workspace_write", "task")).toBe(true);
+    // bash: the rule's argv decides; no argv → not cacheable.
+    expect(
+      permissionCacheScope(req("bash", { argv: ["git", "commit", "-m", "x"] })),
+    ).toBe("git");
+    expect(permissionCacheScope(req("bash"))).toBeUndefined();
+    expect(
+      permissionCacheScope(req("bash", { argv: ["node", "x.mjs"] })),
+    ).toBeUndefined();
+    // A chained line whose only program is git scopes as "git" via
+    // `programs`; two distinct programs → not cacheable; interpreters
+    // excluded either way.
+    expect(permissionCacheScope(req("bash", { programs: ["git"] }))).toBe(
+      "git",
+    );
+    expect(
+      permissionCacheScope(req("bash", { programs: ["npm", "git"] })),
+    ).toBeUndefined();
+    expect(
+      permissionCacheScope(req("bash", { programs: ["python3"] })),
+    ).toBeUndefined();
+    expect(
+      permissionCacheScope(req("bash", { argv: ["bash", "x.sh"] })),
+    ).toBeUndefined();
+    expect(c.isCacheable("bash", "workspace_write", "git")).toBe(true);
+    expect(c.isCacheable("bash", "workspace_write", undefined)).toBe(false);
+  });
+
   it("excludes generic interpreters/shells from caching (a python remember must not cover python -c, audit T3.4 review)", () => {
     const rc = (argv: string[]) =>
       permissionCacheScope(

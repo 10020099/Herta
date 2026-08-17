@@ -7,7 +7,15 @@ import {
   unlink,
   writeFile,
 } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import type {
   HertaTool,
   ToolCallRequest,
@@ -63,6 +71,24 @@ export interface StrReplaceEditorToolOpts {
   workspaceShellPath: () => string;
 }
 
+/** A path as the record header shows it: workspace-relative (POSIX
+ *  separators) when the text is an absolute path — in ANY spelling the
+ *  shell produces — inside the workspace; otherwise exactly as written. */
+export function headerPath(
+  path: string,
+  workspaceRoot: string,
+  paths: ShellPaths,
+): string {
+  const native = paths.toNative(path);
+  if (native === null) return path;
+  const rel = relative(resolve(workspaceRoot), native);
+  if (rel === "") return ".";
+  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+    return path;
+  }
+  return rel.split(sep).join("/");
+}
+
 function fail(
   code: string,
   message: string,
@@ -99,6 +125,39 @@ export function strReplaceEditorTool(
         description: STR_REPLACE_EDITOR_DESCRIPTION,
         inputSchema: strReplaceEditorJsonSchema(opts.workspaceShellPath()),
       };
+    },
+    summarize(input: unknown, ctx: { workspaceRoot: string }) {
+      // The record header: `<command> <path>` (the bridge reads Reading /
+      // Writing from the leading word — the shape is load-bearing), with a
+      // workspace path shown RELATIVE the way edit_file's rows do. The model
+      // copies absolute shell-spelled paths from `pwd` (`/tmp/…/ws/NOTES.md`
+      // under MSYS), and the loop's generic form cannot map that spelling
+      // back — live GUI 2026-08-17: "写入 /tmp/claude/E--HERTA/…/scratchpa…"
+      // with the file name cut off. A path OUTSIDE the workspace stays as
+      // written: that is exactly what a reader must see.
+      const obj =
+        typeof input === "object" && input !== null
+          ? (input as {
+              command?: unknown;
+              path?: unknown;
+              view_range?: unknown;
+            })
+          : null;
+      if (
+        obj === null ||
+        typeof obj.command !== "string" ||
+        typeof obj.path !== "string" ||
+        obj.path.length === 0
+      ) {
+        return undefined;
+      }
+      const display = headerPath(obj.path, ctx.workspaceRoot, paths);
+      const range = Array.isArray(obj.view_range)
+        ? obj.view_range.filter((n): n is number => typeof n === "number")
+        : [];
+      return obj.command === "view" && range.length === 2
+        ? `${obj.command} ${display}:${range[0]}-${range[1]}`
+        : `${obj.command} ${display}`;
     },
     async run(
       call: ToolCallRequest,

@@ -1,10 +1,11 @@
-import type {
-  HertaTool,
-  RunCommandData,
-  ToolCallRequest,
-  ToolContext,
-  ToolResult,
-  ToolSchema,
+import {
+  type HertaTool,
+  type RunCommandData,
+  summarizeShellCommand,
+  type ToolCallRequest,
+  type ToolContext,
+  type ToolResult,
+  type ToolSchema,
 } from "@herta/core";
 import { formatInputIssues } from "../input-issues.js";
 import { splitShellSegments } from "../run-command/classifier.js";
@@ -15,6 +16,7 @@ import { detectTestRun } from "../run-command/test-detector.js";
 import { PersistentShell, SHELL_BG_ID } from "./persistent-shell.js";
 import { bashInputSchema, bashJsonSchema } from "./schema.js";
 import { tokenize } from "./shell-classifier.js";
+import { shellPathsFor } from "./shell-paths.js";
 
 export { findBash } from "./find-bash.js";
 export {
@@ -111,6 +113,20 @@ export function bashTool(opts: BashToolOpts): HertaTool {
         description: BASH_DESCRIPTION,
         inputSchema: bashJsonSchema,
       };
+    },
+    summarize(input: unknown, ctx: { workspaceRoot: string }) {
+      // The record header (`Running <this>`). The loop's generic form strips
+      // the model's `cd <workspace> &&` prefix in the spellings it can derive
+      // from the native path; only THIS shell knows the MSYS `/tmp/…` form
+      // of a %TEMP% checkout (live GUI 2026-08-17: every row still read
+      // "Running cd /tmp/claude/…" because the workspace lived under %TEMP%).
+      const command =
+        typeof input === "object" && input !== null
+          ? (input as { command?: unknown }).command
+          : undefined;
+      if (typeof command !== "string" || command.length === 0) return undefined;
+      const shellForm = shellPathsFor(opts.bashPath).toShell(ctx.workspaceRoot);
+      return summarizeShellCommand(command, ctx.workspaceRoot, [shellForm]);
     },
     async run(call: ToolCallRequest, ctx: ToolContext): Promise<ToolResult> {
       const parsed = bashInputSchema.safeParse(call.input);

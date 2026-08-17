@@ -73,6 +73,52 @@ describe("OverlayAskResolver.present — payload enrichment", () => {
     expect(pending[0]?.command).toBe("npm install left-pad");
   });
 
+  it("minimal contract (ADR 0040): bash asks carry the command line verbatim, and rule-eligible ones the derived project rule", () => {
+    const dir = mkdtempSync(join(tmpdir(), "herta-oar-bash-"));
+    try {
+      const rules = new ProjectCommandRuleStore(() => dir);
+      const { resolver, pending } = makeResolver({ rules });
+      void resolver.present(
+        makeRequest({
+          call: {
+            id: "c",
+            tool: "bash",
+            input: { command: "cd /e/ws && node scripts/check.mjs --all" },
+          },
+          code: "command_ask_interpreter",
+          // The bash RULE derived this (the model's cd-to-root prefix dropped).
+          argv: ["node", "scripts/check.mjs", "--all"],
+        }),
+        new AbortController().signal,
+      );
+      expect(pending[0]?.command).toBe(
+        "cd /e/ws && node scripts/check.mjs --all",
+      );
+      expect(pending[0]?.projectRule).toBe(
+        ruleDisplay({
+          argvPrefix: ["node", "scripts/check.mjs"],
+          anyArgs: true,
+        }),
+      );
+      // A multi-program line carries no argv → no rule offered, command still shown.
+      void resolver.present(
+        makeRequest({
+          call: {
+            id: "c2",
+            tool: "bash",
+            input: { command: "git add -A && git commit -m x" },
+          },
+          code: "command_ask_unknown",
+        }),
+        new AbortController().signal,
+      );
+      expect(pending[1]?.command).toBe("git add -A && git commit -m x");
+      expect(pending[1]?.projectRule).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("carries the ask-class code so the GUI can localize the summary line", () => {
     // User bug 2026-07-23: without the code, the panel showed the raw
     // English rule reason ("unrecognized command — review carefully") in

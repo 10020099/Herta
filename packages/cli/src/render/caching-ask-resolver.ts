@@ -103,6 +103,12 @@ function extractCwd(request: PermissionRequest): string | undefined {
 /** The argv of a run_command permission request, or null for other tools /
  *  malformed input. Fail-closed: any non-string token → null. */
 function extractArgv(request: PermissionRequest): string[] | null {
+  // Minimal contract (ADR 0040): the bash rule's derived effective argv —
+  // same shape as run_command's, same rule/cache path (mirrors app-server).
+  if (request.call.tool === "bash") {
+    const argv = request.argv;
+    return argv !== undefined && argv.length > 0 ? [...argv] : null;
+  }
   if (request.call.tool !== "run_command") return null;
   const input = request.call.input;
   if (typeof input !== "object" || input === null) return null;

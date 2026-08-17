@@ -20,6 +20,21 @@ export type RuleVerdict =
       code?: string;
       diff?: string;
       files?: readonly string[];
+      /** The EFFECTIVE program argv the RULE derived (ADR 0040), for tools
+       *  whose input is not argv-shaped: the minimal contract's `bash` hands
+       *  over the single program a command line really runs (after the
+       *  model's `cd <workspace> &&` prefix) — `["git","commit","-m","x"]` —
+       *  or nothing when the line runs several programs, an interpreter body
+       *  or a redirect outside the workspace. The approval cache scopes by
+       *  its argv[0] and ADR 0030 project rules derive from it, exactly as
+       *  they do from run_command's argv. Absent for every other tool. */
+      argv?: readonly string[];
+      /** The distinct programs a multi-segment shell line runs (ADR 0040),
+       *  readers/builtins excluded — for the task-scoped approval CACHE only
+       *  (`git add && git commit && git status` is a "git" line the way a
+       *  run_command `git commit` is). Rules never derive from this: a
+       *  chained line has no single argv to pin. */
+      programs?: readonly string[];
     }
   | {
       kind: "deny";
@@ -115,6 +130,8 @@ export class RulePermissionEngine implements PermissionEngine {
       code: verdict.code,
       diff: verdict.diff,
       files: verdict.files,
+      ...(verdict.argv !== undefined ? { argv: verdict.argv } : {}),
+      ...(verdict.programs !== undefined ? { programs: verdict.programs } : {}),
     };
     const decision = this.ask.present(request, ctx.signal);
     return { kind: "ask", request, decision };

@@ -87,6 +87,20 @@ export interface HertaTool {
    */
   readOnly?: boolean;
   schema(): ToolSchema;
+  /**
+   * The one-line record header for a call (`Running <this>`, `Writing
+   * <this>`) when the tool knows something the loop's generic
+   * `summarizeInput` cannot: the minimal contract's `bash` (ADR 0040)
+   * knows how ITS shell spells the workspace (`/tmp/…` for a %TEMP%
+   * checkout under MSYS, `/e/…` for a drive) and can drop the model's
+   * `cd <workspace> &&` prefix in every spelling. Optional; a returned
+   * `undefined` (or a throw) falls back to `summarizeInput`, and the loop
+   * applies the same single-line cap either way.
+   */
+  summarize?(
+    input: unknown,
+    ctx: { workspaceRoot: string },
+  ): string | undefined;
   run(
     call: ToolCallRequest,
     ctx: ToolContext,

@@ -18,6 +18,10 @@ export interface PermissionRequest {
   code?: string;
   diff?: string;
   files?: readonly string[];
+  /** Rule-derived effective program argv (ADR 0040); see RuleVerdict. */
+  argv?: readonly string[];
+  /** Rule-derived distinct programs of a shell line (cache scope only). */
+  programs?: readonly string[];
 }
 
 // Opaque in slice B; real shape lives in tools / dialogue specs.

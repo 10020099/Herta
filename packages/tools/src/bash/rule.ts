@@ -10,7 +10,12 @@ import { splitShellSegments } from "../run-command/classifier.js";
 import { checkReaderArgvPaths } from "../run-command/reader-guard.js";
 import { PersistentShell, SHELL_BG_ID } from "./persistent-shell.js";
 import { bashInputSchema } from "./schema.js";
-import { classifyShellCommandDetailed, tokenize } from "./shell-classifier.js";
+import {
+  classifyShellCommandDetailed,
+  effectivePrograms,
+  singleProgramArgv,
+  tokenize,
+} from "./shell-classifier.js";
 import { type ShellPaths, shellPathsFor } from "./shell-paths.js";
 
 export interface BashRuleDeps {
@@ -52,11 +57,24 @@ export function makeBashRule(deps: BashRuleDeps): PermissionRule {
       return { kind: "deny", code: verdict.code, reason: verdict.reason };
     }
     if (verdict.kind === "ask") {
+      // The effective program (ADR 0040): lets the approval cache scope this
+      // ask by argv[0] like run_command's (the cache applies its own
+      // interpreter/shell exclusion), and lets ADR 0030 project rules derive
+      // from it (which DO allow the script-pinned `node scripts/x.mjs:*`
+      // shape) — only when the line really runs one program (see
+      // singleProgramArgv); otherwise every call re-prompts.
+      const scopeOpts = { workspaceRoot: ctx.workspaceRoot, paths, cwd };
+      const argv = singleProgramArgv(parsed.data.command, scopeOpts);
+      // For the task CACHE only: the distinct programs of a chained line
+      // (`git add && git commit && git status` → ["git"]).
+      const programs = effectivePrograms(parsed.data.command, scopeOpts);
       return {
         kind: "ask",
         reason: verdict.reason,
         risk: verdict.risk,
         code: verdict.code,
+        ...(argv !== null ? { argv } : {}),
+        ...(programs !== null && programs.length > 0 ? { programs } : {}),
       };
     }
     // allow → realpath the reader operands of every segment (async guard).

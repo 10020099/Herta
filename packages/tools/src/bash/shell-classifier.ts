@@ -197,6 +197,136 @@ export function classifyShellCommandDetailed(
   };
 }
 
+/**
+ * The single program a command line really runs, as argv — or null.
+ *
+ * Feeds the approval cache and ADR 0030 project rules for `bash` the way
+ * run_command's argv does. Deliberately narrow (fail-closed): after dropping
+ * leading `cd`/`pushd` segments whose target is the WORKSPACE ROOT itself
+ * (the model's habit; a cd into a subdirectory would change what a
+ * cwd-scoped rule means, so it disqualifies), exactly ONE segment may
+ * remain, with no command substitution, no redirect that leaves the
+ * workspace, and a non-empty argv. In-workspace absolute paths are
+ * relativized so the argv is the one a run_command call would carry.
+ */
+export function singleProgramArgv(
+  body: string,
+  opts: ShellClassifyOpts,
+): string[] | null {
+  const trimmed = body.trim();
+  if (trimmed.length === 0) return null;
+  const { text, inner } = extractSubstitutions(stripHeredocBodies(trimmed));
+  if (inner.length > 0) return null;
+  const segments = splitShellSegments(normalizeFdRedirects(text))
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  const root = resolve(opts.workspaceRoot);
+  let i = 0;
+  while (i < segments.length) {
+    const seg = (segments[i] as string).replace(/^[({\s]+/, "");
+    const { words } = tokenize(seg);
+    const name = words[0]?.toLowerCase();
+    if ((name === "cd" || name === "pushd") && words.length === 2) {
+      const dest = destinationOf(words[1] as string, { ...opts, cwd: root });
+      if (dest !== null && resolve(dest) === root) {
+        i += 1;
+        continue;
+      }
+    }
+    break;
+  }
+  const rest = segments.slice(i);
+  if (rest.length !== 1) return null;
+  const seg = (rest[0] as string)
+    .replace(/^[({\s]+/, "")
+    .replace(/[)}\s]+$/, "");
+  const { words, redirects } = tokenize(seg);
+  for (const r of redirects) {
+    if (r.kind === "out" && isDevNull(r.target)) continue;
+    if (leavesWorkspace(r.target, { ...opts, cwd: root })) return null;
+  }
+  if (words.length === 0) return null;
+  if (PREFIX_KEYWORDS.has(words[0] as string)) return null;
+  return words.map((w, idx) =>
+    idx === 0 ? w : relativizeInsideWorkspace(w, { ...opts, cwd: root }),
+  );
+}
+
+/** Allow-listed readers and shell builtins that never make a line a
+ *  DIFFERENT program for cache-scoping purposes: `git add && git commit &&
+ *  echo done && git status` is a "git" line. (Their own asks, if any, are
+ *  workspace_read and the cache only remembers workspace_write — a
+ *  remembered "git" can never cover them.) */
+let scopeNoiseSet: Set<string> | null = null;
+function scopeNoise(): Set<string> {
+  // Lazy: PREFIX_KEYWORDS / STANDALONE_KEYWORDS are declared further down
+  // (module init order), and this is only consulted at call time.
+  scopeNoiseSet ??= new Set([
+    ...STATE_BUILTINS,
+    ...PREFIX_KEYWORDS,
+    ...STANDALONE_KEYWORDS,
+    "ls",
+    "cat",
+    "head",
+    "tail",
+    "wc",
+    "grep",
+    "rg",
+    "find",
+    "date",
+    "whoami",
+    "cd",
+    "pushd",
+  ]);
+  return scopeNoiseSet;
+}
+
+/**
+ * The distinct program identities a command line runs — for the approval
+ * cache's scope only (ADR 0040; see `permissionCacheScope`). Null when the
+ * line cannot be characterized: command substitution, or an output redirect
+ * that leaves the workspace. Readers/builtins are noise (see SCOPE_NOISE);
+ * a `cd` anywhere is fine here (the task cache, like run_command's argv[0]
+ * scope, is cwd-independent) — rules use `singleProgramArgv` instead.
+ */
+export function effectivePrograms(
+  body: string,
+  opts: ShellClassifyOpts,
+): string[] | null {
+  const trimmed = body.trim();
+  if (trimmed.length === 0) return null;
+  const { text, inner } = extractSubstitutions(stripHeredocBodies(trimmed));
+  if (inner.length > 0) return null;
+  const programs: string[] = [];
+  const root = resolve(opts.workspaceRoot);
+  for (const raw of splitShellSegments(normalizeFdRedirects(text))) {
+    const seg = raw
+      .replace(/^[({\s]+/, "")
+      .replace(/[)}\s]+$/, "")
+      .trim();
+    if (seg.length === 0) continue;
+    const { words, redirects } = tokenize(seg);
+    for (const r of redirects) {
+      if (r.kind === "out" && isDevNull(r.target)) continue;
+      if (leavesWorkspace(r.target, { ...opts, cwd: root })) return null;
+    }
+    let ws = words;
+    while (ws.length > 0 && PREFIX_KEYWORDS.has(ws[0] as string))
+      ws = ws.slice(1);
+    const a0 = ws[0];
+    if (a0 === undefined) continue;
+    const name =
+      a0
+        .split(/[\\/]/)
+        .pop()
+        ?.toLowerCase()
+        .replace(/\.exe$/, "") ?? a0;
+    if (scopeNoise().has(name)) continue;
+    if (!programs.includes(a0)) programs.push(a0);
+  }
+  return programs;
+}
+
 // ───────────────────────── segment classification ─────────────────────────
 
 /** Control-flow words that PREFIX a command (`if cmd`, `while ! cmd`,

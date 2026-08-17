@@ -13,6 +13,7 @@ export {
   type BackendTurnHandle,
   partitionToolCalls,
   runBackendTurnLoop,
+  summarizeShellCommand,
   type ToolCallBatch,
 } from "./backend/backend-turn-loop.js";
 export {
@@ -99,6 +100,7 @@ export {
 } from "./project-command-rules.js";
 export { ReadLedger, type ReadLedgerEntry } from "./read-ledger.js";
 export {
+  isCacheableProgram,
   permissionCacheScope,
   SessionApprovalCache,
   wireTaskScopedApprovalCache,

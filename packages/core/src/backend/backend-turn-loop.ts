@@ -468,7 +468,7 @@ export async function* runBackendTurnLoop(
               type: "tool.call.started",
               id: call.id,
               tool: call.tool,
-              inputSummary: summarizeInput(call.tool, call.input),
+              inputSummary: headerFor(deps, call),
             });
           }
           // An AbortError from any concurrent tool rejects the whole
@@ -633,7 +633,7 @@ export async function* runBackendTurnLoop(
           type: "tool.call.started",
           id: call.id,
           tool: call.tool,
-          inputSummary: summarizeInput(call.tool, call.input),
+          inputSummary: headerFor(deps, call),
         });
 
         let result: ToolResult;
@@ -821,19 +821,112 @@ const SUMMARY_CAP = 80;
  * tools or unexpected input shapes so nothing ever throws and every tool
  * renders *something*.
  */
-export function summarizeInput(tool: string, input: unknown): string {
-  // Single-line invariant (slice 6): the summary becomes the one-line
-  // working-state header (`Writing <arg>` in the GUI activity row and the
-  // → 差分协处理器 body line). A newline smuggled through an argv/path/
-  // pattern would break that header into extra lines — normalize to spaces
-  // before the length cap. Marker/control sanitization happens at the
-  // projection choke point (backend-bridge's sanitizeSystemBlock).
-  const cap = (s: string): string => {
-    const oneLine = s.replace(/\s*[\r\n]+\s*/g, " ");
-    return oneLine.length > SUMMARY_CAP
-      ? `${oneLine.slice(0, SUMMARY_CAP - 1)}…`
-      : oneLine;
+/**
+ * The record header for a call: the tool's own `summarize` hook when it has
+ * one (bash knows its shell's spelling of the workspace — the loop cannot
+ * derive `/tmp/…` from a native %TEMP% path), else the generic
+ * `summarizeInput`. Same single-line cap either way; a hook that throws or
+ * returns nothing is simply not consulted for that call.
+ */
+function headerFor(deps: BackendTurnDeps, call: ToolCallRequest): string {
+  const tool = deps.tools.get(call.tool);
+  if (tool?.summarize !== undefined) {
+    try {
+      const own = tool.summarize(call.input, {
+        workspaceRoot: deps.workspaceRoot,
+      });
+      if (typeof own === "string" && own.length > 0) return capHeader(own);
+    } catch {
+      // fall through to the generic form
+    }
+  }
+  return summarizeInput(call.tool, call.input, {
+    workspaceRoot: deps.workspaceRoot,
+  });
+}
+
+// Single-line invariant (slice 6): the summary becomes the one-line
+// working-state header (`Writing <arg>` in the GUI activity row and the
+// → 差分协处理器 body line). A newline smuggled through an argv/path/
+// pattern would break that header into extra lines — normalize to spaces
+// before the length cap. Marker/control sanitization happens at the
+// projection choke point (backend-bridge's sanitizeSystemBlock).
+function capHeader(s: string): string {
+  const oneLine = s.replace(/\s*[\r\n]+\s*/g, " ");
+  return oneLine.length > SUMMARY_CAP
+    ? `${oneLine.slice(0, SUMMARY_CAP - 1)}…`
+    : oneLine;
+}
+
+/**
+ * The header form of a shell command (ADR 0040): leading `cd`/`pushd`
+ * segments that go to the WORKSPACE ROOT dropped (the model prefixes nearly
+ * every call with `cd <workspace> &&` — pure noise; a cd into a subdirectory
+ * is information and stays), every spelling of the workspace root (native,
+ * forward-slash, MSYS `/e/…`, plus any `extraSpellings` the caller knows —
+ * bash passes its shell's own spelling, e.g. `/tmp/…` for a %TEMP% checkout)
+ * collapsed to `./`, first line only with an ellipsis when there is more.
+ * Exported for tests and for the bash tool's `summarize` hook.
+ */
+export function summarizeShellCommand(
+  command: string,
+  workspaceRoot?: string,
+  extraSpellings: readonly string[] = [],
+): string {
+  let text = command.trim();
+  const spellings: string[] = [];
+  if (workspaceRoot !== undefined && workspaceRoot.length > 0) {
+    const native = workspaceRoot.replace(/[\\/]+$/, "");
+    const forward = native.replace(/\\/g, "/");
+    const msys = forward.replace(
+      /^([A-Za-z]):/,
+      (_, d: string) => `/${d.toLowerCase()}`,
+    );
+    for (const s of new Set([
+      native,
+      forward,
+      msys,
+      ...extraSpellings.map((e) => e.replace(/[\\/]+$/, "")),
+    ])) {
+      if (s.length > 1) spellings.push(s);
+    }
+  }
+  // Longest first so `/tmp/a/b` wins over a hypothetical `/tmp/a` alias.
+  spellings.sort((a, b) => b.length - a.length);
+  const lead = /^(?:cd|pushd)\s+("[^"]*"|'[^']*'|[^\s;&|]+)\s*(?:&&|;)\s*/;
+  const isRoot = (target: string): boolean => {
+    const t = target.replace(/^["']|["']$/g, "").replace(/[\\/]+$/, "");
+    if (t === "." || t === "") return true;
+    return spellings.some((s) => s.toLowerCase() === t.toLowerCase());
   };
+  for (;;) {
+    const m = lead.exec(text);
+    if (m === null || !isRoot(m[1] as string)) break;
+    text = text.slice(m[0].length);
+  }
+  if (text.length === 0) text = command.trim(); // it WAS just a cd
+  if (spellings.length > 0) {
+    for (const s of spellings) {
+      const escaped = s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      // Followed by a separator (a path inside the root) or a boundary (the
+      // root itself); case-insensitive on the drive-letter platforms.
+      text = text.replace(
+        new RegExp(`${escaped}(?=[\\\\/]|\\s|$|["'])`, "gi"),
+        ".",
+      );
+    }
+    text = text.replace(/\.[\\/]/g, "./").replace(/\.\/\.\//g, "./");
+  }
+  const first = text.split(/\r?\n/)[0] ?? "";
+  return text.includes("\n") ? `${first} …` : first;
+}
+
+export function summarizeInput(
+  tool: string,
+  input: unknown,
+  opts?: { workspaceRoot?: string },
+): string {
+  const cap = capHeader;
 
   const obj =
     typeof input === "object" && input !== null
@@ -909,11 +1002,14 @@ export function summarizeInput(tool: string, input: unknown): string {
       case "bash": {
         // Minimal contract (ADR 0040): the command line itself, first line
         // only — a heredoc body or a multi-line script is not a header.
+        // The model habitually writes `cd <workspace> && <real command>`
+        // (lab + live GUI 2026-08-17): every activity row read
+        // "Running cd /tmp/…/ws && …" and the real command was cut off. Strip
+        // that prefix and relativize the workspace's spellings so the row
+        // says what is being run.
         const command = str(obj.command);
         if (command !== null) {
-          const first = command.trimStart().split(/\r?\n/)[0] ?? "";
-          const more = command.trim().includes("\n");
-          return cap(more ? `${first} …` : first);
+          return cap(summarizeShellCommand(command, opts?.workspaceRoot));
         }
         break;
       }

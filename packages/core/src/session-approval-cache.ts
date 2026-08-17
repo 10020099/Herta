@@ -23,13 +23,20 @@ const SCOPED_CACHEABLE_TOOLS: ReadonlySet<string> = new Set([
   "edit_file",
   "write_new_file",
   "run_command",
+  // Minimal contract (ADR 0040): the editor's writes share the file-write
+  // identity; `bash` is scoped by the program its RULE derived (or not at all).
+  "str_replace_editor",
+  "bash",
 ]);
 
-/** edit_file and write_new_file share one cache identity: approving "writes
- *  for this task" must cover creating a file AND the follow-up edits to it
- *  (pre-unification the two tools re-prompted separately on the same path). */
+/** edit_file, write_new_file and str_replace_editor share one cache identity:
+ *  approving "writes for this task" must cover creating a file AND the
+ *  follow-up edits to it (pre-unification the two tools re-prompted separately
+ *  on the same path); the minimal contract's editor is the same act. */
 function normalizeTool(tool: string): string {
-  return tool === "edit_file" || tool === "write_new_file"
+  return tool === "edit_file" ||
+    tool === "write_new_file" ||
+    tool === "str_replace_editor"
     ? "file_write"
     : tool;
 }
@@ -174,9 +181,39 @@ export function permissionCacheScope(
     if (UNCACHEABLE_INTERPRETERS.has(binaryBasename(first))) return undefined;
     return first;
   }
-  if (tool === "edit_file" || tool === "write_new_file") {
+  if (
+    tool === "edit_file" ||
+    tool === "write_new_file" ||
+    tool === "str_replace_editor"
+  ) {
     const first = request.files?.[0];
     return typeof first === "string" && first.length > 0 ? "task" : undefined;
   }
+  if (tool === "bash") {
+    // The bash RULE derives the effective argv (ADR 0040): the single
+    // program a command line really runs, after the model's
+    // `cd <workspace> &&` prefix, or nothing when the line runs several
+    // programs / an interpreter body / a redirect outside the workspace.
+    // From there, EXACTLY run_command's rule: argv[0], minus the
+    // interpreter/shell/wrapper set — the same code path so they cannot drift.
+    // A chained line whose every (non-reader, non-builtin) program is the
+    // SAME identity scopes by that identity too — `git add && git commit`
+    // is a "git" line — because the cache is per program, not per rule.
+    const first =
+      request.argv?.[0] ??
+      (request.programs !== undefined && request.programs.length === 1
+        ? request.programs[0]
+        : undefined);
+    if (typeof first !== "string" || first.length === 0) return undefined;
+    if (UNCACHEABLE_INTERPRETERS.has(binaryBasename(first))) return undefined;
+    return first;
+  }
   return undefined;
+}
+
+/** For rules that derive their own scope: is this program identity a safe
+ *  cache discriminator? (Shells, wrappers and script interpreters are not —
+ *  see UNCACHEABLE_INTERPRETERS.) */
+export function isCacheableProgram(a0: string): boolean {
+  return !UNCACHEABLE_INTERPRETERS.has(binaryBasename(a0));
 }

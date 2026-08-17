@@ -26,6 +26,7 @@ import {
   partitionToolCalls,
   runBackendTurnLoop,
   summarizeInput,
+  summarizeShellCommand,
 } from "./backend-turn-loop.js";
 import { BackgroundHost } from "./background-host.js";
 
@@ -212,6 +213,82 @@ describe("runBackendTurnLoop", () => {
     if (finished?.type === "turn.finished") {
       expect(finished.summary.toolCallCount).toBe(1);
     }
+  });
+
+  it("a tool's own `summarize` hook supplies the started-row header (capped, one line); a hook that returns nothing or throws falls back to summarizeInput", async () => {
+    const tools = new InMemoryToolRegistry();
+    const schemaFor = (name: string) => () => ({
+      name,
+      description: name,
+      inputSchema: { type: "object", properties: {} },
+    });
+    const ok = { ok: true, data: {}, summary: "ok" };
+    tools.register({
+      name: "own",
+      schema: schemaFor("own"),
+      summarize: (input, ctx) =>
+        `own:${(input as { x: string }).x}\nsecond line @ ${ctx.workspaceRoot}`,
+      run: async () => ok,
+    });
+    tools.register({
+      name: "read_file",
+      schema: schemaFor("read_file"),
+      summarize: () => undefined,
+      run: async () => ok,
+    });
+    tools.register({
+      name: "list_files",
+      schema: schemaFor("list_files"),
+      summarize: () => {
+        throw new Error("boom");
+      },
+      run: async () => ok,
+    });
+    const provider = new FakeProvider({
+      turns: [
+        [
+          {
+            type: "tool-call-request",
+            call: { id: "c1", tool: "own", input: { x: "hdr" } },
+          },
+          {
+            type: "tool-call-request",
+            call: { id: "c2", tool: "read_file", input: { path: "a.ts" } },
+          },
+          {
+            type: "tool-call-request",
+            call: { id: "c3", tool: "list_files", input: { path: "src" } },
+          },
+          { type: "finish", reason: "tool_calls" },
+        ],
+        [{ type: "finish", reason: "stop" }],
+      ],
+    });
+    const deps = {
+      sessionId: "s-1",
+      provider,
+      tools,
+      permissions: new NoopPermissionEngine(),
+      backendBuilder: new BackendContextBuilder({ tools }),
+      transcript: new TranscriptStore(),
+      todos: new TodoStore(),
+      bg: new BackgroundHost(),
+      bus: new InMemoryEventBus<AgentEvent>(),
+      clock: () => new Date("2026-05-07T00:00:00.000Z"),
+      workspaceRoot: "/repo",
+      reads: new ReadLedger(),
+      memory: new NoopMemoryManager(),
+    };
+    const headers = new Map<string, string>();
+    for await (const e of runBackendTurnLoop(deps, sampleBrief, {
+      signal: new AbortController().signal,
+      userMessages: sampleUserMessages,
+    })) {
+      if (e.type === "tool.call.started") headers.set(e.tool, e.inputSummary);
+    }
+    expect(headers.get("own")).toBe("own:hdr second line @ /repo");
+    expect(headers.get("read_file")).toBe("a.ts");
+    expect(headers.get("list_files")).toBe("src");
   });
 
   it("builds the base frame ONCE per turn; iterations only refresh messages (audit L2)", async () => {
@@ -1134,6 +1211,73 @@ describe("summarizeInput (tool-aware working-state argument)", () => {
       }),
     ).toBe("cat > x.mjs <<'EOF' …");
     expect(summarizeInput("bash", { command: "" })).toBe('{"command":""}');
+  });
+
+  it("bash: the model's `cd <workspace> &&` prefix is dropped and the workspace's spellings collapse to ./ (owner 2026-08-17: every row read `cd xxxx`)", () => {
+    const ws = "E:\\lab\\ws";
+    expect(
+      summarizeInput(
+        "bash",
+        { command: "cd /e/lab/ws && npm test" },
+        { workspaceRoot: ws },
+      ),
+    ).toBe("npm test");
+    expect(
+      summarizeInput(
+        "bash",
+        { command: "cd E:/lab/ws; git status --short" },
+        { workspaceRoot: ws },
+      ),
+    ).toBe("git status --short");
+    expect(
+      summarizeInput(
+        "bash",
+        {
+          command:
+            'cd "/e/lab/ws" && cd src && sed -n 1,20p /e/lab/ws/src/x.ts',
+        },
+        { workspaceRoot: ws },
+      ),
+    ).toBe("cd src && sed -n 1,20p ./src/x.ts");
+    // A pure cd stays a cd (it IS the command).
+    expect(
+      summarizeInput(
+        "bash",
+        { command: "cd /e/lab/ws" },
+        { workspaceRoot: ws },
+      ),
+    ).toBe("cd .");
+    // Multi-line after the prefix: first line + ellipsis.
+    expect(
+      summarizeInput(
+        "bash",
+        { command: "cd /e/lab/ws && cat > a <<'EOF'\nx\nEOF" },
+        { workspaceRoot: ws },
+      ),
+    ).toBe("cat > a <<'EOF' …");
+    // POSIX root spelling.
+    expect(
+      summarizeInput(
+        "bash",
+        { command: "cd /home/u/proj && ls /home/u/proj/src" },
+        { workspaceRoot: "/home/u/proj" },
+      ),
+    ).toBe("ls ./src");
+    expect(summarizeShellCommand("pushd /e/lab/ws && make", ws)).toBe("make");
+    // A caller-supplied spelling (bash's `/tmp/…` for a %TEMP% checkout —
+    // underivable from the native path) is stripped and relativized like
+    // the derived ones. Live GUI 2026-08-17: rows read "Running cd /tmp/…".
+    const tmpWs = "C:\\Users\\u\\AppData\\Local\\Temp\\lab\\ws";
+    expect(
+      summarizeShellCommand(
+        "cd /tmp/lab/ws && printf 'x\\n' >> NOTES.md && git add NOTES.md",
+        tmpWs,
+        ["/tmp/lab/ws"],
+      ),
+    ).toBe("printf 'x\\n' >> NOTES.md && git add NOTES.md");
+    expect(
+      summarizeShellCommand("cat /tmp/lab/ws/a.txt", tmpWs, ["/tmp/lab/ws/"]),
+    ).toBe("cat ./a.txt");
   });
 
   it("str_replace_editor (ADR 0040): `<command> <path>` — the bridge reads the verb from the first word", () => {

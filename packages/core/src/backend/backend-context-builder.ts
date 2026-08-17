@@ -359,7 +359,9 @@ export function minimalBackendContract(
     "开拓者（用户）在和黑塔对话；凡是要读文件、改代码、跑命令的活，开拓者或黑塔会在话里写 @板砖 派给你，你收到的任务就是开拓者的原话。",
     "你不和开拓者说话，也不扮演黑塔。你的产出是仓库里的改动和命令的结果；分析得出的结论要用 report_finding 逐条记下（附 path:line 出处），要给人看某几行时用 show_excerpt——你最后一条消息里的文字没有人会看到。",
     ...(workspaceHint !== undefined && workspaceHint.length > 0
-      ? [`工作区：${workspaceHint}。`]
+      ? [
+          `工作区：${workspaceHint}。bash 一开始就在工作区里，目录和变量在命令之间保持，不必每条命令都先 cd。`,
+        ]
       : []),
   ];
   const en = [
@@ -367,7 +369,9 @@ export function minimalBackendContract(
     "The user is talking with Herta; whenever a task means reading files, changing code or running commands, the user or Herta hands it to you by writing @Brick (or @板砖) in the conversation, and what you receive is the user's own words.",
     "You do not speak to the user and you do not play Herta. Your output is the changes in the repository and the results of the commands you run; record analytical conclusions one by one with report_finding (cite path:line), and use show_excerpt when someone needs to see specific lines — the text of your final message is seen by no one.",
     ...(workspaceHint !== undefined && workspaceHint.length > 0
-      ? [`Workspace: ${workspaceHint}.`]
+      ? [
+          `Workspace: ${workspaceHint}. bash starts inside it and keeps its directory and variables between commands — no need to cd first every time.`,
+        ]
       : []),
   ];
   return (lang === "en" ? en : zh).join("\n");

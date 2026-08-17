@@ -80,6 +80,32 @@ export class CliAskResolver implements AskResolver {
     // inline with prior output (N3 fix, 2026-05-23).
     this.stdout.write("\n");
     this.stdout.write(this.style.dim(`  risk: ${request.risk}\n`));
+    // The minimal contract's `bash` (ADR 0040): the record's Running row shows
+    // the header form (cd-prefix dropped, first line); the whole command is
+    // what is being approved, so print it here — bounded, like the GUI's
+    // console well.
+    if (request.call.tool === "bash") {
+      const input = request.call.input;
+      const command =
+        typeof input === "object" && input !== null
+          ? (input as { command?: unknown }).command
+          : undefined;
+      if (typeof command === "string" && command.trim().length > 0) {
+        const lines = command.trimEnd().split(/\r?\n/);
+        const shown = lines.slice(0, 12);
+        this.stdout.write(this.style.dim("  command:\n"));
+        for (const line of shown) {
+          this.stdout.write(this.style.dim(`    ${line}\n`));
+        }
+        if (lines.length > shown.length) {
+          this.stdout.write(
+            this.style.dim(
+              `    … ${lines.length - shown.length} more line(s)\n`,
+            ),
+          );
+        }
+      }
+    }
     if (request.files && request.files.length > 0) {
       this.stdout.write(
         this.style.dim(`  files: ${request.files.join(", ")}\n`),

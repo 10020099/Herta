@@ -128,7 +128,40 @@ d("bash tool (real bash)", () => {
     registerBashRule(engine, { bashPath: BASH });
     expect((await engine.check(call("cat a.txt"), ctx)).kind).toBe("allow");
     expect((await engine.check(call("echo x > a.txt"), ctx)).kind).toBe("ask");
-    expect((await engine.check(call("git commit -m x"), ctx)).kind).toBe("ask");
+    // The ask carries the effective argv (approval cache scope + ADR 0030
+    // rules) when the line runs ONE program — even behind the model's
+    // `cd <workspace> &&` prefix — and nothing otherwise.
+    const wsShell = new PersistentShell({
+      bashPath: BASH as string,
+      workspaceRoot: ws.root,
+    }).workspaceShellPath;
+    const single = await engine.check(
+      call(`cd ${wsShell} && git commit -m x`),
+      ctx,
+    );
+    expect(single.kind).toBe("ask");
+    if (single.kind === "ask") {
+      expect(single.request.argv).toEqual(["git", "commit", "-m", "x"]);
+    }
+    const multi = await engine.check(
+      call("git add -A && git commit -m x"),
+      ctx,
+    );
+    expect(multi.kind).toBe("ask");
+    if (multi.kind === "ask") {
+      // No single argv (rules can't pin a chained line) …
+      expect(multi.request.argv).toBeUndefined();
+      // … but the task cache can still scope it by its one program.
+      expect(multi.request.programs).toEqual(["git"]);
+    }
+    // An interpreter line still carries argv (ADR 0030 rules accept the
+    // script-pinned shape); the CACHE excludes it separately.
+    const interp = await engine.check(call("node scripts/x.mjs"), ctx);
+    expect(interp.kind).toBe("ask");
+    if (interp.kind === "ask") {
+      expect(interp.request.argv).toEqual(["node", "scripts/x.mjs"]);
+      expect(interp.request.code).toBe("command_ask_interpreter");
+    }
     const blocked = await engine.check(call("rm -rf /"), ctx);
     expect(blocked.kind).toBe("deny");
     // After the shell has cd'd into sub/, a relative read resolves there.
@@ -139,6 +172,32 @@ d("bash tool (real bash)", () => {
     // realpath), while escaping the workspace asks.
     expect((await engine.check(call("cat ../a.txt"), ctx)).kind).toBe("ask");
     await ctx.bg.stopAll();
+  });
+
+  it("summarize: the record header drops the model's `cd <workspace> &&` in the SHELL's own spelling (MSYS `/tmp/…` under %TEMP%), which the loop cannot derive", async () => {
+    ws = await mkTmpWorkspace({});
+    const tool = bashTool({ bashPath: BASH as string });
+    const wsShell = new PersistentShell({
+      bashPath: BASH as string,
+      workspaceRoot: ws.root,
+    }).workspaceShellPath;
+    const ctx = { workspaceRoot: ws.root };
+    expect(
+      tool.summarize?.(
+        { command: `cd ${wsShell} && git add -A && git commit -m x` },
+        ctx,
+      ),
+    ).toBe("git add -A && git commit -m x");
+    // Paths inside the workspace, shell-spelled, relativize too.
+    expect(
+      tool.summarize?.({ command: `sed -n 1,5p ${wsShell}/a.txt` }, ctx),
+    ).toBe("sed -n 1,5p ./a.txt");
+    // A cd into a subdirectory is information and stays.
+    expect(
+      tool.summarize?.({ command: `cd ${wsShell} && cd sub && ls` }, ctx),
+    ).toBe("cd sub && ls");
+    // Not a command → the loop's generic form takes over.
+    expect(tool.summarize?.({ nope: 1 }, ctx)).toBeUndefined();
   });
 
   it("refuses an empty command with a model-facing message and no shell spawn", async () => {

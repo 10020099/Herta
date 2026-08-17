@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   classifyShellCommand,
   classifyShellCommandDetailed,
+  effectivePrograms,
   extractSubstitutions,
   normalizeFdRedirects,
+  singleProgramArgv,
   stripHeredocBodies,
   tokenize,
 } from "./shell-classifier.js";
@@ -60,7 +62,17 @@ describe("classifyShellCommand — allow tier", () => {
     expect(kind("export NODE_ENV=test")).toBe("allow");
     expect(kind("CI=1 npm test")).toBe("allow");
     expect(kind("pwd; echo $FOO")).toBe("allow");
-    expect(kind("sed -n 10,25p src/x.ts")).toBe("ask"); // sed is not allow-listed
+    // Text filters (2026-08-17): the print-only sed idiom the tool's own
+    // description suggests, and the pipeline tails, no longer prompt …
+    expect(kind("sed -n 10,25p src/x.ts")).toBe("allow");
+    expect(kind("find src -type f | sort")).toBe("allow");
+    expect(kind("git log --oneline | head -20 | cut -c1-7 | sort -u")).toBe(
+      "allow",
+    );
+    // … while sed's writing shapes still do.
+    expect(kind("sed -i 's/a/b/' src/x.ts")).toBe("ask");
+    expect(kind("sed -n 's/a/b/p' src/x.ts")).toBe("ask");
+    expect(kind("sort -o out.txt in.txt")).toBe("ask");
   });
 
   it("treats fd duplication as noise, not a write or a segment", () => {
@@ -207,6 +219,62 @@ describe("classifyShellCommand — ask tier", () => {
   it("segments are reported for diagnostics", () => {
     const d = classifyShellCommandDetailed("git status && ls src", opts);
     expect(d.segments).toEqual(["git status", "ls src"]);
+  });
+});
+
+describe("singleProgramArgv (approval cache + ADR 0030 rules for bash)", () => {
+  const one = (cmd: string) => singleProgramArgv(cmd, opts);
+  it("one program, optionally behind the model's cd-to-workspace-root prefix", () => {
+    expect(one("git commit -m 'x y'")).toEqual(["git", "commit", "-m", "x y"]);
+    expect(one(`cd ${wsShell} && git push origin main`)).toEqual([
+      "git",
+      "push",
+      "origin",
+      "main",
+    ]);
+    expect(one(`cd ${wsShell}; npm test`)).toEqual(["npm", "test"]);
+    expect(one(`cd ${wsShell} && node scripts/check.mjs`)).toEqual([
+      "node",
+      "scripts/check.mjs",
+    ]);
+    // in-workspace absolute operands relativized, like run_command's argv
+    expect(one(`node ${wsShell}/scripts/check.mjs`)).toEqual([
+      "node",
+      "scripts/check.mjs",
+    ]);
+  });
+
+  it("is null for anything that is not one program at the workspace root", () => {
+    expect(one("git add -A && git commit -m x")).toBeNull();
+    expect(one("cd src && npm test")).toBeNull(); // cd into a SUBDIR changes what a rule means
+    expect(one("cd .. && ls")).toBeNull();
+    expect(one("echo $(git rev-parse HEAD)")).toBeNull();
+    expect(one("git log | head")).toBeNull();
+    expect(one("echo x > /etc/hosts")).toBeNull(); // redirect leaves the workspace
+    expect(one("echo x > out.txt")).toEqual(["echo", "x"]); // in-workspace redirect is fine
+    expect(one("   ")).toBeNull();
+    expect(one("if true; then ls; fi")).toBeNull();
+  });
+});
+
+describe("effectivePrograms (task-cache scope for chained lines)", () => {
+  const progs = (cmd: string) => effectivePrograms(cmd, opts);
+  it("collapses a chained line to its distinct programs, readers/builtins aside", () => {
+    expect(
+      progs("git add -A && git commit -m x && echo done && git status"),
+    ).toEqual(["git"]);
+    expect(
+      progs(`cd ${wsShell} && git log --oneline -3 > NOTES.md && cat NOTES.md`),
+    ).toEqual(["git"]);
+    expect(progs("cd src && npm test")).toEqual(["npm"]);
+    expect(progs("git status | grep modified")).toEqual(["git"]);
+    expect(progs("npm test && git commit -m x")).toEqual(["npm", "git"]);
+    expect(progs("ls -la && cat a.txt")).toEqual([]);
+  });
+  it("is null when the line cannot be characterized", () => {
+    expect(progs("echo $(git rev-parse HEAD)")).toBeNull();
+    expect(progs("git log > /etc/notes")).toBeNull();
+    expect(progs("  ")).toBeNull();
   });
 });
 

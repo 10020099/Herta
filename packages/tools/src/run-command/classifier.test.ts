@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyCommand } from "./classifier.js";
+import { classifyCommand, readerPathCandidates } from "./classifier.js";
 
 describe("classifyCommand — block phase", () => {
   it("blocks rm -rf /", () => {
@@ -196,9 +196,70 @@ describe("classifyCommand — allow", () => {
     expect(classifyCommand(["ls", "-la"]).kind).toBe("allow");
     expect(classifyCommand(["cat", "README.md"]).kind).toBe("allow");
     expect(classifyCommand(["echo", "hi"]).kind).toBe("allow");
+    expect(classifyCommand(["printf", "%s\\n", "hi"]).kind).toBe("allow");
     expect(classifyCommand(["true"]).kind).toBe("allow");
     expect(classifyCommand(["false"]).kind).toBe("allow");
     expect(classifyCommand(["pwd"]).kind).toBe("allow");
+  });
+
+  it("text filters (2026-08-17): the read-only shapes allow; the writing/executing shapes ask", () => {
+    // The pipeline tails the bash model writes constantly.
+    expect(classifyCommand(["sort"]).kind).toBe("allow");
+    expect(classifyCommand(["sort", "-u", "-k2,2n", "a.txt"]).kind).toBe(
+      "allow",
+    );
+    expect(classifyCommand(["uniq", "-c"]).kind).toBe("allow");
+    expect(classifyCommand(["uniq", "in.txt"]).kind).toBe("allow");
+    expect(classifyCommand(["cut", "-d,", "-f1", "a.csv"]).kind).toBe("allow");
+    expect(classifyCommand(["tr", "a-z", "A-Z"]).kind).toBe("allow");
+    expect(classifyCommand(["nl", "-ba", "a.txt"]).kind).toBe("allow");
+    // sed: only the line-range print idiom (the bash description's own hint).
+    expect(classifyCommand(["sed", "-n", "10,25p", "src/a.ts"]).kind).toBe(
+      "allow",
+    );
+    expect(classifyCommand(["sed", "-n", "5p", "a"]).kind).toBe("allow");
+    expect(classifyCommand(["sed", "-n", "$p", "a"]).kind).toBe("allow");
+    expect(classifyCommand(["sed", "-n", "3,$p"]).kind).toBe("allow");
+    expect(
+      classifyCommand(["sed", "-n", "-e", "1,3p", "-e", "9p", "a"]).kind,
+    ).toBe("allow");
+    expect(classifyCommand(["sed", "--expression=2p", "-n", "a"]).kind).toBe(
+      "allow",
+    );
+    // Writing / executing shapes stay asks (never silently allowed).
+    const asks = [
+      ["sort", "-o", "out.txt", "in.txt"],
+      ["sort", "-uo", "out.txt"],
+      ["sort", "--output=out.txt"],
+      ["sort", "--compress-program=gzip", "big"],
+      ["uniq", "in.txt", "out.txt"],
+      ["sed", "-i", "s/a/b/", "a.txt"],
+      ["sed", "-i.bak", "1d", "a.txt"],
+      ["sed", "--in-place", "1p", "a"],
+      ["sed", "-f", "script.sed", "a"],
+      ["sed", "-n", "s/a/b/p", "a"], // s/// — could carry a w flag
+      ["sed", "-n", "1,3w out.txt", "a"],
+      ["sed", "-n", "1e ls", "a"],
+      ["sed", "-ne", "1p", "a"], // bundled -ne: not parsed, conservative ask
+      ["sed", "1d", "a"],
+      ["sed"], // no script
+      ["awk", "{print $1}", "a"],
+      ["xargs", "rm"],
+      ["tee", "out.txt"],
+    ];
+    for (const argv of asks) {
+      expect(classifyCommand(argv).kind, argv.join(" ")).toBe("ask");
+    }
+    // File operands still take the reader path guard.
+    expect(classifyCommand(["sort", "/etc/passwd"]).kind).toBe("ask");
+    expect(classifyCommand(["sed", "-n", "1p", "../secret"]).kind).toBe("ask");
+    expect(classifyCommand(["cut", "-c1-3", ".env"]).kind).toBe("ask");
+    // And the async reader guard covers them (existing files realpathed).
+    expect(readerPathCandidates(["sed", "-n", "10,25p", "src/a.ts"])).toEqual([
+      "10,25p",
+      "src/a.ts",
+    ]);
+    expect(readerPathCandidates(["sort", "-u", "a.txt"])).toEqual(["a.txt"]);
   });
 });
 
