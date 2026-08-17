@@ -96,6 +96,11 @@ export function persistOversizedResult(opts: {
     ...(opts.result.suggestion !== undefined
       ? { suggestion: opts.result.suggestion }
       : {}),
+    // A model-authored text (ADR 0040) is bounded by its tool and is what
+    // the model must keep seeing; only the harness payload was oversized.
+    ...(opts.result.modelText !== undefined
+      ? { modelText: opts.result.modelText }
+      : {}),
   };
   return { transcriptResult, persistedPath: relPath };
 }

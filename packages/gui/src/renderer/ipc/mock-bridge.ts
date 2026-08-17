@@ -380,7 +380,13 @@ export function createMockHertaBridge(
     },
     getBackendConfig: async () => {
       calls.getBackendConfig += 1;
-      return opts.getBackendConfigResult ?? { thinking: "high" };
+      return (
+        opts.getBackendConfigResult ?? {
+          thinking: "high",
+          contract: "standard",
+          bashFound: true,
+        }
+      );
     },
     setBackendConfig: async (cfg) => {
       calls.setBackendConfig.push(cfg);

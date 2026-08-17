@@ -4606,8 +4606,11 @@ button.session-item__badge--dismiss {
      flagged twice (zh 08-03 morning, EN 08-03 evening). The ADR 0030 rules
      well briefly lived in this pane (floor 641) before moving to the device
      card's ⋯ menu (owner 2026-08-04) — don't re-add pane content without
-     re-running the lab. */
-  min-height: 506px;
+     re-running the lab.
+     RE-MEASURED 2026-08-17 (ADR 0040 added the 工具契约 row above the demo
+     card, live app, CDP, card width 700): zh Coprocessor 591px, EN 630px,
+     every other pane ≤ 506. Floor raised to the new EN tallest. */
+  min-height: 630px;
   padding: 20px 22px;
   position: relative;
   overflow-y: auto;

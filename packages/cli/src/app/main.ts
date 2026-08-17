@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   type AgentEvent,
   BackendContextBuilder,
+  type BackendContract,
   CodingAgentRuntime,
   dreamDirFor,
   ensureHertaGitignore,
@@ -47,10 +48,15 @@ import {
 } from "@herta/providers";
 import {
   canonicalWorkspaceRoot,
+  createMinimalTools,
   createMvpTools,
+  findBash,
+  PersistentShell,
   registerEditFileRule,
+  registerMinimalRules,
   registerRunCommandRule,
   registerWriteNewFileRule,
+  shellWorkspaceHint,
 } from "@herta/tools";
 import { CachingAskResolver } from "../render/caching-ask-resolver.js";
 import { NarrativeRenderer } from "../render/narrative-renderer.js";
@@ -294,12 +300,44 @@ export async function main(
   // each backend brief ends, so a [a] remember never outlives the task.
   wireTaskScopedApprovalCache(bus, approvalCache);
 
-  // Backend's tool registry: full MVP set. Used inside run_coding_task.
+  // Backend's tool registry (ADR 0040): the standard 15-tool set, or — with
+  // HERTA_BACKEND_CONTRACT=minimal and a bash on this machine — the trained
+  // two-tool shape (+ the two record channels). The CLI takes the knob from
+  // the environment like its model knobs; the GUI has a Settings row.
+  const wantMinimal = process.env.HERTA_BACKEND_CONTRACT === "minimal";
+  const bashPath = wantMinimal ? findBash() : null;
+  const backendContract: BackendContract =
+    wantMinimal && bashPath !== null ? "minimal" : "standard";
+  if (wantMinimal && bashPath === null) {
+    stderr.write(
+      "herta: HERTA_BACKEND_CONTRACT=minimal but no bash found (install Git for Windows or set HERTA_BASH); running the standard contract\n",
+    );
+  }
   const backendTools = new InMemoryToolRegistry();
-  for (const t of createMvpTools()) backendTools.register(t);
+  const workspaceShellPath = (): string =>
+    bashPath === null
+      ? wsHolder.current
+      : new PersistentShell({ bashPath, workspaceRoot: wsHolder.current })
+          .workspaceShellPath;
+  if (backendContract === "minimal") {
+    for (const t of createMinimalTools({
+      bashPath: bashPath as string,
+      workspaceShellPath,
+    }))
+      backendTools.register(t);
+  } else {
+    for (const t of createMvpTools()) backendTools.register(t);
+  }
 
   // Backend builder for prompt-frame construction.
-  const backendBuilder = new BackendContextBuilder({ tools: backendTools });
+  const backendBuilder = new BackendContextBuilder({
+    tools: backendTools,
+    contract: backendContract,
+    workspaceHint: () =>
+      backendContract === "minimal"
+        ? shellWorkspaceHint(bashPath, wsHolder.current, lang)
+        : undefined,
+  });
 
   // Factory: per-invocation CodingAgentRuntime. Each run_coding_task call
   // gets a fresh one (per ADR 0007). Reads `wsHolder.current` at call time
@@ -350,9 +388,13 @@ export async function main(
   const actorTools = new InMemoryToolRegistry();
 
   // Permission rules attach to the shared engine.
-  registerEditFileRule(permissions, { bus });
-  registerWriteNewFileRule(permissions, { bus });
-  registerRunCommandRule(permissions);
+  if (backendContract === "minimal") {
+    registerMinimalRules(permissions, { bus, bashPath });
+  } else {
+    registerEditFileRule(permissions, { bus });
+    registerWriteNewFileRule(permissions, { bus });
+    registerRunCommandRule(permissions);
+  }
 
   const input = new Input(stdin as NodeJS.ReadStream, stdout);
 

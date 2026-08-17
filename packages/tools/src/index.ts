@@ -1,4 +1,10 @@
-import type { HertaTool } from "@herta/core";
+import type {
+  AgentEvent,
+  EventBus,
+  HertaTool,
+  RulePermissionEngine,
+} from "@herta/core";
+import { bashTool, registerBashRule, shellPathsFor } from "./bash/index.js";
 import { editFileTool } from "./edit-file/index.js";
 import { gitDiffTool } from "./git-diff/index.js";
 import { gitStatusTool } from "./git-status/index.js";
@@ -14,9 +20,32 @@ import {
 } from "./run-command/index.js";
 import { searchTextTool } from "./search-text/index.js";
 import { showExcerptTool } from "./show-excerpt/index.js";
+import {
+  registerStrReplaceEditorRule,
+  strReplaceEditorTool,
+} from "./str-replace-editor/index.js";
 import { todoWriteTool } from "./todo-write/index.js";
 import { writeNewFileTool } from "./write-new-file/index.js";
 
+export {
+  BASH_DESCRIPTION,
+  BASH_TIMEOUT_MS,
+  type BashToolOpts,
+  bashTool,
+  classifyShellCommand,
+  classifyShellCommandDetailed,
+  findBash,
+  makeBashRule,
+  makeMsysPaths,
+  PersistentShell,
+  registerBashRule,
+  SHELL_BG_ID,
+  type ShellPaths,
+  type ShellRunResult,
+  shellPathsFor,
+  shellWorkspaceHint,
+} from "./bash/index.js";
+export type { BashInput } from "./bash/schema.js";
 // Exported for the attachment ingest (ADR 0033): the denylist must apply to
 // the SOURCE file at the door, because safeStoredName's hash suffix means the
 // stored name (`id_rsa-ab12cd34`) no longer matches the basename rules — a
@@ -94,6 +123,14 @@ export {
   showExcerptTool,
 } from "./show-excerpt/index.js";
 export type { ShowExcerptInput } from "./show-excerpt/schema.js";
+export {
+  makeStrReplaceEditorRule,
+  registerStrReplaceEditorRule,
+  type StrReplaceEditorData,
+  type StrReplaceEditorToolOpts,
+  strReplaceEditorTool,
+} from "./str-replace-editor/index.js";
+export type { StrReplaceEditorInput } from "./str-replace-editor/schema.js";
 export { looksBinary, SNIFF_BYTES } from "./text-sniff.js";
 export type { TodoWriteData } from "./todo-write/index.js";
 export { MAX_TODO_ITEMS, todoWriteTool } from "./todo-write/index.js";
@@ -113,6 +150,50 @@ export {
   writeNewFileTool,
 } from "./write-new-file/index.js";
 export type { WriteNewFileInput } from "./write-new-file/schema.js";
+
+export interface MinimalToolsOpts {
+  /** From `findBash()`; the minimal contract cannot run without one. */
+  bashPath: string;
+  /** How the shell spells the workspace (schema example paths). Getter —
+   *  the workspace can change between dispatches. */
+  workspaceShellPath: () => string;
+}
+
+/**
+ * The minimal contract's tool set (ADR 0040): the trained shape's two tools
+ * plus the two record channels a shell cannot replace — `report_finding`
+ * (conclusions reach the record and the report; the model's final prose
+ * reaches nobody, D6) and `show_excerpt` (lines the user asked to SEE; a
+ * `view` is silent to the record like read_file is).
+ */
+export function createMinimalTools(opts: MinimalToolsOpts): HertaTool[] {
+  // The two record channels accept the SHELL's path spelling too — the model
+  // cites what `pwd`/`ls` printed (`/e/repo/src/x`, `/tmp/…` on MSYS), which
+  // the native resolver would read as root-relative on the current drive
+  // (live GUI run 2026-08-17: `show_excerpt … path_outside_workspace:
+  // E:\tmp\claude\…`). Native and relative spellings pass through unchanged.
+  const paths = shellPathsFor(opts.bashPath);
+  const mapPath = (p: string): string => paths.toNative(p) ?? p;
+  return [
+    bashTool({ bashPath: opts.bashPath }),
+    strReplaceEditorTool({
+      bashPath: opts.bashPath,
+      workspaceShellPath: opts.workspaceShellPath,
+    }),
+    reportFindingTool({ mapPath }),
+    showExcerptTool({ mapPath }),
+  ];
+}
+
+/** Permission rules for `createMinimalTools` (edit/write rules for the
+ *  standard tools stay registered by the caller if it also mounts them). */
+export function registerMinimalRules(
+  engine: RulePermissionEngine,
+  deps: { bus?: EventBus<AgentEvent>; bashPath: string | null },
+): void {
+  registerBashRule(engine, { bashPath: deps.bashPath });
+  registerStrReplaceEditorRule(engine, deps);
+}
 
 export function createMvpTools(): HertaTool[] {
   return [

@@ -136,6 +136,14 @@ export const zh = {
   "banzhuan.thinking.low": "低",
   "banzhuan.thinking.high": "高",
   "banzhuan.thinking.max": "最高",
+  // Tool contract (ADR 0040, 2026-08-17). Owner register: what it is, the
+  // one trade-off, apply semantics; the no-bash sentence only when detected.
+  "banzhuan.contract": "工具契约",
+  "banzhuan.contractDesc":
+    "板砖拿到的工具形态。标准：一套专用工具；极简：一个 bash 加一个编辑器，成本约减半，需要本机有 bash（Windows 随 Git 安装）。下次启动生效。",
+  "banzhuan.contract.noBash": "本机未检测到 bash，选极简也会按标准运行。",
+  "banzhuan.contract.standard": "标准",
+  "banzhuan.contract.minimal": "极简",
   "approval.title": "请求权限",
   "approval.allow": "同意",
   "approval.alwaysAllow": "任务内同意",

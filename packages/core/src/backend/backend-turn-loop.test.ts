@@ -1126,6 +1126,44 @@ describe("summarizeInput (tool-aware working-state argument)", () => {
     ).toBe("scripts/merge_sort.py");
   });
 
+  it("bash (ADR 0040): the first line of the command, marked when there is more", () => {
+    expect(summarizeInput("bash", { command: "npm test" })).toBe("npm test");
+    expect(
+      summarizeInput("bash", {
+        command: "cat > x.mjs <<'EOF'\nexport const a = 1;\nEOF",
+      }),
+    ).toBe("cat > x.mjs <<'EOF' …");
+    expect(summarizeInput("bash", { command: "" })).toBe('{"command":""}');
+  });
+
+  it("str_replace_editor (ADR 0040): `<command> <path>` — the bridge reads the verb from the first word", () => {
+    expect(
+      summarizeInput("str_replace_editor", {
+        command: "view",
+        path: "/e/r/a.ts",
+      }),
+    ).toBe("view /e/r/a.ts");
+    expect(
+      summarizeInput("str_replace_editor", {
+        command: "view",
+        path: "/e/r/a.ts",
+        view_range: [10, 25],
+      }),
+    ).toBe("view /e/r/a.ts:10-25");
+    expect(
+      summarizeInput("str_replace_editor", {
+        command: "str_replace",
+        path: "/e/r/a.ts",
+        old_str: "a\nb",
+        new_str: "c",
+      }),
+    ).toBe("str_replace /e/r/a.ts");
+    // Missing path → JSON fallback (never a bare verb that reads as a write).
+    expect(summarizeInput("str_replace_editor", { command: "create" })).toBe(
+      '{"command":"create"}',
+    );
+  });
+
   it("returns the path for edit_file (no hunks)", () => {
     expect(
       summarizeInput("edit_file", {

@@ -68,6 +68,16 @@ export interface AppServerConfig {
    *  "off" omits the thinking block. Settings → Coprocessor persists this
    *  (GUI, restart-to-apply); default "high". */
   readonly thinking?: "low" | "high" | "max" | "off";
+  /**
+   * 板砖's model-facing tool contract (ADR 0040). `standard` (default) = the
+   * 15-tool set + BACKEND_EXECUTION_CONTRACT; `minimal` = persistent `bash`
+   * + `str_replace_editor` (+ report_finding / show_excerpt) with the short
+   * 板砖 prompt. `minimal` requires a bash on the machine (`findBash()`);
+   * when none is found the session falls back to `standard` and projects a
+   * `→ 系统` line saying so. Settings → 差分协处理器 persists this
+   * (GUI, restart-to-apply).
+   */
+  readonly backendContract?: "standard" | "minimal";
   /** Supervisor quality gate. Default ENABLED — since M-prompts-1
    *  (2026-07-05) this config flag replaces the old
    *  `.herta/narrative/supervisor_reference.txt` existence-toggle. */

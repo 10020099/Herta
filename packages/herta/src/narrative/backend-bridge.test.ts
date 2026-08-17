@@ -214,6 +214,99 @@ describe("projectBackendEvent — show_excerpt (ADR 0027)", () => {
     );
   });
 
+  it("minimal contract (ADR 0040): bash is Running; the editor is Reading for view and Writing otherwise, command word dropped from the row", () => {
+    const started = (tool: string, inputSummary: string) =>
+      projectBackendEvent({
+        type: "tool.call.started",
+        layer: "backend",
+        id: "t",
+        tool,
+        inputSummary,
+      });
+    expect(started("bash", "npm test")?.body).toBe("Running npm test");
+    expect(started("bash", "cat > x <<'EOF' …")?.digest).toEqual({
+      kind: "op",
+      verb: "Running",
+      arg: "cat > x <<'EOF' …",
+    });
+    expect(
+      started("str_replace_editor", "view /e/r/src/a.ts:10-25")?.body,
+    ).toBe("Reading /e/r/src/a.ts:10-25");
+    expect(
+      started("str_replace_editor", "str_replace /e/r/src/a.ts")?.body,
+    ).toBe("Writing /e/r/src/a.ts");
+    expect(started("str_replace_editor", "create /e/r/new.ts")?.digest).toEqual(
+      {
+        kind: "op",
+        verb: "Writing",
+        arg: "/e/r/new.ts",
+      },
+    );
+    expect(started("str_replace_editor", "insert /e/r/a.ts")?.body).toBe(
+      "Writing /e/r/a.ts",
+    );
+    // A bash exit row projects exactly like run_command's (same data shape).
+    const finished = projectBackendEvent({
+      type: "tool.call.finished",
+      layer: "backend",
+      id: "t2",
+      tool: "bash",
+      result: {
+        ok: true,
+        summary: "ran `npm test` (exit 0, 0.4s)",
+        modelText: "ok 1\n# pass 3\n",
+        data: {
+          argv: ["npm test"],
+          cwd: ".",
+          exitCode: 0,
+          signal: null,
+          durationMs: 400,
+          stdout: "ok 1\n# pass 3\n",
+          stderr: "",
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          stdoutBytes: 15,
+          stderrBytes: 0,
+          logPath: ".herta/logs/s-t2.log",
+          timedOut: false,
+          testRun: {
+            command: "npm test",
+            status: "passed",
+            summary: "exit 0, 0.40s",
+          },
+        },
+      },
+    } as never);
+    expect(finished?.body).toBe("↳ tests: exit 0, 0.40s");
+    const plain = projectBackendEvent({
+      type: "tool.call.finished",
+      layer: "backend",
+      id: "t3",
+      tool: "bash",
+      result: {
+        ok: true,
+        summary: "ran `git status` (exit 0, 0.1s)",
+        data: { exitCode: 0, stdout: "M a.ts\n", stderr: "", logPath: "x" },
+      },
+    } as never);
+    expect(plain?.body).toBe("↳ exit 0 · 1 lines");
+    // The editor's successes stay silent like edit_file's (the diff came
+    // through patch.preview from the rule).
+    expect(
+      projectBackendEvent({
+        type: "tool.call.finished",
+        layer: "backend",
+        id: "t4",
+        tool: "str_replace_editor",
+        result: {
+          ok: true,
+          summary: "edited src/a.ts",
+          data: { command: "str_replace", relPath: "src/a.ts", wrote: true },
+        },
+      } as never),
+    ).toBeNull();
+  });
+
   it("a plain read_file success still projects NOTHING (unchanged)", () => {
     expect(
       projectBackendEvent({

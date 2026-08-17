@@ -27,6 +27,7 @@ export const DEFAULT_BACKEND_PROMPT_BUDGET: BackendPromptBudget = {
 
 /** Mirror of the translate layer's toolMessageContent sizing. */
 function toolResultText(m: ToolMessage): string {
+  if (m.result.modelText !== undefined) return m.result.modelText;
   const payload: Record<string, unknown> = {};
   if (m.result.data !== undefined) payload.data = m.result.data;
   if (!m.result.ok) {

@@ -49,7 +49,14 @@ const LINE_CHECK_MAX_BYTES = 64 * 1024 * 1024;
  * lie inside the file. That makes a recorded finding quote-grade by
  * construction — the same stance ADR 0036 took for evidence in the record.
  */
-export function reportFindingTool(): HertaTool {
+export interface ReportFindingToolOpts {
+  /** Translate a cite's path spelling before path safety (ADR 0040; see
+   *  show_excerpt's ShowExcerptToolOpts). Absent = identity. */
+  mapPath?: (p: string) => string;
+}
+
+export function reportFindingTool(opts: ReportFindingToolOpts = {}): HertaTool {
+  const mapPath = opts.mapPath ?? ((p: string) => p);
   return {
     name: "report_finding",
     // NOT readOnly: it appends to the per-brief ledger — harness state, the
@@ -100,7 +107,7 @@ export function reportFindingTool(): HertaTool {
         if (from !== undefined && to !== undefined && to < from) {
           return badCite(raw, "`to` must be >= `from`");
         }
-        const safe = await resolveSafePath(ctx.workspaceRoot, path, {
+        const safe = await resolveSafePath(ctx.workspaceRoot, mapPath(path), {
           allowAttachmentPaths: true,
           allowHarnessReadPaths: true,
           allowEvidenceExcerptPaths: true,

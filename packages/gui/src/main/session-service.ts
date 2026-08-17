@@ -12,7 +12,11 @@ import {
 } from "@herta/app-server";
 import { SessionFileError } from "@herta/core";
 import { validateDeepSeekKey } from "@herta/providers";
-import { canonicalWorkspaceRoot, validateWorkspaceRoot } from "@herta/tools";
+import {
+  canonicalWorkspaceRoot,
+  findBash,
+  validateWorkspaceRoot,
+} from "@herta/tools";
 import {
   app,
   type BrowserWindow,
@@ -36,6 +40,7 @@ import {
   updateGlobalSettings,
 } from "./app-global-settings.js";
 import {
+  isBackendContract,
   isBackendThinking,
   isModelChoice,
   readAppSettings,
@@ -174,6 +179,16 @@ export async function buildConfig(
     // isBackendThinking guards a hand-edited settings.json: an off-enum value
     // falls back to the default instead of reaching the API.
     thinking: isBackendThinking(backendThinking) ? backendThinking : "high",
+    // 板砖's tool contract (ADR 0040): env (dev/lab knob) > Settings →
+    // 差分协处理器 → 工具契约 > standard. Session.create verifies a bash
+    // exists before honoring `minimal` and falls back otherwise.
+    backendContract:
+      process.env.HERTA_BACKEND_CONTRACT === "minimal" ||
+      process.env.HERTA_BACKEND_CONTRACT === "standard"
+        ? process.env.HERTA_BACKEND_CONTRACT
+        : isBackendContract(settings.backend?.contract)
+          ? settings.backend.contract
+          : "standard",
   };
 }
 
@@ -715,19 +730,41 @@ export function createSessionService(
     handle(CMD.getBackendConfig, async () => {
       const s = await readAppSettings(appWorkspaceRoot());
       const v = s.backend?.thinking;
-      return { thinking: isBackendThinking(v) ? v : "high" };
+      const c = s.backend?.contract;
+      return {
+        thinking: isBackendThinking(v) ? v : "high",
+        // ADR 0040: the tool contract, plus whether the minimal one can run
+        // here at all — the row says so next to the choice, where the user
+        // makes it, instead of a note in the record at the next session.
+        contract: isBackendContract(c) ? c : "standard",
+        bashFound: findBash() !== null,
+      };
     });
-    handle(CMD.setBackendConfig, async (_e, cfg: { thinking: string }) => {
-      // Validate like setTheme/setLocale: an off-enum value would fail the
-      // read-side shape check downstream — refuse it instead of persisting.
-      if (!isBackendThinking(cfg?.thinking)) return;
-      const ws = appWorkspaceRoot();
-      const s = await readAppSettings(ws);
-      await writeAppSettings(ws, {
-        ...s,
-        backend: { ...s.backend, thinking: cfg.thinking },
-      });
-    });
+    handle(
+      CMD.setBackendConfig,
+      async (_e, cfg: { thinking?: unknown; contract?: unknown }) => {
+        // Validate like setTheme/setLocale: an off-enum value would fail the
+        // read-side shape check downstream — refuse it instead of persisting.
+        // Each field is optional so the two rows can write independently.
+        const thinking = isBackendThinking(cfg?.thinking)
+          ? cfg.thinking
+          : undefined;
+        const contract = isBackendContract(cfg?.contract)
+          ? cfg.contract
+          : undefined;
+        if (thinking === undefined && contract === undefined) return;
+        const ws = appWorkspaceRoot();
+        const s = await readAppSettings(ws);
+        await writeAppSettings(ws, {
+          ...s,
+          backend: {
+            ...s.backend,
+            ...(thinking !== undefined ? { thinking } : {}),
+            ...(contract !== undefined ? { contract } : {}),
+          },
+        });
+      },
+    );
     // Settings → DeepSeek → 模型: per-stage model (2026-08-17). Same
     // restart-to-apply contract; buildConfig reads it at the next bootstrap
     // (an env override, if set, still wins there — it is the dev/lab knob).

@@ -167,6 +167,168 @@ describe("CodingAgentRuntime.runBrief", () => {
     expect(report.status).toBe("completed");
   });
 
+  describe("minimal-contract tools (ADR 0040)", () => {
+    function scripted(
+      calls: Array<{ tool: string; input: unknown }>,
+    ): FakeProvider {
+      return new FakeProvider({
+        turns: [
+          [
+            ...calls.map((c, i) => ({
+              type: "tool-call-request" as const,
+              call: { id: `call-${i + 1}`, tool: c.tool, input: c.input },
+            })),
+            { type: "finish" as const, reason: "tool_calls" as const },
+          ],
+          [{ type: "finish" as const, reason: "stop" as const }],
+        ],
+      });
+    }
+    const schema = (name: string) => () => ({
+      name,
+      description: name,
+      inputSchema: { type: "object", properties: {} },
+    });
+
+    it("bash at exit 0 argues for completed; a non-zero exit does not, and its testRun lands in report.tests", async () => {
+      const okRun = scripted([
+        { tool: "bash", input: { command: "npm test" } },
+      ]);
+      const { runtime, tools } = makeRuntime(okRun);
+      tools.register({
+        name: "bash",
+        schema: schema("bash"),
+        run: async () => ({
+          ok: true,
+          summary: "ran `npm test` (exit 0, 0.4s)",
+          modelText: "ok 1\n# pass 3",
+          data: {
+            argv: ["npm test"],
+            cwd: ".",
+            exitCode: 0,
+            signal: null,
+            durationMs: 400,
+            stdout: "ok 1\n# pass 3",
+            stderr: "",
+            stdoutTruncated: false,
+            stderrTruncated: false,
+            stdoutBytes: 15,
+            stderrBytes: 0,
+            logPath: ".herta/logs/x.log",
+            timedOut: false,
+            testRun: {
+              command: "npm test",
+              status: "passed",
+              summary: "3 passed",
+            },
+          },
+        }),
+      });
+      const report = await runtime.runBrief(sampleBrief);
+      expect(report.status).toBe("completed");
+      expect(report.tests).toEqual([
+        { command: "npm test", status: "passed", summary: "3 passed" },
+      ]);
+
+      const failRun = scripted([{ tool: "bash", input: { command: "false" } }]);
+      const second = makeRuntime(failRun);
+      second.tools.register({
+        name: "bash",
+        schema: schema("bash"),
+        run: async () => ({
+          ok: true,
+          summary: "ran `false` (exit 1, 0.0s)",
+          modelText: "[exit code: 1]",
+          data: { exitCode: 1, stdout: "", stderr: "" },
+        }),
+      });
+      expect((await second.runtime.runBrief(sampleBrief)).status).toBe(
+        "partial",
+      );
+    });
+
+    it("str_replace_editor: a view proves nothing; a write is a changed file and completion evidence", async () => {
+      const viewOnly = scripted([
+        {
+          tool: "str_replace_editor",
+          input: { command: "view", path: "/e/r/a.ts" },
+        },
+      ]);
+      const { runtime, tools } = makeRuntime(viewOnly);
+      tools.register({
+        name: "str_replace_editor",
+        schema: schema("str_replace_editor"),
+        run: async () => ({
+          ok: true,
+          summary: "viewed src/a.ts (12 lines)",
+          modelText: "Here's the content of /e/r/a.ts …",
+          data: { command: "view", path: "src/a.ts" },
+        }),
+      });
+      const r1 = await runtime.runBrief(sampleBrief);
+      expect(r1.status).toBe("partial");
+      expect(r1.changedFiles).toEqual([]);
+
+      const write = scripted([
+        {
+          tool: "str_replace_editor",
+          input: {
+            command: "str_replace",
+            path: "/e/r/a.ts",
+            old_str: "a",
+            new_str: "b",
+          },
+        },
+        {
+          tool: "str_replace_editor",
+          input: { command: "create", path: "/e/r/new.ts", file_text: "x" },
+        },
+      ]);
+      const second = makeRuntime(write);
+      let n = 0;
+      second.tools.register({
+        name: "str_replace_editor",
+        schema: schema("str_replace_editor"),
+        run: async () => {
+          n += 1;
+          return n === 1
+            ? {
+                ok: true,
+                summary: "edited src/a.ts",
+                modelText: "The file /e/r/a.ts has been edited successfully.",
+                data: {
+                  command: "str_replace",
+                  relPath: "src/a.ts",
+                  diff: "--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-a\n+b\n",
+                  wrote: true,
+                  created: false,
+                },
+              }
+            : {
+                ok: true,
+                summary: "created src/new.ts",
+                modelText: "New file created successfully at: /e/r/new.ts",
+                data: {
+                  command: "create",
+                  relPath: "src/new.ts",
+                  diff: "--- /dev/null\n+++ b/src/new.ts\n@@ -0,0 +1 @@\n+x\n",
+                  wrote: true,
+                  created: true,
+                },
+              };
+        },
+      });
+      const r2 = await second.runtime.runBrief(sampleBrief);
+      expect(r2.status).toBe("completed");
+      expect(
+        r2.changedFiles.map((f) => [f.path, f.kind, f.diffSummary]),
+      ).toEqual([
+        ["src/a.ts", "modified", "+1 -1"],
+        ["src/new.ts", "created", "+1 -0"],
+      ]);
+    });
+  });
+
   it("a recorded FINDING is its own evidence kind and argues for completed (ADR 0039)", async () => {
     // The 1.2 rule keeps read-only tools from claiming 完成 because they only
     // prove execution. A cited finding is the DELIVERABLE of an analysis

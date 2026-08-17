@@ -4,17 +4,23 @@ import { join } from "node:path";
 import {
   type AgentEvent,
   BackendContextBuilder,
+  BackgroundHost,
   CodingAgentRuntime,
+  FindingsLedger,
   type HertaToAgentBrief,
+  type HertaTool,
   InMemoryEventBus,
   InMemoryToolRegistry,
   NoopMemoryManager,
   type PermissionEngine,
+  ReadLedger,
   RulePermissionEngine,
+  TodoStore,
 } from "@herta/core";
 import { FakeAskResolver, FakeProvider } from "@herta/core/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  createMinimalTools,
   createMvpTools,
   editFileTool,
   readFileTool,
@@ -201,6 +207,73 @@ describe("MVP tools end-to-end with CodingAgentRuntime", () => {
       "todo_write",
       "write_new_file",
     ]);
+  });
+
+  it("createMinimalTools (ADR 0040): four tools, and the record channels accept the shell's path spelling", async () => {
+    ws = await mkTmpWorkspace({ "src/a.ts": "one\ntwo\nthree\n" });
+    const tools = createMinimalTools({
+      bashPath: "/nonexistent/bash",
+      workspaceShellPath: () => ws.root,
+    });
+    expect(tools.map((t) => t.name).sort()).toEqual([
+      "bash",
+      "report_finding",
+      "show_excerpt",
+      "str_replace_editor",
+    ]);
+    // Native and forward-slash spellings of the workspace pass; a relative
+    // path passes; on Windows the /e/… MSYS form is understood too (live GUI
+    // 2026-08-17: `/tmp/…` reached show_excerpt as `E:\tmp\…` — outside).
+    const excerpt = tools.find((t) => t.name === "show_excerpt") as HertaTool;
+    const ctx = {
+      sessionId: "s",
+      signal: new AbortController().signal,
+      workspaceRoot: ws.root,
+      reads: new ReadLedger(),
+      todos: new TodoStore(),
+      bg: new BackgroundHost(),
+      bus: new InMemoryEventBus<AgentEvent>(),
+      memory: new NoopMemoryManager(),
+      findings: new FindingsLedger(),
+    };
+    const spellings = [
+      "src/a.ts",
+      join(ws.root, "src", "a.ts"),
+      `${ws.root.replace(/\\/g, "/")}/src/a.ts`,
+    ];
+    if (process.platform === "win32") {
+      spellings.push(
+        `${ws.root.replace(/\\/g, "/").replace(/^([A-Za-z]):/, (_, d: string) => `/${d.toLowerCase()}`)}/src/a.ts`,
+      );
+    }
+    for (const p of spellings) {
+      const r = await excerpt.run(
+        {
+          id: "e",
+          tool: "show_excerpt",
+          input: { path: p, fromLine: 1, toLine: 2 },
+        },
+        ctx,
+        () => {},
+      );
+      expect(r.ok, p).toBe(true);
+    }
+    const finding = tools.find((t) => t.name === "report_finding") as HertaTool;
+    const r = await finding.run(
+      {
+        id: "f",
+        tool: "report_finding",
+        input: {
+          claim: "a.ts has three lines",
+          cites: [`${spellings[spellings.length - 1]}:1-3`],
+        },
+      },
+      ctx,
+      () => {},
+    );
+    expect(r.ok).toBe(true);
+    // …and the recorded cite is workspace-relative regardless of spelling.
+    expect((r.data as { cites: string[] }).cites).toEqual(["src/a.ts:1-3"]);
   });
 
   it("e2e: read_file then edit_file with ask-allow flow", async () => {

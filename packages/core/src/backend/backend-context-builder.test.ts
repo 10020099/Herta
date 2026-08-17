@@ -6,6 +6,7 @@ import {
   BACKEND_EXECUTION_CONTRACT,
   BACKEND_EXECUTION_CONTRACT_EN,
   BackendContextBuilder,
+  minimalBackendContract,
   RECENT_DIALOGUE_HEADER,
   RECENT_DIALOGUE_HEADER_EN,
   serializeUserHistory,
@@ -479,5 +480,81 @@ describe("EN backend prompt (ADR 0016)", () => {
     expect(omitted.backendSystem.startsWith("你是后端的编码执行智能体")).toBe(
       true,
     );
+  });
+});
+
+describe("minimal contract (ADR 0040)", () => {
+  const common = {
+    brief: sampleBrief,
+    userMessages: sampleUserMessages,
+    scopedRepoInstructions: "",
+    scopedMemory: "",
+    messages: [],
+  };
+
+  it("defaults to the standard contract", () => {
+    const tools = new InMemoryToolRegistry();
+    const builder = new BackendContextBuilder({ tools });
+    expect(builder.contract).toBe("standard");
+    expect(builder.build(common).backendSystem).toContain(
+      BACKEND_EXECUTION_CONTRACT,
+    );
+  });
+
+  it("emits the short 板砖 prompt instead of the standard contract, keeps the history sections", () => {
+    const tools = new InMemoryToolRegistry();
+    const builder = new BackendContextBuilder({
+      tools,
+      contract: "minimal",
+      workspaceHint: () => "E:\\repo（bash 里写作 /e/repo）",
+    });
+    const sys = builder.build({
+      ...common,
+      workingHistory: "### 派活 1",
+    }).backendSystem;
+    expect(sys).not.toContain(BACKEND_EXECUTION_CONTRACT);
+    expect(sys).not.toContain("# 任务分类");
+    expect(sys.startsWith("你是板砖，黑塔的差分协处理器")).toBe(true);
+    // The owner's asks: name, who calls it and how, what it produces, where.
+    expect(sys).toContain("@板砖");
+    expect(sys).toContain("开拓者");
+    expect(sys).toContain("report_finding");
+    expect(sys).toContain("show_excerpt");
+    expect(sys).toContain("不扮演黑塔");
+    expect(sys).toContain("工作区：E:\\repo（bash 里写作 /e/repo）。");
+    expect(sys).toContain(WORKING_HISTORY_HEADER);
+    expect(sys).toContain(serializeUserHistory(sampleUserMessages));
+    // Short by design: well under a fifth of the standard contract.
+    expect(minimalBackendContract("zh").length).toBeLessThan(
+      BACKEND_EXECUTION_CONTRACT.length / 5,
+    );
+  });
+
+  it("omits the workspace line when the hint is absent, and re-reads the getter per build", () => {
+    const tools = new InMemoryToolRegistry();
+    let ws: string | undefined;
+    const builder = new BackendContextBuilder({
+      tools,
+      contract: "minimal",
+      workspaceHint: () => ws,
+    });
+    expect(builder.build(common).backendSystem).not.toContain("工作区：");
+    ws = "/home/u/proj";
+    expect(builder.build(common).backendSystem).toContain(
+      "工作区：/home/u/proj。",
+    );
+  });
+
+  it("EN sessions get the English 板砖 prompt with the @Brick alias", () => {
+    const tools = new InMemoryToolRegistry();
+    const builder = new BackendContextBuilder({ tools, contract: "minimal" });
+    const sys = builder.build({ ...common, lang: "en" }).backendSystem;
+    expect(
+      sys.startsWith("You are Brick (板砖), Herta's differential coprocessor"),
+    ).toBe(true);
+    expect(sys).toContain("@Brick");
+    expect(sys).toContain("report_finding");
+    expect(sys).not.toContain(BACKEND_EXECUTION_CONTRACT_EN);
+    expect(sys).not.toMatch(/# Scope classification/);
   });
 });

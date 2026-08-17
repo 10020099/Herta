@@ -4,7 +4,10 @@ import { useDemoDeviceCycle } from "../../hooks/useDemoDeviceCycle.js";
 import type { BanzhuanDeviceState } from "../../hooks/useDeviceState.js";
 import type { MessageKey } from "../../i18n/keys.js";
 import { useLocale, useT } from "../../i18n/LocaleProvider.js";
-import type { BackendThinking } from "../../ipc/bridge-types.js";
+import type {
+  BackendContractChoice,
+  BackendThinking,
+} from "../../ipc/bridge-types.js";
 import { BanzhuanDemoCard } from "../UtilityRail/BanzhuanDemoCard.js";
 import { Select } from "./Select.js";
 import { SettingRow } from "./SettingRow.js";
@@ -115,11 +118,29 @@ export function BanzhuanSettings(): JSX.Element {
   // stale value — only the newest write may revert.
   const writeSeqRef = useRef(0);
 
+  // Tool-contract row (ADR 0040). Same optimistic / latest-wins discipline as
+  // the thinking row; hides when the bridge's config carries no `contract`
+  // (an older bridge / the website demo). `bashFound` comes from main and is
+  // folded into the row description — the fallback is stated where the
+  // choice is made.
+  const [contract, setContract] = useState<BackendContractChoice>("standard");
+  const [contractKnown, setContractKnown] = useState(false);
+  const [bashFound, setBashFound] = useState<boolean | undefined>(undefined);
+  const [contractFailed, setContractFailed] = useState(false);
+  const contractTouchedRef = useRef(false);
+  const contractSeqRef = useRef(0);
+
   useEffect(() => {
     let alive = true;
     bridge.getBackendConfig?.().then(
       (c) => {
-        if (alive && !touchedRef.current) setThinking(c.thinking);
+        if (!alive) return;
+        if (!touchedRef.current) setThinking(c.thinking);
+        if (c.contract !== undefined) {
+          setContractKnown(true);
+          if (!contractTouchedRef.current) setContract(c.contract);
+        }
+        setBashFound(c.bashFound);
       },
       () => {
         if (alive) setLoadFailed(true);
@@ -129,6 +150,20 @@ export function BanzhuanSettings(): JSX.Element {
       alive = false;
     };
   }, [bridge]);
+
+  const onContract = (next: BackendContractChoice): void => {
+    const prev = contract;
+    contractSeqRef.current += 1;
+    const seq = contractSeqRef.current;
+    contractTouchedRef.current = true;
+    setContract(next);
+    setContractFailed(false);
+    void bridge.setBackendConfig?.({ thinking, contract: next }).catch(() => {
+      if (seq !== contractSeqRef.current) return;
+      setContract(prev);
+      setContractFailed(true);
+    });
+  };
 
   const onThinking = (next: BackendThinking): void => {
     // Optimistic: show the pick now, persist async. On a failed write, snap
@@ -185,10 +220,34 @@ export function BanzhuanSettings(): JSX.Element {
           }
         />
       )}
-      {thinkingSupported && failed && (
+      {thinkingSupported && contractKnown && (
+        <SettingRow
+          title={t("banzhuan.contract")}
+          description={
+            bashFound === false
+              ? `${t("banzhuan.contractDesc")} ${t("banzhuan.contract.noBash")}`
+              : t("banzhuan.contractDesc")
+          }
+          control={
+            <Select<BackendContractChoice>
+              value={contract}
+              ariaLabel={t("banzhuan.contract")}
+              options={[
+                {
+                  value: "standard",
+                  label: t("banzhuan.contract.standard"),
+                },
+                { value: "minimal", label: t("banzhuan.contract.minimal") },
+              ]}
+              onChange={onContract}
+            />
+          }
+        />
+      )}
+      {thinkingSupported && (failed || contractFailed) && (
         <p className="settings-note">{t("common.couldntSave")}</p>
       )}
-      {thinkingSupported && !failed && loadFailed && (
+      {thinkingSupported && !failed && !contractFailed && loadFailed && (
         <p className="settings-note">{t("settings.loadFailed")}</p>
       )}
 

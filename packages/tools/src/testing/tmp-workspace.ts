@@ -11,6 +11,37 @@ export interface TmpWorkspace {
   cleanup: () => Promise<void>;
 }
 
+/**
+ * Remove a temp dir without ever failing a test in teardown. Windows: a
+ * just-killed child (the ADR 0040 persistent shell, a background command)
+ * can hold its cwd handle for a while after its exit event — `rmdir`
+ * reports EBUSY. Retry for up to ~10 s, then give up silently: a leftover
+ * dir under %TEMP% is not a test failure.
+ */
+export async function removeTmpDir(root: string): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (true) {
+    try {
+      await rm(root, {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 100,
+      });
+      return;
+    } catch (err) {
+      const code = (err as { code?: string }).code;
+      if (
+        (code !== "EBUSY" && code !== "ENOTEMPTY" && code !== "EPERM") ||
+        Date.now() > deadline
+      ) {
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  }
+}
+
 export async function mkTmpWorkspace(
   files: TmpWorkspaceFiles,
 ): Promise<TmpWorkspace> {
@@ -24,7 +55,7 @@ export async function mkTmpWorkspace(
   }
 
   const cleanup = async () => {
-    await rm(root, { recursive: true, force: true });
+    await removeTmpDir(root);
   };
 
   return { root, cleanup };

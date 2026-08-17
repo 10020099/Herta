@@ -36,8 +36,13 @@ export function workflowKindForBeat(tool: string): string | null {
       return "read";
     case "edit_file":
     case "write_new_file":
+    // Minimal contract (ADR 0040): the editor's view is a read, but this
+    // coarse map only feeds the failure-beat signature — "write" is the
+    // honest bucket for a tool that can write.
+    case "str_replace_editor":
       return "write";
     case "run_command":
+    case "bash":
     case "command_output":
     case "command_stop":
       return "run";

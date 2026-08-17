@@ -284,16 +284,24 @@ function projectBackendEventUnsanitized(event: AgentEvent): SystemBlock | null {
       // AND the progress row); a FAILED todo_write still surfaces via the
       // tool.call.finished failure row below.
       if (event.tool === "todo_write") return null;
-      const label = workflowLabel(event.tool);
+      const label = workflowLabel(event.tool, event.inputSummary);
       if (label === null) return null;
-      const body = `${label} ${event.inputSummary}`.trim();
+      // The editor's summary leads with its command word so the verb can be
+      // chosen; the row itself reads like edit_file's (`Writing <path>`).
+      const arg =
+        event.tool === "str_replace_editor"
+          ? event.inputSummary
+              .replace(/^(view|create|str_replace|insert)\s*/, "")
+              .trim()
+          : event.inputSummary.trim();
+      const body = `${label} ${arg}`.trim();
       return {
         kind: "system",
         label: "差分协处理器",
         body,
         // Structured digest (M-projection-3): compaction digests from THIS,
         // not by regex-parsing the rendered body back apart.
-        digest: { kind: "op", verb: label, arg: event.inputSummary.trim() },
+        digest: { kind: "op", verb: label, arg },
       };
     }
 
@@ -361,10 +369,13 @@ function projectBackendEventUnsanitized(event: AgentEvent): SystemBlock | null {
           return projectSearchResult(data);
         }
         // Success: run_command (incl. the background trio) surfaces a result
-        // block — its output is otherwise invisible. Other tools' successes
-        // stay silent; their Writing/Reading start-line already covered them.
+        // block — its output is otherwise invisible. The minimal contract's
+        // `bash` (ADR 0040) returns the same RunCommandData and gets the same
+        // rows. Other tools' successes stay silent; their Writing/Reading
+        // start-line already covered them.
         if (
           event.tool !== "run_command" &&
+          event.tool !== "bash" &&
           event.tool !== "command_output" &&
           event.tool !== "command_stop"
         )
@@ -575,6 +586,7 @@ function projectBackendEventUnsanitized(event: AgentEvent): SystemBlock | null {
  */
 function workflowLabel(
   tool: string,
+  inputSummary = "",
 ): Extract<SystemBlockDigest, { kind: "op" }>["verb"] | null {
   switch (tool) {
     case "read_file":
@@ -592,7 +604,13 @@ function workflowLabel(
     case "edit_file":
     case "write_new_file":
       return "Writing";
+    // Minimal contract (ADR 0040): one editor tool, four commands — the verb
+    // comes from the summary's leading word, which the loop's summarizeInput
+    // guarantees is the command (`view path` / `str_replace path` …).
+    case "str_replace_editor":
+      return /^view(\s|$)/.test(inputSummary) ? "Reading" : "Writing";
     case "run_command":
+    case "bash":
       return "Running";
     case "command_stop":
       // Not a run. Herta reads these rows, and `Running bg-1` on the stop

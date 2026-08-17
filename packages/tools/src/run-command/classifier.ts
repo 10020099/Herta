@@ -411,7 +411,10 @@ export function splitShellSegments(body: string): string[] {
   return out.map((s) => s.trim()).filter((s) => s.length > 0);
 }
 
-function classifyShellBody(
+/** Block-tier scan of a whole shell body — every segment, nested
+ *  interpreters unwrapped. Shared with the minimal contract's shell-string
+ *  classifier (ADR 0040), which layers the ask/allow tiers on top. */
+export function classifyShellBody(
   body: string,
   depth = 0,
 ): { hit: boolean; reason: string } {

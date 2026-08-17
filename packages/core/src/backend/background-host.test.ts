@@ -53,6 +53,22 @@ describe("BackgroundHost", () => {
     expect(dead.killed).toBe(false);
   });
 
+  it("internal entries (the minimal contract's shell, ADR 0040) are reaped by stopAll but never listed, addressed, or counted", async () => {
+    const h = new BackgroundHost();
+    const shell = Object.assign(fakeProc("shell-1"), { internal: true });
+    const userProc = fakeProc("bg-1");
+    h.register(shell);
+    h.register(userProc);
+    expect(h.list().map((p) => p.id)).toEqual(["bg-1"]);
+    expect(h.get("shell-1")).toBeUndefined();
+    expect(h.getInternal("shell-1")).toBe(shell);
+    const n = await h.stopAll();
+    expect(shell.killed).toBe(true);
+    expect(userProc.killed).toBe(true);
+    // Only the model-started process is "left running at brief end".
+    expect(n).toBe(1);
+  });
+
   it("stopAll tolerates a kill that rejects (allSettled)", async () => {
     const h = new BackgroundHost();
     h.register({

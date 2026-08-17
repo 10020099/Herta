@@ -163,6 +163,9 @@ function toOpenAI(m: Message): OpenAIMessage {
 }
 
 function toolMessageContent(result: ToolResult): string {
+  // A tool that authored its own model-facing text (ADR 0040) is sent
+  // verbatim — the harness fields below are for the record, not the model.
+  if (result.modelText !== undefined) return result.modelText;
   const payload: Record<string, unknown> = {};
   if (result.data !== undefined) payload.data = result.data;
   if (!result.ok) {

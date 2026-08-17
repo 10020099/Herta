@@ -413,6 +413,9 @@ export async function* runBackendTurnLoop(
                       : undefined,
                 summary:
                   code === "permission_denied" ? "denied" : `failed: ${code}`,
+                ...(decision.modelText !== undefined
+                  ? { modelText: decision.modelText }
+                  : {}),
               });
               continue;
             }
@@ -554,6 +557,9 @@ export async function* runBackendTurnLoop(
                 : undefined,
             summary:
               code === "permission_denied" ? "denied" : `failed: ${code}`,
+            ...(decision.modelText !== undefined
+              ? { modelText: decision.modelText }
+              : {}),
           };
           yield* emit({
             type: "tool.call.finished",
@@ -899,6 +905,33 @@ export function summarizeInput(tool: string, input: unknown): string {
           if (argv.length > 0) return cap(argv.join(" "));
         }
         break;
+      }
+      case "bash": {
+        // Minimal contract (ADR 0040): the command line itself, first line
+        // only — a heredoc body or a multi-line script is not a header.
+        const command = str(obj.command);
+        if (command !== null) {
+          const first = command.trimStart().split(/\r?\n/)[0] ?? "";
+          const more = command.trim().includes("\n");
+          return cap(more ? `${first} …` : first);
+        }
+        break;
+      }
+      case "str_replace_editor": {
+        // `<command> <path>` (+ the range for a ranged view) — the bridge
+        // picks Reading/Writing from the leading word, so the shape is
+        // load-bearing (workflowLabel in backend-bridge.ts).
+        const command = str(obj.command);
+        const path = str(obj.path);
+        if (command === null || path === null) break;
+        const range = Array.isArray(obj.view_range)
+          ? obj.view_range.filter((n): n is number => typeof n === "number")
+          : [];
+        return cap(
+          command === "view" && range.length === 2
+            ? `${command} ${path}:${range[0]}-${range[1]}`
+            : `${command} ${path}`,
+        );
       }
       case "command_output": {
         // "Reading bg-1 output" (2026-08-17): both background follow-ups used

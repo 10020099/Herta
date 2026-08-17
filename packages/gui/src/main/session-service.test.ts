@@ -223,6 +223,37 @@ describe("buildConfig", () => {
     expect(cfg.providers.backendModel).toBe("deepseek-v4-pro"); // off-enum → default
   });
 
+  it("backendContract (ADR 0040): default standard; setting honored; env beats setting; off-enum ignored", async () => {
+    vi.stubEnv("HERTA_BACKEND_CONTRACT", undefined);
+    const cwd = mkdtempSync(join(tmpdir(), "herta-bc-contract-"));
+    const home = mkdtempSync(join(tmpdir(), "herta-bc-contracth-"));
+    expect((await buildConfig(cwd, home, "sk")).backendContract).toBe(
+      "standard",
+    );
+    mkdirSync(join(cwd, ".herta"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".herta", "settings.json"),
+      JSON.stringify({ backend: { thinking: "high", contract: "minimal" } }),
+      "utf-8",
+    );
+    expect((await buildConfig(cwd, home, "sk")).backendContract).toBe(
+      "minimal",
+    );
+    vi.stubEnv("HERTA_BACKEND_CONTRACT", "standard");
+    expect((await buildConfig(cwd, home, "sk")).backendContract).toBe(
+      "standard",
+    );
+    vi.stubEnv("HERTA_BACKEND_CONTRACT", undefined);
+    writeFileSync(
+      join(cwd, ".herta", "settings.json"),
+      JSON.stringify({ backend: { contract: "极简" } }),
+      "utf-8",
+    );
+    expect((await buildConfig(cwd, home, "sk")).backendContract).toBe(
+      "standard",
+    );
+  });
+
   it("falls back to 'high' for an off-enum hand-edited thinking value", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "herta-bc-think2-"));
     const home = mkdtempSync(join(tmpdir(), "herta-bc-think2h-"));

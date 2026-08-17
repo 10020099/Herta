@@ -18,6 +18,7 @@ import {
   type AgentEvent,
   type ApprovalOverlayState,
   BackendContextBuilder,
+  type BackendContract,
   CodingAgentRuntime,
   defaultWorkspaceFor,
   dreamDirFor,
@@ -70,10 +71,15 @@ import {
   deepseekProvider,
 } from "@herta/providers";
 import {
+  createMinimalTools,
   createMvpTools,
+  findBash,
+  PersistentShell,
   registerEditFileRule,
+  registerMinimalRules,
   registerRunCommandRule,
   registerWriteNewFileRule,
+  shellWorkspaceHint,
 } from "@herta/tools";
 import {
   attachmentDirFor,
@@ -1581,12 +1587,47 @@ export class SessionImpl implements Session {
     });
     const permissions = new RulePermissionEngine({ ask: overlayResolver });
 
-    // 5. Tool registry (backend MVP set).
+    // 5. Tool registry — the contract the setting asks for (ADR 0040).
+    //    `minimal` needs a bash on this machine; without one the session runs
+    //    `standard`. The Settings row shows the detection result (the GUI's
+    //    getBackendContract reports `bashFound`), so the fallback is visible
+    //    where the choice is made rather than as a record note.
+    const wantMinimal = config.backendContract === "minimal";
+    const bashPath = wantMinimal ? findBash() : null;
+    const contract: BackendContract =
+      wantMinimal && bashPath !== null ? "minimal" : "standard";
+    if (wantMinimal && bashPath === null) {
+      console.warn(
+        "[herta] backendContract=minimal requested but no bash found (install Git for Windows or set HERTA_BASH); running the standard contract",
+      );
+    }
     const backendTools = new InMemoryToolRegistry();
-    for (const t of createMvpTools()) backendTools.register(t);
+    // The shell's own spelling of the workspace, read fresh per schema /
+    // prompt build so a mid-session setWorkspace is reflected.
+    const workspaceShellPath = (): string =>
+      bashPath === null
+        ? wsHolder.current
+        : new PersistentShell({ bashPath, workspaceRoot: wsHolder.current })
+            .workspaceShellPath;
+    if (contract === "minimal") {
+      for (const t of createMinimalTools({
+        bashPath: bashPath as string,
+        workspaceShellPath,
+      }))
+        backendTools.register(t);
+    } else {
+      for (const t of createMvpTools()) backendTools.register(t);
+    }
 
     // 6. Backend context builder.
-    const backendBuilder = new BackendContextBuilder({ tools: backendTools });
+    const backendBuilder = new BackendContextBuilder({
+      tools: backendTools,
+      contract,
+      workspaceHint: () =>
+        contract === "minimal"
+          ? shellWorkspaceHint(bashPath, wsHolder.current, lang)
+          : undefined,
+    });
 
     // 7. Shared event bus.
     const bus = new InMemoryEventBus<AgentEvent>();
@@ -1607,9 +1648,13 @@ export class SessionImpl implements Session {
     const projector = new SessionEventProjector({ bus, queueCapacity: 1000 });
 
     // 8. Permission rules (attach to the shared engine).
-    registerEditFileRule(permissions, { bus });
-    registerWriteNewFileRule(permissions, { bus });
-    registerRunCommandRule(permissions);
+    if (contract === "minimal") {
+      registerMinimalRules(permissions, { bus, bashPath });
+    } else {
+      registerEditFileRule(permissions, { bus });
+      registerWriteNewFileRule(permissions, { bus });
+      registerRunCommandRule(permissions);
+    }
 
     // 9. CodingAgentRuntime factory (per-invocation, per ADR 0007).
     const runtimeFactory = (): CodingAgentRuntime =>

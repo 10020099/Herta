@@ -34,6 +34,20 @@ const MUTATING_TOOLS: ReadonlySet<string> = new Set([
   "run_command",
   "command_stop",
   "memory_save",
+  // Minimal contract (ADR 0040): `bash` counts like run_command (exit 0
+  // only, see below); the editor counts only for its writing commands —
+  // a `view` is a read and proves nothing (the result data says which).
+  "bash",
+  "str_replace_editor",
+]);
+
+/** The two shell-shaped tools whose result data is RunCommandData. */
+const COMMAND_TOOLS: ReadonlySet<string> = new Set(["run_command", "bash"]);
+/** The three file-writing tools whose result data carries relPath + diff. */
+const WRITING_TOOLS: ReadonlySet<string> = new Set([
+  "edit_file",
+  "write_new_file",
+  "str_replace_editor",
 ]);
 
 export interface CodingAgentRuntimeDeps {
@@ -204,14 +218,19 @@ export class CodingAgentRuntime {
             // background start (exitCode null) proves nothing about the
             // task, only about the shell.
             if (event.result.ok && MUTATING_TOOLS.has(event.tool)) {
-              const exit =
-                event.tool === "run_command"
-                  ? (event.result.data as unknown as RunCommandData | undefined)
-                      ?.exitCode
+              const exit = COMMAND_TOOLS.has(event.tool)
+                ? (event.result.data as unknown as RunCommandData | undefined)
+                    ?.exitCode
+                : event.tool === "str_replace_editor"
+                  ? // Only a WRITE argues for completion; `view` is a read.
+                    (event.result.data as unknown as { wrote?: unknown })
+                      ?.wrote === true
+                    ? 0
+                    : undefined
                   : 0;
               if (exit === 0) okEvidence += 1;
             }
-            if (event.tool === "run_command" && event.result.ok) {
+            if (COMMAND_TOOLS.has(event.tool) && event.result.ok) {
               const data = event.result.data as unknown as
                 | WithTestRun
                 | undefined;
@@ -219,12 +238,9 @@ export class CodingAgentRuntime {
                 builder.addTest(data.testRun);
               }
             }
-            if (
-              (event.tool === "edit_file" || event.tool === "write_new_file") &&
-              event.result.ok
-            ) {
+            if (WRITING_TOOLS.has(event.tool) && event.result.ok) {
               const data = event.result.data as unknown as
-                | { relPath?: unknown; diff?: unknown }
+                | { relPath?: unknown; diff?: unknown; created?: unknown }
                 | undefined;
               const path =
                 typeof data?.relPath === "string" ? data.relPath : undefined;
@@ -232,7 +248,9 @@ export class CodingAgentRuntime {
                 changedByPath.set(path, {
                   path,
                   kind:
-                    event.tool === "write_new_file" ? "created" : "modified",
+                    event.tool === "write_new_file" || data?.created === true
+                      ? "created"
+                      : "modified",
                   diffSummary:
                     typeof data?.diff === "string"
                       ? summarizeDiff(data.diff)

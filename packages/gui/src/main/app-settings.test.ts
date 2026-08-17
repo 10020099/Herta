@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  isBackendContract,
   isBackendThinking,
   isModelChoice,
   readAppSettings,
@@ -62,6 +63,21 @@ describe("app-settings", () => {
       "utf-8",
     );
     expect(await readAppSettings(ws)).toEqual({});
+  });
+
+  it("backend.contract round-trips beside thinking; isBackendContract accepts exactly the two names (ADR 0040)", async () => {
+    const ws = mk();
+    await writeAppSettings(ws, {
+      backend: { thinking: "max", contract: "minimal" },
+    });
+    expect(await readAppSettings(ws)).toEqual({
+      backend: { thinking: "max", contract: "minimal" },
+    });
+    expect(isBackendContract("standard")).toBe(true);
+    expect(isBackendContract("minimal")).toBe(true);
+    expect(isBackendContract("极简")).toBe(false);
+    expect(isBackendContract("")).toBe(false);
+    expect(isBackendContract(undefined)).toBe(false);
   });
 
   it("isBackendThinking accepts the three tiers and rejects everything else", () => {

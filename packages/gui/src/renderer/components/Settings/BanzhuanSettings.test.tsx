@@ -89,7 +89,8 @@ describe("BanzhuanSettings", () => {
       // No appearing note — it re-flowed the pane height (owner 2026-08-03);
       // "Applies on the next launch" lives in the row description instead.
       expect(queryByText("Restart to apply.")).toBeNull();
-      expect(queryByText(/next launch/)).toBeTruthy();
+      // (both the thinking and the tool-contract descriptions carry it)
+      expect(screen.queryAllByText(/next launch/).length).toBeGreaterThan(0);
     });
 
     it("the row sits ABOVE the demo card so the Select menu opens into the demo's space", async () => {
@@ -130,6 +131,66 @@ describe("BanzhuanSettings", () => {
         </HertaBridgeProvider>,
       );
       expect(screen.queryByLabelText("Thinking effort")).toBeNull();
+    });
+  });
+
+  describe("tool-contract row (ADR 0040)", () => {
+    it("loads the persisted contract; a pick persists {thinking, contract} together", async () => {
+      const mock = createMockHertaBridge({
+        getBackendConfigResult: {
+          thinking: "low",
+          contract: "minimal",
+          bashFound: true,
+        },
+      });
+      const { queryByText } = renderPane(mock);
+      // The row appears once the config (with `contract`) has loaded.
+      const trigger = await screen.findByLabelText("Tool contract");
+      await waitFor(() => expect(trigger.textContent).toContain("Minimal"));
+      // bash present → no fallback sentence
+      expect(queryByText(/No bash was found/)).toBeNull();
+      fireEvent.click(trigger);
+      fireEvent.click(screen.getByRole("option", { name: "Standard" }));
+      expect(mock.calls.setBackendConfig).toEqual([
+        { thinking: "low", contract: "standard" },
+      ]);
+    });
+
+    it("says so in the description when no bash was found (Minimal would run as Standard)", async () => {
+      const mock = createMockHertaBridge({
+        getBackendConfigResult: {
+          thinking: "high",
+          contract: "standard",
+          bashFound: false,
+        },
+      });
+      const { queryByText } = renderPane(mock);
+      await waitFor(() =>
+        expect(queryByText(/No bash was found on this machine/)).toBeTruthy(),
+      );
+    });
+
+    it("hides the row when the bridge's config carries no contract (older bridge / website demo)", async () => {
+      const mock = createMockHertaBridge({
+        getBackendConfigResult: { thinking: "high" },
+      });
+      renderPane(mock);
+      const thinking = screen.getByLabelText("Thinking effort");
+      await waitFor(() => expect(thinking.textContent).toContain("High"));
+      expect(screen.queryByLabelText("Tool contract")).toBeNull();
+    });
+
+    it("a failed write snaps back and surfaces the error", async () => {
+      const mock = createMockHertaBridge({ failSetBackendConfig: true });
+      const { queryByText } = renderPane(mock);
+      const trigger = await screen.findByLabelText("Tool contract");
+      await waitFor(() => expect(trigger.textContent).toContain("Standard"));
+      fireEvent.click(trigger);
+      fireEvent.click(screen.getByRole("option", { name: "Minimal" }));
+      await waitFor(() =>
+        expect(queryByText("Couldn't save — try again.")).toBeTruthy(),
+      );
+      expect(trigger.textContent).toContain("Standard");
     });
   });
 

@@ -87,6 +87,36 @@ describe("translate", () => {
     ]);
   });
 
+  it("sends modelText verbatim when a tool authored it (ADR 0040) — summary/data stay harness-only", () => {
+    const frame: PromptFrame = {
+      stableSystem: "",
+      repoInstructions: "",
+      memoryContext: "",
+      retrievedLore: "",
+      messages: [
+        {
+          role: "tool",
+          toolCallId: "call_1",
+          result: {
+            ok: true,
+            data: { exitCode: 1, stdout: "x" },
+            summary: "ran `npm test` (exit 1)",
+            modelText: "TAP version 13\nnot ok 1 - a\n[exit code: 1]",
+          },
+          ts: "t",
+        },
+      ],
+      toolSchemas: [],
+      trace: EMPTY_PROMPT_TRACE,
+    };
+    const body = translate(frame, baseOpts);
+    expect(body.messages[0]).toEqual({
+      role: "tool",
+      tool_call_id: "call_1",
+      content: "TAP version 13\nnot ok 1 - a\n[exit code: 1]",
+    });
+  });
+
   it("uses JSON-stringified data when summary is empty", () => {
     const frame: PromptFrame = {
       stableSystem: "",

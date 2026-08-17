@@ -21,7 +21,16 @@ export type RuleVerdict =
       diff?: string;
       files?: readonly string[];
     }
-  | { kind: "deny"; reason: string; code?: string };
+  | {
+      kind: "deny";
+      reason: string;
+      code?: string;
+      /** Model-facing text for the refusal (ADR 0040): the minimal
+       *  contract's rules answer in the trained shape's own strings, which
+       *  the loop sends verbatim instead of `failed: <code>` + JSON. Absent
+       *  → the loop's default rendering (unchanged for every other rule). */
+      modelText?: string;
+    };
 
 export type PermissionRule = (
   call: ToolCallRequest,
@@ -42,7 +51,7 @@ export type PermissionDecision =
       request: PermissionRequest;
       decision: Promise<"allow" | "deny">;
     }
-  | { kind: "deny"; reason: string; code?: string };
+  | { kind: "deny"; reason: string; code?: string; modelText?: string };
 
 export interface PermissionEngine {
   check(call: ToolCallRequest, ctx: ToolContext): Promise<PermissionDecision>;
@@ -87,7 +96,14 @@ export class RulePermissionEngine implements PermissionEngine {
 
     if (verdict.kind === "allow") return { kind: "allow" };
     if (verdict.kind === "deny") {
-      return { kind: "deny", reason: verdict.reason, code: verdict.code };
+      return {
+        kind: "deny",
+        reason: verdict.reason,
+        code: verdict.code,
+        ...(verdict.modelText !== undefined
+          ? { modelText: verdict.modelText }
+          : {}),
+      };
     }
 
     const id = randomUUID();

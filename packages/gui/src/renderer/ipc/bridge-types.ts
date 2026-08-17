@@ -98,9 +98,18 @@ export interface DreamConfig {
  *  its announced early-August-2026 update, so "low" is safe to persist now. */
 export type BackendThinking = "low" | "high" | "max";
 
-/** The user-facing backend config (Settings → Coprocessor). v1 = one tier. */
+/** 板砖's model-facing tool contract (ADR 0040, 2026-08-17). */
+export type BackendContractChoice = "standard" | "minimal";
+
+/** The user-facing backend config (Settings → Coprocessor): the reasoning
+ *  tier, and (ADR 0040) the tool contract. `contract` is optional so an older
+ *  bridge that only knows the tier (the website demo) still type-checks; the
+ *  row hides when it is absent. `bashFound` is read-side information from
+ *  main — whether the minimal contract can actually run on this machine. */
 export interface BackendConfig {
   readonly thinking: BackendThinking;
+  readonly contract?: BackendContractChoice;
+  readonly bashFound?: boolean;
 }
 
 /** The two DeepSeek models a stage can run on (2026-08-17). Exactly the names

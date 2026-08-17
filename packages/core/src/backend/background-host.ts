@@ -14,6 +14,14 @@ export interface BackgroundProcess {
   /** Kill the whole process tree; resolves when the process has closed
    *  (or a bounded grace period elapsed). Idempotent. */
   kill(): Promise<void>;
+  /**
+   * Harness-owned, not model-started (ADR 0040): the minimal contract's
+   * persistent shell registers here so it dies with the brief like any
+   * background process, but its reaping is routine — it is not "a command
+   * the model left running" and must not surface as a residual risk or in
+   * `command_output`/`command_stop` listings.
+   */
+  readonly internal?: boolean;
 }
 
 export class BackgroundHost {
@@ -32,18 +40,29 @@ export class BackgroundHost {
     this.entries.set(p.id, p);
   }
 
+  /** Model-visible lookup (internal harness processes are not addressable). */
   get(id: string): BackgroundProcess | undefined {
+    const p = this.entries.get(id);
+    return p === undefined || p.internal === true ? undefined : p;
+  }
+
+  /** Harness-side lookup incl. internal entries (the tool that owns a
+   *  persistent shell finds it again on the next call this way). */
+  getInternal(id: string): BackgroundProcess | undefined {
     return this.entries.get(id);
   }
 
+  /** Model-visible entries (internal harness processes excluded). */
   list(): readonly BackgroundProcess[] {
-    return [...this.entries.values()];
+    return [...this.entries.values()].filter((p) => p.internal !== true);
   }
 
-  /** Kill every still-running process; returns how many were killed. */
+  /** Kill every still-running process (internal ones too); returns how
+   *  many MODEL-STARTED processes were killed — the number the report
+   *  surfaces as "still running at brief end". */
   async stopAll(): Promise<number> {
-    const running = this.list().filter((p) => p.isRunning());
+    const running = [...this.entries.values()].filter((p) => p.isRunning());
     await Promise.allSettled(running.map((p) => p.kill()));
-    return running.length;
+    return running.filter((p) => p.internal !== true).length;
   }
 }

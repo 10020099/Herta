@@ -74,7 +74,18 @@ function cutAtChar(text: string, max: number): string {
  * paraphrase as the only path. `tool-results/` stays excluded: it is
  * written verbatim, so quoting it would surface unredacted bytes.
  */
-export function showExcerptTool(): HertaTool {
+export interface ShowExcerptToolOpts {
+  /**
+   * Translate the model's path spelling before path safety (ADR 0040): under
+   * the minimal contract the model copies what its shell printed
+   * (`/e/repo/src/x`, `/tmp/…` on MSYS), which the native resolver would
+   * read as root-relative on the current drive. Absent = identity.
+   */
+  mapPath?: (p: string) => string;
+}
+
+export function showExcerptTool(opts: ShowExcerptToolOpts = {}): HertaTool {
+  const mapPath = opts.mapPath ?? ((p: string) => p);
   return {
     name: "show_excerpt",
     readOnly: true,
@@ -117,7 +128,7 @@ export function showExcerptTool(): HertaTool {
       // over, or a shell receipt they asked to hear verbatim, that Herta
       // could read and never quote back would answer half the request
       // (ADR 0033 / ADR 0036).
-      const safe = await resolveSafePath(ctx.workspaceRoot, path, {
+      const safe = await resolveSafePath(ctx.workspaceRoot, mapPath(path), {
         allowAttachmentPaths: true,
         allowEvidenceExcerptPaths: true,
       });

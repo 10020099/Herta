@@ -151,6 +151,13 @@ export const en = {
   "banzhuan.thinking.low": "Low",
   "banzhuan.thinking.high": "High",
   "banzhuan.thinking.max": "Max",
+  "banzhuan.contract": "Tool contract",
+  "banzhuan.contractDesc":
+    "The tool shape Brick works with. Standard: a set of dedicated tools; Minimal: one bash plus one editor, roughly half the cost, needs a bash on this machine (Git for Windows ships one). Applies on the next launch.",
+  "banzhuan.contract.noBash":
+    "No bash was found on this machine; Minimal will run as Standard.",
+  "banzhuan.contract.standard": "Standard",
+  "banzhuan.contract.minimal": "Minimal",
   "approval.title": "Permission request",
   "approval.allow": "Allow",
   "approval.alwaysAllow": "Allow for this task",

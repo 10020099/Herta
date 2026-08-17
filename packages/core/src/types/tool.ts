@@ -30,6 +30,18 @@ export interface ToolResult<O = unknown> {
   error?: { code: string; message: string; retryable: boolean };
   suggestion?: string;
   summary: string;
+  /**
+   * When set, the MODEL sees exactly this text as the tool message — not
+   * `summary` + JSON(`data`). `summary`/`data`/`error` remain the harness
+   * surfaces (record projection, report absorber, evidence). Introduced
+   * for the minimal contract (ADR 0040): `bash` and `str_replace_editor`
+   * are trained-shape tools whose model-facing output is plain text
+   * (command output, `cat -n` views, the classic error strings), while the
+   * harness still needs structured exit codes / diffs for the record.
+   * Bounded by the tool (≤ 16K chars); the oversized-result persistence
+   * keys off `data`, so a tool that sets this keeps `data` small.
+   */
+  modelText?: string;
 }
 
 export interface ToolSchema {

@@ -333,8 +333,57 @@ export function serializeUserHistory(
   return lines.join("\n").trimEnd();
 }
 
+/**
+ * Which model-facing tool contract the backend runs (ADR 0040).
+ *   standard — the 15-tool set (`createMvpTools`) + BACKEND_EXECUTION_CONTRACT.
+ *   minimal  — the trained shape: persistent `bash` + `str_replace_editor`
+ *              (+ report_finding / show_excerpt as the record channels) and
+ *              the short 板砖 prompt below.
+ */
+export type BackendContract = "standard" | "minimal";
+
+/**
+ * The minimal contract's whole system contract (ADR 0040) — deliberately a
+ * few sentences: who 板砖 is, who hands it work and how (the `@板砖`
+ * trigger), what it produces, and where it works. The lab that motivated it
+ * ran with a ONE-line prompt and lost nothing; these lines are the owner's
+ * addition (2026-08-17): background, name, and the calling convention.
+ * D6 still holds — no speaking to the user, no playing Herta.
+ */
+export function minimalBackendContract(
+  lang: "zh" | "en",
+  workspaceHint?: string,
+): string {
+  const zh = [
+    "你是板砖，黑塔的差分协处理器——负责实际动手的软件工程师助手。",
+    "开拓者（用户）在和黑塔对话；凡是要读文件、改代码、跑命令的活，开拓者或黑塔会在话里写 @板砖 派给你，你收到的任务就是开拓者的原话。",
+    "你不和开拓者说话，也不扮演黑塔。你的产出是仓库里的改动和命令的结果；分析得出的结论要用 report_finding 逐条记下（附 path:line 出处），要给人看某几行时用 show_excerpt——你最后一条消息里的文字没有人会看到。",
+    ...(workspaceHint !== undefined && workspaceHint.length > 0
+      ? [`工作区：${workspaceHint}。`]
+      : []),
+  ];
+  const en = [
+    "You are Brick (板砖), Herta's differential coprocessor — the software engineer assistant that does the hands-on work.",
+    "The user is talking with Herta; whenever a task means reading files, changing code or running commands, the user or Herta hands it to you by writing @Brick (or @板砖) in the conversation, and what you receive is the user's own words.",
+    "You do not speak to the user and you do not play Herta. Your output is the changes in the repository and the results of the commands you run; record analytical conclusions one by one with report_finding (cite path:line), and use show_excerpt when someone needs to see specific lines — the text of your final message is seen by no one.",
+    ...(workspaceHint !== undefined && workspaceHint.length > 0
+      ? [`Workspace: ${workspaceHint}.`]
+      : []),
+  ];
+  return (lang === "en" ? en : zh).join("\n");
+}
+
 export interface BackendContextBuilderDeps {
   tools: ToolRegistry;
+  /** Defaults to "standard". */
+  contract?: BackendContract;
+  /**
+   * How the shell spells the workspace, for the minimal contract's last
+   * line — a GETTER because a session's workspace can change between
+   * dispatches (`setWorkspace`) while the builder lives on. Undefined /
+   * "" → the line is omitted.
+   */
+  workspaceHint?: () => string | undefined;
 }
 
 export interface BackendBuildInput {
@@ -374,9 +423,18 @@ export interface BackendBuildInput {
  */
 export class BackendContextBuilder {
   private readonly tools: ToolRegistry;
+  private readonly contractKind: BackendContract;
+  private readonly workspaceHint: (() => string | undefined) | undefined;
 
   constructor(deps: BackendContextBuilderDeps) {
     this.tools = deps.tools;
+    this.contractKind = deps.contract ?? "standard";
+    this.workspaceHint = deps.workspaceHint;
+  }
+
+  /** Which contract this builder emits (ADR 0040). */
+  get contract(): BackendContract {
+    return this.contractKind;
   }
 
   build(input: BackendBuildInput): BackendPromptFrame {
@@ -387,9 +445,11 @@ export class BackendContextBuilder {
       input.omittedUserMessages ?? 0,
     );
     const contract =
-      lang === "en"
-        ? BACKEND_EXECUTION_CONTRACT_EN
-        : BACKEND_EXECUTION_CONTRACT;
+      this.contractKind === "minimal"
+        ? minimalBackendContract(lang, this.workspaceHint?.())
+        : lang === "en"
+          ? BACKEND_EXECUTION_CONTRACT_EN
+          : BACKEND_EXECUTION_CONTRACT;
     const workingHeader =
       lang === "en" ? WORKING_HISTORY_HEADER_EN : WORKING_HISTORY_HEADER;
     const recentHeader =
