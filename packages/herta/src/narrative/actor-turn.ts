@@ -987,8 +987,10 @@ export async function runActorCompletionTurn(
       /**
        * Run the focused trigger judge over a candidate that carries a
        * dispatch-effective `@板砖`, and neutralize the token (`@板砖` →
-       * `板砖`) when it says this is not a dispatch. Returns the text to
-       * commit plus any reason to record.
+       * quoted `` `@板砖` ``, visible but inert — 2026-08-17; the stripped
+       * `板砖` form only as the malformed-backtick fallback) when it says
+       * this is not a dispatch. Returns the text to commit plus any reason
+       * to record.
        *
        * Shared by BOTH passes. It was the re-pass's alone until a live miss
        * showed why the first pass needs it too (user 2026-07-29): Herta
@@ -1711,8 +1713,8 @@ export async function runActorCompletionTurn(
         // the live deltas as the re-speak generated; emit the floor here only if
         // a strict-extension retry never diverged during streaming, then drain
         // the held tail at base cadence. The commit settles the bubble to
-        // retryReplayText (so a trigger-neutralized @板砖 → 板砖 is corrected here
-        // — the accepted one-char flicker). Non-live / empty-recovery path: emit
+        // retryReplayText (so a trigger-neutralized @板砖 → `@板砖` is corrected
+        // here — the accepted two-tick flicker). Non-live / empty-recovery path: emit
         // the floor on the final text and replay it paced, as before.
         const retryReplayText = streamResult.text.trim();
         if (retryLive !== undefined && retryReplayText.length > 0) {
@@ -1891,8 +1893,8 @@ export async function runActorCompletionTurn(
     // speech will NOT dispatch — committing it live would leave a
     // dispatch-looking token in the record and the GUI chip for a run that
     // never happened, eroding the literal-token contract the discipline
-    // spec teaches. Neutralize at commit (same `@板砖 → 板砖` mechanism and
-    // accepted one-char settle as the recheck path). Within the budget the
+    // spec teaches. Neutralize at commit (same quoted-`@板砖` mechanism as
+    // the recheck path). Within the budget the
     // token stays live and the dispatch branch below fires — a synthesis
     // speech may legitimately chain a follow-up run.
     // sanitizeActorText BEFORE the trigger checks: the strip half can

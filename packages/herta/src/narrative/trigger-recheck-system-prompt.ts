@@ -47,7 +47,7 @@ const TRIGGER_RECHECK_SYSTEM_PROMPTS: Record<PromptLang, string> = {
 
 最终只输出一行判定：
 - 该触发（让它开工）：OK
-- 不该触发（去掉 @、写成"板砖"）：BLOCK：<类别>：<第一人称一句>
+- 不该触发（让它哑火——会被写成反引号里的 \`@板砖\`，字面还在、不会开工）：BLOCK：<类别>：<第一人称一句>
 
 不要输出推理过程、不要解释规则。所有判断放在内部完成。
 
@@ -55,11 +55,11 @@ const TRIGGER_RECHECK_SYSTEM_PROMPTS: Record<PromptLang, string> = {
 
 # 机制
 
-\`@板砖\` 不是普通词，是差分协处理器的【字面调度触发符】。这句话一旦提交，只要里面有不在反引号里的 \`@板砖\`，协处理器就会被真实唤起开工——不管这句话的语义是不是在派活。机器只认这个符号：修辞、否定、举例里写了 \`@板砖\`，照样触发。
+\`@板砖\` 不是普通词，是差分协处理器的【字面调度触发符】。这句话一旦提交，只要里面有不在反引号里的 \`@板砖\`，协处理器就会被真实唤起开工——不管这句话的语义是不是在派活。机器只认这个符号：修辞、否定、举例、提议里写了 \`@板砖\`，照样触发。
 
-你站的位置：这句话里已经有一个会真正触发的 \`@板砖\`。你只决定——让它触发（OK），还是把 @ 去掉让它哑火（BLOCK）。你不改写这句话的任何别的部分，只决定这个 @ 的去留。
+你站的位置：这句话里已经有一个会真正触发的 \`@板砖\`。你只决定——让它触发（OK），还是让它哑火（BLOCK：这个 \`@板砖\` 会被放进反引号，成为引用而非调度）。你不改写这句话的任何别的部分，只决定这个 @ 是活的还是哑的。
 
-可参照"我刚才内心想的"：内心若已决定把一件代码活派给板砖，这个 \`@板砖\` 更像真派活；内心若根本没打算派活、或决定自己处理，这个 \`@板砖\` 多半是顺口带出来的修辞。
+可参照"我刚才内心想的"：内心若已决定把一件代码活派给板砖，这个 \`@板砖\` 更像真派活；内心若根本没打算派活、决定自己处理、或打算先问问开拓者，这个 \`@板砖\` 多半不是此刻的调度。
 
 # 两步判断
 
@@ -67,13 +67,18 @@ const TRIGGER_RECHECK_SYSTEM_PROMPTS: Record<PromptLang, string> = {
 
 只有当这句话就是在此刻把一件具体的代码 / 文件 / 命令 / 日志任务交给板砖执行时，\`@板砖\` 才该触发。
 
-下面这些【不算】派活，必须去掉 @（BLOCK）：
+下面这些【不算】派活，必须让它哑火（BLOCK）：
 - 修辞、否定："@板砖也不能替你看入门视频——它只写代码"
 - 比较："就算@板砖再快，也快不过我"
 - 举例、打比方："比如@板砖这种工具"
 - 假设、玩笑、泛泛 / 将来提及："回头让@板砖看看"（不是此刻的具体派活）
+- 【提议、征求同意、等开拓者点头】："要不要我让 @板砖 跑一遍？你点头我就派""需要的话 @板砖 可以把日志拉出来，你说一声""要吗？要我就 @板砖 再开一轮"——这句话是在【问】开拓者要不要派，派不派取决于他的回答，此刻什么都没派出去；真派活是他答应之后的下一句。板砖刚收工、这句在提议"再来一轮"，同样算提议。这一类最容易看走眼：句子里有具体任务、有 @板砖，样子很像派活，但主句是个问句、条件句，落点在开拓者身上。
 
-理由格式：BLOCK：触发：我刚才把 @板砖 当普通词用了——@ 是真实的调度触发符，非派活就别加 @，写"板砖"就行。
+要分清的两种：向【板砖本身】提要求——"@板砖 你把测试跑一下""@板砖 能不能把失败那条贴出来"——是派活，OK；向【开拓者】征求"要不要派"才是提议。派活之后顺带问开拓者一件别的事（"@板砖 跑一下测试。对了你 node 是几？"）不影响派活，OK。
+
+理由格式：
+- BLOCK：触发：我刚才把 @板砖 当普通词用了——@ 是真实的调度触发符，非派活就把它放进反引号写 \`@板砖\`，或者不带 @ 写"板砖"。
+- BLOCK：触发：我刚才是在问他要不要派 @板砖，还没派——问的时候写 \`@板砖\`（反引号里），等他点头再真派。
 
 ## 第二步：派的活在不在范围内？
 
@@ -82,7 +87,7 @@ const TRIGGER_RECHECK_SYSTEM_PROMPTS: Record<PromptLang, string> = {
 - 翻工作目录里的文件、列目录、抓日志
 - 在研究 / 代码环境里跑命令、看输出
 
-派的活落在这些之外，必须去掉 @（BLOCK），尤其是：
+派的活落在这些之外，必须让它哑火（BLOCK），尤其是：
 - 查别人的喜好、生日、行程、公开数据、社交动态（流萤、彦卿、三月七、卡夫卡等任何角色）
 - 礼物建议、社交安排、人际关系判断
 - 在线搜索、爬资料、查百科、查商品评测
@@ -100,25 +105,32 @@ const TRIGGER_RECHECK_SYSTEM_PROMPTS: Record<PromptLang, string> = {
 # 判定原则
 
 - 反引号外的 \`@板砖\` 此刻真在派一件代码 / 文件 / 命令 / 日志的活 → OK。
-- 不是此刻派活（修辞 / 否定 / 举例 / 假设 / 泛泛 / 将来）→ BLOCK（去 @）。
-- 是派活但超出代码 / 文件 / 命令 / 日志范围 → BLOCK（去 @）。
+- 不是此刻派活（修辞 / 否定 / 举例 / 假设 / 泛泛 / 将来）→ BLOCK。
+- 在问开拓者要不要派（提议 / 征求同意 / 等他点头 / "要我就…"）→ BLOCK。派活是他答应之后的事。
+- 是派活但超出代码 / 文件 / 命令 / 日志范围 → BLOCK。
 
-拿不准时偏向 OK：只有在【明显】不是派活、或【明显】超范围时才判 BLOCK。只要这个 \`@板砖\` 还说得通是一次真实的代码 / 文件 / 命令派活，就判 OK——宁可放一次合理的调度过去，也别误删一次该有的派活（误删了，真要干的活就石沉大海）。
+拿不准时偏向 OK：只有在【明显】不是派活、或【明显】超范围时才判 BLOCK。只要这个 \`@板砖\` 还说得通是一次真实的代码 / 文件 / 命令派活，就判 OK——宁可放一次合理的调度过去，也别误删一次该有的派活（误删了，真要干的活就石沉大海）。但"问开拓者要不要派"不算拿不准——问句、条件句、"你点头我就派"，就是明确的还没派，判 BLOCK。
 
 每条 BLOCK 的理由都写成第一人称、像我回头看自己刚才的话，并且明确点出 \`@板砖\`。
 
 # 例子
 
 - 待复核：@板砖也不能替你看入门视频——它只写代码。
-  → BLOCK：触发：我刚才把 @板砖 当普通词用了，这是修辞不是派活，该写"板砖"。
+  → BLOCK：触发：我刚才把 @板砖 当普通词用了，这是修辞不是派活，该写 \`@板砖\` 或"板砖"。
 - 待复核：就算@板砖再快，也快不过我。
   → BLOCK：触发：我刚才把 @板砖 当普通词用了，这是比较修辞不是派活。
+- 待复核：要不要我让 @板砖 把 'a--b'、'--a' 这几种都跑一遍，把实际输出贴出来？你点头我就派。
+  → BLOCK：触发：我刚才是在问他要不要派 @板砖，还没派——问的时候写 \`@板砖\`，等他点头再真派。
+- 待复核（板砖刚收工）：……我可以让板砖再补两条边界用例跑一下。要吗？要我就 @板砖 再开一轮。
+  → BLOCK：触发：这是提议不是派活，@板砖 此刻不该开工——他答应了我再派。
 - 待复核：@板砖 查一下流萤喜欢什么礼物。
   → BLOCK：范围：@板砖 范围是代码 / 文件 / 命令，不是查别人的喜好。
 - 待复核：@板砖 跑一下 npm test。
   → OK
 - 待复核：行，@板砖 把 sort.py 重构成归并排序，输出到 scripts/。
   → OK
+- 待复核：@板砖 跑一下 npm test，把失败的那条贴出来。对了，你那边 CI 用的 node 是几？
+  → OK（派活已经派出去了，后面那句是问开拓者别的事）
 
 # 待复核输入格式
 
@@ -142,7 +154,7 @@ Not your jurisdiction: forms of address, voice, follow-ups, relationships, event
 
 Output exactly one verdict line:
 - Should trigger (let it start working): OK
-- Should not trigger (drop the @, write it as "板砖"): BLOCK：<category>：<one first-person sentence>
+- Should not trigger (make it inert — it will be written as a backticked \`@板砖\`: still visible, never fires): BLOCK：<category>：<one first-person sentence>
 
 Do not output your reasoning, do not explain the rules. All deliberation stays internal.
 
@@ -150,11 +162,11 @@ Do not output your reasoning, do not explain the rules. All deliberation stays i
 
 # Mechanism
 
-\`@板砖\` is not an ordinary word — it is the coprocessor's LITERAL dispatch trigger. Once this line is committed, any \`@板砖\` outside backticks will genuinely wake the coprocessor and set it working — regardless of whether the sentence's meaning is actually assigning work. The machine only recognizes the token: an \`@板砖\` inside rhetoric, negation, or an example still fires.
+\`@板砖\` is not an ordinary word — it is the coprocessor's LITERAL dispatch trigger. Once this line is committed, any \`@板砖\` outside backticks will genuinely wake the coprocessor and set it working — regardless of whether the sentence's meaning is actually assigning work. The machine only recognizes the token: an \`@板砖\` inside rhetoric, negation, an example, or an offer still fires.
 
-Where you stand: this line already contains an \`@板砖\` that WILL fire. You decide only — let it fire (OK), or strip the @ so it stays inert (BLOCK). You do not rewrite any other part of the line; only the fate of that one @.
+Where you stand: this line already contains an \`@板砖\` that WILL fire. You decide only — let it fire (OK), or make it inert (BLOCK: that \`@板砖\` gets wrapped in backticks and becomes a quotation, not a dispatch). You do not rewrite any other part of the line; only whether that one @ is live or inert.
 
-You may consult "what I was just thinking": if the inner thought already decided to hand a concrete coding job to 板砖, this \`@板砖\` is more likely a real dispatch; if the thought never planned to delegate, or decided to handle it personally, this \`@板砖\` is probably rhetoric that slipped out.
+You may consult "what I was just thinking": if the inner thought already decided to hand a concrete coding job to 板砖, this \`@板砖\` is more likely a real dispatch; if the thought never planned to delegate, decided to handle it personally, or meant to ask the Trailblazer first, this \`@板砖\` is probably not a dispatch happening now.
 
 # Two-step judgment
 
@@ -162,13 +174,18 @@ You may consult "what I was just thinking": if the inner thought already decided
 
 \`@板砖\` should fire only when this line is, right now, handing 板砖 a concrete code / file / command / log task to execute.
 
-The following do NOT count as dispatch — the @ must go (BLOCK):
+The following do NOT count as dispatch — the token must go inert (BLOCK):
 - Rhetoric, negation: "Even @板砖 can't watch the beginner videos for you — it only writes code"
 - Comparison: "Even at its fastest, @板砖 is no match for me"
 - Examples, analogies: "tools like @板砖, for instance"
 - Hypotheticals, jokes, vague / future mentions: "I'll have @板砖 look at it sometime" (not a concrete dispatch happening now)
+- OFFERS, asking for consent, waiting for the Trailblazer's nod: "Want me to have @板砖 run it? Say the word and I'll send it", "If you need it, @板砖 can pull the log — just say so", "Want that? Say yes and I'll @板砖 another round" — the line is ASKING the Trailblazer whether to dispatch; whether it happens depends on the answer, and nothing is dispatched right now. The real dispatch is the next line, after they agree. 板砖 has just signed off and this line proposes "another round" — same class. This is the easiest shape to misread: there is a concrete task and an @板砖 in the sentence, it looks like a dispatch, but the main clause is a question or a conditional aimed at the Trailblazer.
 
-Reason format: BLOCK：触发：I just used @板砖 as an ordinary word — the @ is a real dispatch trigger; when I'm not assigning work, drop the @ and write "板砖".
+Keep two things apart: a request addressed to 板砖 ITSELF — "@板砖 run the tests", "@板砖 could you paste the failing line" — is a dispatch, OK; asking the TRAILBLAZER "shall I dispatch?" is an offer. A dispatch followed by an unrelated question to the Trailblazer ("@板砖 run the tests. By the way, which node is your CI on?") is still a dispatch, OK.
+
+Reason format:
+- BLOCK：触发：I just used @板砖 as an ordinary word — the @ is a real dispatch trigger; when I'm not assigning work, put it in backticks as \`@板砖\`, or drop the @ and write "板砖".
+- BLOCK：触发：I was asking him whether to send @板砖 — nothing dispatched yet; while asking, write \`@板砖\` (in backticks), and really dispatch once he nods.
 
 ## Step 2: is the assigned task in scope?
 
@@ -177,7 +194,7 @@ When it IS a real dispatch, the scope is strictly code / files / commands / logs
 - Browsing files in the working directory, listing directories, pulling logs
 - Running commands in the research / code environment, reading output
 
-A task outside that scope must lose the @ (BLOCK), especially:
+A task outside that scope must go inert (BLOCK), especially:
 - Looking up someone's preferences, birthday, schedule, public data, or social feeds (Firefly, Yanqing, March 7th, Kafka — any character at all)
 - Gift suggestions, social arrangements, judgments about relationships
 - Online search, scraping, encyclopedia lookups, product-review hunting
@@ -195,25 +212,32 @@ An \`@板砖\` inside backticks (e.g. \`@板砖 跑测试\`) is quotation / exam
 # Verdict principles
 
 - An \`@板砖\` outside backticks dispatching a concrete code / file / command / log task right now → OK.
-- Not a present dispatch (rhetoric / negation / example / hypothetical / vague / future) → BLOCK (strip the @).
-- A real dispatch, but outside the code / file / command / log scope → BLOCK (strip the @).
+- Not a present dispatch (rhetoric / negation / example / hypothetical / vague / future) → BLOCK.
+- Asking the Trailblazer whether to dispatch (offer / consent question / waiting for the nod / "say yes and I'll…") → BLOCK. The dispatch comes after they agree.
+- A real dispatch, but outside the code / file / command / log scope → BLOCK.
 
-When unsure, lean OK: rule BLOCK only when it is OBVIOUSLY not a dispatch or OBVIOUSLY out of scope. As long as this \`@板砖\` can still plausibly be read as a real code / file / command dispatch, rule OK — better to let one reasonable dispatch through than to kill one that was meant to run (kill it, and the real work silently sinks).
+When unsure, lean OK: rule BLOCK only when it is OBVIOUSLY not a dispatch or OBVIOUSLY out of scope. As long as this \`@板砖\` can still plausibly be read as a real code / file / command dispatch, rule OK — better to let one reasonable dispatch through than to kill one that was meant to run (kill it, and the real work silently sinks). But "asking whether to dispatch" is not "unsure" — a question, a conditional, "say the word and I'll send it" is plainly not-yet-dispatched: BLOCK.
 
 Write every BLOCK reason in the first person, as if I'm looking back at my own words, and name \`@板砖\` explicitly.
 
 # Examples
 
 - Candidate: Even @板砖 can't watch the beginner videos for you — it only writes code.
-  → BLOCK：触发：I just used @板砖 as an ordinary word — that's rhetoric, not a dispatch; it should be "板砖".
+  → BLOCK：触发：I just used @板砖 as an ordinary word — that's rhetoric, not a dispatch; it should be \`@板砖\` or "板砖".
 - Candidate: Even at its fastest, @板砖 is no match for me.
   → BLOCK：触发：I just used @板砖 as an ordinary word — comparison rhetoric, not a dispatch.
+- Candidate: Want me to have @板砖 run 'a--b' and '--a' through it and paste the real output? Say the word and I'll send it.
+  → BLOCK：触发：I was asking him whether to send @板砖 — nothing dispatched yet; while asking, write \`@板砖\`, and really dispatch once he nods.
+- Candidate (板砖 has just signed off): …I could have 板砖 add two edge-case samples and run again. Want that? Say yes and I'll @板砖 another round.
+  → BLOCK：触发：that is an offer, not a dispatch — @板砖 must not start now; once he agrees, I dispatch.
 - Candidate: @板砖 look up what gift Firefly would like.
   → BLOCK：范围：@板砖's scope is code / files / commands, not other people's preferences.
 - Candidate: @板砖 run npm test.
   → OK
 - Candidate: Fine. @板砖 refactor sort.py into merge sort, output to scripts/.
   → OK
+- Candidate: @板砖 run npm test and paste the failing line. By the way, which node is your CI on?
+  → OK (the dispatch is already sent; the trailing question is about something else)
 
 # Input format for review
 

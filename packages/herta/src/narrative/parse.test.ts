@@ -123,15 +123,20 @@ describe("parseHertaBlock — backtick exemption (2026-06-11 trigger discipline)
 });
 
 describe("neutralizeBanzhuanTrigger", () => {
-  it("replaces a bare @板砖 with 板砖", () => {
-    expect(neutralizeBanzhuanTrigger("@板砖也不能替你看视频")).toBe(
-      "板砖也不能替你看视频",
-    );
+  // 2026-08-17 (owner): the inert form is the QUOTED token, not the
+  // stripped one — "要我就 板砖 再开一轮" read broken on screen; the
+  // sentence needs the @ to mean "the @-call". Backticked `@板砖` is the
+  // record's established quotation form: never dispatches, the bubble shows
+  // it monospace instead of the chip.
+  it("quotes a bare @板砖 (keeps it visible, makes it inert)", () => {
+    const out = neutralizeBanzhuanTrigger("要吗？要我就 @板砖 再开一轮。");
+    expect(out).toBe("要吗？要我就 `@板砖` 再开一轮。");
+    expect(parseHertaBlock(out).hasBanzhuanTrigger).toBe(false);
   });
 
-  it("replaces every bare occurrence", () => {
+  it("quotes every bare occurrence", () => {
     expect(neutralizeBanzhuanTrigger("@板砖 一次，@板砖 两次")).toBe(
-      "板砖 一次，板砖 两次",
+      "`@板砖` 一次，`@板砖` 两次",
     );
   });
 
@@ -140,10 +145,18 @@ describe("neutralizeBanzhuanTrigger", () => {
     expect(neutralizeBanzhuanTrigger(input)).toBe(input);
   });
 
-  it("neutralizes bare occurrences while preserving backticked ones", () => {
+  it("quotes bare occurrences while leaving already-backticked ones alone", () => {
     expect(
       neutralizeBanzhuanTrigger("就算@板砖再快——格式才是 `@板砖 <任务>`。"),
-    ).toBe("就算板砖再快——格式才是 `@板砖 <任务>`。");
+    ).toBe("就算`@板砖`再快——格式才是 `@板砖 <任务>`。");
+  });
+
+  it("falls back to the stripped form when an unpaired backtick would mis-pair the quote", () => {
+    // "`abc " is an open span; wrapping would close it on our opening tick
+    // and leave the token bare again — so the old `板砖` form is used.
+    const out = neutralizeBanzhuanTrigger("`abc @板砖 def");
+    expect(out).toBe("`abc 板砖 def");
+    expect(parseHertaBlock(out).hasBanzhuanTrigger).toBe(false);
   });
 
   it("returns text unchanged when no trigger is present", () => {

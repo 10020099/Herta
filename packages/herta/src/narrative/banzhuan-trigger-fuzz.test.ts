@@ -135,9 +135,11 @@ describe("@板砖 trigger contract — fuzz", () => {
     }
   });
 
-  it("T5b — the canonical live token dispatches; the inert form does not", () => {
+  it("T5b — the canonical live token dispatches; the inert forms do not", () => {
     expect(parseHertaBlock("@板砖 跑复现").hasBanzhuanTrigger).toBe(true);
     expect(parseHertaBlock("板砖 跑复现").hasBanzhuanTrigger).toBe(false);
-    expect(neutralizeBanzhuanTrigger("@板砖 跑复现")).toBe("板砖 跑复现");
+    expect(parseHertaBlock("`@板砖` 跑复现").hasBanzhuanTrigger).toBe(false);
+    // The neutralized form is the QUOTED token (2026-08-17): visible, inert.
+    expect(neutralizeBanzhuanTrigger("@板砖 跑复现")).toBe("`@板砖` 跑复现");
   });
 });

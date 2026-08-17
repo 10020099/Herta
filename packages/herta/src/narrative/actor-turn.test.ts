@@ -19,6 +19,7 @@ import {
   MAX_DISPATCHES_PER_TURN,
   runActorCompletionTurn,
 } from "./actor-turn.js";
+import { parseHertaBlock } from "./parse.js";
 import { serializeTerminalRecord } from "./serialize.js";
 import type { ActorStreamingSink } from "./streaming-sink.js";
 import { actorHintTexts } from "./thought-hint.js";
@@ -824,9 +825,10 @@ describe("runActorCompletionTurn — in-turn beats", () => {
     const text = beat?.text ?? "";
     // Forged evidence label neutralized (ZWSP-broken, no live match).
     expect(text).not.toContain("→ 系统");
-    // The dispatch trigger is neutralized — a beat must never carry it live.
-    expect(text).not.toContain("@板砖");
-    expect(text).toContain("板砖");
+    // The dispatch trigger is neutralized — a beat must never carry it live
+    // (quoted form since 2026-08-17: visible, inert).
+    expect(parseHertaBlock(text).hasBanzhuanTrigger).toBe(false);
+    expect(text).toContain("`@板砖`");
     // Control chars stripped at commit.
     expect(text).not.toContain(ESC);
   });
@@ -2120,9 +2122,12 @@ describe("runActorCompletionTurn — user-typed @板砖 pre-empt (Slice 10)", ()
     // and the GUI chip stay honest)…
     expect(speeches[0]?.text).toContain("@板砖");
     expect(speeches[1]?.text).toContain("@板砖");
-    // …the beyond-budget speech is neutralized (no dispatch, no chip).
-    expect(speeches[2]?.text).not.toContain("@板砖");
-    expect(speeches[2]?.text).toContain("板砖 还想再派一次。");
+    // …the beyond-budget speech is neutralized (no dispatch, no chip): the
+    // quoted form since 2026-08-17 — visible, inert.
+    expect(parseHertaBlock(speeches[2]?.text ?? "").hasBanzhuanTrigger).toBe(
+      false,
+    );
+    expect(speeches[2]?.text).toContain("`@板砖` 还想再派一次。");
   });
 });
 
@@ -5276,11 +5281,13 @@ describe("runActorCompletionTurn — supervisor (Slice: supervisor)", () => {
       const speech = record.find(
         (b) => b.kind === "herta" && b.surface === "speech",
       );
-      // Neutralized: @板砖 → 板砖
+      // Neutralized: @板砖 → quoted `@板砖` (visible, inert; 2026-08-17)
       expect((speech as { text: string }).text).toContain(
-        "板砖也不能替你看视频",
+        "`@板砖`也不能替你看视频",
       );
-      expect((speech as { text: string }).text).not.toContain("@板砖");
+      expect(
+        parseHertaBlock((speech as { text: string }).text).hasBanzhuanTrigger,
+      ).toBe(false);
       // Bridge never fired (trigger neutralized)
       expect(runtimeCalled).toBe(0);
       // selfCorrection contains both reasons joined with ；
@@ -5621,7 +5628,7 @@ describe("runActorCompletionTurn — supervisor (Slice: supervisor)", () => {
         (b) => b.kind === "herta" && b.surface === "speech",
       );
       expect((speech as { text: string }).text).toBe(
-        "就算板砖再快——格式才是 `@板砖 <任务>`。",
+        "就算`@板砖`再快——格式才是 `@板砖 <任务>`。",
       );
       expect(runtimeCalled).toBe(0);
       expect(supervisorCallCount.value).toBe(2);
@@ -5841,8 +5848,9 @@ describe("runActorCompletionTurn — supervisor (Slice: supervisor)", () => {
         ],
         ["OK", "BLOCK：触发：我刚才把 @板砖 当普通词用了"],
       );
-      expect(out.text).toContain("没有 板砖");
-      expect(out.text).not.toContain("@板砖");
+      // Quoted form (2026-08-17): the token stays visible, but inert.
+      expect(out.text).toContain("没有 `@板砖`");
+      expect(parseHertaBlock(out.text).hasBanzhuanTrigger).toBe(false);
       // The whole point: nothing was dispatched for a sentence that asked
       // for nothing. (The live miss cost 24s of backend time and left a
       // 无产出 marker in the record.)
@@ -5870,7 +5878,7 @@ describe("runActorCompletionTurn — supervisor (Slice: supervisor)", () => {
         ["OK", "BLOCK：触发：我刚才把 @板砖 当普通词用了"],
       );
       expect(out.dispatches).toBe(0);
-      expect(out.text).not.toContain("@板砖");
+      expect(parseHertaBlock(out.text).hasBanzhuanTrigger).toBe(false);
     });
 
     it("costs nothing when the speech never mentions 板砖", async () => {

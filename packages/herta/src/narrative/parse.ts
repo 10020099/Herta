@@ -54,17 +54,42 @@ function replaceBareTrigger(text: string, replacement: string): string {
 }
 
 /**
- * Replace every dispatch-effective `@板砖` with the inert `板砖`,
- * leaving occurrences inside inline code spans untouched. Used by the
- * veto-retry re-pass (actor-turn §3.2) to neutralize a rhetorical
- * trigger without mangling quoted usage examples. After this runs,
- * `parseHertaBlock(result).hasBanzhuanTrigger` is false — enforced by
- * iterating to a fixed point, because a single replacement pass can
- * FABRICATE a live trigger from its own seam (`@@板砖` → `@板砖`),
- * which would dispatch the backend for exactly the sentence the
- * supervisor just ruled non-dispatch.
+ * Make every dispatch-effective `@板砖` inert while keeping it VISIBLE:
+ * wrap it in backticks — `` `@板砖` `` — the record's established
+ * quotation form (a code-span token never dispatches: this parser, the
+ * composer, supervisor §8, and the 废案 essays she reads all treat it
+ * so). Occurrences already inside inline code spans are untouched.
+ *
+ * Until 2026-08-17 this stripped the `@` (`@板砖` → `板砖`). The owner
+ * read the result on screen — "要我就 板砖 再开一轮。" — and it reads
+ * broken: the sentence needs the @ to mean "the @-call". The bare token
+ * must not stay (bare `@板砖` in her own speech IS the dispatch contract
+ * the record and Herta both read; an un-fired one is the shape the ADR
+ * 0036 fabrication chain starts from, and the GUI chip would claim a
+ * call that never happened), so the visible-but-inert form is the
+ * quoted one: the bubble shows `@板砖` in monospace instead of the chip,
+ * the record and the CLI keep the backticks, and what she reads back is
+ * a mention, not a call.
+ *
+ * Fallback: if the speech already carries an UNPAIRED backtick, wrapping
+ * would mis-pair spans (`` `abc `@板砖` def `` — the first span closes on
+ * our opening tick and the token is bare again). Detected by re-parsing:
+ * when one wrapping pass does not leave the text trigger-free, the old
+ * `板砖` form is used on the ORIGINAL text instead — always inert, just
+ * not pretty, and only on already-malformed speech.
+ *
+ * Both forms are checked to a fixed point, because a single replacement
+ * pass can FABRICATE a live trigger from its own seam (`@@板砖` →
+ * `@板砖`), which would dispatch the backend for exactly the sentence the
+ * judge just ruled non-dispatch. Postcondition either way:
+ * `parseHertaBlock(result).hasBanzhuanTrigger === false`.
  */
 export function neutralizeBanzhuanTrigger(text: string): string {
+  if (!parseHertaBlock(text).hasBanzhuanTrigger) return text;
+  const quoted = replaceBareTrigger(text, "`@板砖`");
+  if (!parseHertaBlock(quoted).hasBanzhuanTrigger) return quoted;
+  // Mis-paired backticks (or a seam-fabricated token): fall back to the
+  // strip-the-@ form, iterated to a fixed point.
   let result = text;
   while (parseHertaBlock(result).hasBanzhuanTrigger) {
     const next = replaceBareTrigger(result, "板砖");

@@ -774,13 +774,14 @@ BLOCK：称呼：我刚才不该跟着叫瓦尔特"杨叔"，那不是我的称�
 
 \`@板砖\` 不是普通词，是差分协处理器的【字面调度触发符】。我说出口的话里，只要出现不在反引号里的 \`@板砖\`，协处理器就会被真实唤起开工——不管那句话的语义是不是在派活。修辞也好、否定也好，机器只认这个符号。
 
-**第一步检查（是不是派活）：** 只有当这句话就是在【此刻、真实地】把一件代码 / 文件 / 命令 / 日志任务派给板砖时，才允许写 \`@板砖\`。修辞、否定、举例、假设、玩笑里提到板砖，必须去掉 \`@\`，直接写"板砖"：
+**第一步检查（是不是派活）：** 只有当这句话就是在【此刻、真实地】把一件代码 / 文件 / 命令 / 日志任务派给板砖时，才允许写 \`@板砖\`。修辞、否定、举例、假设、玩笑里提到板砖，必须去掉 \`@\`，直接写"板砖"（或放进反引号写 \`@板砖\`——引用不触发）；【问开拓者要不要派】的提议（"要不要我让 @板砖 跑一遍？你点头我就派""要吗？要我就 @板砖 再开一轮"）同样不是此刻派活——派不派取决于他的回答，此刻什么都没派出去，@ 不能裸露在反引号外：
 
 - "@板砖也不能替你看入门视频"——修辞否定，不是派活。必须判不过。
 - "就算@板砖再快，也快不过我"——比较修辞。必须判不过。
 - "比如@板砖这种工具"——举例。必须判不过。
+- "要不要我让 @板砖 把这几种输入都跑一遍？你点头我就派"——提议、等他点头，不是此刻派活。必须判不过。
 
-理由格式："我刚才把 @板砖 当普通词用了——@ 是真实的调度触发符，非派活就别加 @，写'板砖'就行"。
+理由格式："我刚才把 @板砖 当普通词用了——@ 是真实的调度触发符，非派活就别加 @，写'板砖'就行（要提这个符号本身，就放进反引号写 \`@板砖\`）"；提议时："我刚才是在问他要不要派 @板砖，还没派——问的时候写 \`@板砖\`（反引号里），等他点头再真派"。
 
 **第二步检查（派的活在不在范围内）：** 真的在派活时，范围严格限定在：
 
@@ -2144,13 +2145,14 @@ Judging principle: look for the \`tool_name(...)\` call shape. If it appears, fa
 
 \`@板砖\` is not an ordinary word — it is the LITERAL dispatch trigger for the differential coprocessor. In anything I say out loud, any \`@板砖\` not inside backticks genuinely wakes the coprocessor and puts it to work — regardless of whether the sentence's meaning is assigning work. Rhetoric or negation, the machine only reads the token.
 
-**Step 1 check (is it a dispatch?):** \`@板砖\` is allowed only when the line is【right now, for real】handing a code / file / command / log task to 板砖. In rhetoric, negation, examples, hypotheticals, or jokes that mention 板砖, the \`@\` must be dropped — write plain "板砖":
+**Step 1 check (is it a dispatch?):** \`@板砖\` is allowed only when the line is【right now, for real】handing a code / file / command / log task to 板砖. In rhetoric, negation, examples, hypotheticals, or jokes that mention 板砖, the \`@\` must be dropped — write plain "板砖" (or quote it in backticks as \`@板砖\` — a quotation never fires); an OFFER that asks the Trailblazer whether to dispatch ("Want me to have @板砖 run it? Say the word and I'll send it", "Want that? Say yes and I'll @板砖 another round") is likewise not a present dispatch — it depends on their answer, nothing is sent yet, so the @ must not stand bare outside backticks:
 
 - "Even @板砖 can't watch the intro videos for you" — rhetorical negation, not a dispatch. Must fail.
 - "However fast @板砖 is, it's still not faster than me" — comparative rhetoric. Must fail.
 - "Take a tool like @板砖, for example" — an example. Must fail.
+- "Want me to have @板砖 run those inputs through it? Say the word and I'll send it" — an offer awaiting the nod, not a present dispatch. Must fail.
 
-Reason-line template: "I just used @板砖 as an ordinary word — the @ is a live dispatch trigger; when I'm not assigning work, drop the @ and just write 板砖".
+Reason-line template: "I just used @板砖 as an ordinary word — the @ is a live dispatch trigger; when I'm not assigning work, drop the @ and just write 板砖 (to mention the token itself, quote it as \`@板砖\`)"; for an offer: "I was asking him whether to send @板砖 — nothing dispatched yet; while asking, write \`@板砖\` in backticks and really dispatch once he nods".
 
 **Step 2 check (is the dispatched task in scope?):** For a real dispatch, the scope is strictly limited to:
 
