@@ -8,6 +8,9 @@ export const zh = {
   "nav.update": "更新",
   "update.intro":
     "空间站固件的接收与安装。新版本会在后台下载，退出时自动安装。",
+  "update.betaLead": "Beta 测试版：",
+  "update.betaNotice":
+    "目前仍处于测试阶段，版本之间可能出现破坏性改动，更新后历史会话或设置未必能完整保留。",
   "update.auto": "自动更新",
   "update.autoDesc": "关闭后将不再自动检查与下载更新，仅在手动检查时进行。",
   "update.currentVersion": "当前版本",
@@ -98,12 +101,11 @@ export const zh = {
   // Per-stage model choice (2026-08-17, owner: API prices rose). Pro is the
   // built-in default for both; flash is cheaper. Restart-to-apply.
   "deepseek.models.intro":
-    "两条线路各用哪个模型。默认都是 Pro；Flash 便宜得多，改动重启后生效。",
+    "模型选择：Pro 表现最佳，成本较高；Flash 幻觉较多，可能增加耗时。改动重启后生效。",
   "deepseek.model.actor": "对话模型",
-  "deepseek.model.actorDesc":
-    "黑塔本人的说话、思考与插话。每一回合都会调用多次，是花费最大的一路。",
+  "deepseek.model.actorDesc": "与黑塔交流时使用的模型。",
   "deepseek.model.backend": "协处理器模型",
-  "deepseek.model.backendDesc": "板砖读文件、改代码、跑命令时用的模型。",
+  "deepseek.model.backendDesc": "板砖读文件、改代码、跑命令时使用的模型。",
   "deepseek.model.pro": "Pro",
   "deepseek.model.flash": "Flash",
   "keyprompt.title": "将黑塔接入 DeepSeek",

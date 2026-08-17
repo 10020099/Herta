@@ -10,6 +10,9 @@ export const en = {
   "nav.update": "Updates",
   "update.intro":
     "Station firmware, received and installed. New versions download in the background and install automatically on exit.",
+  "update.betaLead": "Beta: ",
+  "update.betaNotice":
+    "still under test — releases may include breaking changes, and past sessions or settings may not fully survive an update.",
   "update.auto": "Automatic updates",
   "update.autoDesc":
     "When off, updates are neither checked nor downloaded automatically — only on a manual check.",
@@ -103,13 +106,12 @@ export const en = {
   "deepseek.unencrypted":
     "Stored unencrypted — this device has no secure keychain available.",
   "deepseek.models.intro":
-    "Which model drives each line. Both default to Pro; Flash is much cheaper. Changes apply after a restart.",
+    "Model choice: Pro performs best at a higher cost; Flash hallucinates more and may take longer. Changes apply after a restart.",
   "deepseek.model.actor": "Conversation model",
-  "deepseek.model.actorDesc":
-    "Herta herself — her speech, thought and asides. Called several times per turn; the largest share of the bill.",
+  "deepseek.model.actorDesc": "The model used when talking with Herta.",
   "deepseek.model.backend": "Coprocessor model",
   "deepseek.model.backendDesc":
-    "What 板砖 runs on when it reads files, edits code and runs commands.",
+    "The model Brick uses to read files, edit code and run commands.",
   "deepseek.model.pro": "Pro",
   "deepseek.model.flash": "Flash",
   "keyprompt.title": "Connect Herta to DeepSeek",

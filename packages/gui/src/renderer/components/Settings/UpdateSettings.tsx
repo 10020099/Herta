@@ -75,6 +75,10 @@ export function UpdateSettings(): JSX.Element {
   return (
     <>
       <p className="settings-intro">{t("update.intro")}</p>
+      <p className="settings-intro">
+        <strong>{t("update.betaLead")}</strong>
+        {t("update.betaNotice")}
+      </p>
       <SettingRow
         title={t("update.currentVersion")}
         description={version !== null ? `v${version}` : "—"}

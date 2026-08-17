@@ -4772,6 +4772,14 @@ button.session-item__badge--dismiss {
   border-top: 1px solid var(--hairline, rgba(148, 163, 184, 0.22));
   line-height: 1.55;
 }
+/* Model-choice sub-section on the DeepSeek panel (2026-08-17): a second
+   topic under the same engine, so it gets the same rule-and-gap set-off as
+   the attribution above rather than running on from the key controls. */
+.settings-models-intro {
+  margin-top: 22px;
+  padding-top: 14px;
+  border-top: 1px solid var(--hairline, rgba(148, 163, 184, 0.22));
+}
 /* ── 差分协处理器 (板砖) lifecycle section ─────────────────────────── */
 .settings-intro code {
   font-family: var(--mono, ui-monospace, "SF Mono", Menlo, monospace);
