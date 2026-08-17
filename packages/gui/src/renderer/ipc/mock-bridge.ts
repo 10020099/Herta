@@ -22,6 +22,7 @@ import type {
   DreamConfig,
   HertaBridge,
   InteractionLanguageChoice,
+  ModelConfig,
   NavBlockedEvent,
   SessionError,
   SessionNoSession,
@@ -66,6 +67,11 @@ export interface MockHertaBridgeOpts {
    *  write) — mirrors failSetInteractionLanguage, so the snap-back +
    *  error-note paths are testable. */
   readonly failSetBackendConfig?: boolean;
+  /** Seed for getModelConfig (Settings → DeepSeek → 模型). Default Pro/Pro
+   *  (the real handler's default). */
+  readonly getModelConfigResult?: ModelConfig;
+  /** When true, setModelConfig rejects — same seam as failSetBackendConfig. */
+  readonly failSetModelConfig?: boolean;
   /** Seed the masked DeepSeek key status. Mutated by setDeepSeekKey /
    *  clearDeepSeekKey so tests observe the live status round-trip. */
   readonly deepSeekKeyStatus?: DeepSeekKeyStatus;
@@ -128,6 +134,8 @@ export interface MockHertaBridge {
     setDreamConfig: DreamConfig[];
     getBackendConfig: number;
     setBackendConfig: BackendConfig[];
+    getModelConfig: number;
+    setModelConfig: ModelConfig[];
     getDeepSeekKeyStatus: number;
     setDeepSeekKey: string[];
     clearDeepSeekKey: number;
@@ -205,6 +213,8 @@ export function createMockHertaBridge(
     setDreamConfig: [],
     getBackendConfig: 0,
     setBackendConfig: [],
+    getModelConfig: 0,
+    setModelConfig: [],
     getDeepSeekKeyStatus: 0,
     setDeepSeekKey: [],
     clearDeepSeekKey: 0,
@@ -375,6 +385,21 @@ export function createMockHertaBridge(
     setBackendConfig: async (cfg) => {
       calls.setBackendConfig.push(cfg);
       if (opts.failSetBackendConfig) {
+        throw new Error("settings write failed");
+      }
+    },
+    getModelConfig: async () => {
+      calls.getModelConfig += 1;
+      return (
+        opts.getModelConfigResult ?? {
+          actor: "deepseek-v4-pro",
+          backend: "deepseek-v4-pro",
+        }
+      );
+    },
+    setModelConfig: async (cfg) => {
+      calls.setModelConfig.push(cfg);
+      if (opts.failSetModelConfig) {
         throw new Error("settings write failed");
       }
     },

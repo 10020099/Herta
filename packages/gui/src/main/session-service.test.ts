@@ -188,6 +188,41 @@ describe("buildConfig", () => {
     expect(cfg.thinking).toBe("low");
   });
 
+  it("honors a persisted per-stage model choice from settings.json (2026-08-17)", async () => {
+    vi.stubEnv("HERTA_ACTOR_MODEL", undefined);
+    vi.stubEnv("HERTA_BACKEND_MODEL", undefined);
+    const cwd = mkdtempSync(join(tmpdir(), "herta-bc-model-"));
+    const home = mkdtempSync(join(tmpdir(), "herta-bc-modelh-"));
+    mkdirSync(join(cwd, ".herta"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".herta", "settings.json"),
+      JSON.stringify({ models: { actor: "deepseek-v4-flash" } }),
+      "utf-8",
+    );
+    const cfg = await buildConfig(cwd, home, "sk-test-123");
+    // Actor follows the setting; backend, unset, keeps the built-in default.
+    expect(cfg.providers.actorModel).toBe("deepseek-v4-flash");
+    expect(cfg.providers.backendModel).toBe("deepseek-v4-pro");
+  });
+
+  it("an env override still beats the setting (dev/lab knob), and an off-enum setting is ignored", async () => {
+    vi.stubEnv("HERTA_ACTOR_MODEL", "deepseek-v4-pro");
+    vi.stubEnv("HERTA_BACKEND_MODEL", undefined);
+    const cwd = mkdtempSync(join(tmpdir(), "herta-bc-model2-"));
+    const home = mkdtempSync(join(tmpdir(), "herta-bc-model2h-"));
+    mkdirSync(join(cwd, ".herta"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".herta", "settings.json"),
+      JSON.stringify({
+        models: { actor: "deepseek-v4-flash", backend: "deepseek-v4-base" },
+      }),
+      "utf-8",
+    );
+    const cfg = await buildConfig(cwd, home, "sk-test-123");
+    expect(cfg.providers.actorModel).toBe("deepseek-v4-pro"); // env won
+    expect(cfg.providers.backendModel).toBe("deepseek-v4-pro"); // off-enum → default
+  });
+
   it("falls back to 'high' for an off-enum hand-edited thinking value", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "herta-bc-think2-"));
     const home = mkdtempSync(join(tmpdir(), "herta-bc-think2h-"));

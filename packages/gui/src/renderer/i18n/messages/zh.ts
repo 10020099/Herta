@@ -95,6 +95,17 @@ export const zh = {
   "deepseek.unverified":
     "已保存，但无法连接 DeepSeek 验证——若黑塔没有回应，请检查网络。",
   "deepseek.unencrypted": "已明文存储——此设备没有可用的安全密钥链。",
+  // Per-stage model choice (2026-08-17, owner: API prices rose). Pro is the
+  // built-in default for both; flash is cheaper. Restart-to-apply.
+  "deepseek.models.intro":
+    "两条线路各用哪个模型。默认都是 Pro；Flash 便宜得多，改动重启后生效。",
+  "deepseek.model.actor": "对话模型",
+  "deepseek.model.actorDesc":
+    "黑塔本人的说话、思考与插话。每一回合都会调用多次，是花费最大的一路。",
+  "deepseek.model.backend": "协处理器模型",
+  "deepseek.model.backendDesc": "板砖读文件、改代码、跑命令时用的模型。",
+  "deepseek.model.pro": "Pro",
+  "deepseek.model.flash": "Flash",
   "keyprompt.title": "将黑塔接入 DeepSeek",
   "keyprompt.body":
     "黑塔需要一个 DeepSeek API 密钥才能思考。它存放在本机的系统密钥链里，除了调用 DeepSeek 绝不外传。",

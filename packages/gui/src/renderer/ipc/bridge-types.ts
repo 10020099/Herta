@@ -103,6 +103,17 @@ export interface BackendConfig {
   readonly thinking: BackendThinking;
 }
 
+/** The two DeepSeek models a stage can run on (2026-08-17). Exactly the names
+ *  the completion endpoint accepts. */
+export type ModelChoice = "deepseek-v4-pro" | "deepseek-v4-flash";
+
+/** Settings → DeepSeek → 模型: which model drives the actor (Herta's speech /
+ *  thought / beats) and which drives 板砖. Restart-to-apply. */
+export interface ModelConfig {
+  readonly actor: ModelChoice;
+  readonly backend: ModelChoice;
+}
+
 /** The UI chrome language (Settings → Language). */
 export type Locale = "zh" | "en";
 
@@ -268,6 +279,12 @@ export interface HertaBridge {
   /** Persist the backend reasoning effort. Restart-to-apply (buildConfig
    *  reads it at the next bootstrap). Optional alongside getBackendConfig. */
   setBackendConfig?(cfg: BackendConfig): Promise<void>;
+  /** Read the persisted per-stage model choice (Settings → DeepSeek → 模型,
+   *  2026-08-17). OPTIONAL like the backend-config pair; the rows hide with
+   *  it. */
+  getModelConfig?(): Promise<ModelConfig>;
+  /** Persist the per-stage model choice. Restart-to-apply. */
+  setModelConfig?(cfg: ModelConfig): Promise<void>;
   /** Read the resolved UI language (stored choice, else OS-derived). */
   getLocale(): Promise<Locale>;
   /** Persist the UI language. Live — the renderer re-renders immediately; this

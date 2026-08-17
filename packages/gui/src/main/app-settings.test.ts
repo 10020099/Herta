@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   isBackendThinking,
+  isModelChoice,
   readAppSettings,
   writeAppSettings,
 } from "./app-settings.js";
@@ -74,6 +75,28 @@ describe("app-settings", () => {
     expect(isBackendThinking("")).toBe(false);
     expect(isBackendThinking(undefined)).toBe(false);
     expect(isBackendThinking(5)).toBe(false);
+  });
+
+  it("models round-trips, a malformed models section falls back to {}, and isModelChoice accepts exactly the two names (2026-08-17)", async () => {
+    const ws = mk();
+    await writeAppSettings(ws, {
+      models: { actor: "deepseek-v4-flash", backend: "deepseek-v4-pro" },
+    });
+    expect(await readAppSettings(ws)).toEqual({
+      models: { actor: "deepseek-v4-flash", backend: "deepseek-v4-pro" },
+    });
+    writeFileSync(
+      join(ws, ".herta", "settings.json"),
+      JSON.stringify({ models: "flash" }),
+      "utf-8",
+    );
+    expect(await readAppSettings(ws)).toEqual({});
+    expect(isModelChoice("deepseek-v4-pro")).toBe(true);
+    expect(isModelChoice("deepseek-v4-flash")).toBe(true);
+    // The completion endpoint 400s on anything else (deepseek-v4-base did).
+    expect(isModelChoice("deepseek-v4-base")).toBe(false);
+    expect(isModelChoice("flash")).toBe(false);
+    expect(isModelChoice(undefined)).toBe(false);
   });
 
   it("read + merge + write preserves unrelated keys (the handler pattern)", async () => {

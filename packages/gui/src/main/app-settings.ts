@@ -20,9 +20,31 @@ export function isBackendThinking(v: unknown): v is BackendThinking {
   return typeof v === "string" && BACKEND_THINKING_VALUES.includes(v);
 }
 
+/** The two DeepSeek models the app can drive each stage with (2026-08-17,
+ *  owner: API prices rose; the actor is the biggest per-turn lever). The
+ *  completion endpoint accepts exactly these two names. */
+export type ModelChoice = "deepseek-v4-pro" | "deepseek-v4-flash";
+
+const MODEL_CHOICE_VALUES: readonly string[] = [
+  "deepseek-v4-pro",
+  "deepseek-v4-flash",
+];
+
+export function isModelChoice(v: unknown): v is ModelChoice {
+  return typeof v === "string" && MODEL_CHOICE_VALUES.includes(v);
+}
+
 export interface AppSettings {
   readonly dream?: { readonly enabled?: boolean };
   readonly backend?: { readonly thinking?: BackendThinking };
+  /** Per-stage model choice (Settings → DeepSeek → 模型). `actor` drives the
+   *  narrative actor (speech / thought / beats, completion mode); `backend`
+   *  drives 板砖 (chat + tools). Absent = the built-in default (Pro for
+   *  both). Read at bootstrap; restart-to-apply like the rows above. */
+  readonly models?: {
+    readonly actor?: ModelChoice;
+    readonly backend?: ModelChoice;
+  };
 }
 
 function settingsPath(workspaceRoot: string): string {
@@ -42,13 +64,23 @@ export async function readAppSettings(
     if (typeof parsed !== "object" || parsed === null) return {};
     // A malformed nested section (e.g. a hand-edited `"dream": 5`) → fall back
     // to defaults rather than hand back a shape that violates AppSettings.
-    const { dream, backend } = parsed as { dream?: unknown; backend?: unknown };
+    const { dream, backend, models } = parsed as {
+      dream?: unknown;
+      backend?: unknown;
+      models?: unknown;
+    };
     if (dream !== undefined && (typeof dream !== "object" || dream === null)) {
       return {};
     }
     if (
       backend !== undefined &&
       (typeof backend !== "object" || backend === null)
+    ) {
+      return {};
+    }
+    if (
+      models !== undefined &&
+      (typeof models !== "object" || models === null)
     ) {
       return {};
     }

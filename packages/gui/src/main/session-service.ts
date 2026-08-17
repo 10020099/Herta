@@ -37,6 +37,7 @@ import {
 } from "./app-global-settings.js";
 import {
   isBackendThinking,
+  isModelChoice,
   readAppSettings,
   writeAppSettings,
 } from "./app-settings.js";
@@ -147,9 +148,22 @@ export async function buildConfig(
       // ONLY `deepseek-v4-pro` or `deepseek-v4-flash` — `deepseek-v4-base`
       // returns a 400 "supported API model names are…" and the turn fails
       // silently (no record blocks). The backend (chat mode) also uses
-      // deepseek-v4-pro in the CLI. Env overrides mirror the CLI's knobs.
-      actorModel: process.env.HERTA_ACTOR_MODEL ?? "deepseek-v4-pro",
-      backendModel: process.env.HERTA_BACKEND_MODEL ?? "deepseek-v4-pro",
+      // deepseek-v4-pro in the CLI.
+      //
+      // Precedence (2026-08-17): env (a dev/lab override, mirrors the CLI's
+      // knobs) > Settings → DeepSeek → 模型 (the user's choice, persisted in
+      // settings.json, restart-to-apply) > the built-in default, Pro. The
+      // guard drops an off-enum value a hand-edited file might carry.
+      actorModel:
+        process.env.HERTA_ACTOR_MODEL ??
+        (isModelChoice(settings.models?.actor)
+          ? settings.models.actor
+          : "deepseek-v4-pro"),
+      backendModel:
+        process.env.HERTA_BACKEND_MODEL ??
+        (isModelChoice(settings.models?.backend)
+          ? settings.models.backend
+          : "deepseek-v4-pro"),
       routerModel: "deepseek-v4-flash",
       ...(devBaseUrl !== undefined && devBaseUrl !== ""
         ? { baseUrl: devBaseUrl }
@@ -714,6 +728,32 @@ export function createSessionService(
         backend: { ...s.backend, thinking: cfg.thinking },
       });
     });
+    // Settings → DeepSeek → 模型: per-stage model (2026-08-17). Same
+    // restart-to-apply contract; buildConfig reads it at the next bootstrap
+    // (an env override, if set, still wins there — it is the dev/lab knob).
+    handle(CMD.getModelConfig, async () => {
+      const s = await readAppSettings(appWorkspaceRoot());
+      return {
+        actor: isModelChoice(s.models?.actor)
+          ? s.models.actor
+          : "deepseek-v4-pro",
+        backend: isModelChoice(s.models?.backend)
+          ? s.models.backend
+          : "deepseek-v4-pro",
+      };
+    });
+    handle(
+      CMD.setModelConfig,
+      async (_e, cfg: { actor?: unknown; backend?: unknown }) => {
+        if (!isModelChoice(cfg?.actor) || !isModelChoice(cfg?.backend)) return;
+        const ws = appWorkspaceRoot();
+        const s = await readAppSettings(ws);
+        await writeAppSettings(ws, {
+          ...s,
+          models: { ...s.models, actor: cfg.actor, backend: cfg.backend },
+        });
+      },
+    );
     // Settings → Language. App-global (per-user) preference; the renderer
     // applies it live, so this is just persistence. getLocale resolves a stored
     // choice, else maps the OS locale.

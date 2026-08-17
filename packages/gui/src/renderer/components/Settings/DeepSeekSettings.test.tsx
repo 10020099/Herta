@@ -58,6 +58,61 @@ describe("DeepSeekSettings", () => {
     expect(queryByText(/Connected/)).toBeNull();
   });
 
+  describe("model rows (2026-08-17)", () => {
+    it("loads the persisted choice into both Selects", async () => {
+      const mock = createMockHertaBridge({
+        getModelConfigResult: {
+          actor: "deepseek-v4-flash",
+          backend: "deepseek-v4-pro",
+        },
+      });
+      const { getByLabelText } = renderPane(mock);
+      const actor = getByLabelText("Conversation model");
+      const backend = getByLabelText("Coprocessor model");
+      await waitFor(() => expect(actor.textContent).toContain("Flash"));
+      expect(backend.textContent).toContain("Pro");
+      expect(mock.calls.getModelConfig).toBe(1);
+    });
+
+    it("a pick persists the FULL config (both stages) and shows no dynamic restart note", async () => {
+      const mock = createMockHertaBridge();
+      const { getByLabelText, getByRole, queryByText } = renderPane(mock);
+      const actor = getByLabelText("Conversation model");
+      await waitFor(() => expect(actor.textContent).toContain("Pro"));
+      fireEvent.click(actor);
+      fireEvent.click(getByRole("option", { name: "Flash" }));
+      expect(mock.calls.setModelConfig).toEqual([
+        { actor: "deepseek-v4-flash", backend: "deepseek-v4-pro" },
+      ]);
+      // The restart fact lives in the intro (static), like the thinking row.
+      expect(queryByText("Restart to apply.")).toBeNull();
+      expect(queryByText(/apply after a restart/)).toBeTruthy();
+    });
+
+    it("a failed write snaps back and shows the error note", async () => {
+      const mock = createMockHertaBridge({ failSetModelConfig: true });
+      const { getByLabelText, getByRole, queryByText } = renderPane(mock);
+      const backend = getByLabelText("Coprocessor model");
+      await waitFor(() => expect(backend.textContent).toContain("Pro"));
+      fireEvent.click(backend);
+      fireEvent.click(getByRole("option", { name: "Flash" }));
+      await waitFor(() => expect(queryByText(/Couldn't save/)).toBeTruthy());
+      expect(backend.textContent).toContain("Pro");
+    });
+
+    it("hides the rows when the bridge has no setModelConfig", async () => {
+      const mock = createMockHertaBridge();
+      const { setModelConfig: _s, getModelConfig: _g, ...bare } = mock.bridge;
+      const { queryByLabelText, queryByText } = renderWithLocale(
+        <HertaBridgeProvider bridge={bare as typeof mock.bridge}>
+          <DeepSeekSettings />
+        </HertaBridgeProvider>,
+      );
+      await waitFor(() => expect(queryByText("No key set")).toBeTruthy());
+      expect(queryByLabelText("Conversation model")).toBeNull();
+    });
+  });
+
   it("Delete clears the key and returns to 'No key set'", async () => {
     const mock = createMockHertaBridge({
       deepSeekKeyStatus: { set: true, hint: "1234", encrypted: true },

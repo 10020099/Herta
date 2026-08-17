@@ -1,8 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useHertaBridge } from "../../context/HertaBridgeContext.js";
 import { useActiveSession } from "../../hooks/useActiveSession.js";
 import { useT } from "../../i18n/LocaleProvider.js";
-import type { DeepSeekKeyStatus } from "../../ipc/bridge-types.js";
+import type {
+  DeepSeekKeyStatus,
+  ModelChoice,
+  ModelConfig,
+} from "../../ipc/bridge-types.js";
+import { Select } from "./Select.js";
+import { SettingRow } from "./SettingRow.js";
 
 /**
  * The DeepSeek API-key section. Reads the masked status on mount (the raw key
@@ -30,6 +36,50 @@ export function DeepSeekSettings(): JSX.Element {
   const [unverified, setUnverified] = useState(false);
   // Any in-flight key op (or a running turn) locks both controls.
   const locked = busy || saving || deleting;
+
+  // Per-stage model rows (2026-08-17). Optional bridge surface, same
+  // contract and same optimistic / latest-wins / snap-back shape as the
+  // Coprocessor thinking row (BanzhuanSettings). Restart-to-apply: buildConfig
+  // reads the choice at the next bootstrap.
+  const modelsSupported = bridge.setModelConfig !== undefined;
+  const [models, setModels] = useState<ModelConfig>({
+    actor: "deepseek-v4-pro",
+    backend: "deepseek-v4-pro",
+  });
+  const [modelsFailed, setModelsFailed] = useState(false);
+  const [modelsLoadFailed, setModelsLoadFailed] = useState(false);
+  const modelsTouchedRef = useRef(false);
+  const modelsWriteSeqRef = useRef(0);
+
+  useEffect(() => {
+    let alive = true;
+    bridge.getModelConfig?.().then(
+      (c) => {
+        if (alive && !modelsTouchedRef.current) setModels(c);
+      },
+      () => {
+        if (alive) setModelsLoadFailed(true);
+      },
+    );
+    return () => {
+      alive = false;
+    };
+  }, [bridge]);
+
+  const onModel = (stage: keyof ModelConfig, next: ModelChoice): void => {
+    const prev = models;
+    const nextCfg: ModelConfig = { ...models, [stage]: next };
+    modelsWriteSeqRef.current += 1;
+    const seq = modelsWriteSeqRef.current;
+    modelsTouchedRef.current = true;
+    setModels(nextCfg);
+    setModelsFailed(false);
+    void bridge.setModelConfig?.(nextCfg).catch(() => {
+      if (seq !== modelsWriteSeqRef.current) return;
+      setModels(prev);
+      setModelsFailed(true);
+    });
+  };
 
   useEffect(() => {
     let alive = true;
@@ -166,6 +216,56 @@ export function DeepSeekSettings(): JSX.Element {
       )}
       {status?.set && !status.encrypted && (
         <p className="settings-note">{t("deepseek.unencrypted")}</p>
+      )}
+
+      {modelsSupported && (
+        <>
+          <p className="settings-intro settings-models-intro">
+            {t("deepseek.models.intro")}
+          </p>
+          <SettingRow
+            title={t("deepseek.model.actor")}
+            description={t("deepseek.model.actorDesc")}
+            control={
+              <Select<ModelChoice>
+                value={models.actor}
+                ariaLabel={t("deepseek.model.actor")}
+                options={[
+                  { value: "deepseek-v4-pro", label: t("deepseek.model.pro") },
+                  {
+                    value: "deepseek-v4-flash",
+                    label: t("deepseek.model.flash"),
+                  },
+                ]}
+                onChange={(v) => onModel("actor", v)}
+              />
+            }
+          />
+          <SettingRow
+            title={t("deepseek.model.backend")}
+            description={t("deepseek.model.backendDesc")}
+            control={
+              <Select<ModelChoice>
+                value={models.backend}
+                ariaLabel={t("deepseek.model.backend")}
+                options={[
+                  { value: "deepseek-v4-pro", label: t("deepseek.model.pro") },
+                  {
+                    value: "deepseek-v4-flash",
+                    label: t("deepseek.model.flash"),
+                  },
+                ]}
+                onChange={(v) => onModel("backend", v)}
+              />
+            }
+          />
+          {modelsFailed && (
+            <p className="settings-note">{t("common.couldntSave")}</p>
+          )}
+          {!modelsFailed && modelsLoadFailed && (
+            <p className="settings-note">{t("settings.loadFailed")}</p>
+          )}
+        </>
       )}
     </>
   );
