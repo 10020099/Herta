@@ -110,8 +110,7 @@ export const en = {
   "deepseek.model.actor": "Conversation model",
   "deepseek.model.actorDesc": "The model used when talking with Herta.",
   "deepseek.model.backend": "Coprocessor model",
-  "deepseek.model.backendDesc":
-    "The model Brick uses to read files, edit code and run commands.",
+  "deepseek.model.backendDesc": "The model Brick runs tasks with.",
   "deepseek.model.pro": "Pro",
   "deepseek.model.flash": "Flash",
   "keyprompt.title": "Connect Herta to DeepSeek",
@@ -153,7 +152,7 @@ export const en = {
   "banzhuan.thinking.max": "Max",
   "banzhuan.contract": "Tool contract",
   "banzhuan.contractDesc":
-    "The tool shape Brick works with. Standard: a set of dedicated tools; Minimal: one bash plus one editor, roughly half the cost, needs a bash on this machine (Git for Windows ships one). Applies on the next launch.",
+    "The toolset Brick works with. Standard: a full set of dedicated tools; Minimal: a lean toolset that cuts running cost sharply and needs bash installed on this machine. Applies on the next launch.",
   "banzhuan.contract.noBash":
     "No bash was found on this machine; Minimal will run as Standard.",
   "banzhuan.contract.standard": "Standard",

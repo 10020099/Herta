@@ -105,7 +105,7 @@ export const zh = {
   "deepseek.model.actor": "对话模型",
   "deepseek.model.actorDesc": "与黑塔交流时使用的模型。",
   "deepseek.model.backend": "协处理器模型",
-  "deepseek.model.backendDesc": "板砖读文件、改代码、跑命令时使用的模型。",
+  "deepseek.model.backendDesc": "板砖执行任务时使用的模型。",
   "deepseek.model.pro": "Pro",
   "deepseek.model.flash": "Flash",
   "keyprompt.title": "将黑塔接入 DeepSeek",
@@ -140,7 +140,7 @@ export const zh = {
   // one trade-off, apply semantics; the no-bash sentence only when detected.
   "banzhuan.contract": "工具契约",
   "banzhuan.contractDesc":
-    "板砖拿到的工具形态。标准：一套专用工具；极简：一个 bash 加一个编辑器，成本约减半，需要本机有 bash（Windows 随 Git 安装）。下次启动生效。",
+    "板砖使用的工具组合。标准：一套专用工具集；极简：精简工具组，大幅降低执行成本，需要本机已安装 bash。下次启动生效。",
   "banzhuan.contract.noBash": "本机未检测到 bash，选极简也会按标准运行。",
   "banzhuan.contract.standard": "标准",
   "banzhuan.contract.minimal": "极简",
