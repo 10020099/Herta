@@ -95,8 +95,10 @@ export interface AppServerConfig {
    *  just means voice features never fire. */
   readonly voiceAssetsDir?: string;
   readonly providers: {
-    /** Provider type: deepseek | openai | anthropic | openai-compat */
-    readonly type: ProviderType;
+    /** Provider type: deepseek | openai | anthropic | openai-compat.
+     *  OPTIONAL — defaults to "deepseek" so test configs and the CLI keep
+     *  building without it. */
+    readonly type?: ProviderType;
     /** API key for the selected provider. */
     readonly apiKey: string;
     /** DeepSeek completion model used by the actor (only relevant for deepseek type). */
