@@ -109,15 +109,16 @@ describe("ExecutionReportBuilder validation", () => {
     expect(report.status).toBe("completed");
   });
 
-  it.each(["blocked", "failed", "partial"] as const)(
-    "accepts %s with empty collections",
-    (status) => {
-      const report = new ExecutionReportBuilder(`t-${status}`)
-        .setStatus(status)
-        .build();
-      expect(report.status).toBe(status);
-    },
-  );
+  it.each([
+    "blocked",
+    "failed",
+    "partial",
+  ] as const)("accepts %s with empty collections", (status) => {
+    const report = new ExecutionReportBuilder(`t-${status}`)
+      .setStatus(status)
+      .build();
+    expect(report.status).toBe(status);
+  });
 
   it("rejects an empty taskId", () => {
     expect(() => new ExecutionReportBuilder("").build()).toThrow(/taskId/i);
