@@ -34,3 +34,8 @@ export { RECORD_TAIL_BLOCKS, recordTail } from "./record-window.js";
 export { createSessionHost } from "./session-host.js";
 export type { SessionSearchHit } from "./session-search.js";
 export type * from "./types.js";
+export {
+  PROVIDER_DEFAULTS,
+  type ProviderType,
+  type ThinkingEffort,
+} from "./types.js";

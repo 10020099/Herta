@@ -356,8 +356,6 @@ export interface HertaBridge {
   /** Persist the appearance preference; the renderer's theme controller
    *  applies it live (no restart). */
   setTheme?(theme: ThemePref): Promise<void>;
-  /** Provider type enum. */
-  readonly ProviderType: "deepseek" | "openai" | "anthropic" | "openai-compat";
   /** Read the masked DeepSeek key status (Settings → DeepSeek). */
   getDeepSeekKeyStatus(): Promise<DeepSeekKeyStatus>;
   /** Validate a DeepSeek key (a cheap token-free auth check), and on success

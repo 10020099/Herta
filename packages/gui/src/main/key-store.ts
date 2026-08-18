@@ -193,7 +193,7 @@ export function setProviderKey(
     backendModel?: string;
     routerModel?: string;
     thinking?: ThinkingEffort;
-    anthropicOutputEffort?: number;
+    anthropicOutputEffort?: ThinkingEffort;
   },
 ): { encrypted: boolean } {
   const { encrypted } = setKeyPlain(type, key);

@@ -147,7 +147,8 @@ export async function buildConfig(
   const deepseekApiKey = secureKey?.trim() ?? "";
   // Read the active provider type from persisted settings, default deepseek.
   const appSettings = await readAppSettings(cwd);
-  const activeProvider: ProviderType = appSettings.activeProvider ?? "deepseek";
+  const activeProvider: ProviderType = (appSettings.activeProvider ??
+    "deepseek") as ProviderType;
   // Read the active provider's full config.
   const providerConfig =
     activeProvider === "deepseek"
