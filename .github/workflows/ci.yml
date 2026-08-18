@@ -3,12 +3,14 @@ name: ci
 on:
   workflow_dispatch:
 
-env:
-  ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
-
 jobs:
   check:
     runs-on: ubuntu-latest
+    env:
+      # electron's postinstall downloads its ~100MB platform binary. CI never
+      # LAUNCHES Electron (vitest runs under node/jsdom; `electron-vite build`
+      # only bundles), so skip the download on every job.
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -25,6 +27,9 @@ jobs:
   package:
     needs: check
     runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: packages/gui
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -32,11 +37,17 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      # Do NOT skip the Electron binary download here — electron-builder needs
+      # it to package the installer.
       - run: pnpm install --frozen-lockfile
-        env:
-          ELECTRON_SKIP_BINARY_DOWNLOAD: "0"
       - run: pnpm build
-      - run: pnpm --filter @herta/gui dist
+      - run: pnpm --filter @herta/gui build
+      # Voice clips are gitignored (HoYoverse-derived, outside the MIT grant)
+      # and absent in CI; a voiceless installer is allowed but the gate
+      # downgrades to a warning instead of failing the build.
+      - run: node scripts/check-voice-payload.mjs --warn
+      - run: node scripts/third-party-notices.mjs --check
+      - run: npx electron-builder --win
       - uses: actions/upload-artifact@v4
         with:
           name: Herta-Setup
