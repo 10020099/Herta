@@ -177,23 +177,34 @@ describe("permissionCacheScope — command wrappers (audit S5)", () => {
     }
   });
 
-  it("still refuses the interpreters it always refused", () => {
-    for (const i of [
-      "python",
-      "python3",
-      "node",
-      "bash",
-      "sh",
-      "npx",
-      "make",
-    ]) {
+  it("still refuses shells / wrappers, and interpreters WITHOUT a pinnable script", () => {
+    for (const i of ["bash", "sh", "npx", "make"]) {
       expect(scopeFor([i, "build.py"])).toBeUndefined();
     }
+    // Interpreters: bare argv[0] never scopes (it would cover `-e`/`-c`), and
+    // neither do the arbitrary-code / out-of-workspace shapes…
+    expect(scopeFor(["python", "-c", "print(1)"])).toBeUndefined();
+    expect(scopeFor(["node", "-e", "1"])).toBeUndefined();
+    expect(scopeFor(["node", "--eval", "1"])).toBeUndefined();
+    expect(scopeFor(["node", "/etc/x.mjs"])).toBeUndefined();
+    expect(scopeFor(["node", "../x.mjs"])).toBeUndefined();
+    expect(scopeFor(["node"])).toBeUndefined();
+    // …but the PINNED `<interp> <workspace-script>` scopes by that pair
+    // (permission lab 2026-08-17: `node scripts/stats.mjs` asked 3× in one
+    // brief) — the same shape ADR 0030 rules derive, for the same reason.
+    expect(scopeFor(["python", "build.py"])).toBe("python build.py");
+    expect(scopeFor(["node", "scripts/stats.mjs", "--json"])).toBe(
+      "node scripts/stats.mjs",
+    );
   });
 
   it("normalizes path and .exe before deciding", () => {
     expect(scopeFor(["/usr/bin/timeout", "5", "x"])).toBeUndefined();
-    expect(scopeFor(["C:\\tools\\python.exe", "x.py"])).toBeUndefined();
+    // A path-qualified interpreter still pins by its script.
+    expect(scopeFor(["C:\\tools\\python.exe", "x.py"])).toBe(
+      "C:\\tools\\python.exe x.py",
+    );
+    expect(scopeFor(["C:\\tools\\python.exe", "-c", "1"])).toBeUndefined();
   });
 
   it("still caches a real binary that DOES identify what runs", () => {
@@ -314,12 +325,17 @@ describe("permissionCacheScope", () => {
       permissionCacheScope(req("bash", { argv: ["git", "commit", "-m", "x"] })),
     ).toBe("git");
     expect(permissionCacheScope(req("bash"))).toBeUndefined();
+    // An interpreter with a pinnable workspace script scopes by the pair;
+    // the arbitrary-code shape never.
+    expect(permissionCacheScope(req("bash", { argv: ["node", "x.mjs"] }))).toBe(
+      "node x.mjs",
+    );
     expect(
-      permissionCacheScope(req("bash", { argv: ["node", "x.mjs"] })),
+      permissionCacheScope(req("bash", { argv: ["node", "-e", "1"] })),
     ).toBeUndefined();
     // A chained line whose only program is git scopes as "git" via
-    // `programs`; two distinct programs → not cacheable; interpreters
-    // excluded either way.
+    // `programs`; two distinct programs → not cacheable; an interpreter via
+    // `programs` (no argv to pin a script) is excluded.
     expect(permissionCacheScope(req("bash", { programs: ["git"] }))).toBe(
       "git",
     );
@@ -336,20 +352,27 @@ describe("permissionCacheScope", () => {
     expect(c.isCacheable("bash", "workspace_write", undefined)).toBe(false);
   });
 
-  it("excludes generic interpreters/shells from caching (a python remember must not cover python -c, audit T3.4 review)", () => {
+  it("interpreters never scope by their BARE name (a python remember must not cover python -c, audit T3.4 review) — only by a pinned workspace script", () => {
     const rc = (argv: string[]) =>
       permissionCacheScope(
         req("run_command", {
           call: { id: "c", tool: "run_command", input: { argv } },
         }),
       );
-    // argv[0] that does not constrain the executed code → non-cacheable.
-    expect(rc(["python", "build.py"])).toBeUndefined();
-    expect(rc(["python3", "x.py"])).toBeUndefined();
-    expect(rc(["node", "s.js"])).toBeUndefined();
+    // The pinned pair is the scope: covers `python build.py <any args>` and
+    // nothing else run through python.
+    expect(rc(["python", "build.py"])).toBe("python build.py");
+    expect(rc(["python3", "x.py"])).toBe("python3 x.py");
+    expect(rc(["node", "s.js"])).toBe("node s.js");
+    expect(rc(["/usr/bin/perl", "s.pl"])).toBe("/usr/bin/perl s.pl");
+    expect(rc(["C:\\Python\\python.exe", "x.py"])).toBe(
+      "C:\\Python\\python.exe x.py",
+    );
+    // No pin → nothing: shells, -c/-e bodies, module runs, missing script.
     expect(rc(["bash", "-c", "echo hi"])).toBeUndefined();
-    expect(rc(["/usr/bin/perl", "s.pl"])).toBeUndefined();
-    expect(rc(["C:\\Python\\python.exe", "x.py"])).toBeUndefined();
+    expect(rc(["python", "-c", "print(1)"])).toBeUndefined();
+    expect(rc(["python", "-m", "pytest"])).toBeUndefined();
+    expect(rc(["node"])).toBeUndefined();
     // A specific tool binary still caches under its name.
     expect(rc(["pytest"])).toBe("pytest");
     expect(rc(["npm", "run", "build"])).toBe("npm");

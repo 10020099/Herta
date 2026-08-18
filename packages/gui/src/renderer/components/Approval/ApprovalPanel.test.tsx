@@ -523,6 +523,33 @@ describe("ApprovalPanel — conversation reserve (2026-07-27)", () => {
     });
   });
 
+  it("a chained line names its other ask classes under the top label (2026-08-17)", async () => {
+    // `kill 574; curl localhost` is labelled by its highest-risk segment
+    // (network); the kill used to be invisible on the card.
+    const mock = setup();
+    await settle();
+    act(() => {
+      mock.emitOverlay({
+        kind: "pending",
+        overlay: {
+          kind: "pending-permission",
+          requestId: "req-chain",
+          risk: "network",
+          tool: "bash",
+          code: "command_ask_network",
+          codes: ["command_ask_network", "command_ask_process", "not_a_code"],
+          summary: "curl network call; kill ends processes: 574",
+          command: "kill 574; sleep 0.5; curl -s http://127.0.0.1:4643/",
+          cacheable: false,
+        },
+      });
+    });
+    expect(screen.getByText("Network access")).toBeInTheDocument();
+    expect(
+      screen.getByText("Also: This command ends processes — check the target"),
+    ).toBeInTheDocument();
+  });
+
   describe("heredoc file writes (minimal contract, 2026-08-17)", () => {
     const CMD = [
       "mkdir -p src && cat > src/server.mjs <<'EOF'",

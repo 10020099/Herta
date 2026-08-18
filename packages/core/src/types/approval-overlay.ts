@@ -24,7 +24,13 @@ export interface PendingPermissionApproval {
    *  The GUI localizes the summary line by this code when it recognizes it;
    *  `summary` stays the neutral-English fallback (D2). */
   readonly code?: string;
-  /** run_command only: argv joined with spaces. Undefined for other tools. */
+  /** request.codes — every distinct ask class of a chained shell line,
+   *  `code` first (2026-08-17). The GUI names the classes beyond the top
+   *  label ("另含：结束进程"), so a line labelled by its highest-risk
+   *  segment does not hide what the rest of it does. */
+  readonly codes?: readonly string[];
+  /** run_command / bash: the command as it will run (argv joined, or the
+   *  shell string verbatim). Undefined for other tools. */
   readonly command?: string;
   /** request.diff — the unified diff behind a file-write ask (edit_file /
    *  write_new_file). The GUI shows it behind a collapsed disclosure so the

@@ -697,6 +697,53 @@ export function classifyCommand(argv: readonly string[]): Verdict {
   ) {
     return { kind: "allow" };
   }
+  // The node test runner and version queries (permission lab 2026-08-17):
+  // `node --test test/` was 12 of 65 asks in 15 briefs — the 极简 model runs
+  // tests through node directly, not `npm test`, and each run prompted as
+  // 「解释器执行脚本」. It runs the workspace's test files the way `npm test`
+  // does (which is allowed); the arbitrary-code shapes (`-e`/`--eval`/`-p`/
+  // `--print`, an `--import`/`-r` preload, a script path) stay asks.
+  // `node --version` / `npm -v` execute nothing.
+  if (
+    (a0 === "node" || a0 === "nodejs") &&
+    argv[1] === "--test" &&
+    !argv.some((a) =>
+      /^(-e|--eval|-p|--print|--import|-r|--require|--loader|--experimental-loader)(=|$)/.test(
+        a,
+      ),
+    )
+  ) {
+    return readerArgvGuard(argv) ?? { kind: "allow" };
+  }
+  if (
+    ["node", "nodejs", "npm", "pnpm", "npx", "git"].includes(a0) &&
+    argv.length === 2 &&
+    (argv[1] === "--version" || argv[1] === "-v" || argv[1] === "-V")
+  ) {
+    return { kind: "allow" };
+  }
+  // Read-only process / port listings — the server-flow briefs check whether
+  // the thing they started is up and which pid owns the port; today's
+  // 「未识别的命令」 on `ps aux | grep` / `netstat -ano` was noise. None of
+  // these change anything; the KILLING commands are classified below.
+  if (
+    [
+      "ps",
+      "pgrep",
+      "netstat",
+      "ss",
+      "tasklist",
+      "lsof",
+      "uptime",
+      "df",
+      "free",
+      "uname",
+      "which",
+      "where",
+    ].includes(a0)
+  ) {
+    return { kind: "allow" };
+  }
   if (a0 === "pytest") return { kind: "allow" };
   if (
     a0 === "cargo" &&
@@ -716,6 +763,9 @@ export function classifyCommand(argv: readonly string[]): Verdict {
       "branch",
       "rev-parse",
       "ls-files",
+      "grep",
+      "blame",
+      "stash", // only `git stash list` / `show` — see below
     ].includes(argv[1])
   ) {
     // `git diff --no-index <p1> <p2>` is git's arbitrary-filesystem compare —
@@ -733,7 +783,78 @@ export function classifyCommand(argv: readonly string[]): Verdict {
           "git diff --no-index reads arbitrary filesystem paths — review the targets",
       };
     }
+    // `git grep` searches TRACKED files (the index / working tree of what is
+    // committed) — the same confinement `git show` has, and the search the
+    // 极简 model should reach for over `grep -r` (which asks: it can read an
+    // ignored .env). Its escape hatches ask: `--no-index` (whole tree),
+    // `--untracked` / `--no-exclude-standard` (ignored files back in).
+    if (
+      argv[1] === "grep" &&
+      argv.some(
+        (a) =>
+          a === "--no-index" ||
+          a === "--untracked" ||
+          a === "--no-exclude-standard",
+      )
+    ) {
+      return {
+        kind: "ask",
+        risk: "workspace_read",
+        code: "command_ask_recursive_read",
+        reason:
+          "git grep outside the tracked set can read ignored/untracked files — prefer plain git grep",
+      };
+    }
+    // `git stash` mutates unless it is `list` / `show`.
+    if (argv[1] === "stash" && !(argv[2] === "list" || argv[2] === "show")) {
+      return {
+        kind: "ask",
+        risk: "workspace_write",
+        code: "command_ask_vcs",
+        reason: `git ${argv.slice(1, 3).join(" ")} changes the working tree`,
+      };
+    }
+    // `git branch` LISTS (no operand, or the query flags); a name operand
+    // creates, and -d/-D/-m/-M/-c/-C/-u… mutate.
+    if (argv[1] === "branch") {
+      const rest = argv.slice(2);
+      const mutatingFlag = rest.some((a) =>
+        /^-[dDmMcCu]$|^--(delete|move|copy|force|set-upstream-to|unset-upstream|edit-description|track)(=|$)/.test(
+          a,
+        ),
+      );
+      const queryFlag = rest.some((a) =>
+        /^(-a|-r|-v|-vv|--all|--remotes|--list|--show-current|--contains|--no-contains|--merged|--no-merged|--points-at|--sort=.*|--format=.*)$/.test(
+          a,
+        ),
+      );
+      const positional = rest.some((a) => !a.startsWith("-"));
+      if (mutatingFlag || (positional && !queryFlag)) {
+        return {
+          kind: "ask",
+          risk: "workspace_write",
+          code: "command_ask_vcs",
+          reason: `git branch ${rest.join(" ")} changes branches`,
+        };
+      }
+    }
     return { kind: "allow" };
+  }
+  // Every other git subcommand changes the repository or the working tree
+  // (commit, add, checkout, switch, merge, rebase, mv, rm, tag, push, pull,
+  // fetch, cherry-pick, revert, apply, restore, …). The harness KNOWS it is
+  // git; 「未识别的命令」 read as ignorance on the card (permission lab
+  // 2026-08-17: git lines were 3 of the 14 unknowns). Same tier, same
+  // rule-eligibility as unknown (`git commit:*` project rules still derive),
+  // an honest class. Network-touching subcommands are still git (the remote
+  // is the repo's own); the destructive shapes were classified above.
+  if (a0 === "git" && typeof argv[1] === "string") {
+    return {
+      kind: "ask",
+      risk: "workspace_write",
+      code: "command_ask_vcs",
+      reason: `git ${argv[1]} changes the repository`,
+    };
   }
   if (a0 === "grep" || a0 === "rg" || a0 === "ripgrep") {
     return (
@@ -792,6 +913,40 @@ export function classifyCommand(argv: readonly string[]): Verdict {
       risk: "workspace_write",
       code: "command_ask_interpreter",
       reason: `${a0} executes a script — review the script path and arguments`,
+    };
+  }
+  // Honest classes for the plain filesystem and process verbs (permission
+  // lab 2026-08-17: `rm -f notes.json`, `mkdir -p scripts`, `kill 574` were
+  // 「未识别的命令」 — the harness knows exactly what they are). Same tier,
+  // same risk as before; the card can say what the line does, and the
+  // rule/cache layers key on the code:
+  //   - delete (rm / rmdir / unlink, the non-recursive-force shapes — `-rf`
+  //     was classified destructive above): NOT rule-eligible, like write.
+  //   - process (kill / pkill / killall / taskkill): NOT rule-eligible.
+  //   - fs (mkdir / touch / cp / mv / ln / rename): rule-eligible exactly as
+  //     unknown was, so nothing that could be persisted before cannot now.
+  if (id === "rm" || id === "rmdir" || id === "unlink") {
+    return {
+      kind: "ask",
+      risk: "workspace_write",
+      code: "command_ask_delete",
+      reason: `${id} deletes: ${argv.slice(1).join(" ")}`,
+    };
+  }
+  if (["kill", "pkill", "killall", "taskkill"].includes(id)) {
+    return {
+      kind: "ask",
+      risk: "workspace_write",
+      code: "command_ask_process",
+      reason: `${id} ends processes: ${argv.slice(1).join(" ")}`,
+    };
+  }
+  if (["mkdir", "touch", "cp", "mv", "ln", "rename"].includes(id)) {
+    return {
+      kind: "ask",
+      risk: "workspace_write",
+      code: "command_ask_fs",
+      reason: `${id}: ${argv.slice(1).join(" ")}`,
     };
   }
   return {

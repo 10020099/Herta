@@ -253,6 +253,18 @@ export function ApprovalPanel(): JSX.Element | null {
   const reasonKey =
     shown.code === undefined ? undefined : REASON_KEY[shown.code];
   const summary = reasonKey === undefined ? shown.summary : t(reasonKey);
+  // A chained shell line carries every ask class it triggered (2026-08-17);
+  // the top label says the highest-risk one, this line names the rest — so
+  // `kill 574; curl localhost` reads "network" AND "ends processes", not
+  // just the first. Unrecognized codes are skipped rather than shown raw.
+  const alsoLabels =
+    shown.codes === undefined
+      ? []
+      : shown.codes
+          .filter((c) => c !== shown.code)
+          .map((c) => REASON_KEY[c])
+          .filter((k): k is NonNullable<typeof k> => k !== undefined)
+          .map((k) => t(k));
 
   return (
     <div
@@ -282,6 +294,11 @@ export function ApprovalPanel(): JSX.Element | null {
       </div>
       <div id="approval-panel-desc" className="approval-panel__desc">
         <p className="approval-panel__summary">{summary}</p>
+        {alsoLabels.length > 0 && (
+          <p className="approval-panel__also">
+            {t("approval.alsoClasses", { list: alsoLabels.join("；") })}
+          </p>
+        )}
         {shownCommand !== undefined && (
           <pre className="approval-panel__command">{shownCommand}</pre>
         )}

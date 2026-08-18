@@ -162,6 +162,20 @@ d("bash tool (real bash)", () => {
       expect(interp.request.argv).toEqual(["node", "scripts/x.mjs"]);
       expect(interp.request.code).toBe("command_ask_interpreter");
     }
+    // A chained line carries every ask class it triggered, top first
+    // (2026-08-17): the card labels by the first and names the rest.
+    const chained = await engine.check(
+      call("kill 574; sleep 0.5; curl -s http://127.0.0.1:4643/"),
+      ctx,
+    );
+    expect(chained.kind).toBe("ask");
+    if (chained.kind === "ask") {
+      expect(chained.request.code).toBe("command_ask_network");
+      expect(chained.request.codes).toEqual([
+        "command_ask_network",
+        "command_ask_process",
+      ]);
+    }
     const blocked = await engine.check(call("rm -rf /"), ctx);
     expect(blocked.kind).toBe("deny");
     // After the shell has cd'd into sub/, a relative read resolves there.

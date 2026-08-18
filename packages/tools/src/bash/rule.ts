@@ -54,11 +54,14 @@ export function makeBashRule(deps: BashRuleDeps): PermissionRule {
     const shell = ctx.bg.getInternal(SHELL_BG_ID);
     const cwd =
       shell instanceof PersistentShell ? shell.cwd : ctx.workspaceRoot;
-    const { verdict } = classifyShellCommandDetailed(parsed.data.command, {
-      workspaceRoot: ctx.workspaceRoot,
-      paths,
-      cwd,
-    });
+    const { verdict, codes } = classifyShellCommandDetailed(
+      parsed.data.command,
+      {
+        workspaceRoot: ctx.workspaceRoot,
+        paths,
+        cwd,
+      },
+    );
     if (verdict.kind === "block") {
       return { kind: "deny", code: verdict.code, reason: verdict.reason };
     }
@@ -93,14 +96,23 @@ export function makeBashRule(deps: BashRuleDeps): PermissionRule {
             files: preview.files,
           });
         }
+        const code =
+          verdict.risk === "workspace_write"
+            ? "command_ask_write"
+            : verdict.code;
+        // The write class leads; the line's other classes follow (deduped).
+        const allCodes = [
+          code,
+          ...(codes ?? []).filter(
+            (c) => c !== code && c !== "command_ask_write",
+          ),
+        ];
         return {
           kind: "ask",
           reason: `${preview.summary}; ${verdict.reason}`,
           risk: verdict.risk,
-          code:
-            verdict.risk === "workspace_write"
-              ? "command_ask_write"
-              : verdict.code,
+          code,
+          ...(allCodes.length > 1 ? { codes: allCodes } : {}),
           ...(preview.diff.length > 0 ? { diff: preview.diff } : {}),
           files: preview.files,
           ...(argv !== null ? { argv } : {}),
@@ -112,6 +124,7 @@ export function makeBashRule(deps: BashRuleDeps): PermissionRule {
         reason: verdict.reason,
         risk: verdict.risk,
         code: verdict.code,
+        ...(codes !== undefined && codes.length > 1 ? { codes } : {}),
         ...(argv !== null ? { argv } : {}),
         ...(programs !== null && programs.length > 0 ? { programs } : {}),
       };

@@ -2816,6 +2816,9 @@ button.agent-preview:active {
   gap: 8px;
 }
 .approval-panel__summary { margin: 0; font-size: 13px; color: var(--slate-deep); }
+/* The other ask classes of a chained shell line (2026-08-17) — a dim line
+   under the top label, same register as the project-rule note below. */
+.approval-panel__also { margin: 0; font-size: 12px; color: var(--muted-slate); }
 .approval-panel__command {
   margin: 0;
   padding: 8px 10px;

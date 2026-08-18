@@ -28,6 +28,13 @@ export const REASON_KEY: Record<string, MessageKey> = {
   command_ask_write: "approval.reason.commandWrite",
   command_ask_reader_path: "approval.reason.commandReaderPath",
   command_ask_recursive_read: "approval.reason.commandRecursiveRead",
+  // Split off from `unknown` (permission lab 2026-08-17): the harness knows
+  // these programs; the card should say what the line does.
+  command_ask_vcs: "approval.reason.commandVcs",
+  command_ask_fs: "approval.reason.commandFs",
+  command_ask_delete: "approval.reason.commandDelete",
+  command_ask_process: "approval.reason.commandProcess",
+  command_ask_cwd_escape: "approval.reason.commandCwdEscape",
   write_new_file_ask: "approval.reason.writeNewFile",
   edit_file_ask: "approval.reason.editFile",
   // The minimal contract's editor (ADR 0040) — its raw reason ("writes

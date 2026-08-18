@@ -35,6 +35,11 @@ export type RuleVerdict =
        *  run_command `git commit` is). Rules never derive from this: a
        *  chained line has no single argv to pin. */
       programs?: readonly string[];
+      /** Every DISTINCT ask class a chained line carries, `code` first
+       *  (2026-08-17): the card labels the line by `code` (highest risk) and
+       *  names the rest — `kill 574; curl localhost` is "network" AND
+       *  "ends processes". Absent or length 1 → nothing extra to say. */
+      codes?: readonly string[];
     }
   | {
       kind: "deny";
@@ -132,6 +137,7 @@ export class RulePermissionEngine implements PermissionEngine {
       files: verdict.files,
       ...(verdict.argv !== undefined ? { argv: verdict.argv } : {}),
       ...(verdict.programs !== undefined ? { programs: verdict.programs } : {}),
+      ...(verdict.codes !== undefined ? { codes: verdict.codes } : {}),
     };
     const decision = this.ask.present(request, ctx.signal);
     return { kind: "ask", request, decision };

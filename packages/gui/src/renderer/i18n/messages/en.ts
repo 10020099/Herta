@@ -178,6 +178,17 @@ export const en = {
     "Reads a sensitive or out-of-workspace path",
   "approval.reason.commandRecursiveRead":
     "Recursive read bypasses the credential guard",
+  "approval.reason.commandVcs":
+    "This git command changes the repository or working tree",
+  "approval.reason.commandFs":
+    "Filesystem operation (create / copy / move) — check the paths",
+  "approval.reason.commandDelete":
+    "This command deletes files — check the paths",
+  "approval.reason.commandProcess":
+    "This command ends processes — check the target",
+  "approval.reason.commandCwdEscape":
+    "This command leaves the workspace directory — later relative paths are unguarded",
+  "approval.alsoClasses": "Also: {list}",
   "app.fanNotice":
     "Herta is a character from Honkai: Star Rail, © HoYoverse. Unofficial fan project, unaffiliated with and not endorsed by HoYoverse.",
   "approval.diffShowAria":

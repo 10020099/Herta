@@ -135,6 +135,27 @@ describe("OverlayAskResolver.present — payload enrichment", () => {
     expect(p2[0]?.code).toBeUndefined();
   });
 
+  it("carries the other ask classes of a chained line (codes) — only when there is more than one", () => {
+    const { resolver, pending } = makeResolver();
+    void resolver.present(
+      makeRequest({
+        code: "command_ask_network",
+        codes: ["command_ask_network", "command_ask_process"],
+      }),
+      new AbortController().signal,
+    );
+    expect(pending[0]?.codes).toEqual([
+      "command_ask_network",
+      "command_ask_process",
+    ]);
+    const { resolver: r2, pending: p2 } = makeResolver();
+    void r2.present(
+      makeRequest({ code: "command_ask_vcs", codes: ["command_ask_vcs"] }),
+      new AbortController().signal,
+    );
+    expect(p2[0]?.codes).toBeUndefined();
+  });
+
   it("carries files when present", () => {
     const { resolver, pending } = makeResolver();
     void resolver.present(

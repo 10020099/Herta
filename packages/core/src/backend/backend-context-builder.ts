@@ -360,7 +360,7 @@ export function minimalBackendContract(
     "你不和开拓者说话，也不扮演黑塔。你的产出是仓库里的改动和命令的结果；分析得出的结论要用 report_finding 逐条记下（附 path:line 出处），要给人看某几行时用 show_excerpt——你最后一条消息里的文字没有人会看到。",
     ...(workspaceHint !== undefined && workspaceHint.length > 0
       ? [
-          `工作区：${workspaceHint}。bash 一开始就在工作区里，目录和变量在命令之间保持，不必每条命令都先 cd。`,
+          `工作区：${workspaceHint}。bash 一开始就在工作区里，目录和变量在命令之间保持，不必每条命令都先 cd。搜索代码优先用 git grep -n（只搜已跟踪文件）；跑测试用 npm test 或 node --test。`,
         ]
       : []),
   ];
@@ -370,7 +370,7 @@ export function minimalBackendContract(
     "You do not speak to the user and you do not play Herta. Your output is the changes in the repository and the results of the commands you run; record analytical conclusions one by one with report_finding (cite path:line), and use show_excerpt when someone needs to see specific lines — the text of your final message is seen by no one.",
     ...(workspaceHint !== undefined && workspaceHint.length > 0
       ? [
-          `Workspace: ${workspaceHint}. bash starts inside it and keeps its directory and variables between commands — no need to cd first every time.`,
+          `Workspace: ${workspaceHint}. bash starts inside it and keeps its directory and variables between commands — no need to cd first every time. Search code with git grep -n (tracked files only); run tests with npm test or node --test.`,
         ]
       : []),
   ];

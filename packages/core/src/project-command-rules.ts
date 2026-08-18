@@ -34,10 +34,16 @@ import { join } from "node:path";
 
 /** Ask-class codes whose approvals may be persisted as project rules. All
  *  other ask classes (destructive, network, reader-path, recursive-read,
- *  write-redirection) re-prompt every time, rule or no rule. */
+ *  write-redirection, delete, process) re-prompt every time, rule or no
+ *  rule. `command_ask_vcs` (git mutations) and `command_ask_fs` (mkdir /
+ *  touch / cp / mv / ln) split off from `unknown` on 2026-08-17 for honest
+ *  card labels; they keep unknown's eligibility so `git commit:*` /
+ *  `mkdir:*` rules still derive exactly as before. */
 const RULE_ELIGIBLE_ASK_CODES: ReadonlySet<string> = new Set([
   "command_ask_unknown",
   "command_ask_interpreter",
+  "command_ask_vcs",
+  "command_ask_fs",
 ]);
 
 export function isRuleEligibleAskCode(code: string | undefined): boolean {

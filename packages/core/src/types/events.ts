@@ -22,6 +22,9 @@ export interface PermissionRequest {
   argv?: readonly string[];
   /** Rule-derived distinct programs of a shell line (cache scope only). */
   programs?: readonly string[];
+  /** Every distinct ask class of a chained shell line, `code` first; the
+   *  approval surface names the ones beyond the top label. */
+  codes?: readonly string[];
 }
 
 // Opaque in slice B; real shape lives in tools / dialogue specs.

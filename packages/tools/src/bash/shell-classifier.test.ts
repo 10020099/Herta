@@ -142,7 +142,11 @@ describe("classifyShellCommand — ask tier", () => {
 
   it("asks when cd leaves the workspace (parent, home, absolute outside, variable)", () => {
     expect(ask("cd .. && ls").reason).toContain("cd leaves the workspace");
-    expect(ask("cd ~ && ls").risk).toBe("workspace_read");
+    // Write tier + its own class (2026-08-17): after the escape the
+    // classifier cannot follow relative paths, and the lab saw `cd .. && cp
+    // -r ws ws-copy` labelled by the cp alone.
+    expect(ask("cd ~ && ls").risk).toBe("workspace_write");
+    expect(ask("cd ~ && ls").code).toBe("command_ask_cwd_escape");
     expect(ask("cd /etc && cat passwd").reason).toContain(
       "cd leaves the workspace",
     );
@@ -159,13 +163,18 @@ describe("classifyShellCommand — ask tier", () => {
     expect(ask("python -c 'print(1)'").code).toBe("command_ask_interpreter");
   });
 
-  it("asks for git writes and unknown commands (parity with run_command)", () => {
-    expect(ask("git commit -m 'fix: x'").code).toBe("command_ask_unknown");
-    expect(ask("git checkout -b fix/x").code).toBe("command_ask_unknown");
-    expect(ask("git push origin main").code).toBe("command_ask_unknown");
-    expect(ask("git status && git commit -am x").code).toBe(
-      "command_ask_unknown",
+  it("asks for git writes (the honest vcs class, 2026-08-17) and unknown commands (parity with run_command)", () => {
+    expect(ask("git commit -m 'fix: x'").code).toBe("command_ask_vcs");
+    expect(ask("git checkout -b fix/x").code).toBe("command_ask_vcs");
+    expect(ask("git push origin main").code).toBe("command_ask_vcs");
+    expect(ask("git status && git commit -am x").code).toBe("command_ask_vcs");
+    expect(ask("frobnicate --now").code).toBe("command_ask_unknown");
+    // and the other named verbs (permission lab 2026-08-17)
+    expect(ask("rm -f notes.json").code).toBe("command_ask_delete");
+    expect(ask("kill 574; pkill -f status.mjs").code).toBe(
+      "command_ask_process",
     );
+    expect(ask("mkdir -p scripts").code).toBe("command_ask_fs");
   });
 
   it("asks for destructive / network tiers with their own risks", () => {
@@ -213,7 +222,21 @@ describe("classifyShellCommand — ask tier", () => {
     expect(v.risk).toBe("network");
     expect(v.reason).toContain("curl");
     expect(v.reason).toContain("z");
-    expect(v.reason).toContain("unrecognized");
+    expect(v.reason).toContain("git commit");
+    // …and every distinct class rides along, top first (2026-08-17), so the
+    // card can name what the line does beyond its highest-risk label.
+    const d = classifyShellCommandDetailed(
+      "kill 574; pkill -f status.mjs; sleep 0.5; curl -s http://127.0.0.1:4643/",
+      opts,
+    );
+    expect(d.verdict.kind).toBe("ask");
+    expect(d.codes).toEqual(["command_ask_network", "command_ask_process"]);
+    expect(
+      classifyShellCommandDetailed("git status", opts).codes,
+    ).toBeUndefined();
+    expect(classifyShellCommandDetailed("git commit -m x", opts).codes).toEqual(
+      ["command_ask_vcs"],
+    );
   });
 
   it("segments are reported for diagnostics", () => {

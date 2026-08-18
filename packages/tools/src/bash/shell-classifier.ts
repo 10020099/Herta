@@ -118,6 +118,12 @@ export interface ShellVerdictDetail {
   verdict: Verdict;
   /** Segments actually classified (for tests / diagnostics). */
   segments: string[];
+  /** For an ask: the DISTINCT ask-class codes of every asking segment,
+   *  highest-risk first (the verdict's `code` is the first). A chained line
+   *  is the minimal contract's normal shape, and `kill 574; curl localhost`
+   *  labelled only 「该命令会访问网络」 hid the kill (permission lab
+   *  2026-08-17) — the card names the rest from this. */
+  codes?: string[];
 }
 
 export function classifyShellCommand(
@@ -186,6 +192,7 @@ export function classifyShellCommandDetailed(
   asks.sort((a, b) => RISK_RANK[b.risk] - RISK_RANK[a.risk]);
   const top = asks[0] as Extract<Verdict, { kind: "ask" }>;
   const reasons = [...new Set(asks.map((a) => a.reason))];
+  const codes = [...new Set(asks.map((a) => a.code))];
   return {
     verdict: {
       kind: "ask",
@@ -194,6 +201,7 @@ export function classifyShellCommandDetailed(
       reason: reasons.join("; "),
     },
     segments: classified,
+    codes,
   };
 }
 
@@ -510,11 +518,17 @@ function destinationOf(token: string, opts: ShellClassifyOpts): string | null {
   return isInside(opts.workspaceRoot, resolved) ? resolved : null;
 }
 
+/** A `cd` that leaves the workspace. WRITE risk and its own class
+ *  (2026-08-17): the classifier cannot follow relative paths after it, so
+ *  everything later on the line may read OR write outside the workspace —
+ *  the permission lab saw `cd .. && cp -r ws ws-copy` labelled by its `cp`
+ *  ("filesystem operation") with the escape only in the raw reason. As a
+ *  write-tier ask it competes for the top label and reads as what it is. */
 function cdAsk(target: string): Extract<Verdict, { kind: "ask" }> {
   return {
     kind: "ask",
-    risk: "workspace_read",
-    code: "command_ask_reader_path",
+    risk: "workspace_write",
+    code: "command_ask_cwd_escape",
     reason: `cd leaves the workspace: ${target} — later relative paths would resolve outside it`,
   };
 }

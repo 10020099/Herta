@@ -161,6 +161,14 @@ export const zh = {
   "approval.reason.commandWrite": "该命令会写入文件",
   "approval.reason.commandReaderPath": "读取敏感或工作区外的路径",
   "approval.reason.commandRecursiveRead": "递归读取会绕过凭据保护",
+  "approval.reason.commandVcs": "该 git 命令会改动仓库或工作区",
+  "approval.reason.commandFs": "文件系统操作（新建 / 复制 / 移动），请核对路径",
+  "approval.reason.commandDelete": "该命令会删除文件，请核对路径",
+  "approval.reason.commandProcess": "该命令会结束进程，请核对目标",
+  "approval.reason.commandCwdEscape":
+    "该命令会切到工作区之外，之后的相对路径不受工作区保护",
+  // A chained line with more than one ask class: the other classes, named.
+  "approval.alsoClasses": "另含：{list}",
   "app.fanNotice":
     "黑塔是《崩坏：星穹铁道》的角色，版权归米哈游所有。本项目为非官方同人作品，与米哈游无关，亦未获其认可。",
   "approval.diffShowAria": "展开差分：{n} 行改动，新增 {add} 行，删除 {del} 行",

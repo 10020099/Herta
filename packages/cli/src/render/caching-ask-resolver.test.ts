@@ -236,18 +236,30 @@ describe("CachingAskResolver", () => {
       expect(cache.has("run_command", "workspace_write", "gofmt")).toBe(false);
     });
 
-    it("generic interpreters are NOT cacheable: no remember offered, never cached (audit T3.4 review)", async () => {
+    it("interpreters cache only by a PINNED workspace script — never by their bare name (audit T3.4 review; refined 2026-08-17)", async () => {
       const cache = new SessionApprovalCache();
       const { inner, stdout } = mkInner();
-      inner.outcomes = ["allow_remember"];
+      inner.outcomes = ["allow_remember", "allow_remember"];
       const wrapper = new CachingAskResolver(inner, cache, stdout, style);
       const ac = new AbortController();
-      // `python build.py` remembered would auto-approve `python -c '<evil>'`,
-      // so python/node/bash/... never cache — the remember option is hidden
-      // and the entry is never stored.
+      // `python3 build.py` remembered covers `python3 build.py <args>` and
+      // nothing else run through python — so the remember IS offered and
+      // stored under the pinned pair (permission lab 2026-08-17: the same
+      // pinned script re-asked three times in one brief).
       await wrapper.present(mkRunReq(["python3", "build.py"]), ac.signal);
-      expect(inner.optionsLog).toEqual([{ showRemember: false }]);
-      expect(cache.size()).toBe(0);
+      expect(inner.optionsLog).toEqual([{ showRemember: true }]);
+      expect(cache.size()).toBe(1);
+      expect(cache.list()).toEqual([
+        "run_command:python3 build.py:workspace_write",
+      ]);
+      // The arbitrary-code shape is still never offered / never stored: a
+      // `python3 -c` after the remember above still prompts.
+      await wrapper.present(mkRunReq(["python3", "-c", "print(1)"]), ac.signal);
+      expect(inner.optionsLog).toEqual([
+        { showRemember: true },
+        { showRemember: false },
+      ]);
+      expect(cache.size()).toBe(1);
     });
 
     it("destructive risk: shows [y/N] (no remember), never caches", async () => {
@@ -292,8 +304,10 @@ describe("CachingAskResolver", () => {
           new AbortController().signal,
         );
         expect(d1).toBe("allow");
+        // The pinned script also makes the task-remember available (the
+        // cache scopes by `node src/index.mjs`, 2026-08-17).
         expect(first.inner.optionsLog).toEqual([
-          { showRemember: false, projectRule: "node src/index.mjs:*" },
+          { showRemember: true, projectRule: "node src/index.mjs:*" },
         ]);
         expect(rules.list().map(ruleDisplay)).toEqual(["node src/index.mjs:*"]);
 
@@ -331,7 +345,10 @@ describe("CachingAskResolver", () => {
           nodeReq(["node", "src/index.mjs"], "command_ask_destructive"),
           new AbortController().signal,
         );
-        expect(third.inner.optionsLog).toEqual([{ showRemember: false }]);
+        // (showRemember follows the RISK, which this fixture leaves at
+        // workspace_write with a pinnable script — the point here is that no
+        // projectRule is offered for the non-eligible class.)
+        expect(third.inner.optionsLog).toEqual([{ showRemember: true }]);
 
         // 4) Eligible but underivable (eval flag): no [p] offered.
         const fourth = mkInner();

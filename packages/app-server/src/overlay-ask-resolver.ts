@@ -155,6 +155,9 @@ export class OverlayAskResolver implements AskResolver {
         tool: request.call.tool,
         summary: request.reason,
         code: request.code,
+        ...(request.codes !== undefined && request.codes.length > 1
+          ? { codes: request.codes }
+          : {}),
         command: extractCommand(request),
         diff: request.diff,
         files: request.files,

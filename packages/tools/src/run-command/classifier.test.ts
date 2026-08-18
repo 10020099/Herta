@@ -202,6 +202,119 @@ describe("classifyCommand — allow", () => {
     expect(classifyCommand(["pwd"]).kind).toBe("allow");
   });
 
+  it("permission lab 2026-08-17: node's test runner and version queries allow; process/port listings allow; git grep allows (escape hatches ask)", () => {
+    expect(classifyCommand(["node", "--test", "test/"]).kind).toBe("allow");
+    expect(
+      classifyCommand(["node", "--test", "test/store.test.mjs"]).kind,
+    ).toBe("allow");
+    expect(classifyCommand(["node", "--test"]).kind).toBe("allow");
+    // arbitrary-code shapes stay asks
+    expect(
+      classifyCommand(["node", "--test", "--import", "./x.mjs"]).kind,
+    ).toBe("ask");
+    expect(classifyCommand(["node", "-e", "1"]).kind).toBe("ask");
+    expect(classifyCommand(["node", "src/cli.mjs"]).kind).toBe("ask");
+    for (const argv of [
+      ["node", "--version"],
+      ["node", "-v"],
+      ["npm", "--version"],
+      ["git", "--version"],
+    ]) {
+      expect(classifyCommand(argv).kind, argv.join(" ")).toBe("allow");
+    }
+    for (const argv of [
+      ["ps", "aux"],
+      ["pgrep", "-f", "status.mjs"],
+      ["netstat", "-ano"],
+      ["tasklist", "//FI", "IMAGENAME eq node.exe"],
+      ["lsof", "-i", ":4642"],
+      ["which", "node"],
+    ]) {
+      expect(classifyCommand(argv).kind, argv.join(" ")).toBe("allow");
+    }
+    expect(classifyCommand(["git", "grep", "-n", "TODO"]).kind).toBe("allow");
+    expect(classifyCommand(["git", "blame", "src/a.ts"]).kind).toBe("allow");
+    expect(classifyCommand(["git", "stash", "list"]).kind).toBe("allow");
+    for (const argv of [
+      ["git", "grep", "--no-index", "TODO"],
+      ["git", "grep", "--untracked", "TODO"],
+    ]) {
+      const r = classifyCommand(argv);
+      expect(r.kind, argv.join(" ")).toBe("ask");
+      if (r.kind === "ask") expect(r.code).toBe("command_ask_recursive_read");
+    }
+  });
+
+  it("honest classes (2026-08-17): git mutations are vcs, rm is delete, kill is process, mkdir/cp/mv are fs — all still asks", () => {
+    const code = (argv: string[]) => {
+      const r = classifyCommand(argv);
+      return r.kind === "ask" ? `${r.code}/${r.risk}` : r.kind;
+    };
+    for (const argv of [
+      ["git", "commit", "-m", "x"],
+      ["git", "add", "-A"],
+      ["git", "checkout", "-b", "feat/x"],
+      ["git", "stash"],
+      ["git", "stash", "pop"],
+      ["git", "mv", "a", "b"],
+      ["git", "push"],
+      ["git", "branch", "feat/x"],
+      ["git", "branch", "-d", "feat/x"],
+    ]) {
+      expect(code(argv), argv.join(" ")).toBe(
+        "command_ask_vcs/workspace_write",
+      );
+    }
+    // listing forms of branch stay allowed
+    expect(classifyCommand(["git", "branch"]).kind).toBe("allow");
+    expect(classifyCommand(["git", "branch", "-a"]).kind).toBe("allow");
+    expect(classifyCommand(["git", "branch", "--show-current"]).kind).toBe(
+      "allow",
+    );
+    // the destructive shapes keep their class
+    expect(code(["git", "reset", "--hard"])).toBe(
+      "command_ask_destructive/workspace_destructive",
+    );
+    expect(code(["rm", "-rf", "build/"])).toBe(
+      "command_ask_destructive/workspace_destructive",
+    );
+    for (const argv of [
+      ["rm", "-f", "notes.json"],
+      ["rm", "notes.json"],
+      ["rmdir", "empty"],
+      ["/bin/rm", "x"],
+    ]) {
+      expect(code(argv), argv.join(" ")).toBe(
+        "command_ask_delete/workspace_write",
+      );
+    }
+    for (const argv of [
+      ["kill", "574"],
+      ["pkill", "-f", "status.mjs"],
+      ["taskkill", "//PID", "1", "//F"],
+    ]) {
+      expect(code(argv), argv.join(" ")).toBe(
+        "command_ask_process/workspace_write",
+      );
+    }
+    for (const argv of [
+      ["mkdir", "-p", "scripts"],
+      ["touch", "a"],
+      ["cp", "a", "b"],
+      ["mv", "a", "b"],
+      ["ln", "-s", "a", "b"],
+    ]) {
+      expect(code(argv), argv.join(" ")).toBe("command_ask_fs/workspace_write");
+    }
+    // genuinely unknown stays unknown
+    expect(code(["frobnicate", "--now"])).toBe(
+      "command_ask_unknown/workspace_write",
+    );
+    expect(code(["./bin/notesd.sh", "list"])).toBe(
+      "command_ask_unknown/workspace_write",
+    );
+  });
+
   it("text filters (2026-08-17): the read-only shapes allow; the writing/executing shapes ask", () => {
     // The pipeline tails the bash model writes constantly.
     expect(classifyCommand(["sort"]).kind).toBe("allow");

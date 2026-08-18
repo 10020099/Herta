@@ -1,6 +1,10 @@
 import type { EventBus } from "./event-bus.js";
 import type { RiskLevel } from "./permission-engine.js";
-import { NEVER_RULABLE, SCRIPT_INTERPRETERS } from "./project-command-rules.js";
+import {
+  deriveProjectCommandRule,
+  NEVER_RULABLE,
+  SCRIPT_INTERPRETERS,
+} from "./project-command-rules.js";
 import type { AgentEvent, PermissionRequest } from "./types/events.js";
 
 /**
@@ -178,7 +182,9 @@ export function permissionCacheScope(
     if (!Array.isArray(argv) || argv.length === 0) return undefined;
     const first = argv[0];
     if (typeof first !== "string" || first.length === 0) return undefined;
-    if (UNCACHEABLE_INTERPRETERS.has(binaryBasename(first))) return undefined;
+    if (UNCACHEABLE_INTERPRETERS.has(binaryBasename(first))) {
+      return pinnedInterpreterScope(argv);
+    }
     return first;
   }
   if (
@@ -205,10 +211,40 @@ export function permissionCacheScope(
         ? request.programs[0]
         : undefined);
     if (typeof first !== "string" || first.length === 0) return undefined;
-    if (UNCACHEABLE_INTERPRETERS.has(binaryBasename(first))) return undefined;
+    if (UNCACHEABLE_INTERPRETERS.has(binaryBasename(first))) {
+      // Only the single-program argv can pin a script; a chained line's
+      // `programs` cannot.
+      return request.argv !== undefined
+        ? pinnedInterpreterScope(request.argv)
+        : undefined;
+    }
     return first;
   }
   return undefined;
+}
+
+/**
+ * The one interpreter shape the task cache MAY scope: the pinned
+ * `<interp> <workspace-script>` — `node scripts/stats.mjs` — exactly the
+ * shape ADR 0030 project rules derive, and for the same reason: the script
+ * path constrains what runs to a file the record's diffs track, where bare
+ * `node` would cover `node -e '<anything>'`. Permission lab 2026-08-17: the
+ * model re-ran `node scripts/stats.mjs` three times in one brief and the
+ * user was asked three times, with nothing between the asks that changed
+ * what would run. Flag operands, out-of-workspace scripts, shells and
+ * wrappers still yield no scope (undefined → not cacheable).
+ */
+function pinnedInterpreterScope(argv: readonly unknown[]): string | undefined {
+  if (!argv.every((a): a is string => typeof a === "string")) return undefined;
+  const a0 = argv[0];
+  if (a0 === undefined || !SCRIPT_INTERPRETERS.has(binaryBasename(a0))) {
+    return undefined;
+  }
+  const rule = deriveProjectCommandRule(argv);
+  if (rule === null || !rule.anyArgs || rule.argvPrefix.length !== 2) {
+    return undefined;
+  }
+  return rule.argvPrefix.join(" ");
 }
 
 /** For rules that derive their own scope: is this program identity a safe
