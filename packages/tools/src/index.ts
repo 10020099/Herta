@@ -191,7 +191,7 @@ export function registerMinimalRules(
   engine: RulePermissionEngine,
   deps: { bus?: EventBus<AgentEvent>; bashPath: string | null },
 ): void {
-  registerBashRule(engine, { bashPath: deps.bashPath });
+  registerBashRule(engine, deps);
   registerStrReplaceEditorRule(engine, deps);
 }
 

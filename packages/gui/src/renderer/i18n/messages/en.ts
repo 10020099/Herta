@@ -185,6 +185,8 @@ export const en = {
   "approval.diffHideAria": "Hide the diff",
   "approval.reason.writeNewFile": "Creates a new file",
   "approval.reason.editFile": "Edits an existing file",
+  "approval.reason.strReplaceEditor": "Writes a file",
+  "approval.heredocFolded": "    ⋯ {n} lines folded — see the diff below ⋯",
   "composer.placeholder": "Message Herta…",
   "composer.aria": "Message composer",
   "composer.send": "Send message",

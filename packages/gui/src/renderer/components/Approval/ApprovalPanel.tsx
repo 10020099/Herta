@@ -4,6 +4,7 @@ import { useHertaBridge } from "../../context/HertaBridgeContext.js";
 import { useSessionSelector } from "../../hooks/useSessionSelector.js";
 import { useT } from "../../i18n/LocaleProvider.js";
 import { OVERLAY_Z, useModalOverlay } from "../../lib/overlay-stack.js";
+import { countHeredocs, foldHeredocs } from "./fold-heredocs.js";
 import { isDangerRisk, REASON_KEY, RISK_KEY } from "./risk-label.js";
 
 /** Exit-animation duration; must match .approval-panel.is-out in reference-ux.css. */
@@ -144,6 +145,22 @@ export function ApprovalPanel(): JSX.Element | null {
     return { n: lines.length, add, del };
   }, [shown?.diff]);
 
+  // The command as the card shows it (2026-08-17): when the ask carries a
+  // diff that covers every heredoc in the command (the rule's heredoc-write
+  // preview), the bodies fold out of the command well — the shell line stays,
+  // the content is in the diff below. Otherwise verbatim: the diff is the
+  // only place a folded body could be seen, so without one nothing folds.
+  const shownCommand = useMemo(() => {
+    const command = shown?.command;
+    if (command === undefined) return undefined;
+    if (shown?.diff === undefined) return command;
+    const n = countHeredocs(command);
+    if (n === 0 || (shown.files?.length ?? 0) < n) return command;
+    return foldHeredocs(command, (lines) =>
+      t("approval.heredocFolded", { n: lines }),
+    ).text;
+  }, [shown?.command, shown?.diff, shown?.files, t]);
+
   // Focus the primary action when a fresh request appears (or when the
   // overlay covering this panel closes).
   useEffect(() => {
@@ -265,8 +282,8 @@ export function ApprovalPanel(): JSX.Element | null {
       </div>
       <div id="approval-panel-desc" className="approval-panel__desc">
         <p className="approval-panel__summary">{summary}</p>
-        {shown.command !== undefined && (
-          <pre className="approval-panel__command">{shown.command}</pre>
+        {shownCommand !== undefined && (
+          <pre className="approval-panel__command">{shownCommand}</pre>
         )}
         {shown.projectRule !== undefined && (
           <p className="approval-panel__rule">

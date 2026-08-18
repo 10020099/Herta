@@ -522,4 +522,77 @@ describe("ApprovalPanel — conversation reserve (2026-07-27)", () => {
       expect(document.getElementById("approval-panel-diff")).not.toBeNull();
     });
   });
+
+  describe("heredoc file writes (minimal contract, 2026-08-17)", () => {
+    const CMD = [
+      "mkdir -p src && cat > src/server.mjs <<'EOF'",
+      "import http from 'node:http';",
+      "const port = Number(process.env.PORT) || 4642;",
+      "EOF",
+    ].join("\n");
+    const DIFF =
+      "--- /dev/null\n+++ b/src/server.mjs\n+import http from 'node:http';\n+const port = Number(process.env.PORT) || 4642;\n";
+
+    it("folds the heredoc body out of the command well when the ask carries the write's diff", async () => {
+      const mock = setup();
+      await settle();
+      act(() => {
+        mock.emitOverlay({
+          kind: "pending",
+          overlay: {
+            kind: "pending-permission",
+            requestId: "req-heredoc",
+            risk: "workspace_write",
+            tool: "bash",
+            code: "command_ask_write",
+            summary:
+              "creates src/server.mjs (2 lines); redirects output to src/server.mjs",
+            command: CMD,
+            diff: DIFF,
+            files: ["src/server.mjs"],
+            cacheable: false,
+          },
+        });
+      });
+      // The write it is, not 「unrecognized command」.
+      expect(screen.getByText("This command writes files")).toBeInTheDocument();
+      // The shell line stays; the body is folded; the terminator stays.
+      const well = document.querySelector(".approval-panel__command");
+      expect(well?.textContent).toContain(
+        "mkdir -p src && cat > src/server.mjs <<'EOF'",
+      );
+      expect(well?.textContent).toContain("2 lines folded");
+      expect(well?.textContent).not.toContain("import http from");
+      expect(well?.textContent?.trim().endsWith("EOF")).toBe(true);
+      // The content is one click away, in the diff.
+      fireEvent.click(screen.getByRole("button", { name: /show the diff/i }));
+      expect(
+        document.getElementById("approval-panel-diff")?.textContent,
+      ).toContain("+import http from 'node:http';");
+      expect(screen.getByText("src/server.mjs")).toBeInTheDocument();
+    });
+
+    it("without a diff (nothing previewable) the command stays verbatim — the body is the only place to read it", async () => {
+      const mock = setup();
+      await settle();
+      act(() => {
+        mock.emitOverlay({
+          kind: "pending",
+          overlay: {
+            kind: "pending-permission",
+            requestId: "req-heredoc-2",
+            risk: "workspace_write",
+            tool: "bash",
+            code: "command_ask_write",
+            summary: "redirects output to $OUT",
+            command: CMD.replace("src/server.mjs", "$OUT"),
+            cacheable: false,
+          },
+        });
+      });
+      const well = document.querySelector(".approval-panel__command");
+      expect(well?.textContent).toContain("import http from 'node:http';");
+      expect(well?.textContent).not.toContain("folded");
+    });
+  });
 });

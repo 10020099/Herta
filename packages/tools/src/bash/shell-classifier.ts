@@ -551,6 +551,31 @@ function leavesWorkspace(token: string, opts: ShellClassifyOpts): boolean {
   return !isInside(opts.workspaceRoot, resolved);
 }
 
+/**
+ * A path token as the WORKSPACE sees it: `{ native, relative }` when the
+ * token (shell or native spelling, or relative to the shell cwd) resolves to
+ * a location inside the workspace; null when it leaves it, is `~`, carries
+ * a variable/substitution, or is not a path claim at all. Shared by the
+ * heredoc-write preview (bash/heredoc-write.ts), which needs the same
+ * answer the redirect classifier gives.
+ */
+export function resolveWorkspacePath(
+  token: string,
+  opts: ShellClassifyOpts,
+): { native: string; relative: string } | null {
+  const t = token.replace(/^["']|["']$/g, "");
+  if (t.length === 0 || t.startsWith("~") || /[$`]/.test(t)) return null;
+  const nativeAbs = opts.paths.toNative(t);
+  const native =
+    nativeAbs ??
+    (/^[\\/]/.test(t)
+      ? null
+      : resolveNative(opts.cwd ?? opts.workspaceRoot, t));
+  if (native === null || !isInside(opts.workspaceRoot, native)) return null;
+  const rel = relativePath(opts.workspaceRoot, native);
+  return { native, relative: rel === "" ? "." : rel };
+}
+
 /** `/e/repo/src/x` (or `E:\repo\src\x`) → `src/x` when inside the workspace;
  *  otherwise the token unchanged (so the argv classifier's own guards see
  *  the absolute form and ask). */

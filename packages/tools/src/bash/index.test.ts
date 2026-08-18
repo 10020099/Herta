@@ -174,6 +174,55 @@ d("bash tool (real bash)", () => {
     await ctx.bg.stopAll();
   });
 
+  it("the rule previews a heredoc file write like a file write: diff + files on the ask, code command_ask_write, patch.preview on the bus", async () => {
+    ws = await mkTmpWorkspace({ "notes.md": "one\n" });
+    const ctx = ctxFor(ws.root);
+    const previews: Array<{ diff: string; files: readonly string[] }> = [];
+    ctx.bus.on("patch.preview", (e) => {
+      previews.push(e);
+    });
+    const engine = new RulePermissionEngine({
+      ask: { present: async () => "allow" },
+    });
+    registerBashRule(engine, { bashPath: BASH, bus: ctx.bus });
+    const cmd = [
+      "mkdir -p src && cat > src/server.mjs <<'EOF'",
+      "import http from 'node:http';",
+      "console.log('mini-status');",
+      "EOF",
+    ].join("\n");
+    const d = await engine.check(call(cmd), ctx);
+    expect(d.kind).toBe("ask");
+    if (d.kind === "ask") {
+      // Was 「未识别的命令」 (mkdir won the tie) with the whole file inline as
+      // the command; now the write it is, with the content as a diff.
+      expect(d.request.code).toBe("command_ask_write");
+      expect(d.request.files).toEqual(["src/server.mjs"]);
+      expect(d.request.diff).toContain("+++ b/src/server.mjs");
+      expect(d.request.diff).toContain("+console.log('mini-status');");
+      expect(d.request.reason).toContain("creates src/server.mjs (2 lines)");
+    }
+    expect(previews).toHaveLength(1);
+    expect(previews[0]?.files).toEqual(["src/server.mjs"]);
+    // An append against the existing file diffs against it; a redirect
+    // WITHOUT a heredoc keeps the plain redirect ask (no preview claimed).
+    const app = await engine.check(
+      call("cat >> notes.md <<'EOF'\ntwo\nEOF"),
+      ctx,
+    );
+    if (app.kind === "ask") {
+      expect(app.request.diff).toContain(" one");
+      expect(app.request.diff).toContain("+two");
+    }
+    const plain = await engine.check(call("echo hi > notes.md"), ctx);
+    expect(plain.kind).toBe("ask");
+    if (plain.kind === "ask") {
+      expect(plain.request.diff).toBeUndefined();
+      expect(plain.request.code).toBe("command_ask_write");
+    }
+    await ctx.bg.stopAll();
+  });
+
   it("summarize: the record header drops the model's `cd <workspace> &&` in the SHELL's own spelling (MSYS `/tmp/…` under %TEMP%), which the loop cannot derive", async () => {
     ws = await mkTmpWorkspace({});
     const tool = bashTool({ bashPath: BASH as string });

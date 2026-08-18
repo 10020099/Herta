@@ -30,4 +30,7 @@ export const REASON_KEY: Record<string, MessageKey> = {
   command_ask_recursive_read: "approval.reason.commandRecursiveRead",
   write_new_file_ask: "approval.reason.writeNewFile",
   edit_file_ask: "approval.reason.editFile",
+  // The minimal contract's editor (ADR 0040) — its raw reason ("writes
+  // NOTES.md (str_replace, +1/-1 lines)") showed verbatim in zh cards.
+  str_replace_editor_ask: "approval.reason.strReplaceEditor",
 };

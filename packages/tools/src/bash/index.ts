@@ -20,6 +20,12 @@ import { shellPathsFor } from "./shell-paths.js";
 
 export { findBash } from "./find-bash.js";
 export {
+  findHeredocWrites,
+  type HeredocPreview,
+  type HeredocWrite,
+  previewHeredocWrites,
+} from "./heredoc-write.js";
+export {
   PersistentShell,
   type PersistentShellOpts,
   SHELL_BG_ID,

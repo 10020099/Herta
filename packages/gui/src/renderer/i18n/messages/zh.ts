@@ -167,6 +167,10 @@ export const zh = {
   "approval.diffHideAria": "收起差分",
   "approval.reason.writeNewFile": "新建文件",
   "approval.reason.editFile": "修改现有文件",
+  "approval.reason.strReplaceEditor": "写入文件",
+  // A heredoc body folded out of the command well (the content is in the
+  // diff below) — 2026-08-17.
+  "approval.heredocFolded": "    ⋯ 已折叠 {n} 行，内容见下方差异 ⋯",
   "composer.placeholder": "给黑塔发消息…",
   "composer.aria": "消息输入框",
   "composer.send": "发送消息",

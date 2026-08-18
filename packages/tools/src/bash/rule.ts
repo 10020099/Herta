@@ -1,4 +1,6 @@
 import type {
+  AgentEvent,
+  EventBus,
   PermissionRule,
   RulePermissionEngine,
   RuleVerdict,
@@ -8,6 +10,7 @@ import type {
 import { formatInputIssues } from "../input-issues.js";
 import { splitShellSegments } from "../run-command/classifier.js";
 import { checkReaderArgvPaths } from "../run-command/reader-guard.js";
+import { previewHeredocWrites } from "./heredoc-write.js";
 import { PersistentShell, SHELL_BG_ID } from "./persistent-shell.js";
 import { bashInputSchema } from "./schema.js";
 import {
@@ -21,6 +24,9 @@ import { type ShellPaths, shellPathsFor } from "./shell-paths.js";
 export interface BashRuleDeps {
   /** The bash binary the tool runs; used only for path-spelling awareness. */
   bashPath: string | null;
+  /** For `patch.preview` when the command is a heredoc file write — the
+   *  record then shows the write as a diff, exactly like edit_file's rule. */
+  bus?: EventBus<AgentEvent>;
 }
 
 /**
@@ -68,6 +74,39 @@ export function makeBashRule(deps: BashRuleDeps): PermissionRule {
       // For the task CACHE only: the distinct programs of a chained line
       // (`git add && git commit && git status` → ["git"]).
       const programs = effectivePrograms(parsed.data.command, scopeOpts);
+      // A heredoc file write (`cat > src/x <<'EOF' … EOF`, the contract's
+      // file-write idiom) is previewed like a file write: the diff the write
+      // would produce reaches the ask (the card folds the body out of the
+      // command box and offers the diff instead) and the record (D7 — the
+      // same patch preview edit_file's rule publishes). The ask class becomes
+      // the write it is; the line's other asks keep their reasons.
+      const preview = await previewHeredocWrites(
+        parsed.data.command,
+        scopeOpts,
+      );
+      if (preview !== null) {
+        if (preview.diff.length > 0) {
+          deps.bus?.publish({
+            type: "patch.preview",
+            layer: "backend",
+            diff: preview.diff,
+            files: preview.files,
+          });
+        }
+        return {
+          kind: "ask",
+          reason: `${preview.summary}; ${verdict.reason}`,
+          risk: verdict.risk,
+          code:
+            verdict.risk === "workspace_write"
+              ? "command_ask_write"
+              : verdict.code,
+          ...(preview.diff.length > 0 ? { diff: preview.diff } : {}),
+          files: preview.files,
+          ...(argv !== null ? { argv } : {}),
+          ...(programs !== null && programs.length > 0 ? { programs } : {}),
+        };
+      }
       return {
         kind: "ask",
         reason: verdict.reason,
