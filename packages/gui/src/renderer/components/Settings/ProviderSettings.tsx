@@ -97,8 +97,11 @@ export function ProviderSettings(): JSX.Element {
     let alive = true;
     const load = async () => {
       try {
-        const active = await bridge.getActiveProvider();
-        if (alive) setActiveProvider(active);
+        const active = await bridge.getActiveProvider?.();
+        if (active === undefined) {
+          // Optional bridge method absent — assume deepseek.
+        }
+        if (alive && active !== undefined) setActiveProvider(active);
       } catch {
         // ignore
       }
@@ -110,7 +113,7 @@ export function ProviderSettings(): JSX.Element {
       };
       for (const type of PROVIDER_TYPES) {
         try {
-          newStatuses[type] = await bridge.getProviderStatus(type);
+          newStatuses[type] = (await bridge.getProviderStatus?.(type)) ?? null;
         } catch {
           newStatuses[type] = null;
         }
@@ -160,7 +163,7 @@ export function ProviderSettings(): JSX.Element {
     setRejected(false);
     setUnverified(false);
     try {
-      await bridge.setProviderKey(selectedProvider, key, {
+      await bridge.setProviderKey?.(selectedProvider, key, {
         baseUrl: draftBaseUrl.trim() || undefined,
         actorModel: draftActorModel.trim() || undefined,
         backendModel: draftBackendModel.trim() || undefined,
@@ -169,12 +172,12 @@ export function ProviderSettings(): JSX.Element {
           selectedProvider === "anthropic" ? draftAnthropicEffort : undefined,
       });
       // Refresh status
-      const newStatus = await bridge.getProviderStatus(selectedProvider);
+      const newStatus = (await bridge.getProviderStatus?.(selectedProvider)) ?? null;
       setStatuses((prev) => ({ ...prev, [selectedProvider]: newStatus }));
       setDraftKey("");
       setUnverified(false);
       // Auto-activate this provider
-      await bridge.setActiveProvider(selectedProvider);
+      await bridge.setActiveProvider?.(selectedProvider);
       setActiveProvider(selectedProvider);
     } catch {
       setFailed(true);
@@ -188,8 +191,8 @@ export function ProviderSettings(): JSX.Element {
     setSaving(true);
     setFailed(false);
     try {
-      await bridge.clearProviderKey(selectedProvider);
-      const newStatus = await bridge.getProviderStatus(selectedProvider);
+      await bridge.clearProviderKey?.(selectedProvider);
+      const newStatus = (await bridge.getProviderStatus?.(selectedProvider)) ?? null;
       setStatuses((prev) => ({ ...prev, [selectedProvider]: newStatus }));
     } catch {
       setFailed(true);
@@ -200,7 +203,7 @@ export function ProviderSettings(): JSX.Element {
 
   const onActivate = async (type: ProviderType): Promise<void> => {
     try {
-      await bridge.setActiveProvider(type);
+      await bridge.setActiveProvider?.(type);
       setActiveProvider(type);
     } catch {
       // ignore

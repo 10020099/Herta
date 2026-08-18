@@ -377,14 +377,14 @@ export interface HertaBridge {
     readonly ok: true;
     readonly status: DeepSeekKeyStatus;
   }>;
-  /** Get the active provider type. */
-  getActiveProvider(): Promise<ProviderType>;
+  /** Get the active provider type. OPTIONAL — legacy/test bridges omit it. */
+  getActiveProvider?(): Promise<ProviderType>;
   /** Set the active provider type. */
-  setActiveProvider(type: ProviderType): Promise<void>;
+  setActiveProvider?(type: ProviderType): Promise<void>;
   /** Get masked status for a specific provider. */
-  getProviderStatus(type: ProviderType): Promise<ProviderStatus>;
+  getProviderStatus?(type: ProviderType): Promise<ProviderStatus>;
   /** Set API key + optional config for a provider. */
-  setProviderKey(
+  setProviderKey?(
     type: ProviderType,
     key: string,
     opts?: {
@@ -393,11 +393,11 @@ export interface HertaBridge {
       backendModel?: string;
       routerModel?: string;
       thinking?: ThinkingEffort;
-      anthropicOutputEffort?: number;
+      anthropicOutputEffort?: ThinkingEffort;
     },
   ): Promise<{ encrypted: boolean }>;
   /** Delete a provider's stored key. */
-  clearProviderKey(type: ProviderType): Promise<void>;
+  clearProviderKey?(type: ProviderType): Promise<void>;
   /** Custom caption buttons (the native titleBarOverlay was dropped — its
    *  Chromium-drawn buttons showed unremovable, doubled hover tooltips on
    *  Windows; user 2026-07-06). `windowClose` goes through win.close(), so
