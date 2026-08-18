@@ -7,6 +7,46 @@ import type {
 } from "@herta/core";
 import type { SessionSearchHit } from "./session-search.js";
 
+// ───── Provider types ─────
+
+/** Supported model provider types. */
+export type ProviderType = "deepseek" | "openai" | "anthropic" | "openai-compat";
+
+/** Reasoning/thinking effort levels.
+ *  OpenAI (Responses API): "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+ *  DeepSeek (reasoning_effort): "low" | "high" | "max" (maps "medium" to "high" server-side)
+ *  Anthropic (OutputConfig.effort): "low" | "medium" | "high" | "max" */
+export type ThinkingEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "off";
+
+/** Per-provider default models. */
+export const PROVIDER_DEFAULTS = {
+  deepseek: {
+    baseUrl: "https://api.deepseek.com",
+    actorModel: "deepseek-v4-pro",
+    backendModel: "deepseek-v4-pro",
+    routerModel: "deepseek-v4-flash",
+  },
+  openai: {
+    baseUrl: "https://api.openai.com/v1",
+    actorModel: "o3",
+    backendModel: "gpt-4o",
+    routerModel: "gpt-4o-mini",
+  },
+  anthropic: {
+    baseUrl: "https://api.anthropic.com",
+    // Anthropic has no completion endpoint; actor falls back to chat mode.
+    actorModel: "claude-sonnet-5",
+    backendModel: "claude-sonnet-5",
+    routerModel: "claude-fable-5",
+  },
+  "openai-compat": {
+    baseUrl: "",
+    actorModel: "",
+    backendModel: "",
+    routerModel: "",
+  },
+} as const;
+
 // ───── Configuration ─────
 
 /**
@@ -43,22 +83,17 @@ export interface AppServerConfig {
    *  just means voice features never fire. */
   readonly voiceAssetsDir?: string;
   readonly providers: {
-    readonly deepseekApiKey: string;
-    /** DeepSeek completion model used by the actor. */
+    /** Provider type: deepseek | openai | anthropic | openai-compat */
+    readonly type: ProviderType;
+    /** API key for the selected provider. */
+    readonly apiKey: string;
+    /** DeepSeek completion model used by the actor (only relevant for deepseek type). */
     readonly actorModel: string;
-    /** DeepSeek chat model used by the coding backend. */
+    /** Chat model used by the coding backend. */
     readonly backendModel: string;
-    /** DeepSeek chat model (with thinking) used by the mood router. */
+    /** Chat model used by the mood router. */
     readonly routerModel: string;
-    /** Optional API base override for the TURN-path providers (actor,
-     *  backend, router/supervisor/recap, title) — a dev-only chaos/staging
-     *  lever (E2E-4 failure injection: point at a local proxy that drops
-     *  streams or stalls endpoints). The GUI populates it from
-     *  HERTA_DEEPSEEK_BASE_URL ONLY in unpackaged runs (same credential-
-     *  safety gating as HERTA_UPDATE_URL, audit T1.3: honoring it in a
-     *  packaged build would let any env-setting process redirect the API
-     *  key to an arbitrary host). The dream pass's own client is NOT
-     *  covered — dream failure paths are dream-lab territory. */
+    /** Optional API base URL override. Dev-only staging lever for deepseek/openai-compat. */
     readonly baseUrl?: string;
   };
   /** Backend reasoning effort. Per the official DeepSeek doc (updated
@@ -67,7 +102,7 @@ export interface AppServerConfig {
    *  "high" server-side until its announced early-August-2026 update.
    *  "off" omits the thinking block. Settings → Coprocessor persists this
    *  (GUI, restart-to-apply); default "high". */
-  readonly thinking?: "low" | "high" | "max" | "off";
+  readonly thinking?: ThinkingEffort;
   /**
    * 板砖's model-facing tool contract (ADR 0040). `standard` (default) = the
    * 15-tool set + BACKEND_EXECUTION_CONTRACT; `minimal` = persistent `bash`
@@ -78,6 +113,11 @@ export interface AppServerConfig {
    * (GUI, restart-to-apply).
    */
   readonly backendContract?: "standard" | "minimal";
+  /** Anthropic-specific: thinking budget tokens for extended thinking.
+   *  Only used when providers.type === "anthropic". Default 16000. */
+  /** Anthropic: OutputConfig effort level. Sent as `output_config: { effort: "..." }`.
+   *  Default "medium". */
+  readonly anthropicOutputEffort?: ThinkingEffort;
   /** Supervisor quality gate. Default ENABLED — since M-prompts-1
    *  (2026-07-05) this config flag replaces the old
    *  `.herta/narrative/supervisor_reference.txt` existence-toggle. */

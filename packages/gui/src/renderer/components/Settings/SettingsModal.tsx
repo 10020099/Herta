@@ -4,6 +4,7 @@ import { useT } from "../../i18n/LocaleProvider.js";
 import { OVERLAY_Z, useModalOverlay } from "../../lib/overlay-stack.js";
 import { BanzhuanSettings } from "./BanzhuanSettings.js";
 import { DeepSeekSettings } from "./DeepSeekSettings.js";
+import { ProviderSettings } from "./ProviderSettings.js";
 import { DreamSettings } from "./DreamSettings.js";
 import { LanguageSettings } from "./LanguageSettings.js";
 import { UpdateSettings } from "./UpdateSettings.js";
@@ -205,10 +206,10 @@ const GROUPS = [
     labelKey: "nav.group.engine" satisfies MessageKey,
     items: [
       {
-        key: "deepseek",
-        labelKey: "nav.deepseek" satisfies MessageKey,
+        key: "provider",
+        labelKey: "nav.provider" satisfies MessageKey,
         Icon: DeepSeekIcon,
-        Pane: DeepSeekSettings,
+        Pane: ProviderSettings,
       },
       {
         key: "banzhuan",

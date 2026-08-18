@@ -72,6 +72,12 @@ const bridge: HertaBridge = {
   getDeepSeekKeyStatus: () => ipcRenderer.invoke(CMD.getDeepSeekKeyStatus),
   setDeepSeekKey: (key) => ipcRenderer.invoke(CMD.setDeepSeekKey, key),
   clearDeepSeekKey: () => ipcRenderer.invoke(CMD.clearDeepSeekKey),
+  getActiveProvider: () => ipcRenderer.invoke(CMD.getActiveProvider),
+  setActiveProvider: (type) => ipcRenderer.invoke(CMD.setActiveProvider, type),
+  getProviderStatus: (type) => ipcRenderer.invoke(CMD.getProviderStatus, type),
+  setProviderKey: (type, key, opts) =>
+    ipcRenderer.invoke(CMD.setProviderKey, type, key, opts),
+  clearProviderKey: (type) => ipcRenderer.invoke(CMD.clearProviderKey, type),
   windowMinimize: () => ipcRenderer.send(CMD.windowMinimize),
   windowToggleMaximize: () => ipcRenderer.send(CMD.windowToggleMaximize),
   windowClose: () => ipcRenderer.send(CMD.windowClose),

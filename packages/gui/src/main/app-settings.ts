@@ -1,3 +1,4 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
@@ -64,6 +65,8 @@ export interface AppSettings {
     readonly actor?: ModelChoice;
     readonly backend?: ModelChoice;
   };
+  /** Active provider type. Default "deepseek". */
+  readonly activeProvider?: string;
 }
 
 function settingsPath(workspaceRoot: string): string {
@@ -109,7 +112,43 @@ export async function readAppSettings(
   }
 }
 
-/** Write the settings file, creating `.herta/` if needed. Temp + rename so a
+/**
+ * Read detailed settings (cached, synchronous). Falls back to {} on read failure.
+ * Used by synchronous IPC handlers (getActiveProvider).
+ */
+export function readAppSettingsSync(): AppSettings {
+  try {
+    const path = settingsPath(process.cwd());
+    if (!existsSync(path)) return {};
+    const raw = readFileSync(path, "utf-8");
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return {};
+    return parsed as AppSettings;
+  } catch {
+    return {};
+  }
+}
+
+/** Write settings (synchronous, best-effort). Used by setActiveProvider IPC handler. */
+export function updateAppSettings(partial: Partial<AppSettings>): void {
+  try {
+    const path = settingsPath(process.cwd());
+    let current: AppSettings = {};
+    if (existsSync(path)) {
+      try {
+        const raw = readFileSync(path, "utf-8");
+        const parsed = JSON.parse(raw);
+        if (typeof parsed === "object" && parsed !== null) current = parsed;
+      } catch {
+        // ignore
+      }
+    }
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify({ ...current, ...partial }, null, 2) + "\n", "utf-8");
+  } catch {
+    // Best-effort: a failed settings write must not crash the app.
+  }
+}
  *  crash mid-write can't tear the file into "all defaults" (audit 2026-07-13
  *  T3.9, same fix as app-global-settings). */
 export async function writeAppSettings(

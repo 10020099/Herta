@@ -442,6 +442,16 @@ export function createMockHertaBridge(
       keyStatus = { set: false, hint: null, encrypted: false };
       return { ok: true, status: keyStatus };
     },
+    getActiveProvider: async () => "deepseek" as const,
+    setActiveProvider: async () => {},
+    getProviderStatus: async (type) => ({
+      type,
+      set: false,
+      hint: null,
+      encrypted: false,
+    }),
+    setProviderKey: async (type, key) => ({ encrypted: true }),
+    clearProviderKey: async () => {},
     getLocale: async () => "en" as const,
     setLocale: async () => {},
     getCloseToTray: async () => {

@@ -9,6 +9,9 @@ import {
   type Session,
   type SessionHost,
   type SessionMetadata,
+  type ProviderType,
+  type ThinkingEffort,
+  PROVIDER_DEFAULTS,
 } from "@herta/app-server";
 import { SessionFileError } from "@herta/core";
 import { validateDeepSeekKey } from "@herta/providers";
@@ -25,6 +28,19 @@ import {
   type WebContents,
 } from "electron";
 import { CMD, EVT } from "../preload/channels.js";
+import type {
+  ProviderStatus,
+} from "../renderer/ipc/bridge-types.js";
+import {
+  readProviderConfig,
+  readDeepSeekKeyPlain,
+  getProviderStatus,
+  setProviderKey,
+  clearProviderKey,
+  getDeepSeekKeyStatus,
+  setDeepSeekKey,
+  clearDeepSeekKey,
+} from "./key-store.js";
 import type {
   InteractionLanguageChoice,
   SessionOpenFailure,
@@ -44,6 +60,8 @@ import {
   isBackendThinking,
   isModelChoice,
   readAppSettings,
+  readAppSettingsSync,
+  updateAppSettings,
   writeAppSettings,
 } from "./app-settings.js";
 import {
@@ -136,52 +154,56 @@ export async function buildConfig(
   // plays the canned opening with no LLM). The CLI keeps its own env/file
   // resolution; only the GUI is secure-store-only.
   const deepseekApiKey = secureKey?.trim() ?? "";
+  // Read the active provider type from persisted settings, default deepseek.
+  const appSettings = await readAppSettings(cwd);
+  const activeProvider: ProviderType = appSettings.activeProvider ?? "deepseek";
+  // Read the active provider's full config.
+  const providerConfig = activeProvider === "deepseek"
+    ? { apiKey: deepseekApiKey, type: "deepseek" as ProviderType }
+    : readProviderConfig(activeProvider);
   const dirs = defaultDirsFor({ workspaceRoot: cwd, homedir: home });
   // Dream: read the persisted enable flag (Settings → Dream). Restart-to-apply —
   // this is the whole apply path; the trigger reads config.dream at bootstrap.
   const settings = await readAppSettings(cwd);
   const backendThinking = settings.backend?.thinking;
+
+  // Resolve provider-specific defaults.
+  const defaults = PROVIDER_DEFAULTS[activeProvider];
+  const actorModel = providerConfig?.actorModel
+    ?? process.env.HERTA_ACTOR_MODEL
+    ?? defaults.actorModel;
+  const backendModel = providerConfig?.backendModel
+    ?? process.env.HERTA_BACKEND_MODEL
+    ?? defaults.backendModel;
+  const baseUrl = providerConfig?.baseUrl
+    ?? (devBaseUrl !== undefined && devBaseUrl !== "" ? devBaseUrl : undefined)
+    ?? defaults.baseUrl;
+
   return {
     workspaceRoot: cwd,
     ...dirs,
     ...(voiceAssetsDir !== undefined ? { voiceAssetsDir } : {}),
     dream: { enabled: settings.dream?.enabled ?? true },
     providers: {
-      deepseekApiKey,
-      // Model names MUST match the working CLI (packages/cli/src/app/main.ts).
-      // The DeepSeek COMPLETION endpoint (used by the narrative actor) accepts
-      // ONLY `deepseek-v4-pro` or `deepseek-v4-flash` — `deepseek-v4-base`
-      // returns a 400 "supported API model names are…" and the turn fails
-      // silently (no record blocks). The backend (chat mode) also uses
-      // deepseek-v4-pro in the CLI.
-      //
-      // Precedence (2026-08-17): env (a dev/lab override, mirrors the CLI's
-      // knobs) > Settings → DeepSeek → 模型 (the user's choice, persisted in
-      // settings.json, restart-to-apply) > the built-in default. The guard
-      // drops an off-enum value a hand-edited file might carry.
-      //
-      // Defaults (owner 2026-08-17): actor Pro (flash is voice-flat and
-      // fabricates on first pass — the actor lab), backend FLASH — on the
-      // minimal contract the outcome lab measured flash-板砖 = Pro-板砖
-      // (62/62) at a fraction of the cost. Pro for 板砖 is the user opt-in
-      // now.
+      type: activeProvider,
+      apiKey: providerConfig?.apiKey ?? deepseekApiKey,
+      // Model names: env (dev/lab override) > Settings > built-in default.
+      // When activeProvider is "deepseek", the actor runs in completion mode;
+      // for other providers it falls back to chat mode (session.ts).
       actorModel:
         process.env.HERTA_ACTOR_MODEL ??
         (isModelChoice(settings.models?.actor)
           ? settings.models.actor
-          : "deepseek-v4-pro"),
+          : defaults.actorModel),
       backendModel:
         process.env.HERTA_BACKEND_MODEL ??
         (isModelChoice(settings.models?.backend)
           ? settings.models.backend
-          : "deepseek-v4-flash"),
-      routerModel: "deepseek-v4-flash",
-      ...(devBaseUrl !== undefined && devBaseUrl !== ""
-        ? { baseUrl: devBaseUrl }
-        : {}),
+          : defaults.backendModel),
+      routerModel: defaults.routerModel,
+      ...(baseUrl ? { baseUrl } : {}),
     },
-    // Backend reasoning effort (Settings → Coprocessor, restart-to-apply like
-    // dream above — this read at bootstrap IS the apply path). Default "high".
+    // Backend reasoning effort — supports all three major providers' "max" mode.
     // isBackendThinking guards a hand-edited settings.json: an off-enum value
     // falls back to the default instead of reaching the API.
     thinking: isBackendThinking(backendThinking) ? backendThinking : "high",
@@ -913,6 +935,33 @@ export function createSessionService(
       clearDeepSeekKey();
       host?.setDeepSeekKey("");
       return { ok: true as const, status: getDeepSeekKeyStatus() };
+    });
+    // Settings → Multi-provider support.
+    handle(CMD.getActiveProvider, () => {
+      const s = readAppSettingsSync();
+      return (s.activeProvider ?? "deepseek") as ProviderType;
+    });
+    handle(CMD.setActiveProvider, async (_e, type: ProviderType) => {
+      await updateAppSettings({ activeProvider: type });
+    });
+    handle(CMD.getProviderStatus, (_e, type: ProviderType) => {
+      return getProviderStatus(type) as ProviderStatus;
+    });
+    handle(CMD.setProviderKey, async (_e, type: ProviderType, key: string, opts) => {
+      const { encrypted } = setProviderKey(type, key, opts);
+      // If this is the active provider, push it to the running session.
+      const s = readAppSettingsSync();
+      if (s.activeProvider === type || s.activeProvider === undefined) {
+        host?.setDeepSeekKey(key);
+      }
+      return { encrypted };
+    });
+    handle(CMD.clearProviderKey, (_e, type: ProviderType) => {
+      clearProviderKey(type);
+      const s = readAppSettingsSync();
+      if (s.activeProvider === type) {
+        host?.setDeepSeekKey("");
+      }
     });
   }
   registerHandlers();

@@ -170,6 +170,23 @@ export interface DeepSeekKeyStatus {
   readonly encrypted: boolean;
 }
 
+/** Provider type identifiers. */
+export type ProviderType = "deepseek" | "openai" | "anthropic" | "openai-compat";
+
+/** Provider masked status for the renderer. */
+export interface ProviderStatus {
+  readonly type: ProviderType;
+  readonly set: boolean;
+  readonly hint: string | null;
+  readonly encrypted: boolean;
+}
+
+/** Thinking/reasoning effort level.
+ *  OpenAI: none | minimal | low | medium | high | xhigh | max
+ *  DeepSeek: low | high | max
+ *  Anthropic: low | medium | high | max */
+export type ThinkingEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "off";
+
 /**
  * The typed surface the preload exposes to the renderer as
  * `window.herta`. Commands round-trip through ipcRenderer.invoke;
@@ -327,6 +344,8 @@ export interface HertaBridge {
   /** Persist the appearance preference; the renderer's theme controller
    *  applies it live (no restart). */
   setTheme?(theme: ThemePref): Promise<void>;
+  /** Provider type enum. */
+  readonly ProviderType: "deepseek" | "openai" | "anthropic" | "openai-compat";
   /** Read the masked DeepSeek key status (Settings → DeepSeek). */
   getDeepSeekKeyStatus(): Promise<DeepSeekKeyStatus>;
   /** Validate a DeepSeek key (a cheap token-free auth check), and on success
@@ -348,6 +367,27 @@ export interface HertaBridge {
     readonly ok: true;
     readonly status: DeepSeekKeyStatus;
   }>;
+  /** Get the active provider type. */
+  getActiveProvider(): Promise<ProviderType>;
+  /** Set the active provider type. */
+  setActiveProvider(type: ProviderType): Promise<void>;
+  /** Get masked status for a specific provider. */
+  getProviderStatus(type: ProviderType): Promise<ProviderStatus>;
+  /** Set API key + optional config for a provider. */
+  setProviderKey(
+    type: ProviderType,
+    key: string,
+    opts?: {
+      baseUrl?: string;
+      actorModel?: string;
+      backendModel?: string;
+      routerModel?: string;
+      thinking?: ThinkingEffort;
+      anthropicOutputEffort?: number;
+    },
+  ): Promise<{ encrypted: boolean }>;
+  /** Delete a provider's stored key. */
+  clearProviderKey(type: ProviderType): Promise<void>;
   /** Custom caption buttons (the native titleBarOverlay was dropped — its
    *  Chromium-drawn buttons showed unremovable, doubled hover tooltips on
    *  Windows; user 2026-07-06). `windowClose` goes through win.close(), so

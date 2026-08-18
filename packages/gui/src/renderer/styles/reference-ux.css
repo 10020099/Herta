@@ -5045,6 +5045,108 @@ button.session-item__badge--dismiss {
 }
 .settings-key-delete:hover:not(:disabled) { text-decoration: underline; }
 .settings-key-delete:disabled { opacity: .5; cursor: not-allowed; }
+.settings-key-activate {
+  display: inline-block;
+  margin: 8px 0 0;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--accent-deep, #4d86ff);
+  background: rgba(77, 134, 255, .08);
+  border: 1px solid rgba(77, 134, 255, .2);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.settings-key-activate:hover:not(:disabled) { background: rgba(77, 134, 255, .14); }
+.settings-key-activate:disabled { opacity: .5; cursor: not-allowed; }
+
+/* ── Provider tabs ─────────────────────────────────────────────────── */
+.provider-tabs {
+  display: flex;
+  gap: 4px;
+  margin: 0 0 16px;
+  flex-wrap: wrap;
+}
+.provider-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted, #6b7280);
+  background: transparent;
+  border: 1px solid var(--line, #e5e7eb);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 120ms ease;
+}
+.provider-tab:hover { color: var(--ink, #111); background: var(--ink-a05, rgba(0,0,0,.05)); }
+.provider-tab.is-active { color: var(--accent-deep, #4d86ff); border-color: var(--accent-deep, #4d86ff); background: rgba(77, 134, 255, .08); }
+.provider-tab.is-current { border-color: #1f7a3d; }
+.provider-tab-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #1f7a3d;
+}
+.provider-tab-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(31, 122, 61, .12);
+  color: #1f7a3d;
+}
+.provider-tab-label { white-space: nowrap; }
+
+/* ── Provider settings fields ──────────────────────────────────────── */
+.settings-field { margin: 0 0 14px; }
+.settings-field-label {
+  display: block;
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink, #111);
+}
+.settings-field-desc {
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: var(--muted, #6b7280);
+  line-height: 1.4;
+}
+.settings-field-input {
+  width: 100%;
+  padding: 7px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--ink, #111);
+  background: var(--panel, #fff);
+  border: 1px solid var(--line, #d1d5db);
+  border-radius: 6px;
+  outline: none;
+  transition: border-color 120ms ease;
+  box-sizing: border-box;
+}
+.settings-field-input:focus { border-color: var(--accent-deep, #4d86ff); }
+.settings-field-input:disabled { opacity: .55; cursor: not-allowed; }
+.settings-field-input::placeholder { color: var(--muted, #9ca3af); }
+.settings-field-select {
+  width: 100%;
+  padding: 7px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--ink, #111);
+  background: var(--panel, #fff);
+  border: 1px solid var(--line, #d1d5db);
+  border-radius: 6px;
+  outline: none;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+.settings-field-select:focus { border-color: var(--accent-deep, #4d86ff); }
+.settings-field-select:disabled { opacity: .55; cursor: not-allowed; }
 /* ── No-key onboarding card (KeyPrompt) ─────────────────────────────── */
 .keyprompt-card {
   width: 380px;

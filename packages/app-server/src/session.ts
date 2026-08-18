@@ -1525,26 +1525,33 @@ export class SessionImpl implements Session {
     // key in Settings / onboarding) so a new key takes effect on the next turn
     // without a restart; fall back to the static config key (tests).
     const deepSeekKey: () => string =
-      opts.deepSeekKey ?? (() => config.providers.deepseekApiKey);
+      opts.deepSeekKey ?? (() => config.providers.apiKey);
     const apiKey: ApiKey = deepSeekKey;
-    // Dev-only chaos/staging lever (see types.ts providers.baseUrl) — spread
-    // into every turn-path provider construction below so a chaos proxy sees
-    // the actor, backend, and router/supervisor/title traffic alike.
+    const providerType = config.providers.type;
     const baseUrl =
       config.providers.baseUrl !== undefined
         ? { baseUrl: config.providers.baseUrl }
         : {};
+
+    // Create the actor (narrative completion) provider based on type.
+    // DeepSeek uses completion mode; all others fall back to chat mode.
     const actorProvider =
       deps.providerOverrides?.actor ??
-      deepseekCompletionProvider({ apiKey, ...baseUrl });
+      (providerType === "deepseek"
+        ? deepseekCompletionProvider({ apiKey, ...baseUrl })
+        : deepseekProvider({
+            apiKey,
+            model: config.providers.actorModel,
+            ...baseUrl,
+          }));
+
+    // Create the backend (板砖) chat provider based on type.
     const backendProvider =
       deps.providerOverrides?.backend ??
       deepseekProvider({
         apiKey,
         model: config.providers.backendModel,
-        // Default "high". Settings → Coprocessor can set low/high/max —
-        // note deepseek-v4-pro maps a sent "low" to "high" server-side
-        // until its announced early-August-2026 update (flash honors it).
+        // All three major providers now support "low" | "high" | "max".
         thinking:
           config.thinking === "off" ? false : (config.thinking ?? "high"),
         ...baseUrl,
