@@ -14,8 +14,6 @@ name: ci
 # start arriving. Not taken yet: that is an owner decision, and the sibling
 # note at the bottom of this file records why a second runner was dropped once.
 on:
-  schedule:
-    - cron: "0 3 * * *" # daily 03:00 UTC
   workflow_dispatch:
 
 env:
