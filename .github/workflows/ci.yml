@@ -27,9 +27,6 @@ jobs:
   package:
     needs: check
     runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: packages/gui
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -38,16 +35,21 @@ jobs:
           node-version: 22
           cache: pnpm
       # Do NOT skip the Electron binary download here — electron-builder needs
-      # it to package the installer.
+      # it to package the installer. Run from the repo ROOT: `pnpm build` is
+      # `tsc -b` (compiles every workspace package's dist/), and doing it from
+      # packages/gui would instead run gui's own electron-vite build too early.
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm --filter @herta/gui build
       # Voice clips are gitignored (HoYoverse-derived, outside the MIT grant)
-      # and absent in CI; a voiceless installer is allowed but the gate
+      # and absent in CI; a voiceless installer is allowed, so the gate
       # downgrades to a warning instead of failing the build.
       - run: node scripts/check-voice-payload.mjs --warn
+        working-directory: packages/gui
       - run: node scripts/third-party-notices.mjs --check
+        working-directory: packages/gui
       - run: npx electron-builder --win
+        working-directory: packages/gui
       - uses: actions/upload-artifact@v4
         with:
           name: Herta-Setup
