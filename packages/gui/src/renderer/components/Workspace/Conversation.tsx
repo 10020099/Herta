@@ -360,36 +360,9 @@ export const Conversation = memo(function Conversation(): JSX.Element {
   const [incomingClone, setIncomingClone] = useState(false);
   const [hideStreaming, setHideStreaming] = useState(false);
   const prevStreaming = useRef<string | null>(null);
-
-  // Detection: on the streamingText null→value edge, mount the incoming clone +
-  // hide the flow streaming bubble. The fixed width pins wrap so the bubble
-  // doesn't reflow while it fills during the rise.
-  // LAYOUT effect for the same reason as the outgoing detection above: the
-  // hide flag must land before the browser paints the freshly-mounted flow
-  // bubble, or it flashes at its resting slot for one frame.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: runs on the streamingText null→value edge
-  useLayoutEffect(() => {
-    const appeared = prevStreaming.current === null && streamingText !== null;
-    prevStreaming.current = streamingText;
-    if (streamingText === null) {
-      incomingRise.cancel();
-      setIncomingClone(false);
-      setHideStreaming(false);
-      composerRef.current?.classList.remove("is-glass");
-      return;
-    }
-    // `retracting` is defensive: retry deltas buffer in retryText, so
-    // streamingText can't do a null→value edge mid-retract.
-    if (!appeared || retracting) return;
-    const composer = composerRef.current;
-    const overlay = overlayRef.current;
-    if (composer === null || overlay === null || reduced) return;
-    // The clone's size is driven by the shared measurer effect (it mirrors the
-    // in-place bubble); here we only flag it active and hide the flow bubble
-    // until the rise settles.
-    setHideStreaming(true);
-    setIncomingClone(true);
-  }, [streamingText, reduced, retracting]);
+  // (The detection layout effect — the null→value edge that mounts the clone —
+  // lives below the in-flight block: it keys on `visibleStreamingText`, the
+  // stream as the flow shows it, which is defined there.)
 
   // Animate once the incoming clone has mounted (same rationale as outgoing).
   // FLIP-style: measure the real streaming bubble's slot (held in layout via
@@ -1007,93 +980,131 @@ export const Conversation = memo(function Conversation(): JSX.Element {
   }, [reduced, t, lang]);
 
   // Both in-flight indicators — the recap-compaction row and the galaxy-travel
-  // row — share ONE gate so they appear at the same moment: only once the
-  // send-morph has SETTLED (outgoingClone → null), never during the outgoing
-  // bubble's flight (user 2026-06-20). Also suppressed once the backend (板砖)
-  // owns the phase (a delegation turn stays "thinking" with no actor delta while
-  // the backend works — its own 处理中…/activity indicator owns that window, user
-  // 2026-06-16), a delta is already streaming, or the supervisor is judging a
-  // candidate (the 伽马风暴 hold row owns that window). The recap leads while
-  // compacting; otherwise the galaxy (chosen at render below).
+  // row — share ONE lifecycle. What the user sees, in order, after a send:
   //
-  // Gate on "turn in flight" (status !== "idle"), NOT status === "thinking"
-  // (bug 3, 2026-07-09): after a @板砖 run's done-marker, the turn stays in
-  // flight while Herta's synthesis completion generates — often the longest
-  // silent wait of a delegation turn — but `status` is a STALE "speaking"
-  // from the pre-dispatch speech, so the old gate showed nothing and the
-  // user stared at a locked composer with no hint. Any non-idle status with
-  // no live stream, no morph, and no backend activity is a genuine
-  // waiting-on-Herta window; the appearance debounce below absorbs the
-  // few-ms gaps at ordinary boundaries (speech committed → turn.finished).
+  //   the bubble flies (send morph) → the row ("消息正在穿越银河", or the
+  //   recap row while compacting) → it stays up at least
+  //   IN_FLIGHT_MIN_VISIBLE_MS → it fades out → whatever comes next mounts
+  //   in its place: Herta's reply bubble, the 处理中… placeholder, or the
+  //   turn-failed notice.
+  //
+  // Owner decision 2026-08-17 ("we are mimicking sending a message to the
+  // space station"): the row shows on EVERY send, for at least the minimum,
+  // regardless of how fast the other side answers. Before this, the row
+  // appeared only if the wait outlasted a 400 ms grace, so a fast direct
+  // @板砖 turn showed it on some sends and not others; and a reply or a
+  // failure took it down in the same render, so a fast one could still cut
+  // it to a sub-second flash. Now every hide reason except a NEW send is
+  // "quiet": the row keeps its minimum, fades, and the successor UI defers
+  // on `inFlightPresent` (处理中… already did; the streaming bubble and the
+  // failure row now do too — that is what keeps the 2026-07-10 morph-slot
+  // invariant: the incoming-rise morph measures its landing slot only after
+  // the row is gone, because the bubble is not mounted until then).
+  //
+  // What still does NOT show it: a send that never became a turn (no
+  // DeepSeek key → the key prompt takes the message; a rejected submit that
+  // hands the text back to the composer) — nothing was sent, so nothing
+  // travels. A turn that fails while the bubble is still flying (a 401/402
+  // comes back in a few hundred ms) DOES show it: the message went out, then
+  // the reply was lost — the notice follows the fade.
+  //
+  // Turns that are not sends (the opening seed, an orphan reply) keep the
+  // older debounce: shown after GALAXY_APPEAR_DELAY_MS only if the wait is
+  // still on — there is no "send" to honour and no morph to wait behind.
+  //
+  // "Wait is on" gates on "turn in flight" (status !== "idle"), NOT
+  // status === "thinking" (bug 3, 2026-07-09): after a @板砖 run's
+  // done-marker the turn stays in flight while Herta's synthesis completion
+  // generates — often the longest silent wait of a delegation turn — but
+  // `status` is a STALE "speaking" from the pre-dispatch speech.
   const inFlightSettled =
     status !== "idle" &&
     streamingText === null &&
     outgoingClone === null &&
     !backendActive &&
     !supervisorChecking;
-  // Debounce the APPEARANCE (not the removal) by GALAXY_APPEAR_DELAY_MS so the
-  // indicator never flickers in during the morph's final frames. The
-  // recap↔galaxy swap stays immediate.
   const [showInFlight, setShowInFlight] = useState(false);
   /** When the row actually became visible — the clock the minimum-visible hold
    *  is measured from. Null whenever it is down. */
   const inFlightShownAtRef = useRef<number | null>(null);
-  /** True from the frame the row is UP until it begins its exit — the
-   *  render-synchronous "this row is on screen" flag that carries it across
-   *  a quiet hide (backend starting, turn ending) so a dispatch that lands
-   *  fast cannot flash it (user 2026-07-30). Held only against the quiet hide
-   *  reasons; `inFlightVisible` still drops it in the same render for a
-   *  stream, a morph or a failure.
-   *
-   *  It used to flip true only in the hold EFFECT, i.e. one commit AFTER the
-   *  hide condition arrived — and in that one commit `inFlightVisible` was
-   *  false: the row unmounted, 处理中… mounted underneath, then the effect set
-   *  the hold and the row REMOUNTED with a fresh entrance animation. Measured
-   *  live (2026-08-17, CDP mutation timeline of a user-typed @板砖 turn):
-   *  `galaxy UNMOUNT + 处理中 MOUNT` at 1149 ms, `处理中 UNMOUNT + galaxy
-   *  MOUNT → is-shown` at 1167 ms — an 18 ms gap that read as the row
-   *  "flashing twice before the 板砖 row appears". Setting it at appear time
-   *  closes the gap: the quiet-hide render already sees the hold. */
-  const [inFlightHeld, setInFlightHeld] = useState(false);
   /** True while the row is fading OUT after a quiet hide (user 2026-07-31:
    *  the swap to 处理中 was a hard same-commit switch). The row stays mounted
-   *  without `is-shown` for IN_FLIGHT_EXIT_MS, then unmounts; 处理中 defers
-   *  until the fade is done so the two hand off in place instead of stacking.
-   *  Loud hides never enter this phase — see `inFlightVisible`. */
+   *  without `is-shown` for IN_FLIGHT_EXIT_MS, then unmounts; the successor
+   *  UI defers until the fade is done so the two hand off in place instead
+   *  of stacking. */
   const [inFlightExiting, setInFlightExiting] = useState(false);
+  /** A send is ARMED from the moment the user's message leaves the composer
+   *  (the pendingUser echo appears) until the row it guarantees is up, or
+   *  until it turns out no turn ever started. See the block comment. */
+  const [sendArmed, setSendArmed] = useState(false);
+  const prevPendingUserForArm = useRef<string | null>(null);
   useEffect(() => {
-    if (inFlightSettled) {
-      if (inFlightShownAtRef.current !== null) {
-        // The row is already up and its hide condition reversed inside the
-        // hold (a supervisor check ending, a backend blip): keep it, keep its
-        // clock — the effect cleanup already disarmed the pending exit.
-        setInFlightExiting(false);
-        setShowInFlight(true);
-        setInFlightHeld(true);
-        return;
-      }
-      const id = window.setTimeout(() => {
-        inFlightShownAtRef.current = Date.now();
-        setInFlightExiting(false); // a re-show mid-fade resumes the row
-        setShowInFlight(true);
-        // On-screen flag from the first frame (see its declaration): the
-        // quiet-hide render must already see the hold, or the row unmounts
-        // for one commit and remounts — the "flashed twice" (2026-08-17).
-        setInFlightHeld(true);
-      }, GALAXY_APPEAR_DELAY_MS);
-      return () => window.clearTimeout(id);
+    const appeared =
+      prevPendingUserForArm.current === null && pendingUser !== null;
+    prevPendingUserForArm.current = pendingUser;
+    if (appeared) setSendArmed(true);
+  }, [pendingUser]);
+  // A send that never became a turn: the echo is gone, nothing is in flight,
+  // nothing failed — the key prompt took the message, or the submit was
+  // rejected and the text went back to the composer. Disarm; no row.
+  // (Ordering note: a REAL turn's status goes non-idle within milliseconds of
+  // the send — the lifecycle event precedes the user block by the whole
+  // router phase — so an idle status with the echo gone is not a race.)
+  useEffect(() => {
+    if (sendArmed && pendingUser === null && status === "idle" && !turnFailed) {
+      setSendArmed(false);
     }
-    // The hide condition arrived before the row ever appeared — nothing to
-    // fade, just disarm.
+  }, [sendArmed, pendingUser, status, turnFailed]);
+  /** The armed row may appear: the send morph has settled (or there was
+   *  none) and the turn is real — in flight, or already failed. */
+  const armedShow =
+    sendArmed && outgoingClone === null && (status !== "idle" || turnFailed);
+  useEffect(() => {
+    const showNow = (): void => {
+      inFlightShownAtRef.current = Date.now();
+      setInFlightExiting(false); // a re-show mid-fade resumes the row
+      setShowInFlight(true);
+      // The send's promise is kept the moment the row is up — disarm HERE,
+      // not when the timer is armed: a re-run of this effect (the wait-is-on
+      // predicate flipping while the reduced-motion grace runs) cancels the
+      // timer, and a still-armed send simply re-arms it.
+      setSendArmed(false);
+    };
     const shownAt = inFlightShownAtRef.current;
     if (shownAt === null) {
-      setInFlightHeld(false);
+      // ── Row is down. Should it come up? ──
+      if (armedShow) {
+        // A send: show now (the morph already gave the recap event its lead;
+        // under reduced motion there is no morph, so give it the same small
+        // grace the non-send path uses — the minimum still applies after).
+        if (!reduced) {
+          showNow();
+          return;
+        }
+        const id = window.setTimeout(showNow, GALAXY_APPEAR_DELAY_MS);
+        return () => window.clearTimeout(id);
+      }
+      if (inFlightSettled) {
+        // Not a send (opening / orphan reply): only if the wait outlasts the
+        // grace — nothing promised a row here.
+        const id = window.setTimeout(showNow, GALAXY_APPEAR_DELAY_MS);
+        return () => window.clearTimeout(id);
+      }
       setShowInFlight(false);
       return;
     }
-    // The row is up. If it has not had its minimum time yet, hold it for the
-    // remainder instead of yanking it; either way it leaves through the fade
-    // (reduced motion skips the fade — there is no transition to play).
+    // ── Row is up. ──
+    if (inFlightSettled) {
+      // Its hide condition reversed inside the hold (a supervisor check
+      // ending, a backend blip): keep it, keep its clock — the effect cleanup
+      // already disarmed the pending exit.
+      setInFlightExiting(false);
+      setShowInFlight(true);
+      return;
+    }
+    // The wait is over. If the row has not had its minimum yet, hold it for
+    // the remainder instead of yanking it; either way it leaves through the
+    // fade (reduced motion skips the fade — there is no transition to play).
     const beginExit = (): void => {
       // A hold timer can outlive the row: this effect doesn't re-run on a
       // session switch (settled is false on both sides of the reset) or on a
@@ -1102,7 +1113,6 @@ export const Conversation = memo(function Conversation(): JSX.Element {
       // a 220ms ghost row in whatever context came next.
       if (inFlightShownAtRef.current === null) return;
       inFlightShownAtRef.current = null;
-      setInFlightHeld(false);
       setShowInFlight(false);
       if (!reduced) setInFlightExiting(true);
     };
@@ -1111,10 +1121,9 @@ export const Conversation = memo(function Conversation(): JSX.Element {
       beginExit();
       return;
     }
-    setInFlightHeld(true);
     const id = window.setTimeout(beginExit, remaining);
     return () => window.clearTimeout(id);
-  }, [inFlightSettled, reduced]);
+  }, [inFlightSettled, armedShow, reduced]);
   // End of the exit fade → unmount. Keyed on the phase flag alone; a loud
   // event mid-fade clears the flag through the watcher below and this timer's
   // cleanup disarms it.
@@ -1126,82 +1135,87 @@ export const Conversation = memo(function Conversation(): JSX.Element {
     );
     return () => window.clearTimeout(id);
   }, [inFlightExiting]);
-  // A loud hide — a stream, a morph, or the turn FAILING — ENDS the hold
-  // rather than pausing it (user 2026-07-31). `inFlightVisible` below already
-  // drops the row in the same render for a stream/morph, but the hold state
-  // used to survive underneath: the moment the stream finished (dispatch
-  // speech committed, bridge starting), the quiet branch turned true again
-  // and the galaxy flashed BACK above the freshly mounted 处理中… row for the
-  // rest of the minimum, shoving it down and back. A provider failure is loud
-  // for the same reason (review 2026-07-31): its idle edge read as a quiet
-  // hide, so the held galaxy sat stacked on TurnFailedRow — "crossing the
-  // galaxy" directly above "the reply was lost" — then yanked it up mid-read.
-  // (An interrupt sets no turnFailed and deliberately keeps the clean-finish
-  // hold — indistinguishable at this level, and the same brief fade reads
-  // fine.) Once the row is down, the run the hold was extending is over; the
-  // next settled window re-shows through the normal appearance grace instead.
+  // The one LOUD hide: a NEW send morph (the composer unlocks at idle, so a
+  // fast next send can catch the previous row still holding or fading). The
+  // new bubble's flight owns the screen; the row goes down in the same
+  // render (`inFlightVisible` below) and this clears its state so the hold
+  // cannot resurface it. The new send's own arm brings the row back at its
+  // settle. (Streams and failures used to be loud too — see the block
+  // comment for why they now wait out the minimum instead.)
   useEffect(() => {
-    if (streamingText === null && outgoingClone === null && !turnFailed) {
-      return;
-    }
-    if (!showInFlight && !inFlightHeld && !inFlightExiting) return;
+    if (outgoingClone === null) return;
+    if (!showInFlight && !inFlightExiting) return;
     inFlightShownAtRef.current = null;
-    setInFlightHeld(false);
     setShowInFlight(false);
     setInFlightExiting(false);
-  }, [
-    streamingText,
-    outgoingClone,
-    turnFailed,
-    showInFlight,
-    inFlightHeld,
-    inFlightExiting,
-  ]);
+  }, [outgoingClone, showInFlight, inFlightExiting]);
   // The hold has no session identity (Class A, 2026-07-24 audit):
   // Conversation stays mounted across a switch, `inFlightSettled` is false on
   // both sides of the reset, and the loud watcher above sees only quiet in
   // the new session — so a hold armed by a fast turn-end rode into the next
   // session's entrance cascade for up to its remainder (review 2026-07-31).
-  // The stale timer stays armed but only re-writes the same false state.
+  // The stale timer stays armed but only re-writes the same false state. The
+  // send arm goes with it: the send belonged to the session you left.
   // biome-ignore lint/correctness/useExhaustiveDependencies: sessionId is the clear trigger, not an input
   useEffect(() => {
     inFlightShownAtRef.current = null;
-    setInFlightHeld(false);
     setShowInFlight(false);
     setInFlightExiting(false);
+    setSendArmed(false);
+    prevPendingUserForArm.current = null;
   }, [sessionId]);
-  /**
-   * Is an in-flight row on screen right now?
-   *
-   * `inFlightSettled ||` keeps the HIDE render-synchronous (bug 2026-07-10):
-   * `showInFlight` is state cleared by an effect, one commit LATE, and in the
-   * post-板砖 window the row is up when the first delta arrives — the
-   * incoming-rise morph measured its landing slot while the row was still
-   * mounted, then the row unmounted, the pinned scroll clamped ~a row-height,
-   * and the clone landed overlapping the activity header before snapping down.
-   *
-   * The hold therefore stops at exactly that boundary: a stream or a morph
-   * takes the row down in the same render regardless, and only the quieter
-   * hide reasons (the backend starting, the turn ending) wait out the minimum.
-   */
-  const inFlightVisible =
-    showInFlight &&
-    (inFlightSettled ||
-      (inFlightHeld &&
-        streamingText === null &&
-        outgoingClone === null &&
-        // The failure hide stays render-synchronous now that the hold flag is
-        // up for the row's whole life (it used to be false at this render).
-        !turnFailed));
-  /** The exit fade, with the SAME render-synchronous loud-hide guard: a
-   *  stream or a morph arriving mid-fade unmounts the row this render (the
-   *  watcher then clears the stale flag), so the 2026-07-10 morph-measure
-   *  invariant holds through the exit phase too. */
-  const inFlightExitingVisible =
-    inFlightExiting && streamingText === null && outgoingClone === null;
-  /** Row mounted at all — visible or fading out. 处理中 defers on this, not
-   *  on `inFlightVisible`, so it never mounts under a still-fading row. */
+  /** Is an in-flight row on screen right now? `showInFlight` is the whole
+   *  story except for the one loud hide, which must be render-synchronous:
+   *  a new send morph takes the row down in the same render (the state
+   *  clears one commit later through the watcher above). */
+  const inFlightVisible = showInFlight && outgoingClone === null;
+  /** The exit fade, with the same render-synchronous loud-hide guard. */
+  const inFlightExitingVisible = inFlightExiting && outgoingClone === null;
+  /** Row mounted at all — visible or fading out. The successor UI (处理中…,
+   *  the streaming bubble, the failure notice) defers on THIS, not on
+   *  `inFlightVisible`, so nothing ever mounts under a still-fading row.
+   *  For the streaming bubble that is also the 2026-07-10 morph-slot
+   *  invariant: the incoming-rise morph measures its landing slot at mount,
+   *  which now happens only after the row is gone. */
   const inFlightPresent = inFlightVisible || inFlightExitingVisible;
+  /** The stream as the FLOW shows it: held back (null) while an in-flight
+   *  row is still on screen, so Herta's reply enters after the row's fade
+   *  instead of cutting it. The store's `streamingText` (status, device
+   *  state, the wait-is-over signal above) is untouched — only the bubble
+   *  and its rise morph wait. The reveal is paced anyway; it starts with a
+   *  small backlog and types it out. */
+  const visibleStreamingText = inFlightPresent ? null : streamingText;
+
+  // Detection: on the VISIBLE stream's null→value edge, mount the incoming
+  // clone + hide the flow streaming bubble. The fixed width pins wrap so the
+  // bubble doesn't reflow while it fills during the rise.
+  // LAYOUT effect for the same reason as the outgoing detection above: the
+  // hide flag must land before the browser paints the freshly-mounted flow
+  // bubble, or it flashes at its resting slot for one frame.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runs on the visibleStreamingText null→value edge
+  useLayoutEffect(() => {
+    const appeared =
+      prevStreaming.current === null && visibleStreamingText !== null;
+    prevStreaming.current = visibleStreamingText;
+    if (visibleStreamingText === null) {
+      incomingRise.cancel();
+      setIncomingClone(false);
+      setHideStreaming(false);
+      composerRef.current?.classList.remove("is-glass");
+      return;
+    }
+    // `retracting` is defensive: retry deltas buffer in retryText, so
+    // streamingText can't do a null→value edge mid-retract.
+    if (!appeared || retracting) return;
+    const composer = composerRef.current;
+    const overlay = overlayRef.current;
+    if (composer === null || overlay === null || reduced) return;
+    // The clone's size is driven by the shared measurer effect (it mirrors the
+    // in-place bubble); here we only flag it active and hide the flow bubble
+    // until the rise settles.
+    setHideStreaming(true);
+    setIncomingClone(true);
+  }, [visibleStreamingText, reduced, retracting]);
 
   // Supervisor judgment hint (bug 4, 2026-07-09; stall-gated 2026-07-10):
   // while the verdict is pending the paced reveal HOLDS its tail, so a slow
@@ -1447,9 +1461,12 @@ export const Conversation = memo(function Conversation(): JSX.Element {
     pendingUser,
     status,
     showInFlight,
-    // The held row leaves on its own timer, and its removal changes the flow's
-    // height like any other row's — a pinned reader must follow that too.
-    inFlightHeld,
+    // The row leaves on its own timer, and its removal changes the flow's
+    // height like any other row's — a pinned reader must follow that too; the
+    // deferred successors (处理中, the failure notice, the reply bubble) mount
+    // on that same edge, and on the send arm resolving.
+    inFlightExiting,
+    sendArmed,
     showSupervisorHold,
     backendActive,
     recapCompacting,
@@ -2034,7 +2051,9 @@ export const Conversation = memo(function Conversation(): JSX.Element {
             )}
             <StreamingReply
               lang={lang}
-              streamingText={streamingText}
+              // Held back while an in-flight row is still on screen — the
+              // reply enters after the row's fade (see visibleStreamingText).
+              streamingText={visibleStreamingText}
               retryText={retryText}
               retracting={retracting}
               retractKeepLen={retractKeepLen}
@@ -2064,12 +2083,19 @@ export const Conversation = memo(function Conversation(): JSX.Element {
             {/* Non-interrupt turn failure (slice 4): the reply was lost to a
             provider/connection error and nothing committed — say so instead
             of silently evaporating the half-typed sentence. */}
-            {turnFailed && status === "idle" && (
-              <TurnFailedRow
-                status={turnFailedStatus}
-                providerCode={turnFailedProviderCode}
-              />
-            )}
+            {/* Deferred like 处理中… below: while the in-flight row is up or
+            fading (or the send that will bring it up has not settled yet), the
+            notice waits — the message went out, the row travels, THEN "the
+            reply was lost". Never both at once (review 2026-07-31). */}
+            {turnFailed &&
+              status === "idle" &&
+              !inFlightPresent &&
+              !sendArmed && (
+                <TurnFailedRow
+                  status={turnFailedStatus}
+                  providerCode={turnFailedProviderCode}
+                />
+              )}
             {/* The 处理中… backend placeholder sits at the BOTTOM of the flow —
           backend work happens after Herta speaks the @板砖 delegation, so it
           must appear below her reply (record block or still-streaming bubble),
@@ -2081,6 +2107,11 @@ export const Conversation = memo(function Conversation(): JSX.Element {
           fades in where it stood (user 2026-07-31). */}
             {backendActive &&
               !inFlightPresent &&
+              // …and while a send is armed but its row not yet up (the bubble
+              // is still flying), so a backend that starts before the morph
+              // settles does not put 处理中 under a bubble in flight, only to
+              // yield to the row a moment later.
+              !sendArmed &&
               (() => {
                 const last = items[items.length - 1];
                 const lastIsActive =

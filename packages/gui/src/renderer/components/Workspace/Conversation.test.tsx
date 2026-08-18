@@ -30,6 +30,17 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+/** Type into the rendered Composer and submit — the real send path (the
+ *  optimistic echo + bridge.submitText), which is what arms the in-flight
+ *  row. Call inside act(). */
+function sendViaComposer(text: string): void {
+  const input = screen.getByPlaceholderText(
+    "Message Herta…",
+  ) as HTMLTextAreaElement;
+  fireEvent.change(input, { target: { value: text } });
+  fireEvent.submit(input.closest("form") as HTMLFormElement);
+}
+
 /** Ms from the retract rising edge to just past the `n`-th erase deletion:
  *  the hold beat + the cumulative ramped per-char delays (mirrors the morph). */
 function eraseMs(n: number): number {
@@ -215,13 +226,13 @@ describe("Conversation", () => {
     vi.useRealTimers();
   });
 
-  it("a mid-hold stream ends the hold — the galaxy never flashes back above 处理中", () => {
-    // Fast @板砖 dispatch (user 2026-07-31): the galaxy shows, Herta's short
-    // dispatch speech takes it down (loud, same render), the speech commits
-    // and the bridge starts — all inside IN_FLIGHT_MIN_VISIBLE_MS. The hold
-    // state used to survive the stream underneath, so the quiet branch
-    // resurfaced the galaxy above the freshly mounted 处理中… row for the rest
-    // of the minimum, shoving the row down and back up.
+  it("a fast dispatch turn: galaxy → (stream waits) → speech commits → 处理中 — one continuous row, no re-show", () => {
+    // Fast @板砖 dispatch (user 2026-07-31): Herta's short dispatch speech,
+    // its commit and the bridge start all land inside IN_FLIGHT_MIN_VISIBLE_MS.
+    // The row used to go down for the stream and then FLASH BACK above the
+    // freshly mounted 处理中… (a zombie hold). Now the stream waits out the
+    // row; the row's single hold covers speech → commit → bridge; and 处理中
+    // takes over only once the row has left. Nothing re-shows.
     vi.useFakeTimers();
     const mock = createMockHertaBridge();
     renderWithLocale(
@@ -245,11 +256,11 @@ describe("Conversation", () => {
     act(() => {
       vi.advanceTimersByTime(GALAXY_APPEAR_DELAY_MS);
     });
-    expect(
-      screen.getByText("Message is crossing the galaxy…"),
-    ).toBeInTheDocument();
+    const row = screen
+      .getByText("Message is crossing the galaxy…")
+      .closest(".status-row");
     // Herta's dispatch line starts streaming well inside the minimum — the
-    // row goes down this render (the 2026-07-10 morph-slot invariant)…
+    // row stays (its hold), the bubble waits…
     act(() => {
       mock.emitAgent({
         kind: "agent",
@@ -261,11 +272,13 @@ describe("Conversation", () => {
       });
     });
     expect(
-      screen.queryByText("Message is crossing the galaxy…"),
-    ).not.toBeInTheDocument();
-    // …the speech commits (stream clears — a genuine settled gap before the
-    // bridge starts). A fresh show must wait out the appearance grace; the
-    // zombie hold used to bring the row back in THIS render.
+      screen
+        .getByText("Message is crossing the galaxy…")
+        .closest(".status-row"),
+    ).toBe(row);
+    expect(screen.queryByTestId("streaming-bubble")).not.toBeInTheDocument();
+    // …the speech commits (the stream clears — the wait-is-on predicate is
+    // true again for a moment): still the same row, still up…
     act(() => {
       mock.emitRecord({
         kind: "block",
@@ -274,9 +287,11 @@ describe("Conversation", () => {
       });
     });
     expect(
-      screen.queryByText("Message is crossing the galaxy…"),
-    ).not.toBeInTheDocument();
-    // The bridge starts: 处理中… owns the phase, alone.
+      screen
+        .getByText("Message is crossing the galaxy…")
+        .closest(".status-row"),
+    ).toBe(row);
+    // …the bridge starts: 处理中 defers behind the row…
     act(() => {
       mock.emitAgent({
         kind: "agent",
@@ -287,27 +302,40 @@ describe("Conversation", () => {
         } as never,
       });
     });
-    expect(screen.getByTestId("pending-activity")).toBeInTheDocument();
+    expect(
+      screen
+        .getByText("Message is crossing the galaxy…")
+        .closest(".status-row"),
+    ).toBe(row);
+    expect(screen.queryByTestId("pending-activity")).not.toBeInTheDocument();
+    // …the minimum runs out → the fade → 处理中 alone. Never a re-show.
+    act(() => {
+      vi.advanceTimersByTime(IN_FLIGHT_MIN_VISIBLE_MS);
+    });
+    expect(row?.className).toContain("is-exiting");
+    expect(screen.queryByTestId("pending-activity")).not.toBeInTheDocument();
+    act(() => {
+      vi.advanceTimersByTime(IN_FLIGHT_EXIT_MS);
+    });
     expect(
       screen.queryByText("Message is crossing the galaxy…"),
     ).not.toBeInTheDocument();
-    // And the leftover minimum never resurrects it.
+    expect(screen.getByTestId("pending-activity")).toBeInTheDocument();
     act(() => {
       vi.advanceTimersByTime(IN_FLIGHT_MIN_VISIBLE_MS);
     });
     expect(
       screen.queryByText("Message is crossing the galaxy…"),
     ).not.toBeInTheDocument();
-    expect(screen.getByTestId("pending-activity")).toBeInTheDocument();
     vi.useRealTimers();
   });
 
-  it("a turn FAILURE ends the hold — the galaxy never stacks on the failure row", () => {
-    // turn.failed lands as one emit (status idle + turnFailed), and the idle
-    // edge used to read as a QUIET hide: the held galaxy sat directly above
-    // the freshly mounted TurnFailedRow — crossing-the-galaxy stacked on
-    // the-reply-was-lost — then yanked it up when the hold expired (review
-    // 2026-07-31).
+  it("a turn FAILURE inside the minimum: the row keeps its time, fades, THEN the notice — never stacked", () => {
+    // The 2026-07-31 review's complaint was the two on screen together (the
+    // held galaxy directly above "the reply was lost", then yanked up). The
+    // owner's 2026-08-17 rule keeps the row's minimum for failures too — the
+    // message went out, the reply was lost — so the notice now defers behind
+    // the row exactly like 处理中 does. Same invariant, opposite mechanism.
     vi.useFakeTimers();
     const mock = createMockHertaBridge();
     renderWithLocale(
@@ -334,7 +362,8 @@ describe("Conversation", () => {
     expect(
       screen.getByText("Message is crossing the galaxy…"),
     ).toBeInTheDocument();
-    // The provider dies well inside the minimum.
+    // The provider dies well inside the minimum: the row stays, the notice
+    // waits.
     act(() => {
       mock.emitTurn({
         kind: "failed",
@@ -342,16 +371,199 @@ describe("Conversation", () => {
         error: { code: "actor_failed", message: "boom" },
       });
     });
-    expect(screen.getByTestId("turn-failed-row")).toBeInTheDocument();
+    expect(screen.queryByTestId("turn-failed-row")).not.toBeInTheDocument();
     expect(
-      screen.queryByText("Message is crossing the galaxy…"),
-    ).not.toBeInTheDocument();
+      screen.getByText("Message is crossing the galaxy…"),
+    ).toBeInTheDocument();
+    // Minimum → fade (still no notice) → the notice, alone.
     act(() => {
       vi.advanceTimersByTime(IN_FLIGHT_MIN_VISIBLE_MS);
     });
     expect(
+      screen.getByText("Message is crossing the galaxy…").closest(".status-row")
+        ?.className,
+    ).toContain("is-exiting");
+    expect(screen.queryByTestId("turn-failed-row")).not.toBeInTheDocument();
+    act(() => {
+      vi.advanceTimersByTime(IN_FLIGHT_EXIT_MS);
+    });
+    expect(
       screen.queryByText("Message is crossing the galaxy…"),
     ).not.toBeInTheDocument();
+    expect(screen.getByTestId("turn-failed-row")).toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it("a SEND shows the row at the morph's settle regardless of how fast the other side answers (owner 2026-08-17)", () => {
+    // Every send travels: the row appears the moment the outgoing bubble
+    // lands, even when the backend is already active by then (a fast direct
+    // @板砖 turn), and 处理中 waits for it. Before, a wait shorter than the
+    // 400 ms appearance grace showed nothing — same turn, some sends showed
+    // the row and some did not.
+    vi.useFakeTimers();
+    const mock = createMockHertaBridge();
+    renderWithLocale(
+      <WorkspaceRefsProvider>
+        <HertaBridgeProvider bridge={mock.bridge}>
+          <Conversation />
+          <Composer />
+        </HertaBridgeProvider>
+      </WorkspaceRefsProvider>,
+    );
+    act(() => {
+      mock.emitReset({
+        sessionId: "s",
+        workspaceRoot: "/r",
+        record: [],
+        overlay: null,
+        backendWorkspace: "/r",
+        backendWorkspaceIsDefault: true,
+      });
+    });
+    // The user sends (the optimistic echo is the send edge; jsdom flies no
+    // clone, so the "settle" is immediate) and the turn starts…
+    act(() => {
+      sendViaComposer("@板砖 fix the parser");
+      mock.emitTurn({ kind: "started", turnId: "t1" });
+    });
+    // …and the backend is active BEFORE any grace could elapse.
+    act(() => {
+      mock.emitAgent({
+        kind: "agent",
+        event: {
+          type: "turn.started",
+          layer: "backend",
+          userText: "",
+        } as never,
+      });
+    });
+    // The row is up anyway; 处理中 defers.
+    expect(
+      screen.getByText("Message is crossing the galaxy…"),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("pending-activity")).not.toBeInTheDocument();
+    // It keeps its minimum, fades, and hands off in place.
+    act(() => {
+      vi.advanceTimersByTime(IN_FLIGHT_MIN_VISIBLE_MS);
+    });
+    expect(
+      screen.getByText("Message is crossing the galaxy…").closest(".status-row")
+        ?.className,
+    ).toContain("is-exiting");
+    act(() => {
+      vi.advanceTimersByTime(IN_FLIGHT_EXIT_MS);
+    });
+    expect(
+      screen.queryByText("Message is crossing the galaxy…"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("pending-activity")).toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it("a send that never became a turn (no DeepSeek key) shows no row", async () => {
+    // The key prompt takes the message: nothing was sent, nothing travels.
+    vi.useFakeTimers();
+    const mock = createMockHertaBridge({
+      submitTextResult: { needsKey: true },
+    });
+    renderWithLocale(
+      <WorkspaceRefsProvider>
+        <HertaBridgeProvider bridge={mock.bridge}>
+          <Conversation />
+          <Composer />
+        </HertaBridgeProvider>
+      </WorkspaceRefsProvider>,
+    );
+    act(() => {
+      mock.emitReset({
+        sessionId: "s",
+        workspaceRoot: "/r",
+        record: [],
+        overlay: null,
+        backendWorkspace: "/r",
+        backendWorkspaceIsDefault: true,
+      });
+    });
+    // submitText resolves { needsKey } → the store hands the text to the
+    // prompt (echo withdrawn); no turn ever starts.
+    await act(async () => {
+      sendViaComposer("hi");
+      await Promise.resolve();
+    });
+    act(() => {
+      vi.advanceTimersByTime(GALAXY_APPEAR_DELAY_MS + IN_FLIGHT_MIN_VISIBLE_MS);
+    });
+    expect(
+      screen.queryByText("Message is crossing the galaxy…"),
+    ).not.toBeInTheDocument();
+    // And the arm does not leak into a LATER non-send turn's row: the next
+    // (opening-style) turn still waits out the appearance grace.
+    act(() => {
+      mock.emitTurn({ kind: "started", turnId: "t2" });
+    });
+    expect(
+      screen.queryByText("Message is crossing the galaxy…"),
+    ).not.toBeInTheDocument();
+    act(() => {
+      vi.advanceTimersByTime(GALAXY_APPEAR_DELAY_MS);
+    });
+    expect(
+      screen.getByText("Message is crossing the galaxy…"),
+    ).toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it("a send whose turn fails while the bubble is still flying: row for its minimum, THEN the notice", () => {
+    // A 401/402 comes back in a few hundred ms — before the morph would have
+    // settled. The message went out; the row travels; then "the reply was
+    // lost". The notice never mounts under a still-flying bubble or a
+    // still-showing row.
+    vi.useFakeTimers();
+    const mock = createMockHertaBridge();
+    renderWithLocale(
+      <WorkspaceRefsProvider>
+        <HertaBridgeProvider bridge={mock.bridge}>
+          <Conversation />
+          <Composer />
+        </HertaBridgeProvider>
+      </WorkspaceRefsProvider>,
+    );
+    act(() => {
+      mock.emitReset({
+        sessionId: "s",
+        workspaceRoot: "/r",
+        record: [],
+        overlay: null,
+        backendWorkspace: "/r",
+        backendWorkspaceIsDefault: true,
+      });
+    });
+    act(() => {
+      sendViaComposer("hi");
+      mock.emitTurn({ kind: "started", turnId: "t1" });
+    });
+    act(() => {
+      mock.emitTurn({
+        kind: "failed",
+        turnId: "t1",
+        error: { code: "provider_error", message: "402", status: 402 } as never,
+      });
+    });
+    expect(
+      screen.getByText("Message is crossing the galaxy…"),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("turn-failed-row")).not.toBeInTheDocument();
+    act(() => {
+      vi.advanceTimersByTime(IN_FLIGHT_MIN_VISIBLE_MS);
+    });
+    expect(screen.queryByTestId("turn-failed-row")).not.toBeInTheDocument();
+    act(() => {
+      vi.advanceTimersByTime(IN_FLIGHT_EXIT_MS);
+    });
+    expect(
+      screen.queryByText("Message is crossing the galaxy…"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("turn-failed-row")).toBeInTheDocument();
     vi.useRealTimers();
   });
 
@@ -421,10 +633,12 @@ describe("Conversation", () => {
     vi.useRealTimers();
   });
 
-  it("a stream mid-exit-fade still unmounts the row in the SAME render", () => {
-    // The exit fade must stop at the same boundary the hold does (the
-    // 2026-07-10 morph-slot invariant): a first delta arriving while the row
-    // is fading out takes it down this render, not IN_FLIGHT_EXIT_MS later.
+  it("a stream mid-exit-fade waits for the fade — the bubble mounts in the render the row leaves (never both)", () => {
+    // Owner 2026-08-17 ("mimicking sending a message to the space station"):
+    // the reply enters AFTER the row's fade instead of cutting it. The
+    // 2026-07-10 morph-slot invariant is kept the other way round — the
+    // streaming bubble is simply not mounted while the row is on screen, so
+    // its rise measures a slot the row has already left.
     vi.useFakeTimers();
     const mock = createMockHertaBridge();
     renderWithLocale(
@@ -466,7 +680,8 @@ describe("Conversation", () => {
       screen.getByText("Message is crossing the galaxy…").closest(".status-row")
         ?.className,
     ).toContain("is-exiting");
-    // A beat's first delta lands mid-fade — loud, same render.
+    // A beat's first delta lands mid-fade: the row keeps fading, the bubble
+    // waits.
     act(() => {
       mock.emitAgent({
         kind: "agent",
@@ -478,17 +693,27 @@ describe("Conversation", () => {
       });
     });
     expect(
+      screen.getByText("Message is crossing the galaxy…").closest(".status-row")
+        ?.className,
+    ).toContain("is-exiting");
+    expect(screen.queryByTestId("streaming-bubble")).not.toBeInTheDocument();
+    // The fade ends → the row unmounts and the bubble mounts, same render.
+    act(() => {
+      vi.advanceTimersByTime(IN_FLIGHT_EXIT_MS);
+    });
+    expect(
       screen.queryByText("Message is crossing the galaxy…"),
     ).not.toBeInTheDocument();
+    expect(screen.getByTestId("streaming-bubble")).toBeInTheDocument();
     vi.useRealTimers();
   });
 
-  it("a stream still takes the in-flight row down in the SAME render, hold or not", () => {
-    // The hold must stop at the boundary the 2026-07-10 fix guards: the
-    // incoming-rise morph measures its landing slot when the first delta
-    // arrives, and a row that unmounts a commit later moved that slot out from
-    // under it (the clone landed overlapping the activity header). So a
-    // stream hides the row immediately even inside the minimum-visible window.
+  it("a stream inside the minimum waits out the hold, then the fade — the row is never cut short", () => {
+    // The row's minimum used to stop at a stream (a fast first token cut it
+    // to a sub-second flash — the "quick flash" report class). Now Herta's
+    // reply enters after the row has had its time; while it waits, the
+    // stream is buffered (status/device state already say "speaking"; only
+    // the bubble and its rise wait).
     vi.useFakeTimers();
     const mock = createMockHertaBridge();
     renderWithLocale(
@@ -515,8 +740,11 @@ describe("Conversation", () => {
     expect(
       screen.getByText("Message is crossing the galaxy…"),
     ).toBeInTheDocument();
-    // Herta starts speaking well inside the minimum — the row must be gone
-    // this render, not 800ms from now.
+    const row = screen
+      .getByText("Message is crossing the galaxy…")
+      .closest(".status-row");
+    // Herta starts speaking well inside the minimum — the SAME row stays,
+    // not fading yet, and the bubble is not mounted.
     act(() => {
       mock.emitAgent({
         kind: "agent",
@@ -527,9 +755,28 @@ describe("Conversation", () => {
         } as never,
       });
     });
+    const still = screen
+      .getByText("Message is crossing the galaxy…")
+      .closest(".status-row");
+    expect(still).toBe(row);
+    expect(still?.className).not.toContain("is-exiting");
+    expect(screen.queryByTestId("streaming-bubble")).not.toBeInTheDocument();
+    // Minimum reached → the fade; the bubble still waits…
+    act(() => {
+      vi.advanceTimersByTime(IN_FLIGHT_MIN_VISIBLE_MS);
+    });
+    expect(still?.className).toContain("is-exiting");
+    expect(screen.queryByTestId("streaming-bubble")).not.toBeInTheDocument();
+    // …and enters as the row leaves.
+    act(() => {
+      vi.advanceTimersByTime(IN_FLIGHT_EXIT_MS);
+    });
     expect(
       screen.queryByText("Message is crossing the galaxy…"),
     ).not.toBeInTheDocument();
+    // (Mounted; the paced reveal fills it frame by frame — no frames run
+    // under fake timers, so the text itself is not asserted here.)
+    expect(screen.getByTestId("streaming-bubble")).toBeInTheDocument();
     vi.useRealTimers();
   });
 
