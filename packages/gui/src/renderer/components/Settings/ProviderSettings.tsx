@@ -22,7 +22,7 @@ const PROVIDER_DEFAULTS: Record<
   deepseek: {
     baseUrl: "https://api.deepseek.com",
     actorModel: "deepseek-v4-pro",
-    backendModel: "deepseek-v4-pro",
+    backendModel: "deepseek-v4-flash",
   },
   openai: {
     baseUrl: "https://api.openai.com/v1",

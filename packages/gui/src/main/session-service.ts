@@ -5,7 +5,6 @@ import {
   type AppServerConfig,
   createSessionHost,
   defaultDirsFor,
-  PROVIDER_DEFAULTS,
   type ProviderType,
   recordTail,
   type Session,
@@ -120,6 +119,45 @@ export function appWorkspaceRoot(): string {
  *  still reaches every transcript on disk. */
 const SIDEBAR_LIST_LIMIT = 200;
 
+/** Per-provider default base URL + model names (GUI). The actor runs in
+ *  DeepSeek completion mode regardless (no other provider exposes a raw
+ *  completion endpoint); for other providers the chat surfaces (板砖 &
+ *  router) use these defaults until the user overrides them in Settings. */
+const PROVIDER_DEFAULTS: Record<
+  ProviderType,
+  {
+    baseUrl: string;
+    actorModel: string;
+    backendModel: string;
+    routerModel: string;
+  }
+> = {
+  deepseek: {
+    baseUrl: "https://api.deepseek.com",
+    actorModel: "deepseek-v4-pro",
+    backendModel: "deepseek-v4-flash",
+    routerModel: "deepseek-v4-flash",
+  },
+  openai: {
+    baseUrl: "https://api.openai.com/v1",
+    actorModel: "o3",
+    backendModel: "gpt-4o",
+    routerModel: "gpt-4o-mini",
+  },
+  anthropic: {
+    baseUrl: "https://api.anthropic.com",
+    actorModel: "claude-sonnet-5",
+    backendModel: "claude-sonnet-5",
+    routerModel: "claude-fable-5",
+  },
+  "openai-compat": {
+    baseUrl: "",
+    actorModel: "",
+    backendModel: "",
+    routerModel: "",
+  },
+};
+
 export async function buildConfig(
   cwd: string,
   home: string,
@@ -162,14 +200,7 @@ export async function buildConfig(
 
   // Resolve provider-specific defaults.
   const defaults = PROVIDER_DEFAULTS[activeProvider];
-  const actorModel =
-    providerConfig?.actorModel ??
-    process.env.HERTA_ACTOR_MODEL ??
-    defaults.actorModel;
-  const backendModel =
-    providerConfig?.backendModel ??
-    process.env.HERTA_BACKEND_MODEL ??
-    defaults.backendModel;
+  // Base URL: provider config > dev env knob > provider default.
   const baseUrl =
     providerConfig?.baseUrl ??
     (devBaseUrl !== undefined && devBaseUrl !== "" ? devBaseUrl : undefined) ??
@@ -183,19 +214,22 @@ export async function buildConfig(
     providers: {
       type: activeProvider,
       apiKey: providerConfig?.apiKey ?? deepseekApiKey,
-      // Model names: env (dev/lab override) > Settings > built-in default.
+      // Model precedence: provider config > env (dev/lab knob) > Settings →
+      // 模型 (persisted UI choice) > provider built-in default.
       // When activeProvider is "deepseek", the actor runs in completion mode;
       // for other providers it falls back to chat mode (session.ts).
       actorModel:
+        providerConfig?.actorModel ??
         process.env.HERTA_ACTOR_MODEL ??
         (isModelChoice(settings.models?.actor)
           ? settings.models.actor
-          : actorModel),
+          : defaults.actorModel),
       backendModel:
+        providerConfig?.backendModel ??
         process.env.HERTA_BACKEND_MODEL ??
         (isModelChoice(settings.models?.backend)
           ? settings.models.backend
-          : backendModel),
+          : defaults.backendModel),
       routerModel: defaults.routerModel,
       ...(baseUrl ? { baseUrl } : {}),
     },

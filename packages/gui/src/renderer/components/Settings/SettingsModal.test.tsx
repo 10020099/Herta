@@ -69,9 +69,9 @@ describe("SettingsModal", () => {
       </HertaBridgeProvider>,
     );
     // Switch to a non-default section.
-    fireEvent.click(getByRole("button", { name: "DeepSeek" }));
-    expect(getByRole("heading", { name: "DeepSeek" })).toBeTruthy();
-    // Close, then reopen — it should be back on Language, not DeepSeek.
+    fireEvent.click(getByRole("button", { name: "Model Provider" }));
+    expect(getByRole("heading", { name: "Model Provider" })).toBeTruthy();
+    // Close, then reopen — it should be back on Language, not Model Provider.
     // Note: rerender replaces the whole tree, so wrap in the full provider stack.
     rerender(ui(false));
     rerender(ui(true));

@@ -30,35 +30,6 @@ export type ThinkingEffort =
   | "max"
   | "off";
 
-/** Per-provider default models. */
-export const PROVIDER_DEFAULTS = {
-  deepseek: {
-    baseUrl: "https://api.deepseek.com",
-    actorModel: "deepseek-v4-pro",
-    backendModel: "deepseek-v4-pro",
-    routerModel: "deepseek-v4-flash",
-  },
-  openai: {
-    baseUrl: "https://api.openai.com/v1",
-    actorModel: "o3",
-    backendModel: "gpt-4o",
-    routerModel: "gpt-4o-mini",
-  },
-  anthropic: {
-    baseUrl: "https://api.anthropic.com",
-    // Anthropic has no completion endpoint; actor falls back to chat mode.
-    actorModel: "claude-sonnet-5",
-    backendModel: "claude-sonnet-5",
-    routerModel: "claude-fable-5",
-  },
-  "openai-compat": {
-    baseUrl: "",
-    actorModel: "",
-    backendModel: "",
-    routerModel: "",
-  },
-} as const;
-
 // ───── Configuration ─────
 
 /**

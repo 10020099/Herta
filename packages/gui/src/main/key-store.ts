@@ -239,7 +239,11 @@ export function readDeepSeekKeyPlain(): string | null {
 }
 
 export function getDeepSeekKeyStatus(): DeepSeekKeyStatus {
-  return getProviderStatus("deepseek");
+  // Strip the `type` field ProviderStatus carries — the legacy DeepSeek-only
+  // shape predates multi-provider and its consumers/test expect exactly
+  // { set, hint, encrypted }.
+  const { set, hint, encrypted } = getProviderStatus("deepseek");
+  return { set, hint, encrypted };
 }
 
 export function clearDeepSeekKey(): void {
