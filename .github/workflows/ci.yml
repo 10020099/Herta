@@ -48,7 +48,7 @@ jobs:
         working-directory: packages/gui
       - run: node scripts/third-party-notices.mjs --check
         working-directory: packages/gui
-      - run: npx electron-builder --win
+      - run: npx electron-builder --win --publish never
         working-directory: packages/gui
       - uses: actions/upload-artifact@v4
         with:
