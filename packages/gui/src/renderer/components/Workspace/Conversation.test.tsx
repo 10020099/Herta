@@ -152,6 +152,69 @@ describe("Conversation", () => {
     vi.useRealTimers();
   });
 
+  it("the backend starting keeps the SAME galaxy row mounted — no unmount/remount, no replayed entrance (2026-08-17)", () => {
+    // Live CDP mutation timeline of a user-typed @板砖 turn: `galaxy UNMOUNT
+    // + 处理中 MOUNT` at 1149 ms, then `处理中 UNMOUNT + galaxy MOUNT →
+    // is-shown` at 1167 ms — the hold flag flipped in an EFFECT one commit
+    // after the hide render, and in that commit the row was down. The row
+    // fading in from zero a second time (with 处理中 blinking underneath) was
+    // the owner's "flashed twice before the 板砖 row". act() flushes that
+    // intermediate commit, so the pin is DOM identity: the element the user
+    // was looking at must be the element still there afterwards.
+    vi.useFakeTimers();
+    const mock = createMockHertaBridge();
+    renderWithLocale(
+      <WorkspaceRefsProvider>
+        <HertaBridgeProvider bridge={mock.bridge}>
+          <Conversation />
+        </HertaBridgeProvider>
+      </WorkspaceRefsProvider>,
+    );
+    act(() => {
+      mock.emitReset({
+        sessionId: "s",
+        workspaceRoot: "/r",
+        record: [{ kind: "user", text: "@板砖 fix the parser" }],
+        overlay: null,
+        backendWorkspace: "/r",
+        backendWorkspaceIsDefault: true,
+      });
+      mock.emitTurn({ kind: "started", turnId: "t1" });
+    });
+    act(() => {
+      vi.advanceTimersByTime(GALAXY_APPEAR_DELAY_MS);
+    });
+    const before = screen
+      .getByText("Message is crossing the galaxy…")
+      .closest(".status-row");
+    expect(before).not.toBeNull();
+    act(() => {
+      mock.emitAgent({
+        kind: "agent",
+        event: {
+          type: "turn.started",
+          layer: "backend",
+          userText: "",
+        } as never,
+      });
+    });
+    const after = screen
+      .getByText("Message is crossing the galaxy…")
+      .closest(".status-row");
+    expect(after).toBe(before);
+    expect(after?.className).not.toContain("is-exiting");
+    // The same node then leaves through its fade, in place.
+    act(() => {
+      vi.advanceTimersByTime(IN_FLIGHT_MIN_VISIBLE_MS);
+    });
+    const fading = screen
+      .getByText("Message is crossing the galaxy…")
+      .closest(".status-row");
+    expect(fading).toBe(before);
+    expect(fading?.className).toContain("is-exiting");
+    vi.useRealTimers();
+  });
+
   it("a mid-hold stream ends the hold — the galaxy never flashes back above 处理中", () => {
     // Fast @板砖 dispatch (user 2026-07-31): the galaxy shows, Herta's short
     // dispatch speech takes it down (loud, same render), the speech commits

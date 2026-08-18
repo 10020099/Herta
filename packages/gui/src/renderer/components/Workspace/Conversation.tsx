@@ -1038,10 +1038,22 @@ export const Conversation = memo(function Conversation(): JSX.Element {
   /** When the row actually became visible — the clock the minimum-visible hold
    *  is measured from. Null whenever it is down. */
   const inFlightShownAtRef = useRef<number | null>(null);
-  /** True while the row is being HELD past its hide condition, so a dispatch
-   *  that lands fast cannot flash it (user 2026-07-30). Held only against the
-   *  quiet hide reasons; `inFlightVisible` still drops it in the same render
-   *  for a stream or a morph. */
+  /** True from the frame the row is UP until it begins its exit — the
+   *  render-synchronous "this row is on screen" flag that carries it across
+   *  a quiet hide (backend starting, turn ending) so a dispatch that lands
+   *  fast cannot flash it (user 2026-07-30). Held only against the quiet hide
+   *  reasons; `inFlightVisible` still drops it in the same render for a
+   *  stream, a morph or a failure.
+   *
+   *  It used to flip true only in the hold EFFECT, i.e. one commit AFTER the
+   *  hide condition arrived — and in that one commit `inFlightVisible` was
+   *  false: the row unmounted, 处理中… mounted underneath, then the effect set
+   *  the hold and the row REMOUNTED with a fresh entrance animation. Measured
+   *  live (2026-08-17, CDP mutation timeline of a user-typed @板砖 turn):
+   *  `galaxy UNMOUNT + 处理中 MOUNT` at 1149 ms, `处理中 UNMOUNT + galaxy
+   *  MOUNT → is-shown` at 1167 ms — an 18 ms gap that read as the row
+   *  "flashing twice before the 板砖 row appears". Setting it at appear time
+   *  closes the gap: the quiet-hide render already sees the hold. */
   const [inFlightHeld, setInFlightHeld] = useState(false);
   /** True while the row is fading OUT after a quiet hide (user 2026-07-31:
    *  the swap to 处理中 was a hard same-commit switch). The row stays mounted
@@ -1051,11 +1063,23 @@ export const Conversation = memo(function Conversation(): JSX.Element {
   const [inFlightExiting, setInFlightExiting] = useState(false);
   useEffect(() => {
     if (inFlightSettled) {
-      setInFlightHeld(false);
+      if (inFlightShownAtRef.current !== null) {
+        // The row is already up and its hide condition reversed inside the
+        // hold (a supervisor check ending, a backend blip): keep it, keep its
+        // clock — the effect cleanup already disarmed the pending exit.
+        setInFlightExiting(false);
+        setShowInFlight(true);
+        setInFlightHeld(true);
+        return;
+      }
       const id = window.setTimeout(() => {
         inFlightShownAtRef.current = Date.now();
         setInFlightExiting(false); // a re-show mid-fade resumes the row
         setShowInFlight(true);
+        // On-screen flag from the first frame (see its declaration): the
+        // quiet-hide render must already see the hold, or the row unmounts
+        // for one commit and remounts — the "flashed twice" (2026-08-17).
+        setInFlightHeld(true);
       }, GALAXY_APPEAR_DELAY_MS);
       return () => window.clearTimeout(id);
     }
@@ -1163,7 +1187,12 @@ export const Conversation = memo(function Conversation(): JSX.Element {
   const inFlightVisible =
     showInFlight &&
     (inFlightSettled ||
-      (inFlightHeld && streamingText === null && outgoingClone === null));
+      (inFlightHeld &&
+        streamingText === null &&
+        outgoingClone === null &&
+        // The failure hide stays render-synchronous now that the hold flag is
+        // up for the row's whole life (it used to be false at this render).
+        !turnFailed));
   /** The exit fade, with the SAME render-synchronous loud-hide guard: a
    *  stream or a morph arriving mid-fade unmounts the row this render (the
    *  watcher then clears the stale flag), so the 2026-07-10 morph-measure
