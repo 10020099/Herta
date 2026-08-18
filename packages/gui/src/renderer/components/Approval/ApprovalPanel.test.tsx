@@ -514,12 +514,27 @@ describe("ApprovalPanel — conversation reserve (2026-07-27)", () => {
       const toggle = screen.getByRole("button", { name: /show the diff/i });
       expect(toggle).toHaveAttribute("aria-expanded", "false");
       expect(toggle).toHaveAttribute("aria-controls", "approval-panel-diff");
+      // The well is MOUNTED while collapsed (owner 2026-08-17: it used to
+      // mount on open and the panel snapped to its new height; now the
+      // grid-row wrapper animates open). Hidden from AT + tab order until
+      // opened.
+      const well = document.getElementById("approval-panel-diff");
+      expect(well).not.toBeNull();
+      const wrap = well?.closest(".approval-panel__diff-wrap");
+      expect(wrap?.className).not.toContain("is-open");
+      expect(wrap).toHaveAttribute("aria-hidden", "true");
+      expect(well).toHaveAttribute("tabindex", "-1");
 
       fireEvent.click(toggle);
       expect(
         screen.getByRole("button", { name: /hide the diff/i }),
       ).toHaveAttribute("aria-expanded", "true");
-      expect(document.getElementById("approval-panel-diff")).not.toBeNull();
+      // Same node — never remounted; the wrapper opens and it joins the tab
+      // order.
+      expect(document.getElementById("approval-panel-diff")).toBe(well);
+      expect(wrap?.className).toContain("is-open");
+      expect(wrap).toHaveAttribute("aria-hidden", "false");
+      expect(well).toHaveAttribute("tabindex", "0");
     });
   });
 

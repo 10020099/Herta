@@ -624,7 +624,20 @@ body:after{
    hidden the pane widens and fixed-width bubbles hugging the left edge left
    the middle empty. Cap the flow at a readable measure and center it; at or
    below the cap this is width-neutral (100% width, auto margins collapse). */
-.conversation-flow{max-width:880px;margin:0 auto;width:100%}
+.conversation-flow{max-width:var(--flow-measure);margin:0 auto;width:100%}
+/* One readable measure for the whole column (owner 2026-08-17): the
+   composer and the approval panel used to stretch to the pane's full width
+   while the flow above them stayed at 880px centered, so on a maximized
+   window the input ran far past both edges of the conversation. The footer
+   now caps at the same measure and centers with the flow (the flow sits
+   5px left of true centre because of .conversation's 10px scrollbar
+   gutter — under the eye's threshold, and not worth a padding dance that
+   would also shift the absolute approval panel). Below the cap nothing
+   changes (100% width, auto margins collapse), so the sidebar-open layout
+   is untouched. The approval panel is absolute inside the footer
+   (left/right 0), so it inherits the same measure. */
+.workspace{--flow-measure:880px}
+.workspace-footer{width:100%;max-width:var(--flow-measure);margin:0 auto}
 /* Turn headroom (2026-07-29): room reserved under the newest turn so a reply
    arrives into a region instead of crawling along the bottom edge. Sized
    imperatively by Conversation (see turn-headroom.ts) — 0 until you send,
@@ -2858,6 +2871,43 @@ button.agent-preview:active {
 }
 .approval-panel__diff-toggle {
   align-self: flex-start;
+}
+/* The diff disclosure animates (owner 2026-08-17: it used to snap open —
+   the well was mounted/unmounted). Grid-row interpolation 0fr → 1fr sizes
+   the open state to the well's own height (capped by its max-height), so
+   the panel's top edge glides up instead of jumping; the panel's
+   ResizeObserver republishes --approval-reserve every frame of it. Closed:
+   the well is hidden after the collapse plays (visibility waits out the
+   row transition), and the toggle's aria-expanded is the AT truth. The
+   wrap's negative margin cancels the panel's flex gap while closed, so a
+   collapsed disclosure adds no blank strip under the toggle. */
+.approval-panel__diff-wrap {
+  display: grid;
+  grid-template-rows: 0fr;
+  margin-top: -8px;
+  transition:
+    grid-template-rows 240ms var(--ease-signature),
+    margin-top 240ms var(--ease-signature);
+}
+.approval-panel__diff-wrap.is-open {
+  grid-template-rows: 1fr;
+  margin-top: 0;
+}
+.approval-panel__diff-clip {
+  min-height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  transition: visibility 0s linear 240ms;
+}
+.approval-panel__diff-wrap.is-open .approval-panel__diff-clip {
+  visibility: visible;
+  transition-delay: 0s;
+}
+@media (prefers-reduced-motion: reduce) {
+  .approval-panel__diff-wrap,
+  .approval-panel__diff-clip {
+    transition: none;
+  }
 }
 /* Slim pill scrollbar (2026-07-23 sweep after the composer finding) — the
    default chunky OS bar sat inside the approval card on big previews. */

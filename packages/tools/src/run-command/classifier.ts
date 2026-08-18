@@ -722,6 +722,15 @@ export function classifyCommand(argv: readonly string[]): Verdict {
   ) {
     return { kind: "allow" };
   }
+  // `node --check <file>` parses without executing (the model's syntax
+  // check after a write) — a read, guarded like one.
+  if (
+    (a0 === "node" || a0 === "nodejs") &&
+    (argv[1] === "--check" || argv[1] === "-c") &&
+    argv.length === 3
+  ) {
+    return readerArgvGuard(argv) ?? { kind: "allow" };
+  }
   // Read-only process / port listings — the server-flow briefs check whether
   // the thing they started is up and which pid owns the port; today's
   // 「未识别的命令」 on `ps aux | grep` / `netstat -ano` was noise. None of

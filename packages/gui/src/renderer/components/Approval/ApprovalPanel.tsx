@@ -344,11 +344,26 @@ export function ApprovalPanel(): JSX.Element | null {
                   del: diffStats.del,
                 })}`}
           </button>
-          {diffOpen && (
-            <pre id="approval-panel-diff" className="approval-panel__diff">
-              {shown.diff}
-            </pre>
-          )}
+          {/* Stays mounted; the wrapper animates open/closed (grid rows
+              0fr → 1fr) so the panel grows smoothly instead of jumping to
+              its new height (owner 2026-08-17). `hidden` while closed
+              keeps it out of the tab order and the AT tree — a
+              `visibility` transition on the inner well delays the hide
+              until the collapse has played. */}
+          <div
+            className={`approval-panel__diff-wrap${diffOpen ? " is-open" : ""}`}
+            aria-hidden={!diffOpen}
+          >
+            <div className="approval-panel__diff-clip">
+              <pre
+                id="approval-panel-diff"
+                className="approval-panel__diff"
+                tabIndex={diffOpen ? 0 : -1}
+              >
+                {shown.diff}
+              </pre>
+            </div>
+          </div>
         </>
       )}
       <div className="approval-panel__actions">
