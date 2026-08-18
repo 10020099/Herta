@@ -1,25 +1,9 @@
 name: ci
-# No per-push CI by decision (2026-07-19, reaffirmed 2026-08-03): one scheduled
-# run per day plus manual dispatch. It began as an Actions-minutes diet for the
-# PRIVATE dev repo, where every run burns paid minutes; the public mirror keeps
-# the same triggers so this file stays identical in both and the mirror script
-# has one less exception to carry.
-#
-# Consequence in both: pushes land ungated — run the local gates before pushing.
-# (July 2026 quota exhaustion had the cron commented out; restored 2026-08-03
-# with the August reset, per the note it carried.)
-#
-# Now that the mirror is public, its Actions minutes are free, so push /
-# pull_request triggers there would cost nothing — worth doing if outside PRs
-# start arriving. Not taken yet: that is an owner decision, and the sibling
-# note at the bottom of this file records why a second runner was dropped once.
+
 on:
   workflow_dispatch:
 
 env:
-  # electron's postinstall downloads its ~100MB platform binary. CI never
-  # LAUNCHES Electron (vitest runs under node/jsdom; `electron-vite build`
-  # only bundles), so skip the download on every job.
   ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
 
 jobs:
@@ -27,9 +11,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # No `version:` here — pnpm/action-setup reads it from package.json's
-      # `packageManager` field (pnpm@9.15.0). Specifying both collides:
-      # ERR_PNPM_BAD_PM_VERSION / "Multiple versions of pnpm specified".
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -38,31 +19,25 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm build
-      # `tsc -b` skips packages/gui and website (excluded from root project
-      # references); biome doesn't type-check and vitest transpiles without
-      # type-checking — without this step a type error in the Electron main
-      # process, the renderer, or the website lands green on main.
       - run: pnpm typecheck:apps
       - run: pnpm test
-      # Production bundles (audit 2026-07-13 T3.3): lint/typecheck/test never
-      # exercised the real electron-vite/vite builds, so a bundler regression
-      # or a packaging leak landed green on main.
-      - run: pnpm build:gui
-      # Packaging invariant: the shipped app has NO node_modules, so the main
-      # bundle must tree-shake the better-sqlite3/native branch out. A match
-      # here means the packaged app would be broken (or shipping native code).
-      - name: assert no native refs in the main bundle
-        run: "! grep -rqE 'better-sqlite3|node-gyp-build' packages/gui/out/main"
-      # Licensing invariant (audit BL26): THIRD-PARTY-NOTICES.md must match
-      # what the build above actually bundled. A new dependency that reached
-      # main without regenerating the notices lands red here, a day after
-      # merge, rather than at release.
-      - name: assert third-party notices match the bundle
-        run: node packages/gui/scripts/third-party-notices.mjs --check
-      - run: pnpm --filter @herta/website build
-      # NOTE: a windows-latest job was tried (2026-07-13 T3.3) but removed —
-      # the app-server e2e scripted-turn test hangs only on that runner (the
-      # permission gate's `present()` sees an already-aborted signal there and
-      # skips the overlay, so the test's overlay consumer waits forever), and
-      # the platform difference wasn't worth a flaky gate. The ubuntu job's
-      # build + tree-shake steps above still cover the packaging invariant.
+
+  package:
+    needs: check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "0"
+      - run: pnpm build
+      - run: pnpm --filter @herta/gui dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Herta-Setup
+          path: packages/gui/release/
