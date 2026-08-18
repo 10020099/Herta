@@ -69,7 +69,7 @@ class SessionHostImpl implements SessionHost {
   private readonly serializeLifecycle = makeLifecycleSerializer();
 
   constructor(private readonly config: AppServerConfig) {
-    this.keyHolder = { current: config.providers.deepseekApiKey };
+    this.keyHolder = { current: config.providers.apiKey };
     const dreamCfg = resolveDreamConfig(config.dream);
 
     this.dreamTrigger = new DreamTrigger({

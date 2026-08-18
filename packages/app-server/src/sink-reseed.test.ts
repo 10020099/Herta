@@ -36,7 +36,7 @@ function mkConfig(): AppServerConfig {
     capsulesDir: join(root, ".herta", "capsules"),
     narrativeDir: join(root, ".herta", "narrative"),
     providers: {
-      deepseekApiKey: "sk-test",
+      apiKey: "sk-test",
       actorModel: "deepseek-v4-base",
       backendModel: "deepseek-v4-chat",
       routerModel: "deepseek-v4-flash",

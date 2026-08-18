@@ -1527,33 +1527,38 @@ export class SessionImpl implements Session {
     const deepSeekKey: () => string =
       opts.deepSeekKey ?? (() => config.providers.apiKey);
     const apiKey: ApiKey = deepSeekKey;
-    const providerType = config.providers.type;
     const baseUrl =
       config.providers.baseUrl !== undefined
         ? { baseUrl: config.providers.baseUrl }
         : {};
 
     // Create the actor (narrative completion) provider based on type.
-    // DeepSeek uses completion mode; all others fall back to chat mode.
+    // DeepSeek uses completion mode. NOTE: other providers do not expose a
+    // raw completion endpoint, so the actor currently only runs against
+    // DeepSeek (or a DeepSeek-compatible completion endpoint) regardless of
+    // provider type. Multi-provider support currently covers the chat-mode
+    // surfaces (板砖/backend, router, supervisor, title).
     const actorProvider =
       deps.providerOverrides?.actor ??
-      (providerType === "deepseek"
-        ? deepseekCompletionProvider({ apiKey, ...baseUrl })
-        : deepseekProvider({
-            apiKey,
-            model: config.providers.actorModel,
-            ...baseUrl,
-          }));
+      deepseekCompletionProvider({ apiKey, ...baseUrl });
 
     // Create the backend (板砖) chat provider based on type.
+    // Map the broad ThinkingEffort to DeepSeek's accepted values:
+    //   off → false (omit thinking); none/minimal/low → "low";
+    //   medium/high → "high"; xhigh/max → "max".
+    const backendThinking = (() => {
+      const t = config.thinking ?? "high";
+      if (t === "off") return false;
+      if (t === "none" || t === "minimal" || t === "low") return "low";
+      if (t === "medium" || t === "high") return "high";
+      return "max";
+    })();
     const backendProvider =
       deps.providerOverrides?.backend ??
       deepseekProvider({
         apiKey,
         model: config.providers.backendModel,
-        // All three major providers now support "low" | "high" | "max".
-        thinking:
-          config.thinking === "off" ? false : (config.thinking ?? "high"),
+        thinking: backendThinking,
         ...baseUrl,
       });
 

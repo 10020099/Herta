@@ -31,7 +31,7 @@ function mkConfig(): AppServerConfig {
     capsulesDir: join(root, ".herta", "capsules"),
     narrativeDir: join(root, ".herta", "narrative"),
     providers: {
-      deepseekApiKey: "sk-test",
+      apiKey: "sk-test",
       actorModel: "deepseek-v4-base",
       backendModel: "deepseek-v4-chat",
       routerModel: "deepseek-v4-flash",
@@ -63,12 +63,12 @@ describe("createSessionHost — skeleton", () => {
     ).toThrow(/absolute/i);
   });
 
-  it("accepts an empty deepseekApiKey (no-key onboarding is deferred to submit)", () => {
+  it("accepts an empty apiKey (no-key onboarding is deferred to submit)", () => {
     const cfg = mkConfig();
     expect(() =>
       createSessionHost({
         ...cfg,
-        providers: { ...cfg.providers, deepseekApiKey: "" },
+        providers: { ...cfg.providers, apiKey: "" },
       }),
     ).not.toThrow();
   });
@@ -77,7 +77,7 @@ describe("createSessionHost — skeleton", () => {
     const cfg = mkConfig();
     const host = createSessionHost({
       ...cfg,
-      providers: { ...cfg.providers, deepseekApiKey: "" },
+      providers: { ...cfg.providers, apiKey: "" },
     });
     expect(() => host.setDeepSeekKey("sk-live")).not.toThrow();
     host.dispose();

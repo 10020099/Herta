@@ -133,7 +133,7 @@ describe("buildConfig", () => {
     const home = mkdtempSync(join(tmpdir(), "herta-bc-home-"));
     const cfg = await buildConfig(cwd, home, "sk-test-123");
     expect(cfg.workspaceRoot).toBe(cwd);
-    expect(cfg.providers.deepseekApiKey).toBe("sk-test-123");
+    expect(cfg.providers.apiKey).toBe("sk-test-123");
     // Must match the working CLI: the completion endpoint accepts only
     // deepseek-v4-pro / deepseek-v4-flash (deepseek-v4-base 400s).
     // Defaults (owner 2026-08-17): actor Pro, backend FLASH.
@@ -281,7 +281,7 @@ describe("buildConfig", () => {
     const cwd = mkdtempSync(join(tmpdir(), "herta-bc-cwd3-"));
     const home = mkdtempSync(join(tmpdir(), "herta-bc-home3-"));
     const cfg = await buildConfig(cwd, home, "sk-secure");
-    expect(cfg.providers.deepseekApiKey).toBe("sk-secure");
+    expect(cfg.providers.apiKey).toBe("sk-secure");
   });
 
   it("voiceAssetsDir: dev default under the workspace, packaged override wins", async () => {
@@ -300,7 +300,7 @@ describe("buildConfig", () => {
     const cwd = mkdtempSync(join(tmpdir(), "herta-bc-cwd2-"));
     const home = mkdtempSync(join(tmpdir(), "herta-bc-home2-"));
     const cfg = await buildConfig(cwd, home, null);
-    expect(cfg.providers.deepseekApiKey).toBe("");
+    expect(cfg.providers.apiKey).toBe("");
   });
 
   it("ignores the DEEPSEEK_API_KEY env — the GUI is secure-store-only", async () => {
@@ -311,7 +311,7 @@ describe("buildConfig", () => {
     const cwd = mkdtempSync(join(tmpdir(), "herta-bc-env-"));
     const home = mkdtempSync(join(tmpdir(), "herta-bc-envh-"));
     const cfg = await buildConfig(cwd, home, null);
-    expect(cfg.providers.deepseekApiKey).toBe("");
+    expect(cfg.providers.apiKey).toBe("");
   });
 });
 

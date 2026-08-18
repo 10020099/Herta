@@ -125,8 +125,6 @@ export interface AppServerConfig {
    * (GUI, restart-to-apply).
    */
   readonly backendContract?: "standard" | "minimal";
-  /** Anthropic-specific: thinking budget tokens for extended thinking.
-   *  Only used when providers.type === "anthropic". Default 16000. */
   /** Anthropic: OutputConfig effort level. Sent as `output_config: { effort: "..." }`.
    *  Default "medium". */
   readonly anthropicOutputEffort?: ThinkingEffort;

@@ -23,7 +23,7 @@ describe("@herta/app-server — type exports", () => {
       capsulesDir: "/tmp/x/.herta/capsules",
       narrativeDir: "/tmp/x/.herta/narrative",
       providers: {
-        deepseekApiKey: "sk-test",
+        apiKey: "sk-test",
         actorModel: "deepseek-v4-base",
         backendModel: "deepseek-v4-chat",
         routerModel: "deepseek-v4-flash",
