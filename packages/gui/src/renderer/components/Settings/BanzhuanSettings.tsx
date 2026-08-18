@@ -123,7 +123,10 @@ export function BanzhuanSettings(): JSX.Element {
   // (an older bridge / the website demo). `bashFound` comes from main and is
   // folded into the row description — the fallback is stated where the
   // choice is made.
-  const [contract, setContract] = useState<BackendContractChoice>("standard");
+  // Pre-load optimistic state = the real handler's default (minimal —
+  // owner flip 2026-08-17), so the pill never flashes 标准 while the
+  // config is in flight.
+  const [contract, setContract] = useState<BackendContractChoice>("minimal");
   const [contractKnown, setContractKnown] = useState(false);
   const [bashFound, setBashFound] = useState<boolean | undefined>(undefined);
   const [contractFailed, setContractFailed] = useState(false);

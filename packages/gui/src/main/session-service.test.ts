@@ -136,8 +136,9 @@ describe("buildConfig", () => {
     expect(cfg.providers.deepseekApiKey).toBe("sk-test-123");
     // Must match the working CLI: the completion endpoint accepts only
     // deepseek-v4-pro / deepseek-v4-flash (deepseek-v4-base 400s).
+    // Defaults (owner 2026-08-17): actor Pro, backend FLASH.
     expect(cfg.providers.actorModel).toBe("deepseek-v4-pro");
-    expect(cfg.providers.backendModel).toBe("deepseek-v4-pro");
+    expect(cfg.providers.backendModel).toBe("deepseek-v4-flash");
     expect(cfg.providers.routerModel).toBe("deepseek-v4-flash");
     // "high" is the default backend reasoning effort (Settings → Coprocessor
     // can lower/raise it; with no settings file the default stands).
@@ -200,9 +201,18 @@ describe("buildConfig", () => {
       "utf-8",
     );
     const cfg = await buildConfig(cwd, home, "sk-test-123");
-    // Actor follows the setting; backend, unset, keeps the built-in default.
+    // Actor follows the setting; backend, unset, keeps the built-in default
+    // (flash since 2026-08-17). A PERSISTED backend choice is also honored.
     expect(cfg.providers.actorModel).toBe("deepseek-v4-flash");
-    expect(cfg.providers.backendModel).toBe("deepseek-v4-pro");
+    expect(cfg.providers.backendModel).toBe("deepseek-v4-flash");
+    writeFileSync(
+      join(cwd, ".herta", "settings.json"),
+      JSON.stringify({ models: { backend: "deepseek-v4-pro" } }),
+      "utf-8",
+    );
+    expect(
+      (await buildConfig(cwd, home, "sk-test-123")).providers.backendModel,
+    ).toBe("deepseek-v4-pro");
   });
 
   it("an env override still beats the setting (dev/lab knob), and an off-enum setting is ignored", async () => {
@@ -220,28 +230,28 @@ describe("buildConfig", () => {
     );
     const cfg = await buildConfig(cwd, home, "sk-test-123");
     expect(cfg.providers.actorModel).toBe("deepseek-v4-pro"); // env won
-    expect(cfg.providers.backendModel).toBe("deepseek-v4-pro"); // off-enum → default
+    expect(cfg.providers.backendModel).toBe("deepseek-v4-flash"); // off-enum → default
   });
 
-  it("backendContract (ADR 0040): default standard; setting honored; env beats setting; off-enum ignored", async () => {
+  it("backendContract (ADR 0040): default MINIMAL (owner flip 2026-08-17); setting honored; env beats setting; off-enum → default", async () => {
     vi.stubEnv("HERTA_BACKEND_CONTRACT", undefined);
     const cwd = mkdtempSync(join(tmpdir(), "herta-bc-contract-"));
     const home = mkdtempSync(join(tmpdir(), "herta-bc-contracth-"));
     expect((await buildConfig(cwd, home, "sk")).backendContract).toBe(
-      "standard",
+      "minimal",
     );
     mkdirSync(join(cwd, ".herta"), { recursive: true });
     writeFileSync(
       join(cwd, ".herta", "settings.json"),
-      JSON.stringify({ backend: { thinking: "high", contract: "minimal" } }),
+      JSON.stringify({ backend: { thinking: "high", contract: "standard" } }),
       "utf-8",
     );
     expect((await buildConfig(cwd, home, "sk")).backendContract).toBe(
-      "minimal",
-    );
-    vi.stubEnv("HERTA_BACKEND_CONTRACT", "standard");
-    expect((await buildConfig(cwd, home, "sk")).backendContract).toBe(
       "standard",
+    );
+    vi.stubEnv("HERTA_BACKEND_CONTRACT", "minimal");
+    expect((await buildConfig(cwd, home, "sk")).backendContract).toBe(
+      "minimal",
     );
     vi.stubEnv("HERTA_BACKEND_CONTRACT", undefined);
     writeFileSync(
@@ -250,7 +260,7 @@ describe("buildConfig", () => {
       "utf-8",
     );
     expect((await buildConfig(cwd, home, "sk")).backendContract).toBe(
-      "standard",
+      "minimal",
     );
   });
 

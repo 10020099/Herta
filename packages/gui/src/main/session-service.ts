@@ -157,8 +157,14 @@ export async function buildConfig(
       //
       // Precedence (2026-08-17): env (a dev/lab override, mirrors the CLI's
       // knobs) > Settings → DeepSeek → 模型 (the user's choice, persisted in
-      // settings.json, restart-to-apply) > the built-in default, Pro. The
-      // guard drops an off-enum value a hand-edited file might carry.
+      // settings.json, restart-to-apply) > the built-in default. The guard
+      // drops an off-enum value a hand-edited file might carry.
+      //
+      // Defaults (owner 2026-08-17): actor Pro (flash is voice-flat and
+      // fabricates on first pass — the actor lab), backend FLASH — on the
+      // minimal contract the outcome lab measured flash-板砖 = Pro-板砖
+      // (62/62) at a fraction of the cost. Pro for 板砖 is the user opt-in
+      // now.
       actorModel:
         process.env.HERTA_ACTOR_MODEL ??
         (isModelChoice(settings.models?.actor)
@@ -168,7 +174,7 @@ export async function buildConfig(
         process.env.HERTA_BACKEND_MODEL ??
         (isModelChoice(settings.models?.backend)
           ? settings.models.backend
-          : "deepseek-v4-pro"),
+          : "deepseek-v4-flash"),
       routerModel: "deepseek-v4-flash",
       ...(devBaseUrl !== undefined && devBaseUrl !== ""
         ? { baseUrl: devBaseUrl }
@@ -180,15 +186,17 @@ export async function buildConfig(
     // falls back to the default instead of reaching the API.
     thinking: isBackendThinking(backendThinking) ? backendThinking : "high",
     // 板砖's tool contract (ADR 0040): env (dev/lab knob) > Settings →
-    // 差分协处理器 → 工具契约 > standard. Session.create verifies a bash
-    // exists before honoring `minimal` and falls back otherwise.
+    // 差分协处理器 → 工具契约 > MINIMAL (owner default flip 2026-08-17,
+    // after the permission lab + card fixes — ~½ prompt tokens, ~⅒
+    // cache-miss, same outcomes). Session.create verifies a bash exists
+    // before honoring `minimal` and falls back to standard otherwise.
     backendContract:
       process.env.HERTA_BACKEND_CONTRACT === "minimal" ||
       process.env.HERTA_BACKEND_CONTRACT === "standard"
         ? process.env.HERTA_BACKEND_CONTRACT
         : isBackendContract(settings.backend?.contract)
           ? settings.backend.contract
-          : "standard",
+          : "minimal",
   };
 }
 
@@ -736,7 +744,8 @@ export function createSessionService(
         // ADR 0040: the tool contract, plus whether the minimal one can run
         // here at all — the row says so next to the choice, where the user
         // makes it, instead of a note in the record at the next session.
-        contract: isBackendContract(c) ? c : "standard",
+        // Default MINIMAL (owner 2026-08-17) — must match buildConfig's.
+        contract: isBackendContract(c) ? c : "minimal",
         bashFound: findBash() !== null,
       };
     });
@@ -774,9 +783,10 @@ export function createSessionService(
         actor: isModelChoice(s.models?.actor)
           ? s.models.actor
           : "deepseek-v4-pro",
+        // Default flash (owner 2026-08-17) — must match buildConfig's.
         backend: isModelChoice(s.models?.backend)
           ? s.models.backend
-          : "deepseek-v4-pro",
+          : "deepseek-v4-flash",
       };
     });
     handle(

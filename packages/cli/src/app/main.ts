@@ -243,7 +243,10 @@ export async function main(
       : {};
   const backendProvider = deepseekProvider({
     apiKey,
-    model: process.env.HERTA_BACKEND_MODEL ?? "deepseek-v4-pro",
+    // Default flash (owner 2026-08-17, parity with the GUI): on the minimal
+    // contract the outcome lab measured flash-板砖 = Pro-板砖 (62/62) at a
+    // fraction of the cost. HERTA_BACKEND_MODEL=deepseek-v4-pro opts back.
+    model: process.env.HERTA_BACKEND_MODEL ?? "deepseek-v4-flash",
     // Default "high". HERTA_BACKEND_THINKING accepts low/high/max/false —
     // note deepseek-v4-pro maps a sent "low" to "high" server-side until
     // its announced early-August-2026 update (flash already honors it).
@@ -300,15 +303,17 @@ export async function main(
   // each backend brief ends, so a [a] remember never outlives the task.
   wireTaskScopedApprovalCache(bus, approvalCache);
 
-  // Backend's tool registry (ADR 0040): the standard 15-tool set, or — with
-  // HERTA_BACKEND_CONTRACT=minimal and a bash on this machine — the trained
-  // two-tool shape (+ the two record channels). The CLI takes the knob from
-  // the environment like its model knobs; the GUI has a Settings row.
-  const wantMinimal = process.env.HERTA_BACKEND_CONTRACT === "minimal";
+  // Backend's tool registry (ADR 0040): the trained two-tool shape (+ the
+  // two record channels) is the DEFAULT when a bash exists on this machine
+  // (owner flip 2026-08-17, parity with the GUI); the standard 15-tool set
+  // otherwise, or with HERTA_BACKEND_CONTRACT=standard. The CLI takes the
+  // knob from the environment like its model knobs; the GUI has a row.
+  const wantMinimal = process.env.HERTA_BACKEND_CONTRACT !== "standard";
   const bashPath = wantMinimal ? findBash() : null;
   const backendContract: BackendContract =
     wantMinimal && bashPath !== null ? "minimal" : "standard";
-  if (wantMinimal && bashPath === null) {
+  if (process.env.HERTA_BACKEND_CONTRACT === "minimal" && bashPath === null) {
+    // Warn only on an EXPLICIT request; the default falls back silently.
     stderr.write(
       "herta: HERTA_BACKEND_CONTRACT=minimal but no bash found (install Git for Windows or set HERTA_BASH); running the standard contract\n",
     );

@@ -2135,8 +2135,27 @@ button.agent-preview:active {
   max-height: 38px;
   margin-bottom: 16px;
 }
+/* The FIELD shrinks with the reveal instead of being guillotined by it
+   (owner 2026-08-17: on close, the wrap's max-height clip cut the field's
+   bottom to a straight line under its still-rounded top — it read as a
+   rectangle sliding up over the input). The inner compresses toward its
+   top (scaleY, origin top) so the field keeps its own rounded shape at
+   BOTH edges as it goes, and the fast opacity fade (120ms out vs the
+   wrap's 200ms height) guarantees the residual clip line is never seen.
+   On open the order flips: the field is already near-full shape as it
+   fades in under the growing clip. Reduced motion: none of this — the
+   wrap's existing transition:none override is extended below. */
 .sidebar-search-inner {
   min-height: 0;
+  transform-origin: top center;
+  transform: scaleY(0.55);
+  opacity: 0;
+  transition: transform 200ms ease, opacity 120ms ease;
+}
+.sidebar-search-wrap.is-open .sidebar-search-inner {
+  transform: none;
+  opacity: 1;
+  transition: transform 200ms ease, opacity 160ms ease 30ms;
 }
 
 /* ── Slice 4: bootstrap error panel ─────────────────────────────── */
@@ -2729,7 +2748,8 @@ button.agent-preview:active {
   .app,
   .sidebar,
   .sidebar > *,
-  .sidebar-search-wrap {
+  .sidebar-search-wrap,
+  .sidebar-search-inner {
     transition: none !important;
   }
   .transfer-text.is-shimmer,
@@ -2903,9 +2923,29 @@ button.agent-preview:active {
   visibility: visible;
   transition-delay: 0s;
 }
+/* The WELL shrinks with the row instead of being guillotined by it (owner
+   2026-08-17, same artifact class as the sidebar search field): compress
+   toward the top so the dark rounded well keeps its shape at both edges
+   through the collapse, with a fast fade covering the clip line. */
+.approval-panel__diff-wrap .approval-panel__diff {
+  transform-origin: top center;
+  transform: scaleY(0.9);
+  opacity: 0;
+  transition:
+    transform 240ms var(--ease-signature),
+    opacity 140ms ease;
+}
+.approval-panel__diff-wrap.is-open .approval-panel__diff {
+  transform: none;
+  opacity: 1;
+  transition:
+    transform 240ms var(--ease-signature),
+    opacity 180ms ease 40ms;
+}
 @media (prefers-reduced-motion: reduce) {
   .approval-panel__diff-wrap,
-  .approval-panel__diff-clip {
+  .approval-panel__diff-clip,
+  .approval-panel__diff-wrap .approval-panel__diff {
     transition: none;
   }
 }

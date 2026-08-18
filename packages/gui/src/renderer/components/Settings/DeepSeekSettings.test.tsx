@@ -81,8 +81,9 @@ describe("DeepSeekSettings", () => {
       await waitFor(() => expect(actor.textContent).toContain("Pro"));
       fireEvent.click(actor);
       fireEvent.click(getByRole("option", { name: "Flash" }));
+      // Backend rides along at its default (flash since 2026-08-17).
       expect(mock.calls.setModelConfig).toEqual([
-        { actor: "deepseek-v4-flash", backend: "deepseek-v4-pro" },
+        { actor: "deepseek-v4-flash", backend: "deepseek-v4-flash" },
       ]);
       // The restart fact lives in the intro (static), like the thinking row.
       expect(queryByText("Restart to apply.")).toBeNull();
@@ -93,11 +94,12 @@ describe("DeepSeekSettings", () => {
       const mock = createMockHertaBridge({ failSetModelConfig: true });
       const { getByLabelText, getByRole, queryByText } = renderPane(mock);
       const backend = getByLabelText("Coprocessor model");
-      await waitFor(() => expect(backend.textContent).toContain("Pro"));
+      // Default flash (2026-08-17); the failed pick of Pro snaps back to it.
+      await waitFor(() => expect(backend.textContent).toContain("Flash"));
       fireEvent.click(backend);
-      fireEvent.click(getByRole("option", { name: "Flash" }));
+      fireEvent.click(getByRole("option", { name: "Pro" }));
       await waitFor(() => expect(queryByText(/Couldn't save/)).toBeTruthy());
-      expect(backend.textContent).toContain("Pro");
+      expect(backend.textContent).toContain("Flash");
     });
 
     it("hides the rows when the bridge has no setModelConfig", async () => {

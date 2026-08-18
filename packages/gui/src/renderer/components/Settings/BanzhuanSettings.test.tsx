@@ -184,13 +184,15 @@ describe("BanzhuanSettings", () => {
       const mock = createMockHertaBridge({ failSetBackendConfig: true });
       const { queryByText } = renderPane(mock);
       const trigger = await screen.findByLabelText("Tool contract");
-      await waitFor(() => expect(trigger.textContent).toContain("Standard"));
+      // Default minimal (owner flip 2026-08-17); the failed pick of
+      // Standard snaps back to it.
+      await waitFor(() => expect(trigger.textContent).toContain("Minimal"));
       fireEvent.click(trigger);
-      fireEvent.click(screen.getByRole("option", { name: "Minimal" }));
+      fireEvent.click(screen.getByRole("option", { name: "Standard" }));
       await waitFor(() =>
         expect(queryByText("Couldn't save — try again.")).toBeTruthy(),
       );
-      expect(trigger.textContent).toContain("Standard");
+      expect(trigger.textContent).toContain("Minimal");
     });
   });
 

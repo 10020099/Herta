@@ -42,9 +42,12 @@ export function DeepSeekSettings(): JSX.Element {
   // Coprocessor thinking row (BanzhuanSettings). Restart-to-apply: buildConfig
   // reads the choice at the next bootstrap.
   const modelsSupported = bridge.setModelConfig !== undefined;
+  // Pre-load optimistic state = the real handler's defaults (actor Pro,
+  // backend flash — owner 2026-08-17), so the pills never flash a wrong
+  // selection while getModelConfig is in flight.
   const [models, setModels] = useState<ModelConfig>({
     actor: "deepseek-v4-pro",
-    backend: "deepseek-v4-pro",
+    backend: "deepseek-v4-flash",
   });
   const [modelsFailed, setModelsFailed] = useState(false);
   const [modelsLoadFailed, setModelsLoadFailed] = useState(false);

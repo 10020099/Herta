@@ -61,14 +61,15 @@ export interface MockHertaBridgeOpts {
   readonly removeAttachmentResult?: { ok: boolean; message?: string };
   readonly getDreamConfigResult?: DreamConfig;
   /** Seed for getBackendConfig (Settings → Coprocessor). Default
-   *  `{ thinking: "high" }` (the real handler's default). */
+   *  `{ thinking: "high", contract: "minimal" }` (the real handler's
+   *  defaults). */
   readonly getBackendConfigResult?: BackendConfig;
   /** When true, setBackendConfig rejects (simulates a failed settings
    *  write) — mirrors failSetInteractionLanguage, so the snap-back +
    *  error-note paths are testable. */
   readonly failSetBackendConfig?: boolean;
-  /** Seed for getModelConfig (Settings → DeepSeek → 模型). Default Pro/Pro
-   *  (the real handler's default). */
+  /** Seed for getModelConfig (Settings → DeepSeek → 模型). Default
+   *  actor Pro / backend flash (the real handler's defaults). */
   readonly getModelConfigResult?: ModelConfig;
   /** When true, setModelConfig rejects — same seam as failSetBackendConfig. */
   readonly failSetModelConfig?: boolean;
@@ -383,7 +384,8 @@ export function createMockHertaBridge(
       return (
         opts.getBackendConfigResult ?? {
           thinking: "high",
-          contract: "standard",
+          // Mirrors the real handler's defaults (owner flip 2026-08-17).
+          contract: "minimal",
           bashFound: true,
         }
       );
@@ -399,7 +401,8 @@ export function createMockHertaBridge(
       return (
         opts.getModelConfigResult ?? {
           actor: "deepseek-v4-pro",
-          backend: "deepseek-v4-pro",
+          // Mirrors the real handler's default (owner flip 2026-08-17).
+          backend: "deepseek-v4-flash",
         }
       );
     },
