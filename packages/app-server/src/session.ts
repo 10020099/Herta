@@ -1546,7 +1546,7 @@ export class SessionImpl implements Session {
     // Map the broad ThinkingEffort to DeepSeek's accepted values:
     //   off → false (omit thinking); none/minimal/low → "low";
     //   medium/high → "high"; xhigh/max → "max".
-    const backendThinking = (() => {
+    const backendThinking: false | "low" | "high" | "max" = (() => {
       const t = config.thinking ?? "high";
       if (t === "off") return false;
       if (t === "none" || t === "minimal" || t === "low") return "low";

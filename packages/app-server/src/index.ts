@@ -34,8 +34,5 @@ export { RECORD_TAIL_BLOCKS, recordTail } from "./record-window.js";
 export { createSessionHost } from "./session-host.js";
 export type { SessionSearchHit } from "./session-search.js";
 export type * from "./types.js";
-export {
-  PROVIDER_DEFAULTS,
-  type ProviderType,
-  type ThinkingEffort,
-} from "./types.js";
+// PROVIDER_DEFAULTS is a VALUE (const), which `export type *` does not surface.
+export { PROVIDER_DEFAULTS } from "./types.js";

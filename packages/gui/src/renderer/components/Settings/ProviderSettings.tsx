@@ -172,7 +172,8 @@ export function ProviderSettings(): JSX.Element {
           selectedProvider === "anthropic" ? draftAnthropicEffort : undefined,
       });
       // Refresh status
-      const newStatus = (await bridge.getProviderStatus?.(selectedProvider)) ?? null;
+      const newStatus =
+        (await bridge.getProviderStatus?.(selectedProvider)) ?? null;
       setStatuses((prev) => ({ ...prev, [selectedProvider]: newStatus }));
       setDraftKey("");
       setUnverified(false);
@@ -192,7 +193,8 @@ export function ProviderSettings(): JSX.Element {
     setFailed(false);
     try {
       await bridge.clearProviderKey?.(selectedProvider);
-      const newStatus = (await bridge.getProviderStatus?.(selectedProvider)) ?? null;
+      const newStatus =
+        (await bridge.getProviderStatus?.(selectedProvider)) ?? null;
       setStatuses((prev) => ({ ...prev, [selectedProvider]: newStatus }));
     } catch {
       setFailed(true);

@@ -116,9 +116,9 @@ export async function readAppSettings(
  * Read detailed settings (cached, synchronous). Falls back to {} on read failure.
  * Used by synchronous IPC handlers (getActiveProvider).
  */
-export function readAppSettingsSync(): AppSettings {
+export function readAppSettingsSync(workspaceRoot: string): AppSettings {
   try {
-    const path = settingsPath(process.cwd());
+    const path = settingsPath(workspaceRoot);
     if (!existsSync(path)) return {};
     const raw = readFileSync(path, "utf-8");
     const parsed: unknown = JSON.parse(raw);
@@ -130,9 +130,12 @@ export function readAppSettingsSync(): AppSettings {
 }
 
 /** Write settings (synchronous, best-effort). Used by setActiveProvider IPC handler. */
-export function updateAppSettings(partial: Partial<AppSettings>): void {
+export function updateAppSettings(
+  workspaceRoot: string,
+  partial: Partial<AppSettings>,
+): void {
   try {
-    const path = settingsPath(process.cwd());
+    const path = settingsPath(workspaceRoot);
     let current: AppSettings = {};
     if (existsSync(path)) {
       try {

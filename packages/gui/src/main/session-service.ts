@@ -29,7 +29,6 @@ import {
 import { CMD, EVT } from "../preload/channels.js";
 import type {
   InteractionLanguageChoice,
-  ProviderStatus,
   SessionOpenFailure,
   SessionSnapshot,
 } from "../renderer/ipc/bridge-types.js";
@@ -56,6 +55,7 @@ import {
   clearProviderKey,
   getDeepSeekKeyStatus,
   getProviderStatus,
+  type ProviderConfig,
   readDeepSeekKeyPlain,
   readProviderConfig,
   setDeepSeekKey,
@@ -150,9 +150,9 @@ export async function buildConfig(
   const activeProvider: ProviderType = (appSettings.activeProvider ??
     "deepseek") as ProviderType;
   // Read the active provider's full config.
-  const providerConfig =
+  const providerConfig: ProviderConfig | null =
     activeProvider === "deepseek"
-      ? { apiKey: deepseekApiKey, type: "deepseek" as ProviderType }
+      ? { apiKey: deepseekApiKey, type: "deepseek" }
       : readProviderConfig(activeProvider);
   const dirs = defaultDirsFor({ workspaceRoot: cwd, homedir: home });
   // Dream: read the persisted enable flag (Settings → Dream). Restart-to-apply —
@@ -934,21 +934,21 @@ export function createSessionService(
     });
     // Settings → Multi-provider support.
     handle(CMD.getActiveProvider, () => {
-      const s = readAppSettingsSync();
+      const s = readAppSettingsSync(appWorkspaceRoot());
       return (s.activeProvider ?? "deepseek") as ProviderType;
     });
     handle(CMD.setActiveProvider, async (_e, type: ProviderType) => {
-      await updateAppSettings({ activeProvider: type });
+      await updateAppSettings(appWorkspaceRoot(), { activeProvider: type });
     });
     handle(CMD.getProviderStatus, (_e, type: ProviderType) => {
-      return getProviderStatus(type) as ProviderStatus;
+      return getProviderStatus(type);
     });
     handle(
       CMD.setProviderKey,
       async (_e, type: ProviderType, key: string, opts) => {
         const { encrypted } = setProviderKey(type, key, opts);
         // If this is the active provider, push it to the running session.
-        const s = readAppSettingsSync();
+        const s = readAppSettingsSync(appWorkspaceRoot());
         if (s.activeProvider === type || s.activeProvider === undefined) {
           host?.setDeepSeekKey(key);
         }
@@ -957,7 +957,7 @@ export function createSessionService(
     );
     handle(CMD.clearProviderKey, (_e, type: ProviderType) => {
       clearProviderKey(type);
-      const s = readAppSettingsSync();
+      const s = readAppSettingsSync(appWorkspaceRoot());
       if (s.activeProvider === type) {
         host?.setDeepSeekKey("");
       }
