@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { app, safeStorage } from "electron";
 import type { ProviderType, ThinkingEffort } from "@herta/app-server";
+import { app, safeStorage } from "electron";
 
 /**
  * Multi-provider key store, generalized from the original DeepSeek-only store.

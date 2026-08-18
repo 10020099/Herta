@@ -10,7 +10,6 @@ import {
   type SessionHost,
   type SessionMetadata,
   type ProviderType,
-  type ThinkingEffort,
   PROVIDER_DEFAULTS,
 } from "@herta/app-server";
 import { SessionFileError } from "@herta/core";
@@ -29,23 +28,21 @@ import {
 } from "electron";
 import { CMD, EVT } from "../preload/channels.js";
 import type {
-  ProviderStatus,
-} from "../renderer/ipc/bridge-types.js";
-import {
-  readProviderConfig,
-  readDeepSeekKeyPlain,
-  getProviderStatus,
-  setProviderKey,
-  clearProviderKey,
-  getDeepSeekKeyStatus,
-  setDeepSeekKey,
-  clearDeepSeekKey,
-} from "./key-store.js";
-import type {
   InteractionLanguageChoice,
+  ProviderStatus,
   SessionOpenFailure,
   SessionSnapshot,
 } from "../renderer/ipc/bridge-types.js";
+import {
+  clearDeepSeekKey,
+  clearProviderKey,
+  getDeepSeekKeyStatus,
+  getProviderStatus,
+  readDeepSeekKeyPlain,
+  readProviderConfig,
+  setDeepSeekKey,
+  setProviderKey,
+} from "./key-store.js";
 import {
   type InteractionLang,
   type Locale,
@@ -64,12 +61,6 @@ import {
   updateAppSettings,
   writeAppSettings,
 } from "./app-settings.js";
-import {
-  clearDeepSeekKey,
-  getDeepSeekKeyStatus,
-  readDeepSeekKeyPlain,
-  setDeepSeekKey,
-} from "./key-store.js";
 import { resolveVoiceRoot } from "./voice-path.js";
 
 type Send = (channel: string, payload: unknown) => void;

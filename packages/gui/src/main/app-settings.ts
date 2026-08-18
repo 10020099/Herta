@@ -144,11 +144,13 @@ export function updateAppSettings(partial: Partial<AppSettings>): void {
       }
     }
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, JSON.stringify({ ...current, ...partial }, null, 2) + "\n", "utf-8");
+    writeFileSync(path, `${JSON.stringify({ ...current, ...partial }, null, 2)}\n`, "utf-8");
   } catch {
     // Best-effort: a failed settings write must not crash the app.
   }
 }
+
+/** Write the settings file, creating `.herta/` if needed. Temp + rename so a
  *  crash mid-write can't tear the file into "all defaults" (audit 2026-07-13
  *  T3.9, same fix as app-global-settings). */
 export async function writeAppSettings(

@@ -379,7 +379,6 @@ export function ProviderSettings(): JSX.Element {
           </select>
         </div>
       )}
-      )}
 
       {/* Delete key button */}
       {status?.set && (
