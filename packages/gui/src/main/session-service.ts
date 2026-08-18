@@ -5,12 +5,12 @@ import {
   type AppServerConfig,
   createSessionHost,
   defaultDirsFor,
+  PROVIDER_DEFAULTS,
+  type ProviderType,
   recordTail,
   type Session,
   type SessionHost,
   type SessionMetadata,
-  type ProviderType,
-  PROVIDER_DEFAULTS,
 } from "@herta/app-server";
 import { SessionFileError } from "@herta/core";
 import { validateDeepSeekKey } from "@herta/providers";
@@ -34,16 +34,6 @@ import type {
   SessionSnapshot,
 } from "../renderer/ipc/bridge-types.js";
 import {
-  clearDeepSeekKey,
-  clearProviderKey,
-  getDeepSeekKeyStatus,
-  getProviderStatus,
-  readDeepSeekKeyPlain,
-  readProviderConfig,
-  setDeepSeekKey,
-  setProviderKey,
-} from "./key-store.js";
-import {
   type InteractionLang,
   type Locale,
   readGlobalSettings,
@@ -61,6 +51,16 @@ import {
   updateAppSettings,
   writeAppSettings,
 } from "./app-settings.js";
+import {
+  clearDeepSeekKey,
+  clearProviderKey,
+  getDeepSeekKeyStatus,
+  getProviderStatus,
+  readDeepSeekKeyPlain,
+  readProviderConfig,
+  setDeepSeekKey,
+  setProviderKey,
+} from "./key-store.js";
 import { resolveVoiceRoot } from "./voice-path.js";
 
 type Send = (channel: string, payload: unknown) => void;
@@ -149,9 +149,10 @@ export async function buildConfig(
   const appSettings = await readAppSettings(cwd);
   const activeProvider: ProviderType = appSettings.activeProvider ?? "deepseek";
   // Read the active provider's full config.
-  const providerConfig = activeProvider === "deepseek"
-    ? { apiKey: deepseekApiKey, type: "deepseek" as ProviderType }
-    : readProviderConfig(activeProvider);
+  const providerConfig =
+    activeProvider === "deepseek"
+      ? { apiKey: deepseekApiKey, type: "deepseek" as ProviderType }
+      : readProviderConfig(activeProvider);
   const dirs = defaultDirsFor({ workspaceRoot: cwd, homedir: home });
   // Dream: read the persisted enable flag (Settings → Dream). Restart-to-apply —
   // this is the whole apply path; the trigger reads config.dream at bootstrap.
@@ -160,15 +161,18 @@ export async function buildConfig(
 
   // Resolve provider-specific defaults.
   const defaults = PROVIDER_DEFAULTS[activeProvider];
-  const actorModel = providerConfig?.actorModel
-    ?? process.env.HERTA_ACTOR_MODEL
-    ?? defaults.actorModel;
-  const backendModel = providerConfig?.backendModel
-    ?? process.env.HERTA_BACKEND_MODEL
-    ?? defaults.backendModel;
-  const baseUrl = providerConfig?.baseUrl
-    ?? (devBaseUrl !== undefined && devBaseUrl !== "" ? devBaseUrl : undefined)
-    ?? defaults.baseUrl;
+  const actorModel =
+    providerConfig?.actorModel ??
+    process.env.HERTA_ACTOR_MODEL ??
+    defaults.actorModel;
+  const backendModel =
+    providerConfig?.backendModel ??
+    process.env.HERTA_BACKEND_MODEL ??
+    defaults.backendModel;
+  const baseUrl =
+    providerConfig?.baseUrl ??
+    (devBaseUrl !== undefined && devBaseUrl !== "" ? devBaseUrl : undefined) ??
+    defaults.baseUrl;
 
   return {
     workspaceRoot: cwd,
@@ -185,12 +189,12 @@ export async function buildConfig(
         process.env.HERTA_ACTOR_MODEL ??
         (isModelChoice(settings.models?.actor)
           ? settings.models.actor
-          : defaults.actorModel),
+          : actorModel),
       backendModel:
         process.env.HERTA_BACKEND_MODEL ??
         (isModelChoice(settings.models?.backend)
           ? settings.models.backend
-          : defaults.backendModel),
+          : backendModel),
       routerModel: defaults.routerModel,
       ...(baseUrl ? { baseUrl } : {}),
     },
@@ -938,15 +942,18 @@ export function createSessionService(
     handle(CMD.getProviderStatus, (_e, type: ProviderType) => {
       return getProviderStatus(type) as ProviderStatus;
     });
-    handle(CMD.setProviderKey, async (_e, type: ProviderType, key: string, opts) => {
-      const { encrypted } = setProviderKey(type, key, opts);
-      // If this is the active provider, push it to the running session.
-      const s = readAppSettingsSync();
-      if (s.activeProvider === type || s.activeProvider === undefined) {
-        host?.setDeepSeekKey(key);
-      }
-      return { encrypted };
-    });
+    handle(
+      CMD.setProviderKey,
+      async (_e, type: ProviderType, key: string, opts) => {
+        const { encrypted } = setProviderKey(type, key, opts);
+        // If this is the active provider, push it to the running session.
+        const s = readAppSettingsSync();
+        if (s.activeProvider === type || s.activeProvider === undefined) {
+          host?.setDeepSeekKey(key);
+        }
+        return { encrypted };
+      },
+    );
     handle(CMD.clearProviderKey, (_e, type: ProviderType) => {
       clearProviderKey(type);
       const s = readAppSettingsSync();

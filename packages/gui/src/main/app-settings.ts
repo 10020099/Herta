@@ -144,7 +144,11 @@ export function updateAppSettings(partial: Partial<AppSettings>): void {
       }
     }
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, `${JSON.stringify({ ...current, ...partial }, null, 2)}\n`, "utf-8");
+    writeFileSync(
+      path,
+      `${JSON.stringify({ ...current, ...partial }, null, 2)}\n`,
+      "utf-8",
+    );
   } catch {
     // Best-effort: a failed settings write must not crash the app.
   }

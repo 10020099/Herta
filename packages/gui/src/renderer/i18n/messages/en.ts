@@ -13,9 +13,11 @@ export const en = {
   "provider.actorModel": "Herta Model",
   "provider.backendModel": "Brick Model",
   "provider.thinking": "Thinking Effort",
-  "provider.thinkingDesc": "Reasoning effort for the model. Applies on next start.",
+  "provider.thinkingDesc":
+    "Reasoning effort for the model. Applies on next start.",
   "provider.anthropicOutputEffort": "Output Effort (Anthropic)",
-  "provider.anthropicOutputEffortDesc": "Anthropic OutputConfig.effort, controls output reasoning strength, independent from thinking effort.",
+  "provider.anthropicOutputEffortDesc":
+    "Anthropic OutputConfig.effort, controls output reasoning strength, independent from thinking effort.",
   "provider.type.deepseek": "DeepSeek",
   "provider.type.openai": "OpenAI",
   "provider.type.anthropic": "Anthropic",
@@ -32,8 +34,10 @@ export const en = {
   "provider.deleting": "Deleting…",
   "provider.rejected": "{provider} rejected that key — check and try again.",
   "provider.busy": "Finish the current turn first.",
-  "provider.unverified": "Saved but couldn't connect to verify — if Herta doesn't respond, check your network.",
-  "provider.unencrypted": "Stored as plaintext — no secure keychain available on this device.",
+  "provider.unverified":
+    "Saved but couldn't connect to verify — if Herta doesn't respond, check your network.",
+  "provider.unencrypted":
+    "Stored as plaintext — no secure keychain available on this device.",
   "provider.thinking.low": "Low",
   "provider.thinking.medium": "Medium",
   "provider.thinking.high": "High",

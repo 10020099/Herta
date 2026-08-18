@@ -13,7 +13,8 @@ export const zh = {
   "provider.thinking": "思考强度",
   "provider.thinkingDesc": "推理时的思考强度，下次启动生效。",
   "provider.anthropicOutputEffort": "输出强度（Anthropic）",
-  "provider.anthropicOutputEffortDesc": "Anthropic OutputConfig.effort，控制输出推理强度，与 thinking 独立。",
+  "provider.anthropicOutputEffortDesc":
+    "Anthropic OutputConfig.effort，控制输出推理强度，与 thinking 独立。",
   "provider.type.deepseek": "DeepSeek",
   "provider.type.openai": "OpenAI",
   "provider.type.anthropic": "Anthropic",

@@ -10,13 +10,25 @@ import type { SessionSearchHit } from "./session-search.js";
 // ───── Provider types ─────
 
 /** Supported model provider types. */
-export type ProviderType = "deepseek" | "openai" | "anthropic" | "openai-compat";
+export type ProviderType =
+  | "deepseek"
+  | "openai"
+  | "anthropic"
+  | "openai-compat";
 
 /** Reasoning/thinking effort levels.
  *  OpenAI (Responses API): "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
  *  DeepSeek (reasoning_effort): "low" | "high" | "max" (maps "medium" to "high" server-side)
  *  Anthropic (OutputConfig.effort): "low" | "medium" | "high" | "max" */
-export type ThinkingEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "off";
+export type ThinkingEffort =
+  | "none"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max"
+  | "off";
 
 /** Per-provider default models. */
 export const PROVIDER_DEFAULTS = {

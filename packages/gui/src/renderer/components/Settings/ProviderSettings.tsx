@@ -2,7 +2,11 @@ import { useEffect, useState } from "react";
 import { useHertaBridge } from "../../context/HertaBridgeContext.js";
 import { useActiveSession } from "../../hooks/useActiveSession.js";
 import { useT } from "../../i18n/LocaleProvider.js";
-import type { ProviderStatus, ProviderType, ThinkingEffort } from "../../ipc/bridge-types.js";
+import type {
+  ProviderStatus,
+  ProviderType,
+  ThinkingEffort,
+} from "../../ipc/bridge-types.js";
 
 const PROVIDER_TYPES: ProviderType[] = [
   "deepseek",
@@ -52,11 +56,15 @@ export function ProviderSettings(): JSX.Element {
   const busy = sessionStatus !== "idle";
 
   // Active provider (which one the session uses)
-  const [activeProvider, setActiveProvider] = useState<ProviderType>("deepseek");
+  const [activeProvider, setActiveProvider] =
+    useState<ProviderType>("deepseek");
   // Currently selected provider tab in the UI
-  const [selectedProvider, setSelectedProvider] = useState<ProviderType>("deepseek");
+  const [selectedProvider, setSelectedProvider] =
+    useState<ProviderType>("deepseek");
   // Provider statuses
-  const [statuses, setStatuses] = useState<Record<ProviderType, ProviderStatus | null>>({
+  const [statuses, setStatuses] = useState<
+    Record<ProviderType, ProviderStatus | null>
+  >({
     deepseek: null,
     openai: null,
     anthropic: null,
@@ -73,7 +81,8 @@ export function ProviderSettings(): JSX.Element {
   // Draft thinking effort
   const [draftThinking, setDraftThinking] = useState<ThinkingEffort>("high");
   // Anthropic-specific: output effort (separate from thinking effort)
-  const [draftAnthropicEffort, setDraftAnthropicEffort] = useState<ThinkingEffort>("medium");
+  const [draftAnthropicEffort, setDraftAnthropicEffort] =
+    useState<ThinkingEffort>("medium");
   // Saving state
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -228,7 +237,9 @@ export function ProviderSettings(): JSX.Element {
                 <span className="provider-tab-dot" aria-hidden="true" />
               )}
               {isCurrent && (
-                <span className="provider-tab-badge">{t("provider.active")}</span>
+                <span className="provider-tab-badge">
+                  {t("provider.active")}
+                </span>
               )}
             </button>
           );
@@ -239,9 +250,7 @@ export function ProviderSettings(): JSX.Element {
       <div className="settings-key-status">
         {status === null ? (
           <span className="settings-key-state is-muted">
-            {statusFailed
-              ? t("deepseek.statusFailed")
-              : t("deepseek.checking")}
+            {statusFailed ? t("deepseek.statusFailed") : t("deepseek.checking")}
           </span>
         ) : status.set ? (
           <span className="settings-key-state is-connected">
@@ -265,7 +274,9 @@ export function ProviderSettings(): JSX.Element {
               ? t("provider.replaceKey")
               : `sk-${selectedProvider === "anthropic" ? "ant" : "…"}`
           }
-          aria-label={t("provider.keyAria", { provider: t(`provider.type.${selectedProvider}`) })}
+          aria-label={t("provider.keyAria", {
+            provider: t(`provider.type.${selectedProvider}`),
+          })}
           autoComplete="off"
           spellCheck={false}
           value={draftKey}
@@ -295,7 +306,7 @@ export function ProviderSettings(): JSX.Element {
 
       {/* Base URL (optional) */}
       <div className="settings-field">
-        <label className="settings-field-label">{t("provider.baseUrl")}</label>
+        <span className="settings-field-label">{t("provider.baseUrl")}</span>
         <input
           type="text"
           className="settings-field-input"
@@ -308,7 +319,7 @@ export function ProviderSettings(): JSX.Element {
 
       {/* Actor model (optional) */}
       <div className="settings-field">
-        <label className="settings-field-label">{t("provider.actorModel")}</label>
+        <span className="settings-field-label">{t("provider.actorModel")}</span>
         <input
           type="text"
           className="settings-field-input"
@@ -321,7 +332,9 @@ export function ProviderSettings(): JSX.Element {
 
       {/* Backend model (optional) */}
       <div className="settings-field">
-        <label className="settings-field-label">{t("provider.backendModel")}</label>
+        <span className="settings-field-label">
+          {t("provider.backendModel")}
+        </span>
         <input
           type="text"
           className="settings-field-input"
@@ -334,7 +347,7 @@ export function ProviderSettings(): JSX.Element {
 
       {/* Thinking effort */}
       <div className="settings-field">
-        <label className="settings-field-label">{t("provider.thinking")}</label>
+        <span className="settings-field-label">{t("provider.thinking")}</span>
         <p className="settings-field-desc">{t("provider.thinkingDesc")}</p>
         <select
           className="settings-field-select"
@@ -342,22 +355,31 @@ export function ProviderSettings(): JSX.Element {
           disabled={locked}
           onChange={(e) => setDraftThinking(e.target.value as ThinkingEffort)}
         >
-          {(["none", "minimal", "low", "medium", "high", "xhigh", "max", "off"] as ThinkingEffort[]).map(
-            (effort) => (
-              <option key={effort} value={effort}>
-                {t(`provider.thinking.${effort}`)}
-              </option>
-            ),
-          )}
+          {(
+            [
+              "none",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max",
+              "off",
+            ] as ThinkingEffort[]
+          ).map((effort) => (
+            <option key={effort} value={effort}>
+              {t(`provider.thinking.${effort}`)}
+            </option>
+          ))}
         </select>
       </div>
 
       {/* Anthropic-specific: output effort */}
       {needsThinkingBudget && (
         <div className="settings-field">
-          <label className="settings-field-label">
+          <span className="settings-field-label">
             {t("provider.anthropicOutputEffort")}
-          </label>
+          </span>
           <p className="settings-field-desc">
             {t("provider.anthropicOutputEffortDesc")}
           </p>

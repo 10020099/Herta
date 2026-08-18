@@ -171,7 +171,11 @@ export interface DeepSeekKeyStatus {
 }
 
 /** Provider type identifiers. */
-export type ProviderType = "deepseek" | "openai" | "anthropic" | "openai-compat";
+export type ProviderType =
+  | "deepseek"
+  | "openai"
+  | "anthropic"
+  | "openai-compat";
 
 /** Provider masked status for the renderer. */
 export interface ProviderStatus {
@@ -185,7 +189,15 @@ export interface ProviderStatus {
  *  OpenAI: none | minimal | low | medium | high | xhigh | max
  *  DeepSeek: low | high | max
  *  Anthropic: low | medium | high | max */
-export type ThinkingEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "off";
+export type ThinkingEffort =
+  | "none"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max"
+  | "off";
 
 /**
  * The typed surface the preload exposes to the renderer as

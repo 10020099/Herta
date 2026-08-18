@@ -165,7 +165,12 @@ export function readProviderConfig(type: ProviderType): ProviderConfig | null {
 export function readAllProviderConfigs(): Record<string, ProviderConfig> {
   const configs = readConfigFile();
   const result: Record<string, ProviderConfig> = {};
-  for (const type of ["deepseek", "openai", "anthropic", "openai-compat"] as ProviderType[]) {
+  for (const type of [
+    "deepseek",
+    "openai",
+    "anthropic",
+    "openai-compat",
+  ] as ProviderType[]) {
     const key = readKeyPlain(type);
     if (key !== null) {
       result[type] = {

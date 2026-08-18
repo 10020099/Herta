@@ -450,7 +450,7 @@ export function createMockHertaBridge(
       hint: null,
       encrypted: false,
     }),
-    setProviderKey: async (type, key) => ({ encrypted: true }),
+    setProviderKey: async (_type, _key) => ({ encrypted: true }),
     clearProviderKey: async () => {},
     getLocale: async () => "en" as const,
     setLocale: async () => {},

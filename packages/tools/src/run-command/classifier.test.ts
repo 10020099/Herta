@@ -211,9 +211,7 @@ describe("classifyCommand — allow", () => {
     expect(classifyCommand(["node", "--check", "src/server.mjs"]).kind).toBe(
       "allow",
     );
-    expect(classifyCommand(["node", "--check", "/etc/x.mjs"]).kind).toBe(
-      "ask",
-    );
+    expect(classifyCommand(["node", "--check", "/etc/x.mjs"]).kind).toBe("ask");
     // arbitrary-code shapes stay asks
     expect(
       classifyCommand(["node", "--test", "--import", "./x.mjs"]).kind,
