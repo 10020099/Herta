@@ -55,14 +55,18 @@ export class McpTool implements HertaTool {
         undefined,
         { signal: ctx.signal },
       );
-      const text = result.content
-        .filter((c): c is { type: "text"; text: string } => c.type === "text")
-        .map((c) => c.text)
+      const content = (result.content ?? []) as Array<{
+        type: string;
+        text?: string;
+      }>;
+      const text = content
+        .filter((c) => c.type === "text")
+        .map((c) => c.text ?? "")
         .join("\n");
       return {
         ok: !result.isError,
         summary: text,
-        data: result.content,
+        data: content,
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

@@ -86,7 +86,7 @@ function toAnthropic(m: Message): AnthropicMessage {
     }
     return {
       role: "assistant",
-      content: content.length === 1 ? content[0] : content,
+      content,
     };
   }
   return {

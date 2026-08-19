@@ -408,6 +408,7 @@ export class SessionImpl implements Session {
     easterEggRandom: () => number;
     easterEggNow: () => number;
     deepSeekKey: () => string;
+    mcpDispose?: () => Promise<void>;
     lang: PromptLang;
     lastTurnEnd?: LastTurnEnd;
   }) {
@@ -437,6 +438,7 @@ export class SessionImpl implements Session {
     this.openingLeadMs = opts.openingLeadMs;
     this.openingBaseMs = opts.openingBaseMs;
     this.deepSeekKey = opts.deepSeekKey;
+    if (opts.mcpDispose !== undefined) this.mcpDispose = opts.mcpDispose;
     this.easterEggClips = opts.easterEggClips;
     this.easterEggRandom = opts.easterEggRandom;
     this.easterEggNow = opts.easterEggNow;
