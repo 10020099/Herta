@@ -58,7 +58,10 @@ export function TraceCard(): JSX.Element | null {
     }
   };
 
-  const counts = [t("trace.card.steps", { n: String(trace.ops.length) })];
+  // Counts cover the WHOLE dispatch; the list below is the recent window
+  // (trace-context trims to TRACE_MAX_ROWS so a long run cannot grow the
+  // DOM without bound; the list's CSS max-height bounds the card itself).
+  const counts = [t("trace.card.steps", { n: String(trace.steps) })];
   if (trace.writes > 0) {
     counts.push(t("trace.card.files", { n: String(trace.writes) }));
   }
@@ -93,8 +96,12 @@ export function TraceCard(): JSX.Element | null {
       >
         {trace.ops.map((op, i) => (
           <li
-            // biome-ignore lint/suspicious/noArrayIndexKey: ops are append-only within a dispatch (derived from the append-only record), so position is a stable identity; rows carry no per-row state.
-            key={i}
+            // Keyed by the op's ORDINAL within the whole dispatch, not the
+            // window index: once the list trims to its cap the window slides,
+            // and index keys would remount every row per append — replaying
+            // the entrance animation on the entire list.
+            // biome-ignore lint/suspicious/noArrayIndexKey: firstOrdinal + i is the op's stable position in the append-only dispatch, not its position in the sliding window.
+            key={trace.firstOrdinal + i}
             className={`plan-card__row trace-card__row is-${op.status}`}
           >
             <span className="plan-card__mark" aria-hidden="true">

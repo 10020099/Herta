@@ -1,6 +1,6 @@
 import type { TerminalRecordBlock } from "@herta/app-server";
 import { describe, expect, it } from "vitest";
-import { settleTrace, traceScope } from "./trace-context.js";
+import { settleTrace, TRACE_MAX_ROWS, traceScope } from "./trace-context.js";
 
 const user = (text = "修一下"): TerminalRecordBlock =>
   ({ kind: "user", text }) as TerminalRecordBlock;
@@ -59,6 +59,27 @@ describe("traceScope", () => {
     ]);
     expect(s.trace.running).toBe(true);
     expect(s.trace.writes).toBe(1);
+    expect(s.trace.steps).toBe(4);
+    expect(s.trace.firstOrdinal).toBe(0);
+  });
+
+  it("a long run trims the list to TRACE_MAX_ROWS but keeps whole-run counts", () => {
+    const blocks: TerminalRecordBlock[] = [user()];
+    for (let i = 0; i < 30; i += 1) {
+      blocks.push(op(i % 5 === 0 ? "Writing" : "Running", `step-${i}`));
+      blocks.push(exit(0));
+    }
+    const s = traceScope(blocks);
+    expect(s.kind).toBe("trace");
+    if (s.kind !== "trace") return;
+    expect(s.trace.ops).toHaveLength(TRACE_MAX_ROWS);
+    // The window is the TAIL: newest kept, oldest dropped.
+    expect(s.trace.ops[0]?.arg).toBe(`step-${30 - TRACE_MAX_ROWS}`);
+    expect(s.trace.ops[TRACE_MAX_ROWS - 1]?.arg).toBe("step-29");
+    expect(s.trace.firstOrdinal).toBe(30 - TRACE_MAX_ROWS);
+    // Header counts stay honest over the WHOLE dispatch, trim or no trim.
+    expect(s.trace.steps).toBe(30);
+    expect(s.trace.writes).toBe(6);
   });
 
   it("herta beats do not stop the scan; the trace spans the whole dispatch", () => {

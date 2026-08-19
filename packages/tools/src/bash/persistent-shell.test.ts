@@ -152,20 +152,29 @@ d("PersistentShell (real bash)", () => {
   });
 });
 
-describe("shell paths (MSYS mapping, pure)", () => {
-  const p = makeMsysPaths("C:\\Users\\u\\AppData\\Local\\Temp");
-  it("maps drive, cygdrive, /tmp and native forms; rejects relative and MSYS-internal roots", () => {
-    expect(p.toNative("/e/repo/src")).toBe("E:\\repo\\src");
-    expect(p.toNative("/cygdrive/c/x")).toBe("C:\\x");
-    expect(p.toNative("/tmp/lab/ws")).toBe(
-      "C:\\Users\\u\\AppData\\Local\\Temp\\lab\\ws",
-    );
-    expect(p.toNative("E:/repo/a.ts")).toBe("E:\\repo\\a.ts");
-    expect(p.toNative("src/a.ts")).toBeNull();
-    expect(p.toNative("/usr/bin")).toBeNull();
-    expect(p.toShell("E:\\repo\\src")).toBe("/e/repo/src");
-    expect(p.toShell("C:\\Users\\u\\AppData\\Local\\Temp\\lab")).toBe(
-      "/tmp/lab",
-    );
-  });
-});
+// win32-only: makeMsysPaths builds on node:path `resolve`, whose drive-letter
+// semantics exist only there — on the Linux CI runner `resolve("E:\\repo")`
+// is a RELATIVE join against cwd and the expectations are meaningless
+// (scheduled CI 2026-08-18: 1 failed with `/home/runner/…/E:\repo\src`).
+// The mapping itself is unreachable off-Windows: shellPathsFor returns the
+// identity mapping on POSIX.
+describe.skipIf(process.platform !== "win32")(
+  "shell paths (MSYS mapping, pure)",
+  () => {
+    const p = makeMsysPaths("C:\\Users\\u\\AppData\\Local\\Temp");
+    it("maps drive, cygdrive, /tmp and native forms; rejects relative and MSYS-internal roots", () => {
+      expect(p.toNative("/e/repo/src")).toBe("E:\\repo\\src");
+      expect(p.toNative("/cygdrive/c/x")).toBe("C:\\x");
+      expect(p.toNative("/tmp/lab/ws")).toBe(
+        "C:\\Users\\u\\AppData\\Local\\Temp\\lab\\ws",
+      );
+      expect(p.toNative("E:/repo/a.ts")).toBe("E:\\repo\\a.ts");
+      expect(p.toNative("src/a.ts")).toBeNull();
+      expect(p.toNative("/usr/bin")).toBeNull();
+      expect(p.toShell("E:\\repo\\src")).toBe("/e/repo/src");
+      expect(p.toShell("C:\\Users\\u\\AppData\\Local\\Temp\\lab")).toBe(
+        "/tmp/lab",
+      );
+    });
+  },
+);

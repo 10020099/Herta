@@ -2901,23 +2901,32 @@ button.agent-preview:active {
    row transition), and the toggle's aria-expanded is the AT truth. The
    wrap's negative margin cancels the panel's flex gap while closed, so a
    collapsed disclosure adds no blank strip under the toggle. */
+/* Asymmetric timing (owner 2026-08-19: "the collapse animation is too
+   fast"): the OPEN answers a click, so it stays quick (240ms, declared on
+   .is-open — the state being entered owns the transition); the CLOSE is
+   dismissal, nothing is waiting on it, so it settles over 360ms with the
+   fade finishing just inside the clip (260ms + 60ms delay = 320ms) — the
+   content stays legible into the shrink instead of vanishing at once. */
 .approval-panel__diff-wrap {
   display: grid;
   grid-template-rows: 0fr;
   margin-top: -8px;
   transition:
-    grid-template-rows 240ms var(--ease-signature),
-    margin-top 240ms var(--ease-signature);
+    grid-template-rows 360ms var(--ease-signature),
+    margin-top 360ms var(--ease-signature);
 }
 .approval-panel__diff-wrap.is-open {
   grid-template-rows: 1fr;
   margin-top: 0;
+  transition:
+    grid-template-rows 240ms var(--ease-signature),
+    margin-top 240ms var(--ease-signature);
 }
 .approval-panel__diff-clip {
   min-height: 0;
   overflow: hidden;
   visibility: hidden;
-  transition: visibility 0s linear 240ms;
+  transition: visibility 0s linear 360ms;
 }
 .approval-panel__diff-wrap.is-open .approval-panel__diff-clip {
   visibility: visible;
@@ -2926,14 +2935,14 @@ button.agent-preview:active {
 /* The WELL shrinks with the row instead of being guillotined by it (owner
    2026-08-17, same artifact class as the sidebar search field): compress
    toward the top so the dark rounded well keeps its shape at both edges
-   through the collapse, with a fast fade covering the clip line. */
+   through the collapse, with a delayed fade covering the clip line. */
 .approval-panel__diff-wrap .approval-panel__diff {
   transform-origin: top center;
   transform: scaleY(0.9);
   opacity: 0;
   transition:
-    transform 240ms var(--ease-signature),
-    opacity 140ms ease;
+    transform 360ms var(--ease-signature),
+    opacity 260ms ease 60ms;
 }
 .approval-panel__diff-wrap.is-open .approval-panel__diff {
   transform: none;
@@ -4135,6 +4144,16 @@ button.session-item__badge--dismiss {
 @keyframes trace-row-in {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: none; }
+}
+/* A long-run dispatch lands hundreds of ops (owner 2026-08-17): the list
+   caps its VISIBLE height (~6 rows) and scrolls inside — with the fog
+   edges and the follow-tail pin, the card reaches this size and then
+   stays, instead of creeping down the rail. trace-context caps the DOM
+   rows separately (TRACE_MAX_ROWS); the header count still covers the
+   whole run. The plan card keeps its grow-then-flex behaviour — a todo
+   list is finite and its tail is the payoff. */
+.trace-card .plan-card__list {
+  max-height: 168px;
 }
 /* One line per op, ellipsized — a command line can be arbitrarily long and
    the row is a pointer, not the record (hover carries the full text via

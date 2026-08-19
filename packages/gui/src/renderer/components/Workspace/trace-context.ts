@@ -30,10 +30,27 @@ export interface TraceOp {
   readonly note?: TraceNote;
 }
 
+/**
+ * The card keeps the last N op ROWS only (a long-run dispatch lands
+ * hundreds — the owner's question was exactly "does the card grow without
+ * stop?"). The counts stay honest over the WHOLE dispatch (`steps`,
+ * `writes` are computed before the trim), so the header reads `87 步` while
+ * the list shows the recent window — recency, not completeness, same claim
+ * the partial-window scan already makes. 24 bounds the DOM; the CSS
+ * max-height on the list bounds what is visible (~6 rows, scrollable).
+ */
+export const TRACE_MAX_ROWS = 24;
+
 export interface TraceContext {
-  /** Every op of the current dispatch, oldest first. */
+  /** The newest ops of the current dispatch (≤ TRACE_MAX_ROWS), oldest
+   *  first. `firstOrdinal` is the 0-based index of `ops[0]` within the
+   *  whole dispatch — the card keys rows by ordinal so a sliding window
+   *  never replays entrance animations on rows that merely shifted. */
   readonly ops: readonly TraceOp[];
-  /** Distinct files written (Writing-verb args). */
+  readonly firstOrdinal: number;
+  /** Total op count of the dispatch (the header's `N 步`). */
+  readonly steps: number;
+  /** Distinct files written (Writing-verb args), over the whole dispatch. */
   readonly writes: number;
   /** True while the newest op has no result yet. */
   readonly running: boolean;
@@ -88,21 +105,17 @@ export function traceScope(record: readonly TerminalRecordBlock[]): TraceScope {
     if (block === undefined) continue;
     if (block.kind === "user") {
       const trace = build(collected);
-      return trace.ops.length > 0
-        ? { kind: "trace", trace }
-        : { kind: "absent" };
+      return trace.steps > 0 ? { kind: "trace", trace } : { kind: "absent" };
     }
     if (block.kind !== "system") continue;
     if (block.role === "done-marker" || block.role === "noop-marker") {
       const trace = build(collected);
-      return trace.ops.length > 0
-        ? { kind: "trace", trace }
-        : { kind: "ended" };
+      return trace.steps > 0 ? { kind: "trace", trace } : { kind: "ended" };
     }
     collected.push(block);
   }
   const trace = build(collected);
-  return trace.ops.length > 0 ? { kind: "trace", trace } : { kind: "unknown" };
+  return trace.steps > 0 ? { kind: "trace", trace } : { kind: "unknown" };
 }
 
 /** Collected newest-first; processed oldest-first. */
@@ -161,7 +174,15 @@ function build(collectedNewestFirst: readonly SystemBlock[]): TraceContext {
     ops.filter((op) => op.verb === "Writing").map((op) => op.arg),
   ).size;
   const last = ops[ops.length - 1];
-  return { ops, writes, running: last?.status === "running" };
+  const trimmed =
+    ops.length > TRACE_MAX_ROWS ? ops.slice(-TRACE_MAX_ROWS) : ops;
+  return {
+    ops: trimmed,
+    firstOrdinal: ops.length - trimmed.length,
+    steps: ops.length,
+    writes,
+    running: last?.status === "running",
+  };
 }
 
 /** The held (post-run) view settles every still-running op as done — the
