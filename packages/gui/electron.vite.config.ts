@@ -69,16 +69,7 @@ export default defineConfig({
   // builtins stay external automatically.
   main: {
     plugins: [bundleManifest("main")],
-    build: {
-      outDir: "out/main",
-      rollupOptions: {
-        output: {
-          // __dirname polyfill for ESM main (type:module). Electron 43
-          // ships Node 22 → import.meta.dirname is available.
-          banner: "const __dirname = import.meta.dirname",
-        },
-      },
-    },
+    build: { outDir: "out/main" },
   },
   preload: {
     plugins: [bundleManifest("preload")],
