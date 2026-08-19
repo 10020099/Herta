@@ -1,9 +1,8 @@
-import {
-  type ActorPromptFrame,
-  EMPTY_PROMPT_TRACE,
-  type ProviderAdapter,
-  type ProviderEvent,
-  type TerminalRecord,
+import type {
+  ActorPromptFrame,
+  ProviderAdapter,
+  ProviderEvent,
+  TerminalRecord,
 } from "@herta/core";
 import {
   type StaticHertaPrefix,
@@ -475,7 +474,6 @@ export function makeRecapSummarize(
       retrievedLore: "",
       messages: [{ role: "user", text: user, ts: now() }],
       toolSchemas: [],
-      trace: EMPTY_PROMPT_TRACE,
     };
     let buffered = "";
     for await (const ev of provider.streamChat(

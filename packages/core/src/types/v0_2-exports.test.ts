@@ -11,9 +11,19 @@ describe("@herta/core v0.2 type exports", () => {
     expect(core.isSystemBlockLabel("板砖")).toBe(false);
   });
 
-  it("exports InMemoryEvidenceStore class", () => {
-    const store = new core.InMemoryEvidenceStore();
-    const handle = store.put({ kind: "diff", payload: "x" });
-    expect(handle.uri.startsWith("evidence://")).toBe(true);
+  it("no longer exports the retired v0.1 capsule/evidence runtime (ADR 0041)", () => {
+    const keys = Object.keys(core);
+    for (const gone of [
+      "activate",
+      "buildEvidence",
+      "estimateTokens",
+      "EMPTY_PROMPT_TRACE",
+      "StubContextBuilder",
+      "InMemoryEvidenceStore",
+      "TerminalScrollback",
+      "stripAnsi",
+    ]) {
+      expect(keys).not.toContain(gone);
+    }
   });
 });

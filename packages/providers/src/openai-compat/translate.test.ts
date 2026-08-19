@@ -1,5 +1,4 @@
 import type { BackendPromptFrame, PromptFrame } from "@herta/core";
-import { EMPTY_PROMPT_TRACE } from "@herta/core";
 import { describe, expect, it } from "vitest";
 import { translate } from "./translate.js";
 
@@ -18,7 +17,6 @@ describe("translate", () => {
       retrievedLore: "",
       messages: [{ role: "user", text: "hello", ts: "2026-05-03T00:00:00Z" }],
       toolSchemas: [],
-      trace: EMPTY_PROMPT_TRACE,
     };
     const body = translate(frame, baseOpts);
     expect(body).toEqual({
@@ -62,7 +60,6 @@ describe("translate", () => {
         },
       ],
       toolSchemas: [],
-      trace: EMPTY_PROMPT_TRACE,
     };
     const body = translate(frame, baseOpts);
     expect(body.messages).toEqual([
@@ -107,7 +104,6 @@ describe("translate", () => {
         },
       ],
       toolSchemas: [],
-      trace: EMPTY_PROMPT_TRACE,
     };
     const body = translate(frame, baseOpts);
     expect(body.messages[0]).toEqual({
@@ -132,7 +128,6 @@ describe("translate", () => {
         },
       ],
       toolSchemas: [],
-      trace: EMPTY_PROMPT_TRACE,
     };
     const body = translate(frame, baseOpts);
     expect(body.messages[0]).toEqual({
@@ -159,7 +154,6 @@ describe("translate", () => {
           },
         },
       ],
-      trace: EMPTY_PROMPT_TRACE,
     };
     const body = translate(frame, baseOpts);
     expect(body.tools).toEqual([
@@ -185,7 +179,6 @@ describe("translate", () => {
       retrievedLore: "",
       messages: [],
       toolSchemas: [],
-      trace: EMPTY_PROMPT_TRACE,
     };
     const body = translate(frame, {
       ...baseOpts,
@@ -208,7 +201,6 @@ describe("translate", () => {
       retrievedLore: "",
       messages: [],
       toolSchemas: [],
-      trace: EMPTY_PROMPT_TRACE,
     };
     const body = translate(frame, { model: "deepseek-v4-pro" });
     expect("temperature" in body).toBe(false);
@@ -223,7 +215,6 @@ describe("translate", () => {
       retrievedLore: "",
       messages: [{ role: "user", text: "ping", ts: "t" }],
       toolSchemas: [],
-      trace: EMPTY_PROMPT_TRACE,
     };
     const body = translate(frame, baseOpts);
     expect(body.messages).toEqual([
@@ -240,7 +231,6 @@ describe("translate", () => {
       retrievedLore: "",
       messages: [{ role: "user", text: "ping", ts: "t" }],
       toolSchemas: [],
-      trace: EMPTY_PROMPT_TRACE,
     };
     const body = translate(frame, baseOpts);
     expect(body.messages).toEqual([{ role: "user", content: "ping" }]);
@@ -254,7 +244,6 @@ describe("translate", () => {
       retrievedLore: "",
       messages: [{ role: "user", text: "ping", ts: "t" }],
       toolSchemas: [],
-      trace: EMPTY_PROMPT_TRACE,
     };
     const body = translate(frame, baseOpts);
     expect(body.messages).toEqual([
@@ -272,7 +261,6 @@ describe("translate", () => {
       retrievedLore: "",
       messages: [{ role: "user", text: "ping", ts: "t" }],
       toolSchemas: [],
-      trace: EMPTY_PROMPT_TRACE,
     };
     const body = translate(frame, baseOpts);
     expect(body.messages).toEqual([
@@ -289,7 +277,6 @@ describe("translate", () => {
       retrievedLore: "",
       messages: [{ role: "user", text: "ping", ts: "t" }],
       toolSchemas: [],
-      trace: EMPTY_PROMPT_TRACE,
     };
     const body = translate(frame, baseOpts);
     expect(body.messages).toEqual([
@@ -332,7 +319,6 @@ describe("translate", () => {
         },
       ],
       toolSchemas: [],
-      trace: EMPTY_PROMPT_TRACE,
     };
     const body = translate(frame, baseOpts);
     expect(body.messages).toEqual([
@@ -379,7 +365,6 @@ describe("translate", () => {
         },
       ],
       toolSchemas: [],
-      trace: EMPTY_PROMPT_TRACE,
     };
     const body = translate(frame, baseOpts);
     for (const m of body.messages) {
@@ -395,7 +380,6 @@ describe("translate", () => {
       retrievedLore: "",
       messages: [{ role: "user", text: "ping", ts: "t" }],
       toolSchemas: [],
-      trace: EMPTY_PROMPT_TRACE,
     };
     const body = translate(frame, baseOpts);
     expect(body.messages).toEqual([
@@ -413,7 +397,6 @@ describe("translate", () => {
       retrievedLore: "L",
       messages: [{ role: "user", text: "ping", ts: "t" }],
       toolSchemas: [],
-      trace: EMPTY_PROMPT_TRACE,
     };
     const body = translate(frame, baseOpts);
     expect(body.messages).toEqual([
@@ -433,7 +416,6 @@ describe("translate", () => {
       retrievedLore: "",
       messages: [{ role: "user", text: "ping", ts: "t" }],
       toolSchemas: [],
-      trace: EMPTY_PROMPT_TRACE,
     };
     const body = translate(frame, baseOpts);
     expect(body.messages).toEqual([{ role: "user", content: "ping" }]);
@@ -458,7 +440,6 @@ describe("translate", () => {
         },
       ],
       toolSchemas: [],
-      trace: EMPTY_PROMPT_TRACE,
     };
     const body = translate(frame, baseOpts);
     expect(body.messages[0]).toEqual({
@@ -493,7 +474,6 @@ describe("translate", () => {
         },
       ],
       toolSchemas: [],
-      trace: EMPTY_PROMPT_TRACE,
     };
     const body = translate(frame, baseOpts);
     expect(body.messages[0]).toEqual({
@@ -519,7 +499,6 @@ describe("translate", () => {
         },
       ],
       toolSchemas: [],
-      trace: EMPTY_PROMPT_TRACE,
     };
     const body = translate(frame, baseOpts);
     expect(body.messages[0]).toEqual({
@@ -544,7 +523,6 @@ describe("translate", () => {
         },
       ],
       toolSchemas: [],
-      trace: EMPTY_PROMPT_TRACE,
     };
     const body = translate(frame, baseOpts);
     expect(body.messages[0]).toEqual({
@@ -565,7 +543,6 @@ describe("translateBackend", () => {
       scopedMemory: "",
       toolSchemas: [],
       messages: [],
-      trace: EMPTY_PROMPT_TRACE,
       ...overrides,
     };
   }

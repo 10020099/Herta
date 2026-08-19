@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { EMPTY_PROMPT_TRACE } from "../capsule/types.js";
 import type { PromptFrame } from "../types/prompt.js";
 import type { ProviderEvent } from "../types/provider.js";
 import { FakeProvider } from "./fake-provider.js";
@@ -11,7 +10,6 @@ const FRAME: PromptFrame = {
   retrievedLore: "",
   messages: [],
   toolSchemas: [],
-  trace: EMPTY_PROMPT_TRACE,
 };
 
 async function collect(

@@ -1,10 +1,9 @@
-import {
-  type ActorPromptFrame,
-  EMPTY_PROMPT_TRACE,
-  type ProviderAdapter,
-  type ProviderEvent,
-  type TerminalRecord,
-  type TerminalRecordBlock,
+import type {
+  ActorPromptFrame,
+  ProviderAdapter,
+  ProviderEvent,
+  TerminalRecord,
+  TerminalRecordBlock,
 } from "@herta/core";
 import { MOOD_STATES, type MoodState } from "./meta-think.js";
 import type { PromptLang } from "./prompt-lang.js";
@@ -280,7 +279,6 @@ function buildRouterFrame(input: ClassifyIntentInput): {
       },
     ],
     toolSchemas: [],
-    trace: EMPTY_PROMPT_TRACE,
   };
   return { frame, systemPrompt, userMessage };
 }

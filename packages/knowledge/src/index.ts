@@ -97,10 +97,6 @@ export {
   type PersonaPersistence,
 } from "./persona/components.js";
 export { PersonaStore } from "./persona/persona-store.js";
-export {
-  type FormatLoreCapsuleOptions,
-  formatLoreCapsule,
-} from "./retrieval/capsule-format.js";
 export type { EntityCandidate } from "./retrieval/disambiguate.js";
 export {
   type ExtractScenesOpts,
@@ -108,10 +104,6 @@ export {
   type Scene,
   type SceneTurn,
 } from "./retrieval/extract-scenes.js";
-export {
-  LoreRetriever,
-  type LoreRetrieverOptions,
-} from "./retrieval/lore-retriever.js";
 export {
   type LoreSearchQuery,
   type LoreSearchResult,

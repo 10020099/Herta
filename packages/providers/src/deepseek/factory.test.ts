@@ -1,5 +1,4 @@
 import type { PromptFrame } from "@herta/core";
-import { EMPTY_PROMPT_TRACE } from "@herta/core";
 import { describe, expect, it } from "vitest";
 import { deepseekProvider } from "./factory.js";
 
@@ -10,7 +9,6 @@ const userOnly: PromptFrame = {
   retrievedLore: "",
   messages: [{ role: "user", text: "hi", ts: "t" }],
   toolSchemas: [],
-  trace: EMPTY_PROMPT_TRACE,
 };
 
 async function captureRequestBody(

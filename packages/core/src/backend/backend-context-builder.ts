@@ -1,5 +1,4 @@
 import type { HertaToAgentBrief } from "../bridge/types.js";
-import { EMPTY_PROMPT_TRACE } from "../capsule/types.js";
 import type { ToolRegistry } from "../tool-registry.js";
 import type { BackendPromptFrame } from "../types/prompt.js";
 import type { Message } from "../types/transcript.js";
@@ -472,7 +471,6 @@ export class BackendContextBuilder {
       scopedMemory: input.scopedMemory,
       toolSchemas: this.tools.list().map((t) => t.schema()),
       messages: [...input.messages],
-      trace: EMPTY_PROMPT_TRACE,
     };
   }
 }

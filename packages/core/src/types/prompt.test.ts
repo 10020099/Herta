@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { EMPTY_PROMPT_TRACE } from "../capsule/types.js";
 import type {
   ActorPromptFrame,
   BackendPromptFrame,
@@ -15,7 +14,6 @@ describe("prompt frame types", () => {
       retrievedLore: "",
       messages: [],
       toolSchemas: [],
-      trace: EMPTY_PROMPT_TRACE,
     };
     // Round-trip: an ActorPromptFrame is structurally a PromptFrame.
     const asLegacy: PromptFrame = actor;
@@ -29,7 +27,6 @@ describe("prompt frame types", () => {
       scopedMemory: "",
       toolSchemas: [],
       messages: [],
-      trace: EMPTY_PROMPT_TRACE,
     };
     expect(backend.backendSystem).toBe("");
 
