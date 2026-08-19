@@ -1,4 +1,5 @@
 import { ProviderError } from "../errors.js";
+import { isAbortError } from "./abort.js";
 
 const DONE = Symbol("SSE_DONE");
 type ParsedEvent = unknown | typeof DONE;
@@ -152,15 +153,6 @@ export async function* parseSSE(
       // already released
     }
   }
-}
-
-/** Same predicate as http.ts's private copy — an abort is the user's
- *  interrupt in flight, never a provider failure to re-badge. */
-function isAbortError(e: unknown): boolean {
-  return (
-    e instanceof Error &&
-    (e.name === "AbortError" || (e as { code?: string }).code === "ABORT_ERR")
-  );
 }
 
 function takeEvent(raw: string): string | undefined {

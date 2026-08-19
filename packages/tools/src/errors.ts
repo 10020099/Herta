@@ -1,3 +1,29 @@
+import type { ToolResult } from "@herta/core";
+
+/**
+ * The one failed-`ToolResult` constructor. Five tools (edit_file,
+ * write_new_file, run_command, git_status, git_diff) each carried a private
+ * `errResult` with a slightly different positional shape until 2026-08-19
+ * (ADR 0041 follow-up); this is the union of them: `suggestion` and
+ * `summary` optional (summary defaults to `failed: <code>`), `retryable`
+ * last and false by default. `suggestion` is included only when given so
+ * the result shape is identical to the tools' hand-built objects.
+ */
+export function errResult<T = unknown>(
+  code: string,
+  message: string,
+  suggestion?: string,
+  summary: string = `failed: ${code}`,
+  retryable = false,
+): ToolResult<T> {
+  return {
+    ok: false,
+    error: { code, message, retryable },
+    ...(suggestion !== undefined ? { suggestion } : {}),
+    summary,
+  };
+}
+
 export type ToolErrorCode =
   | "path_denied"
   | "path_outside_workspace"

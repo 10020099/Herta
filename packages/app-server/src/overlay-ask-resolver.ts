@@ -11,17 +11,18 @@
  * but resolveExternal will still return { ok: false, reason: "stale_request" }
  * if the requestId doesn't match (defense-in-depth).
  *
+ * The POLICY (cache / project-rule short-circuits, which persistence choices
+ * to offer, what a grant writes back) is `@herta/core`'s `ApprovalPolicy`,
+ * shared with the CLI's resolver; this class only renders and awaits.
+ *
  * v0.3 Slice 2 Task 6.
  */
 import {
+  ApprovalPolicy,
   type AskResolver,
-  deriveProjectCommandRule,
-  isRuleEligibleAskCode,
   type PendingPermissionApproval,
   type PermissionRequest,
   type ProjectCommandRuleStore,
-  permissionCacheScope,
-  ruleDisplay,
   type SessionApprovalCache,
 } from "@herta/core";
 
@@ -79,35 +80,19 @@ export class OverlayAskResolver implements AskResolver {
     readonly resolve: (decision: "allow" | "deny") => void;
   } | null = null;
 
-  constructor(private readonly deps: OverlayAskResolverDeps) {}
+  private readonly policy: ApprovalPolicy;
+
+  constructor(private readonly deps: OverlayAskResolverDeps) {
+    this.policy = new ApprovalPolicy(deps.cache, deps.rules);
+  }
 
   present(
     request: PermissionRequest,
     signal: AbortSignal,
   ): Promise<"allow" | "deny"> {
-    const tool = request.call.tool;
-    const risk = request.risk;
-    const scope = permissionCacheScope(request);
-
-    // Cache hit: short-circuit without surfacing an overlay event.
-    if (this.deps.cache.has(tool, risk, scope)) {
-      return Promise.resolve("allow");
-    }
-
-    // Project-rule hit (ADR 0030): same silent short-circuit, but persistent.
-    // Gated on the LIVE ask code being rule-eligible — a hand-edited rule can
-    // never cover a destructive/network/reader ask, whatever the file says.
-    const argv = extractArgv(request);
-    if (
-      argv !== null &&
-      isRuleEligibleAskCode(request.code) &&
-      // Scoped to the directory the approval was granted in (audit BL15): the
-      // same `node src/index.mjs` under a different cwd is a different script,
-      // and cwd is model-supplied.
-      this.deps.rules?.matches(argv, extractCwd(request)) === true
-    ) {
-      return Promise.resolve("allow");
-    }
+    // Cache / project-rule hit: short-circuit without surfacing an overlay.
+    const pre = this.policy.preflight(request);
+    if (pre.kind === "auto") return Promise.resolve("allow");
 
     const requestId = request.id;
     // An interrupted turn must settle a pending ask — but as an ABORT, not a
@@ -162,28 +147,18 @@ export class OverlayAskResolver implements AskResolver {
         diff: request.diff,
         files: request.files,
         // Gate the GUI "always allow (session)" button: only offer it when a
-        // remembered choice would actually be cached for this request. Uses
-        // the SAME (tool, risk, scope) the eventual cache.add() will use, so
-        // the button never appears for a choice that would silently no-op and
-        // re-prompt (audit T3.4 follow-up; mirrors the CLI showRemember gate).
-        cacheable: this.deps.cache.isCacheable(tool, risk, scope),
+        // remembered choice would actually be cached for this request (the
+        // policy uses the SAME (tool, risk, scope) the eventual cache.add()
+        // will use), so the button never appears for a choice that would
+        // silently no-op and re-prompt (audit T3.4 follow-up; mirrors the
+        // CLI showRemember gate).
+        cacheable: pre.showRemember,
         // Same contract for the 「本项目允许」 button (ADR 0030): present only
         // when persistence:"always" would actually save this exact rule.
-        projectRule: this.projectRuleFor(request),
+        projectRule: pre.projectRule,
       };
       this.deps.setPendingOverlay(overlay);
     });
-  }
-
-  /** The display form of the rule an "always" resolution would persist, or
-   *  undefined when no rule is safe to offer (button hidden). */
-  private projectRuleFor(request: PermissionRequest): string | undefined {
-    if (this.deps.rules === undefined) return undefined;
-    if (!isRuleEligibleAskCode(request.code)) return undefined;
-    const argv = extractArgv(request);
-    if (argv === null) return undefined;
-    const rule = deriveProjectCommandRule(argv);
-    return rule === null ? undefined : ruleDisplay(rule);
   }
 
   /**
@@ -194,7 +169,8 @@ export class OverlayAskResolver implements AskResolver {
    * pair is written to the task-scoped cache so subsequent identical asks
    * short-circuit until the brief ends. Persistence "always" instead persists
    * the derived PROJECT rule (ADR 0030) — the reserved value the v0.3 design
-   * doc §7 left open now has its store.
+   * doc §7 left open now has its store. Both re-derive from the pending
+   * request (never a caller-supplied shape) inside `ApprovalPolicy.commit`.
    *
    * Returns:
    * - { ok: true } — matched; promise resolved; overlay cleared via deps.
@@ -217,62 +193,14 @@ export class OverlayAskResolver implements AskResolver {
 
     // Write to cache/store before resolving so the caller's .then() handler
     // immediately sees the entry on the next present() call.
-    if (opts.decision === "allow" && opts.persistence === "session") {
-      const tool = request.call.tool;
-      const risk = request.risk;
-      const scope = permissionCacheScope(request);
-      this.deps.cache.add(tool, risk, scope);
-    }
-    if (opts.decision === "allow" && opts.persistence === "always") {
-      // Re-derive from the pending request — never trust a caller-supplied
-      // rule shape. All the guards (eligible code, derivable shape, no
-      // shells/wrappers) re-run here; a non-derivable request no-ops.
-      const argv = extractArgv(request);
-      if (
-        this.deps.rules !== undefined &&
-        argv !== null &&
-        isRuleEligibleAskCode(request.code)
-      ) {
-        const rule = deriveProjectCommandRule(argv);
-        // The cwd rides along (audit BL15) — re-derived from the pending
-        // request like everything else here, never caller-supplied.
-        if (rule !== null) {
-          this.deps.rules.add({ ...rule, cwd: extractCwd(request) });
-        }
-      }
+    if (opts.decision === "allow" && opts.persistence !== undefined) {
+      this.policy.commit(request, opts.persistence);
     }
 
     this.deps.clearOverlay(requestId);
     resolve(opts.decision);
     return { ok: true };
   }
-}
-
-/** The argv of a run_command permission request, or null for other tools /
- *  malformed input. Fail-closed: any non-string token → null. */
-function extractCwd(request: PermissionRequest): string | undefined {
-  const input = request.call.input;
-  if (typeof input !== "object" || input === null) return undefined;
-  const cwd = (input as { cwd?: unknown }).cwd;
-  return typeof cwd === "string" ? cwd : undefined;
-}
-
-function extractArgv(request: PermissionRequest): string[] | null {
-  // Minimal contract (ADR 0040): the bash RULE derives the effective program
-  // argv (single program, after the `cd <workspace> &&` prefix) — the same
-  // argv shape run_command carries, so rule derivation / matching are one
-  // code path. Absent → not rule-eligible.
-  if (request.call.tool === "bash") {
-    const argv = request.argv;
-    return argv !== undefined && argv.length > 0 ? [...argv] : null;
-  }
-  if (request.call.tool !== "run_command") return null;
-  const input = request.call.input;
-  if (typeof input !== "object" || input === null) return null;
-  const argv = (input as { argv?: unknown }).argv;
-  if (!Array.isArray(argv) || argv.length === 0) return null;
-  if (!argv.every((a): a is string => typeof a === "string")) return null;
-  return argv;
 }
 
 /**

@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { DeepSeekClient } from "../llm/types.js";
 import type { AntiPattern, DefaultRegister } from "../schema.js";
+import { stripMarkdownFence } from "../text-utils.js";
 import { buildJudgePrompt } from "./judge-prompt.js";
 import {
   type HertaSelfModelV1,
@@ -120,16 +121,6 @@ function parseJudgeOutput(raw: string): ParseResult {
     };
   }
   return { ok: true, report: result.data };
-}
-
-function stripMarkdownFence(raw: string): string {
-  const trimmed = raw.trim();
-  const fenceMatch = /^```(?:json)?\s*\n?/i.exec(trimmed);
-  if (fenceMatch === null) return trimmed;
-  let body = trimmed.slice(fenceMatch[0].length);
-  const endIdx = body.lastIndexOf("```");
-  if (endIdx !== -1) body = body.slice(0, endIdx);
-  return body.trim();
 }
 
 function aggregateScores(report: JudgeReport): {

@@ -1,4 +1,11 @@
 export {
+  type ApprovalPersistence,
+  ApprovalPolicy,
+  type ApprovalPreflight,
+  commandArgv,
+  commandCwd,
+} from "./approval-policy.js";
+export {
   BACKEND_EXECUTION_CONTRACT,
   BACKEND_EXECUTION_CONTRACT_EN,
   type BackendBuildInput,
@@ -46,23 +53,6 @@ export {
 } from "./backend/tool-result-persistence.js";
 export { ExecutionReportBuilder } from "./bridge/report-builder.js";
 export type * from "./bridge/types.js";
-export {
-  type ActivateOpts,
-  type ActivationOutput,
-  activate,
-} from "./capsule/activation-engine.js";
-export { estimateTokens } from "./capsule/estimate-tokens.js";
-export { buildEvidence } from "./capsule/evidence.js";
-export type {
-  BudgetSummary,
-  CapsuleProducer,
-  Evidence,
-  PromptTrace,
-  TraceEntry,
-} from "./capsule/types.js";
-export { EMPTY_PROMPT_TRACE } from "./capsule/types.js";
-export type { ContextBuilder } from "./context-builder.js";
-export { StubContextBuilder } from "./context-builder.js";
 export type { EventBus } from "./event-bus.js";
 export { InMemoryEventBus, publishWithLayer } from "./event-bus.js";
 export {
@@ -142,7 +132,6 @@ export {
   resolveEffectiveWorkspace,
   workspacesBaseDir,
 } from "./session-io/workspace-paths.js";
-export { stripAnsi, TerminalScrollback } from "./terminal-scrollback.js";
 export {
   aliasBanzhuanDisplay,
   aliasBanzhuanPlain,
@@ -163,19 +152,9 @@ export type { ToolRegistry } from "./tool-registry.js";
 export { InMemoryToolRegistry } from "./tool-registry.js";
 export { TranscriptStore } from "./transcript-store.js";
 export type * from "./types/approval-overlay.js";
-export type * from "./types/backend-transcript.js";
-export type * from "./types/capsule.js";
 export type * from "./types/completion-provider.js";
-export type * from "./types/dialogue.js";
 export type * from "./types/errors.js";
 export type * from "./types/events.js";
-export {
-  type EvidenceEntry,
-  type EvidenceHandle,
-  type EvidenceKind,
-  type EvidenceStore,
-  InMemoryEvidenceStore,
-} from "./types/evidence-store.js";
 export type * from "./types/prompt.js";
 export type * from "./types/provider.js";
 export {

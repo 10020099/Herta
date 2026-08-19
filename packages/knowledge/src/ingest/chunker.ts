@@ -1,6 +1,6 @@
-import { createHash } from "node:crypto";
 import type { ParsedDocument } from "../html/parse-html.js";
 import type { CanonChunk, CanonDocumentKind } from "../schema.js";
+import { sha1 } from "../text-utils.js";
 
 export function classifyDocumentKind(path: string): CanonDocumentKind {
   const norm = path.replace(/\\/g, "/");
@@ -43,10 +43,6 @@ export function chunkParsedDocument(
     ordinal += 1;
   }
   return chunks;
-}
-
-function sha1(s: string): string {
-  return createHash("sha1").update(s, "utf8").digest("hex");
 }
 
 function estimateTokens(s: string): number {

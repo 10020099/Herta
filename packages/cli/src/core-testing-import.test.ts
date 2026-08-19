@@ -1,4 +1,3 @@
-import { EMPTY_PROMPT_TRACE } from "@herta/core";
 import { FakeProvider } from "@herta/core/testing";
 import { describe, expect, it } from "vitest";
 
@@ -17,7 +16,6 @@ describe("@herta/core/testing sub-export", () => {
         retrievedLore: "",
         messages: [],
         toolSchemas: [],
-        trace: EMPTY_PROMPT_TRACE,
       },
       ac.signal,
     )) {

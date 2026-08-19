@@ -2875,13 +2875,13 @@ button.agent-preview:active {
 }
 /* The diff behind a file-write ask (user 2026-07-24): same dark console
    well as the command preview, opened by the collapsed disclosure below —
-   long patches scroll inside the capped well instead of growing the panel. */
+   long patches scroll inside the capped well instead of growing the panel.
+   The dark chrome (background / border / radius) is NOT on this <pre> — it
+   lives on the clip box below, see there for why; the pre is the scrolling
+   text region inside it. */
 .approval-panel__diff {
   margin: 0;
   padding: 8px 10px;
-  border-radius: 8px;
-  background: #0f172a;
-  border: 1px solid var(--ink-a09);
   color: #e2e8f0;
   font-size: 12px;
   white-space: pre-wrap;
@@ -2901,51 +2901,75 @@ button.agent-preview:active {
    row transition), and the toggle's aria-expanded is the AT truth. The
    wrap's negative margin cancels the panel's flex gap while closed, so a
    collapsed disclosure adds no blank strip under the toggle. */
+/* Asymmetric timing (owner 2026-08-19): the OPEN answers a click, so it
+   stays quick (240ms on the house morph curve, declared on .is-open — the
+   state being entered owns the transition); the CLOSE is dismissal,
+   nothing is waiting on it, so it settles over 360ms.
+   THE fr QUIRK (measured with an in-page rAF sampler, 2026-08-19): the
+   0fr↔1fr row does NOT follow its timing function — the track resolves
+   the fr size twice (the grid's block size from the first pass is definite
+   in the second), so the row height tracks the timing function SQUARED
+   (close: 44% gone at 36ms of a 360ms ease-out-soft; open: 52% at 58ms of
+   a 240ms signature = 0.72²). Every "too fast" report on this collapse was
+   that square. The close therefore runs `linear`, which the quirk turns
+   into (1−t)² — a clean quadratic ease-out that actually spans the 360ms
+   (56% left at 90ms, 25% at 180, 6% at 270). The open keeps the signature
+   curve: its square is still a front-loaded ease-out and it answers a
+   click. Any future 0fr↔1fr disclosure inherits this: tune the timing
+   function for its square, not its face value. */
 .approval-panel__diff-wrap {
   display: grid;
   grid-template-rows: 0fr;
   margin-top: -8px;
   transition:
-    grid-template-rows 240ms var(--ease-signature),
-    margin-top 240ms var(--ease-signature);
+    grid-template-rows 360ms linear,
+    margin-top 360ms linear;
 }
 .approval-panel__diff-wrap.is-open {
   grid-template-rows: 1fr;
   margin-top: 0;
+  transition:
+    grid-template-rows 240ms var(--ease-signature),
+    margin-top 240ms var(--ease-signature);
 }
+/* The clip IS the dark rounded well (owner 2026-08-19, screenshots): the
+   chrome used to sit on the <pre> inside a transparent clip, so the edge
+   doing the cutting was the clip's straight bottom line slicing through an
+   opaque box — a rectangle bottom sliding up while the panel's top edge
+   (the panel is bottom-anchored) came down. With the background / border /
+   radius on the clip box, the box that shrinks with the grid row is the
+   shape itself: both corners stay rounded through the whole travel and the
+   text simply disappears behind its own bottom border. (The earlier
+   scaleY-toward-top + fast-fade recipe is only good for a short element
+   like the sidebar search field; a 130–240px opaque well needs the shrinking
+   box to BE the chrome.) The close fades the box only over its last
+   stretch (from ~1/5 height on) so the shrink is the story and it
+   dissolves rather than snapping away as a 2px line; the open fades the
+   box in WITH the space (no delay — a delayed fade left a half-open hole
+   with nothing in it for the first ~60ms). */
 .approval-panel__diff-clip {
   min-height: 0;
+  box-sizing: border-box;
   overflow: hidden;
+  border-radius: 8px;
+  background: #0f172a;
+  border: 1px solid var(--ink-a09);
   visibility: hidden;
-  transition: visibility 0s linear 240ms;
+  opacity: 0;
+  transition:
+    visibility 0s linear 360ms,
+    opacity 160ms ease 200ms;
 }
 .approval-panel__diff-wrap.is-open .approval-panel__diff-clip {
   visibility: visible;
-  transition-delay: 0s;
-}
-/* The WELL shrinks with the row instead of being guillotined by it (owner
-   2026-08-17, same artifact class as the sidebar search field): compress
-   toward the top so the dark rounded well keeps its shape at both edges
-   through the collapse, with a fast fade covering the clip line. */
-.approval-panel__diff-wrap .approval-panel__diff {
-  transform-origin: top center;
-  transform: scaleY(0.9);
-  opacity: 0;
-  transition:
-    transform 240ms var(--ease-signature),
-    opacity 140ms ease;
-}
-.approval-panel__diff-wrap.is-open .approval-panel__diff {
-  transform: none;
   opacity: 1;
   transition:
-    transform 240ms var(--ease-signature),
-    opacity 180ms ease 40ms;
+    visibility 0s linear 0s,
+    opacity 140ms var(--ease-out-soft) 0s;
 }
 @media (prefers-reduced-motion: reduce) {
   .approval-panel__diff-wrap,
-  .approval-panel__diff-clip,
-  .approval-panel__diff-wrap .approval-panel__diff {
+  .approval-panel__diff-clip {
     transition: none;
   }
 }
@@ -4083,10 +4107,124 @@ button.session-item__badge--dismiss {
   font-size: 12px;
   color: var(--muted-faint);
 }
+
+/* ── 操作轨迹 rail card (2026-08-17) — rides the .plan-card chrome ──────
+   The plan card's fallback for dispatches with no 任务清单 (every 极简 run).
+   Same glass, slide, fog and mark triad; what differs lives under the
+   `trace-card` variant class below. */
+/* No denominator, so no fill fraction: a slow edge-to-edge sweep is the
+   live state (and the card's ONE moving element — the row marks stay
+   static per the 2026-07-27 form-not-motion rule); settled, the meter
+   rests as a solid full line, the same "done" register as the plan meter
+   reaching its end. */
+.trace-card__meter-fill {
+  display: block;
+  height: 100%;
+  width: 100%;
+  border-radius: inherit;
+  background: var(--banzhuan-led);
+  opacity: .55;
+  transition: opacity 420ms ease;
+}
+.trace-card__meter-fill.is-live {
+  opacity: 1;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--banzhuan-led) 35%,
+    var(--banzhuan-led) 65%,
+    transparent 100%
+  );
+  background-size: 45% 100%;
+  background-repeat: no-repeat;
+  animation: trace-meter-sweep 1.6s ease-in-out infinite;
+}
+@keyframes trace-meter-sweep {
+  0% { background-position: -80% 0; }
+  100% { background-position: 180% 0; }
+}
+/* Parked on a permission gate: nothing is being worked — the sweep stops
+   mid-flight (paused, not removed: resuming continues rather than
+   restarting). Same discipline as the plan caret going hollow. */
+.plan-card.is-waiting .trace-card__meter-fill.is-live {
+  animation-play-state: paused;
+}
+/* Rows are append-only within a dispatch, so each mounts exactly once —
+   a small rise-and-fade entrance makes the trace visibly GROW instead of
+   rows teleporting in. */
+.trace-card__row {
+  align-items: center;
+  animation: trace-row-in 200ms ease both;
+}
+@keyframes trace-row-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+/* A long-run dispatch lands hundreds of ops (owner 2026-08-17): the list
+   caps its VISIBLE height (~6 rows) and scrolls inside — with the fog
+   edges and the follow-tail pin, the card reaches this size and then
+   stays, instead of creeping down the rail. trace-context caps the DOM
+   rows separately (TRACE_MAX_ROWS); the header count still covers the
+   whole run. The plan card keeps its grow-then-flex behaviour — a todo
+   list is finite and its tail is the payoff. */
+.trace-card .plan-card__list {
+  max-height: 168px;
+}
+/* One line per op, ellipsized — a command line can be arbitrarily long and
+   the row is a pointer, not the record (hover carries the full text via
+   title; the record's own rows keep everything). Unlike plan items, which
+   wrap: a task NAME is the card's content, an op ARG is its address. */
+.trace-card__text {
+  min-width: 0;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.trace-card__verb {
+  color: var(--muted-4);
+}
+.trace-card__row.is-running {
+  color: var(--ink);
+}
+.trace-card__row.is-running .plan-card__mark {
+  color: var(--banzhuan-led);
+}
+.trace-card__row.is-ok .plan-card__mark {
+  color: var(--banzhuan-led);
+  opacity: .75;
+}
+.trace-card__row.is-fail .plan-card__mark {
+  color: #9a5b5b;
+}
+/* The optical-centre nudge is for the plan card's wrapping rows; these are
+   single-line and centre-aligned. */
+.trace-card__row .plan-card__mark {
+  margin-top: 0;
+}
+.trace-card__note {
+  flex: none;
+  margin-left: auto;
+  padding-left: 8px;
+  font-size: 11.5px;
+  color: var(--muted-4);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.trace-card__note.is-fail {
+  color: #9a5b5b;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .plan-card,
   .plan-card__list,
   .plan-card__meter-fill { transition: none; }
+  .trace-card__meter-fill { transition: none; }
+  .trace-card__meter-fill.is-live {
+    animation: none;
+    background: var(--banzhuan-led);
+  }
+  .trace-card__row { animation: none; }
   .plan-card__row { animation: none; }
 }
 .activity-step {

@@ -10,77 +10,36 @@
  * v0.3 Slice 2 Task 5 — uses SessionEventProjector for all subscription channels.
  */
 import { randomUUID } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { readdir, rm } from "node:fs/promises";
+import { rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import {
-  type AgentEvent,
   type ApprovalOverlayState,
-  BackendContextBuilder,
-  type BackendContract,
-  CodingAgentRuntime,
   defaultWorkspaceFor,
-  dreamDirFor,
-  InMemoryEventBus,
-  InMemoryToolRegistry,
   isAbortError,
   type LastTurnEnd,
-  narrativeDirFor,
-  ProjectCommandRuleStore,
+  type ProjectCommandRuleStore,
   type ProviderAdapter,
-  RulePermissionEngine,
   readSessionTitle,
   readSessionTopics,
   ruleDisplay,
-  SessionApprovalCache,
   type SessionTopic,
   type SystemBlock,
   type TerminalRecord,
   type TerminalRecordBlock,
   type V2RecordPersister,
-  wireTaskScopedApprovalCache,
   writeSessionTitle,
 } from "@herta/core";
 import {
-  buildRecapRuntime,
-  buildStaticHertaPrefix,
   generateSessionTitle,
-  loadActorHints,
-  loadMetaThinkCorpus,
   type MetaThinkCorpus,
-  materializeSeedFeian,
   type OpeningChoice,
   type PromptLang,
-  pickOpening,
-  readRecapCache,
   type StaticHertaPrefix,
   spanMatchedBaseMs,
-  supervisorReferenceFor,
   V2ActorDriver,
 } from "@herta/herta";
-import {
-  readManifest,
-  resolveDreamConfig,
-  selectPromptExclusions,
-} from "@herta/knowledge";
-import { FileMemoryManager } from "@herta/memory";
-import {
-  type ApiKey,
-  deepseekCompletionProvider,
-  deepseekProvider,
-} from "@herta/providers";
-import {
-  createMinimalTools,
-  createMvpTools,
-  findBash,
-  PersistentShell,
-  registerEditFileRule,
-  registerMinimalRules,
-  registerRunCommandRule,
-  registerWriteNewFileRule,
-  shellWorkspaceHint,
-} from "@herta/tools";
+import { type ApiKey, deepseekProvider } from "@herta/providers";
 import {
   attachmentDirFor,
   ingestAttachment,
@@ -100,6 +59,7 @@ import {
   synthesizeInitialTopic,
   topicAnchorText,
 } from "./session-topics.js";
+import { createActorStack, createBackendStack } from "./session-wiring.js";
 import type {
   ApprovalResult,
   AppServerConfig,
@@ -278,49 +238,6 @@ export interface SessionInternalDeps {
 
 /** Easter-egg voice throttle: ≤1 play per session per hour. */
 const EASTER_EGG_COOLDOWN_MS = 60 * 60 * 1000;
-
-/**
- * Filenames of dreamed 废案 to withhold from a reopening session's prefix
- * (design 2026-07-07): those whose source episodes still sit verbatim in the
- * loaded record. Fail-open — any error returns undefined (no exclusions),
- * which is exactly the pre-filter behavior.
- *
- * Exported for direct testing only (like `SessionInternalDeps`, not part of
- * the package barrel).
- */
-export function ownDreamExclusions(opts: {
-  workspaceRoot: string;
-  sessionId: string;
-  record: TerminalRecord;
-  dream: AppServerConfig["dream"];
-  /** Interaction language — selects the per-language dream manifest so the
-   *  reopen own-dream filter reads THIS session's language's corpus. */
-  lang: "zh" | "en";
-}): ReadonlySet<string> | undefined {
-  try {
-    // Mirror the recap runtime's cache validation: a cached boundary must
-    // index a user block inside this record, else the runtime treats the
-    // session as uncompacted — the prefix filter must see the same view.
-    const cached =
-      readRecapCache(opts.workspaceRoot, opts.sessionId)?.boundaryIndex ?? 0;
-    const recapBoundaryIndex =
-      cached > 0 &&
-      cached < opts.record.length &&
-      opts.record[cached]?.kind === "user"
-        ? cached
-        : 0;
-    const excluded = selectPromptExclusions({
-      manifest: readManifest(dreamDirFor(opts.workspaceRoot, opts.lang)),
-      sessionId: opts.sessionId,
-      record: opts.record,
-      recapBoundaryIndex,
-      config: resolveDreamConfig(opts.dream),
-    });
-    return excluded.size > 0 ? excluded : undefined;
-  } catch {
-    return undefined;
-  }
-}
 
 // ── SessionImpl ─────────────────────────────────────────────────────────────
 
@@ -1471,81 +1388,25 @@ export class SessionImpl implements Session {
     // SessionImpl instance, so a future setWorkspace mutates both at once.
     const wsHolder = { current: opts.effectiveWorkspace };
 
-    // 0b. Fresh-workspace bootstrap: materialize the compiled seed 废案 into
-    //     the live narrative dir so the static prefix below finds a starting
-    //     memory corpus. No-op the moment ANY 废案 exists (never resurrects
-    //     cap-evicted seeds). Skipped when the prefix is overridden (tests).
-    if (deps.staticPrefixOverride === undefined) {
-      await materializeSeedFeian(workspaceRoot, lang);
-    }
-
-    // 0c. Reopen own-dream filter: 废案 distilled from THIS session's
-    //     episodes stay out of the prefix while their source content is
-    //     still verbatim in the reopened record — otherwise Herta re-reads
-    //     the ongoing conversation as a memory from another life. Only a
-    //     reopen can hit this (a fresh session has no record to overlap).
-    const excludeFewShotFiles =
-      deps.staticPrefixOverride === undefined && initialRecord.length > 0
-        ? ownDreamExclusions({
-            workspaceRoot,
-            sessionId,
-            record: initialRecord,
-            dream: config.dream,
-            lang,
-          })
-        : undefined;
-
-    // 1. Static Herta prefix (bio/env compiled in; 废案 from the live dir).
-    const staticPrefix: StaticHertaPrefix =
-      deps.staticPrefixOverride ??
-      (await buildStaticHertaPrefix({
-        workspaceRoot,
-        lang,
-        readFile: async (relPath) => {
-          const { readFile } = await import("node:fs/promises");
-          return readFile(join(workspaceRoot, relPath), "utf-8");
-        },
-        readNarrativeDir: async () => {
-          try {
-            return await readdir(narrativeDirFor(workspaceRoot, lang));
-          } catch (err) {
-            const code = (err as { code?: string }).code;
-            if (code === "ENOENT") return [];
-            throw err;
-          }
-        },
-        ...(excludeFewShotFiles !== undefined ? { excludeFewShotFiles } : {}),
-      }));
-
-    // 2. Memory manager.
-    const memory = new FileMemoryManager({ workspaceRoot });
-
-    // 3. Providers.
     // Live key: prefer the host-provided getter (updated when the user sets the
     // key in Settings / onboarding) so a new key takes effect on the next turn
     // without a restart; fall back to the static config key (tests).
     const deepSeekKey: () => string =
       opts.deepSeekKey ?? (() => config.providers.apiKey);
     const apiKey: ApiKey = deepSeekKey;
+    // Dev-only chaos/staging lever (see types.ts providers.baseUrl) — spread
+    // into every turn-path provider construction so a chaos proxy sees the
+    // actor, backend, and router/supervisor/title traffic alike.
     const baseUrl =
       config.providers.baseUrl !== undefined
         ? { baseUrl: config.providers.baseUrl }
         : {};
 
-    // Create the actor (narrative completion) provider based on type.
-    // DeepSeek uses completion mode. NOTE: other providers do not expose a
-    // raw completion endpoint, so the actor currently only runs against
-    // DeepSeek (or a DeepSeek-compatible completion endpoint) regardless of
-    // provider type. Multi-provider support currently covers the chat-mode
-    // surfaces (板砖/backend, router, supervisor, title).
-    const actorProvider =
-      deps.providerOverrides?.actor ??
-      deepseekCompletionProvider({ apiKey, ...baseUrl });
-
-    // Create the backend (板砖) chat provider based on type.
-    // Map the broad ThinkingEffort to DeepSeek's accepted values:
+    // Map the broad ThinkingEffort to DeepSeek's accepted reasoning_effort:
     //   off → false (omit thinking); none/minimal/low → "low";
     //   medium/high → "high"; xhigh/max → "max".
+    // The actor/chat-mode provider split, and the per-provider-type factory
+    // selection, live in createActorStack (session-wiring.ts).
     const backendThinking: false | "low" | "high" | "max" = (() => {
       const t = config.thinking ?? "high";
       if (t === "off") return false;
@@ -1562,92 +1423,63 @@ export class SessionImpl implements Session {
         ...baseUrl,
       });
 
-    // 4. Permission engine.
-    // OverlayAskResolver surfaces pending permission requests through the
-    // session's overlay snapshot and emits OverlayEvents via the projector.
-    // The deps callbacks close over a mutable `sessionHolder` object that is
-    // filled in after SessionImpl construction — this is safe because
-    // present() is only ever called during a live turn, which can only happen
-    // after create() returns the SessionImpl to the caller.
+    // 1. Backend stack (shared wiring — see session-wiring.ts). The
+    //    OverlayAskResolver surfaces pending permission requests through the
+    //    session's overlay snapshot and emits OverlayEvents via the projector.
+    //    Its callbacks close over a mutable `sessionHolder` filled in after
+    //    SessionImpl construction — safe because present() is only ever
+    //    called during a live turn, which can only happen after create()
+    //    returns the SessionImpl to the caller.
     const sessionHolder: { session: SessionImpl | null } = { session: null };
-    const approvalCache = new SessionApprovalCache();
-    // Project-scoped command allow rules (ADR 0030) — persisted under the
-    // EFFECTIVE workspace's .herta/permissions.json. Reads the holder so a
-    // mid-session setWorkspace re-anchors the rules with the workspace.
-    const commandRules = new ProjectCommandRuleStore(() => wsHolder.current);
-    const overlayResolver = new OverlayAskResolver({
-      cache: approvalCache,
-      rules: commandRules,
-      setPendingOverlay(overlay) {
-        // biome-ignore lint/style/noNonNullAssertion: set before any turn runs
-        sessionHolder.session!._overlay = overlay;
-        // biome-ignore lint/style/noNonNullAssertion: set before any turn runs
-        sessionHolder.session!.projector.emitOverlay({
-          kind: "pending",
-          overlay,
+    let overlayResolver: OverlayAskResolver | undefined;
+    const backend = createBackendStack({
+      wsHolder,
+      workspaceRoot,
+      lang,
+      // The contract the setting asks for (ADR 0040). `minimal` needs a bash
+      // on this machine; without one the session runs `standard`. The
+      // Settings row shows the detection result (the GUI's getBackendContract
+      // reports `bashFound`), so the fallback is visible where the choice is
+      // made rather than as a record note.
+      wantMinimal: config.backendContract === "minimal",
+      backendProvider,
+      makeAsk: ({ cache, rules }) => {
+        overlayResolver = new OverlayAskResolver({
+          cache,
+          rules,
+          setPendingOverlay(overlay) {
+            // biome-ignore lint/style/noNonNullAssertion: set before any turn runs
+            sessionHolder.session!._overlay = overlay;
+            // biome-ignore lint/style/noNonNullAssertion: set before any turn runs
+            sessionHolder.session!.projector.emitOverlay({
+              kind: "pending",
+              overlay,
+            });
+          },
+          clearOverlay(requestId) {
+            // biome-ignore lint/style/noNonNullAssertion: set before any turn runs
+            sessionHolder.session!._overlay = null;
+            // biome-ignore lint/style/noNonNullAssertion: set before any turn runs
+            sessionHolder.session!.projector.emitOverlay({
+              kind: "resolved",
+              requestId,
+            });
+          },
         });
-      },
-      clearOverlay(requestId) {
-        // biome-ignore lint/style/noNonNullAssertion: set before any turn runs
-        sessionHolder.session!._overlay = null;
-        // biome-ignore lint/style/noNonNullAssertion: set before any turn runs
-        sessionHolder.session!.projector.emitOverlay({
-          kind: "resolved",
-          requestId,
-        });
+        return overlayResolver;
       },
     });
-    const permissions = new RulePermissionEngine({ ask: overlayResolver });
-
-    // 5. Tool registry — the contract the setting asks for (ADR 0040).
-    //    `minimal` needs a bash on this machine; without one the session runs
-    //    `standard`. The Settings row shows the detection result (the GUI's
-    //    getBackendContract reports `bashFound`), so the fallback is visible
-    //    where the choice is made rather than as a record note.
-    const wantMinimal = config.backendContract === "minimal";
-    const bashPath = wantMinimal ? findBash() : null;
-    const contract: BackendContract =
-      wantMinimal && bashPath !== null ? "minimal" : "standard";
-    if (wantMinimal && bashPath === null) {
+    if (overlayResolver === undefined) {
+      throw new Error("createBackendStack did not build the ask resolver");
+    }
+    if (config.backendContract === "minimal" && backend.bashPath === null) {
       console.warn(
         "[herta] backendContract=minimal requested but no bash found (install Git for Windows or set HERTA_BASH); running the standard contract",
       );
     }
-    const backendTools = new InMemoryToolRegistry();
-    // The shell's own spelling of the workspace, read fresh per schema /
-    // prompt build so a mid-session setWorkspace is reflected.
-    const workspaceShellPath = (): string =>
-      bashPath === null
-        ? wsHolder.current
-        : new PersistentShell({ bashPath, workspaceRoot: wsHolder.current })
-            .workspaceShellPath;
-    if (contract === "minimal") {
-      for (const t of createMinimalTools({
-        bashPath: bashPath as string,
-        workspaceShellPath,
-      }))
-        backendTools.register(t);
-    } else {
-      for (const t of createMvpTools()) backendTools.register(t);
-    }
+    const { bus, commandRules, runtimeFactory } = backend;
 
-    // 6. Backend context builder.
-    const backendBuilder = new BackendContextBuilder({
-      tools: backendTools,
-      contract,
-      workspaceHint: () =>
-        contract === "minimal"
-          ? shellWorkspaceHint(bashPath, wsHolder.current, lang)
-          : undefined,
-    });
-
-    // 7. Shared event bus.
-    const bus = new InMemoryEventBus<AgentEvent>();
-    // Task-scope approval lifetime (ADR 0026): the remember cache clears when
-    // each backend brief ends, so 总是同意 never outlives the task.
-    wireTaskScopedApprovalCache(bus, approvalCache);
-
-    // 7a. Event projector — subscribes to the bus so agent events fan-out
+    // 1a. Event projector — subscribes to the bus so agent events fan-out
     //     to all SessionAgentEvent consumers automatically.
     //     Bus → wire-stream classification: the agent stream is a raw
     //     passthrough for all events. Record-stream projection is NOT done
@@ -1659,62 +1491,48 @@ export class SessionImpl implements Session {
     //     loop publishes turn.* on the bus and submitText also emits lifecycle).
     const projector = new SessionEventProjector({ bus, queueCapacity: 1000 });
 
-    // 8. Permission rules (attach to the shared engine).
-    if (contract === "minimal") {
-      registerMinimalRules(permissions, { bus, bashPath });
-    } else {
-      registerEditFileRule(permissions, { bus });
-      registerWriteNewFileRule(permissions, { bus });
-      registerRunCommandRule(permissions);
-    }
+    // 2. Actor stack (shared wiring): providers, static prefix (+ reopen
+    //    own-dream filter), opening seed, meta-think/hints/supervisor toggle,
+    //    recap runtime, prompt dump. The test seams in `deps` thread through
+    //    as overrides.
+    const actor = await createActorStack({
+      workspaceRoot,
+      sessionId,
+      lang,
+      initialRecord,
+      apiKey,
+      ...(config.providers.baseUrl !== undefined
+        ? { baseUrl: config.providers.baseUrl }
+        : {}),
+      // Supervisor toggle is config-driven (default ON).
+      supervisorEnabled: config.supervisor?.enabled ?? true,
+      dream: config.dream,
+      promptDumpDir: config.transcriptDir,
+      overrides: {
+        ...(deps.providerOverrides?.actor !== undefined
+          ? { actorProvider: deps.providerOverrides.actor }
+          : {}),
+        ...(deps.providerOverrides?.router !== undefined
+          ? { routerProvider: deps.providerOverrides.router }
+          : {}),
+        ...(deps.providerOverrides?.supervisor !== undefined
+          ? { supervisorProvider: deps.providerOverrides.supervisor }
+          : {}),
+        ...(deps.staticPrefixOverride !== undefined
+          ? { staticPrefix: deps.staticPrefixOverride }
+          : {}),
+        ...(deps.metaThinkOverride !== undefined
+          ? { metaThink: deps.metaThinkOverride }
+          : {}),
+        ...(deps.supervisorReferenceOverride !== undefined
+          ? { supervisorReference: deps.supervisorReferenceOverride }
+          : {}),
+        ...(deps.openingOverride !== undefined
+          ? { opening: deps.openingOverride }
+          : {}),
+      },
+    });
 
-    // 9. CodingAgentRuntime factory (per-invocation, per ADR 0007).
-    const runtimeFactory = (): CodingAgentRuntime =>
-      new CodingAgentRuntime({
-        sessionId: randomUUID(),
-        provider: backendProvider,
-        tools: backendTools,
-        permissions,
-        backendBuilder,
-        bus,
-        clock: () => new Date(),
-        // Read fresh from the shared holder so a mid-session setWorkspace
-        // (next task) is picked up on the next dispatch.
-        workspaceRoot: wsHolder.current,
-        memory,
-      });
-
-    // 10. Mood-routing + supervisor providers. The router classifies the
-    //     conversation into one of seven moods once per turn; the supervisor
-    //     gates phase-2 speech. This gives the desktop session the same
-    //     wiring as the CLI's main.ts.
-    //     Router runs thinking "low" (owner decision 2026-08-03; the
-    //     2026-07-31 DeepSeek update gave flash a real "low" tier): a 7-way
-    //     mood pick needs thinking MODE, not depth. The supervisor no longer
-    //     shares the router's adapter — it is a precision gate (misses
-    //     buried-rule shapes ~1/3 even at high, trigger-gate 2026-07-29), so
-    //     it keeps its own "high" flash adapter, and the recap summarizer
-    //     below rides that one too.
-    const routerProvider =
-      deps.providerOverrides?.router ??
-      deepseekProvider({
-        apiKey,
-        model: "deepseek-v4-flash",
-        thinking: "low",
-        ...baseUrl,
-      });
-    // Test seam preserved: with only a `router` override present, the
-    // supervisor (and recap, which takes this adapter) still receive that
-    // stub — stub-session tests rely on one stub covering all three roles.
-    const supervisorProvider =
-      deps.providerOverrides?.supervisor ??
-      deps.providerOverrides?.router ??
-      deepseekProvider({
-        apiKey,
-        model: "deepseek-v4-flash",
-        thinking: "high",
-        ...baseUrl,
-      });
     // Title provider — a fast flash chat call at thinking "low" (owner
     // decision 2026-08-03; omitting `thinking` meant the server's DEFAULT
     // effort, which is "high" — titles were silently paying full reasoning).
@@ -1767,14 +1585,6 @@ export class SessionImpl implements Session {
       loadedRecord,
     );
     if (synthesized !== null) existingTopics = [synthesized];
-    // Compiled prompt assets (M-prompts-1): hints and the meta-think corpus
-    // resolve from the bundle, and the supervisor toggle is config-driven
-    // (default ON) instead of a workspace file's existence.
-    const metaThinkCorpus = deps.metaThinkOverride ?? loadMetaThinkCorpus(lang);
-    const actorHints = loadActorHints(lang);
-    const supervisorReference =
-      deps.supervisorReferenceOverride ??
-      supervisorReferenceFor(config.supervisor?.enabled ?? true);
 
     const sink = new BusActorStreamingSink(
       bus,
@@ -1787,14 +1597,8 @@ export class SessionImpl implements Session {
       lang,
     );
 
-    // 10a. Opening seed (new sessions only). Resumed/opened sessions already
-    //      carry block 0 in their loaded record, so the opening pickup is
-    //      skipped for them. The preamble (when present) folds into the
-    //      static prefix BEFORE the driver is constructed (the driver takes
-    //      staticPrefix at construction time); the seed line becomes record
-    //      block 0, loaded into the driver and persisted below. Mirrors the
-    //      CLI's main.ts. Missing openings dir → pickOpening returns
-    //      undefined → no seed (graceful).
+    // 3. Opening voice pairing (the seed itself came from the actor stack;
+    //    the host adds the clip and the clip-matched cadence).
     // Voice-clip root, shared by every voice feature below (openings /
     // particles / veto / easter egg). Config-driven since 2026-07-06 so a
     // PACKAGED app can point it at its bundled resources copy; the fallback
@@ -1802,126 +1606,42 @@ export class SessionImpl implements Session {
     // a missing dir just means voice never fires.
     const voiceAssetsDir =
       config.voiceAssetsDir ?? join(workspaceRoot, "data", "voice");
-    let effectiveStaticPrefix = staticPrefix;
-    let seedBlock: TerminalRecordBlock | null = null;
+    const { opening, seedBlock } = actor;
     // The opening's voice clipId = its filename stem (the .opus shares the stem),
     // captured for the `voice` cue emitted when playOpening streams the seed.
-    let openingClipId: string | null = null;
+    // The pairing comes from the picker (slice 4): zh openings carry their
+    // filename stem; EN openings carry NO clip (no EN clips in v1) — never
+    // derive a clip id from `sourceFile` here, or an EN seed would pair with
+    // a CN clip.
+    const openingClipId: string | null = opening?.voiceClipId ?? null;
     // Matched per-char cadence so the seed reveal spans ≈ the clip's audio
     // (SPEC 2026-06-23). undefined when there's no clip / the clip is unreadable.
     let openingBaseMs: number | undefined;
-    if (initialRecord.length === 0) {
-      // Openings come from the compiled corpus (M-prompts-1); the paired
-      // voice clip still resolves by filename stem under the workspace's
-      // data/voice/openings/. An explicit `null` override means NO opening.
-      const opening =
-        deps.openingOverride !== undefined
-          ? (deps.openingOverride ?? undefined)
-          : pickOpening({ lang });
-      if (opening !== undefined) {
-        effectiveStaticPrefix = { ...staticPrefix, opening: opening.preamble };
-        // The voice pairing comes from the picker (slice 4): zh openings
-        // carry their filename stem; EN openings carry NO clip (no EN clips
-        // in v1) — never derive a clip id from `sourceFile` here, or an EN
-        // seed would pair with a CN clip.
-        openingClipId = opening.voiceClipId ?? null;
-        // Match the text-stream cadence to the voice clip's duration. The clip
-        // lives at <voiceAssetsDir>/openings/<clipId>.opus (mirrors the GUI's
-        // voice-path resolution; Ogg/Opus since the 2026-07-16 cutover).
-        // Best-effort: an unreadable / absent clip — or no clip at all (EN
-        // opening) — leaves openingBaseMs undefined → the sink's read-along
-        // default.
-        const durationMs =
-          deps.openingDurationMs ??
-          (openingClipId !== null
-            ? await readOpusDurationMs(
-                join(voiceAssetsDir, "openings", `${openingClipId}.opus`),
-              )
-            : null);
-        // `durationMs` is number | null (the `??` collapses the seam's undefined).
-        if (durationMs !== null) {
-          openingBaseMs = spanMatchedBaseMs({
-            text: opening.seedText,
-            targetMs: durationMs,
-            fallbackMs: SLOW_MS_PER_CHAR,
-          });
-        }
-        seedBlock = {
-          kind: "herta",
-          surface: "speech",
+    if (opening !== undefined) {
+      // Match the text-stream cadence to the voice clip's duration. The clip
+      // lives at <voiceAssetsDir>/openings/<clipId>.opus (mirrors the GUI's
+      // voice-path resolution; Ogg/Opus since the 2026-07-16 cutover).
+      // Best-effort: an unreadable / absent clip — or no clip at all (EN
+      // opening) — leaves openingBaseMs undefined → the sink's read-along
+      // default.
+      const durationMs =
+        deps.openingDurationMs ??
+        (openingClipId !== null
+          ? await readOpusDurationMs(
+              join(voiceAssetsDir, "openings", `${openingClipId}.opus`),
+            )
+          : null);
+      // `durationMs` is number | null (the `??` collapses the seam's undefined).
+      if (durationMs !== null) {
+        openingBaseMs = spanMatchedBaseMs({
           text: opening.seedText,
-          // Stamp at construction so the opening line carries its timestamp in
-          // the onReset snapshot too (the persister won't double-stamp). New
-          // sessions then show the seed's time live, not only after reload.
-          at: new Date().toISOString(),
-        };
+          targetMs: durationMs,
+          fallbackMs: SLOW_MS_PER_CHAR,
+        });
       }
     }
 
-    // 10b. Prompt-dump callback (HERTA_DUMP_PROMPTS). Mirrors the CLI's
-    //      main.ts: when the env var is truthy, each turn's literal LLM
-    //      prompts are written to
-    //      <transcriptDir>/<sessionId>.prompts/turn-NNN-<label>.txt for
-    //      debugging parity with the CLI. Off by default; a dump failure
-    //      must never break a turn (swallow all errors).
-    let onPrompt:
-      | ((
-          label:
-            | "primary"
-            | "primary-out"
-            | "beat"
-            | "beat-out"
-            | "phase2"
-            | "phase2-out"
-            | "state"
-            | "state-out"
-            | "supervisor"
-            | "supervisor-out"
-            | "supervisor-retry"
-            | "supervisor-retry-out",
-          prompt: string,
-        ) => void)
-      | undefined;
-    if (process.env.HERTA_DUMP_PROMPTS) {
-      const promptsDir = join(config.transcriptDir, `${sessionId}.prompts`);
-      try {
-        mkdirSync(promptsDir, { recursive: true });
-        let promptCounter = 0;
-        onPrompt = (label, prompt): void => {
-          try {
-            promptCounter += 1;
-            const filename = `turn-${String(promptCounter).padStart(3, "0")}-${label}.txt`;
-            writeFileSync(join(promptsDir, filename), prompt, "utf-8");
-          } catch {
-            // swallow — a prompt-dump failure must never break a turn
-          }
-        };
-      } catch {
-        // mkdir failed — leave onPrompt undefined (dumping disabled)
-      }
-    }
-
-    // 10c. Recap runtime — automatic long-session compaction (spec
-    //      2026-06-19, ADR 0009). Enabled. NOTE: the default thresholds engage
-    //      only at ~800K tokens (1M window × bufferFraction 0.2), so on normal
-    //      sessions this stays effectively inert — it won't fire until the
-    //      budgets are tuned down to realistic session sizes (a separate,
-    //      validation-gated change; see session-recap.ts §"STARTING POINTS").
-    //      The manual /compact path bypasses `enabled`. Built via the shared
-    //      @herta/herta factory so this and the CLI's main.ts bootstrap can't
-    //      drift on config or the guide path (the factory reads 黑塔's
-    //      HertaGuide.txt from the narrative dir with a safe fallback to "").
-    const recap = await buildRecapRuntime({
-      // The supervisor's "high" adapter, NOT the low-effort router: recap
-      // distills voice anchors and rolls (ADR 0009) — precision work.
-      routerProvider: supervisorProvider,
-      workspaceRoot,
-      sessionId,
-      enabled: true,
-      lang,
-    });
-
-    // 11. V2ActorDriver — owns the growing TerminalRecord, mood routing,
+    // 4. V2ActorDriver — owns the growing TerminalRecord, mood routing,
     //     the supervisor, and (via the persister) block persistence. An
     //     all-empty corpus + empty supervisor reference degrade to
     //     single-phase actor mode. The per-turn AbortSignal is threaded by
@@ -1970,14 +1690,14 @@ export class SessionImpl implements Session {
     const easterEggNow = deps.easterEggNow ?? Date.now;
 
     const driver = new V2ActorDriver({
-      provider: actorProvider,
+      provider: actor.actorProvider,
       model: config.providers.actorModel,
-      staticPrefix: effectiveStaticPrefix,
+      staticPrefix: actor.staticPrefix,
       bus,
       runtimeFactory,
       persister,
       sink,
-      onPrompt,
+      onPrompt: actor.onPrompt,
       // Particle voice: the actor fires this at the FIRST speech of each turn
       // (not retries/beats/regenerate). Match the leading particle and cue a
       // random variant on the same voice channel the opening uses.
@@ -2020,12 +1740,12 @@ export class SessionImpl implements Session {
           clipId: reaction.clipId,
         });
       },
-      routerProvider,
-      metaThinkCorpus,
-      hints: actorHints,
-      supervisorProvider,
-      supervisorReference,
-      recap,
+      routerProvider: actor.routerProvider,
+      metaThinkCorpus: actor.metaThinkCorpus,
+      hints: actor.actorHints,
+      supervisorProvider: actor.supervisorProvider,
+      supervisorReference: actor.supervisorReference,
+      recap: actor.recap,
       lang,
     });
 

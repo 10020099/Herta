@@ -152,6 +152,12 @@ d("PersistentShell (real bash)", () => {
   });
 });
 
+// win32-only: makeMsysPaths builds on node:path `resolve`, whose drive-letter
+// semantics exist only there — on the Linux CI runner `resolve("E:\\repo")`
+// is a RELATIVE join against cwd and the expectations are meaningless
+// (scheduled CI 2026-08-18: 1 failed with `/home/runner/…/E:\repo\src`).
+// The mapping itself is unreachable off-Windows: shellPathsFor returns the
+// identity mapping on POSIX.
 describe.skipIf(process.platform !== "win32")(
   "shell paths (MSYS mapping, pure)",
   () => {

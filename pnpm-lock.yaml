@@ -63,6 +63,9 @@ importers:
 
   packages/cli:
     dependencies:
+      '@herta/app-server':
+        specifier: workspace:*
+        version: link:../app-server
       '@herta/core':
         specifier: workspace:*
         version: link:../core

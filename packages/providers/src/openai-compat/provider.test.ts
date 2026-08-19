@@ -2,7 +2,6 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { PromptFrame, ProviderEvent } from "@herta/core";
-import { EMPTY_PROMPT_TRACE } from "@herta/core";
 import { describe, expect, it } from "vitest";
 import { OpenAICompatibleProvider } from "./provider.js";
 
@@ -25,7 +24,6 @@ const userOnly: PromptFrame = {
   retrievedLore: "",
   messages: [{ role: "user", text: "hi", ts: "t" }],
   toolSchemas: [],
-  trace: EMPTY_PROMPT_TRACE,
 };
 
 async function collect<T>(it: AsyncIterable<T>): Promise<T[]> {

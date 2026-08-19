@@ -1,7 +1,12 @@
-import type { PromptTrace } from "../capsule/types.js";
 import type { ToolSchema } from "./tool.js";
 import type { Message } from "./transcript.js";
 
+/**
+ * Chat-mode prompt frame for the actor-side SIDECAR calls (mood router,
+ * supervisor judge, session title, recap summarizer) — the v0.1 actor's
+ * frame shape, kept because `translate.ts` maps it onto the OpenAI wire
+ * format. The narrative-completion actor itself (D8) does not use it.
+ */
 export interface PromptFrame {
   stableSystem: string;
   repoInstructions: string;
@@ -9,13 +14,11 @@ export interface PromptFrame {
   retrievedLore: string;
   messages: Message[];
   toolSchemas: ToolSchema[];
-  trace: PromptTrace;
 }
 
 /**
  * Alias for the legacy `PromptFrame`, used when the actor-vs-backend
- * distinction matters at the call site. Identical shape — `PromptFrame`
- * is what the Herta actor consumes today.
+ * distinction matters at the call site. Identical shape.
  */
 export type ActorPromptFrame = PromptFrame;
 
@@ -42,5 +45,4 @@ export interface BackendPromptFrame {
    * its prompt-cache prefix intact.
    */
   todoState?: string;
-  trace: PromptTrace;
 }

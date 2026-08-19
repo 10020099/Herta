@@ -1,13 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { BackgroundHost } from "./backend/background-host.js";
-import { StubContextBuilder } from "./context-builder.js";
 import { InMemoryEventBus } from "./event-bus.js";
 import { NoopMemoryManager } from "./memory-manager.js";
 import { NoopPermissionEngine } from "./permission-engine.js";
 import { ReadLedger } from "./read-ledger.js";
 import { TodoStore } from "./todo-store.js";
 import { InMemoryToolRegistry } from "./tool-registry.js";
-import { TranscriptStore } from "./transcript-store.js";
 import type { AgentEvent } from "./types/events.js";
 import type { HertaTool, ToolContext } from "./types/tool.js";
 
@@ -73,25 +71,6 @@ describe("InMemoryToolRegistry", () => {
     expect(result.ok).toBe(false);
     expect(result.error?.code).toBe("unknown_tool");
     expect(result.error?.retryable).toBe(false);
-  });
-});
-
-describe("StubContextBuilder", () => {
-  it("returns transcript messages and registered tool schemas", () => {
-    const b = new StubContextBuilder();
-    const t = new TranscriptStore();
-    t.appendUser("hi", new Date());
-    const r = new InMemoryToolRegistry();
-    r.register({
-      name: "echo",
-      schema: () => ({ name: "echo", description: "d", inputSchema: {} }),
-      run: async () => ({ ok: true, summary: "" }),
-    });
-    const frame = b.build(t, r);
-    expect(frame.messages).toHaveLength(1);
-    expect(frame.toolSchemas).toEqual([
-      { name: "echo", description: "d", inputSchema: {} },
-    ]);
   });
 });
 

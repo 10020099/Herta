@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import type { HertaToAgentBrief } from "../bridge/types.js";
-import { EMPTY_PROMPT_TRACE } from "../capsule/types.js";
 import { InMemoryToolRegistry } from "../tool-registry.js";
 import {
   BACKEND_EXECUTION_CONTRACT,
@@ -188,7 +187,6 @@ describe("BackendContextBuilder", () => {
     expect(frame.scopedMemory).toBe("User dislikes overlong replies.");
     expect(frame.messages).toEqual([]);
     expect(frame.toolSchemas).toEqual([]);
-    expect(frame.trace).toBe(EMPTY_PROMPT_TRACE);
   });
 
   it("returns a fresh frame on every build call", () => {

@@ -1,4 +1,5 @@
 import type { CanonDocumentKind } from "../schema.js";
+import { stableStringify } from "../text-utils.js";
 import type { DisambiguationBatchInput } from "./types.js";
 
 export const CLAIM_EXTRACTION_SYSTEM_PROMPT = `You are extracting evidence-backed canon claims from local Star Rail source chunks for a Herta knowledge database.
@@ -79,20 +80,4 @@ export function buildClaimExtractionRequest(
     userPayload,
     model: opts.model,
   };
-}
-
-function stableStringify(value: unknown): string {
-  return JSON.stringify(value, sortedReplacer);
-}
-
-function sortedReplacer(_key: string, value: unknown): unknown {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    return value;
-  }
-  const obj = value as Record<string, unknown>;
-  const sorted: Record<string, unknown> = {};
-  for (const k of Object.keys(obj).sort()) {
-    sorted[k] = obj[k];
-  }
-  return sorted;
 }

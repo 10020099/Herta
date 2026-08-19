@@ -1,7 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
-import type { EntityCandidate } from "../retrieval/disambiguate.js";
 import type {
   AddresseeClass,
   CanonChunk,
@@ -25,6 +24,13 @@ import { applyMigrations } from "./migrations.js";
 export interface OpenStoreOptions {
   dbPath: string;
   readonly?: boolean;
+}
+
+/** One referent an ambiguous alias may resolve to (`resolveAmbiguousAlias`). */
+export interface EntityCandidate {
+  entityId: string;
+  canonicalName: string;
+  type: string;
 }
 
 export interface FtsHit {

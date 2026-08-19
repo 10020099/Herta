@@ -308,6 +308,11 @@ export const zh = {
   "activity.plan.more": "还有 {n} 项",
   "plan.card.title": "任务清单",
   "plan.card.itemsUnavailable": "这次记录没有留下清单明细。",
+  // 操作轨迹 rail card (2026-08-17) — the plan card's fallback for
+  // dispatches with no 任务清单 (every 极简 run).
+  "trace.card.title": "操作轨迹",
+  "trace.card.steps": "{n} 步",
+  "trace.card.files": "{n} 文件",
   "activity.result.detail": "结果明细",
   // Evidence-detail section labels. The canonical record composes these in
   // Chinese and keeps them there (ADR 0018); these translate the DISPLAY.

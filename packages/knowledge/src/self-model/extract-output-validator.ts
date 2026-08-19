@@ -1,3 +1,4 @@
+import { stripMarkdownFence } from "../text-utils.js";
 import { type FileFacts, fileFactsSchema } from "./schema.js";
 
 export interface ParseExtractionOutputInput {
@@ -92,18 +93,4 @@ export function parseExtractionOutput(
   }
 
   return { ok: true, fileFacts, warnings };
-}
-
-function stripMarkdownFence(raw: string): string {
-  const trimmed = raw.trim();
-  // Strip a leading ```json or ``` fence.
-  const fenceMatch = /^```(?:json)?\s*\n?/i.exec(trimmed);
-  if (fenceMatch === null) return trimmed;
-  let body = trimmed.slice(fenceMatch[0].length);
-  // Strip a trailing ``` fence if present.
-  const endIdx = body.lastIndexOf("```");
-  if (endIdx !== -1) {
-    body = body.slice(0, endIdx);
-  }
-  return body.trim();
 }

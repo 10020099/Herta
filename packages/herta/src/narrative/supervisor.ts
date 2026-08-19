@@ -1,8 +1,7 @@
-import {
-  type ActorPromptFrame,
-  EMPTY_PROMPT_TRACE,
-  type ProviderAdapter,
-  type TerminalRecordBlock,
+import type {
+  ActorPromptFrame,
+  ProviderAdapter,
+  TerminalRecordBlock,
 } from "@herta/core";
 import { sanitizeActorText } from "./escape.js";
 import { type MoodState, moodDescriptions } from "./meta-think.js";
@@ -235,7 +234,6 @@ export function buildSupervisorPrompt(
       },
     ],
     toolSchemas: [],
-    trace: EMPTY_PROMPT_TRACE,
   };
   return { prompt, frame };
 }
@@ -318,7 +316,6 @@ export function buildTriggerRecheckPrompt(
       },
     ],
     toolSchemas: [],
-    trace: EMPTY_PROMPT_TRACE,
   };
   return { prompt, frame };
 }
@@ -354,7 +351,6 @@ export function buildMissingDispatchPrompt(
       },
     ],
     toolSchemas: [],
-    trace: EMPTY_PROMPT_TRACE,
   };
   return { prompt, frame };
 }

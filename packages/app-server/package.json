@@ -6,7 +6,8 @@
   "type": "module",
   "sideEffects": false,
   "exports": {
-    ".": "./dist/index.js"
+    ".": "./dist/index.js",
+    "./wiring": "./dist/session-wiring.js"
   },
   "files": [
     "dist"

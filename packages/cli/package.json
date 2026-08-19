@@ -14,6 +14,7 @@
     "dist"
   ],
   "dependencies": {
+    "@herta/app-server": "workspace:*",
     "@herta/core": "workspace:*",
     "@herta/herta": "workspace:*",
     "@herta/knowledge": "workspace:*",

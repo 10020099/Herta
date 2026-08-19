@@ -1,6 +1,5 @@
 import {
   type ActorPromptFrame,
-  EMPTY_PROMPT_TRACE,
   type ProviderAdapter,
   stripDisplayUnsafe,
 } from "@herta/core";
@@ -154,7 +153,6 @@ export function buildTitlePrompt(input: {
     retrievedLore: "",
     messages: [{ role: "user", text: user, ts: "1970-01-01T00:00:00.000Z" }],
     toolSchemas: [],
-    trace: EMPTY_PROMPT_TRACE,
   };
 }
 

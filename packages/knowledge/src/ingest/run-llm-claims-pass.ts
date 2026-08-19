@@ -1,9 +1,9 @@
-import { createHash } from "node:crypto";
 import { buildClaimExtractionRequest } from "../llm/claim-extraction-prompt.js";
 import { parseAndValidateClaimOutput } from "../llm/claim-output-validator.js";
 import type { DeepSeekClient } from "../llm/types.js";
 import type { CanonDocumentKind } from "../schema.js";
 import type { SqliteKnowledgeStore } from "../store/sqlite-knowledge-store.js";
+import { sha1 } from "../text-utils.js";
 import { applyClaimResolution } from "./apply-claim-resolution.js";
 import { selectClaimCandidates } from "./select-claim-candidates.js";
 
@@ -161,8 +161,4 @@ export async function runLlmClaimsPass(
   }
 
   return { proposed, accepted, merged, needsReview, rejected };
-}
-
-function sha1(s: string): string {
-  return createHash("sha1").update(s, "utf8").digest("hex");
 }
