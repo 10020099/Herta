@@ -216,8 +216,9 @@ export async function buildConfig(
       apiKey: providerConfig?.apiKey ?? deepseekApiKey,
       // Model precedence: provider config > env (dev/lab knob) > Settings →
       // 模型 (persisted UI choice) > provider built-in default.
-      // When activeProvider is "deepseek", the actor runs in completion mode;
-      // for other providers it falls back to chat mode (session.ts).
+      // Per-provider dispatch (DeepSeek completion, OpenAI responses, Anthropic
+      // messages, openai-compat chat) happens in @herta/app-server's
+      // provider-factory, keyed on `providers.type`.
       actorModel:
         providerConfig?.actorModel ??
         process.env.HERTA_ACTOR_MODEL ??
