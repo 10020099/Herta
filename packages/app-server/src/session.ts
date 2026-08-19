@@ -39,7 +39,7 @@ import {
   spanMatchedBaseMs,
   V2ActorDriver,
 } from "@herta/herta";
-import { type ApiKey, deepseekProvider } from "@herta/providers";
+import type { ApiKey } from "@herta/providers";
 import {
   attachmentDirFor,
   ingestAttachment,
@@ -51,6 +51,7 @@ import {
   SLOW_MS_PER_CHAR,
 } from "./bus-streaming-sink.js";
 import { OverlayAskResolver } from "./overlay-ask-resolver.js";
+import { createChatProvider } from "./provider-factory.js";
 import { recordTail } from "./record-window.js";
 import { SessionEventProjector } from "./session-event-projector.js";
 import {
@@ -1402,24 +1403,16 @@ export class SessionImpl implements Session {
         ? { baseUrl: config.providers.baseUrl }
         : {};
 
-    // Map the broad ThinkingEffort to DeepSeek's accepted reasoning_effort:
-    //   off → false (omit thinking); none/minimal/low → "low";
-    //   medium/high → "high"; xhigh/max → "max".
-    // The actor/chat-mode provider split, and the per-provider-type factory
-    // selection, live in createActorStack (session-wiring.ts).
-    const backendThinking: false | "low" | "high" | "max" = (() => {
-      const t = config.thinking ?? "high";
-      if (t === "off") return false;
-      if (t === "none" || t === "minimal" || t === "low") return "low";
-      if (t === "medium" || t === "high") return "high";
-      return "max";
-    })();
+    // Backend chat adapter — dispatch on provider type via the shared factory.
+    // Thinking-effort normalization lives in provider-factory.ts (the broad
+    // ThinkingEffort enum maps onto each vendor's own vocabulary).
     const backendProvider =
       deps.providerOverrides?.backend ??
-      deepseekProvider({
+      createChatProvider({
+        type: config.providers.type ?? "deepseek",
         apiKey,
         model: config.providers.backendModel,
-        thinking: backendThinking,
+        thinking: config.thinking,
         ...baseUrl,
       });
 
@@ -1504,6 +1497,9 @@ export class SessionImpl implements Session {
       ...(config.providers.baseUrl !== undefined
         ? { baseUrl: config.providers.baseUrl }
         : {}),
+      providerType: config.providers.type ?? "deepseek",
+      routerModel: config.providers.routerModel,
+      ...(config.thinking !== undefined ? { thinking: config.thinking } : {}),
       // Supervisor toggle is config-driven (default ON).
       supervisorEnabled: config.supervisor?.enabled ?? true,
       dream: config.dream,
@@ -1543,9 +1539,10 @@ export class SessionImpl implements Session {
     // stops naturally after the title.
     const titleProvider =
       deps.providerOverrides?.title ??
-      deepseekProvider({
+      createChatProvider({
+        type: config.providers.type ?? "deepseek",
         apiKey,
-        model: "deepseek-v4-flash",
+        model: config.providers.routerModel,
         thinking: "low",
         maxTokens: 1024,
         temperature: 0.3,

@@ -1,3 +1,14 @@
+export type {
+  AnthropicCompletionOpts,
+  AnthropicOpts,
+} from "./anthropic/index.js";
+export {
+  ANTHROPIC_VERSION,
+  AnthropicCompletionProvider,
+  AnthropicProvider,
+  anthropicCompletionProvider,
+  anthropicProvider,
+} from "./anthropic/index.js";
 export type { ResolveOpts } from "./config/resolve-deepseek-key.js";
 export {
   resolveDeepSeekKey,
@@ -20,6 +31,16 @@ export type { OpenAICompatibleCompletionProviderOpts } from "./openai-compat/com
 export { OpenAICompatibleCompletionProvider } from "./openai-compat/completion-provider.js";
 export type { OpenAICompatibleProviderOpts } from "./openai-compat/provider.js";
 export { OpenAICompatibleProvider } from "./openai-compat/provider.js";
+export type {
+  OpenAIResponsesCompletionOpts,
+  OpenAIResponsesOpts,
+} from "./openai-responses/index.js";
+export {
+  OpenAIResponsesCompletionProvider,
+  OpenAIResponsesProvider,
+  openaiResponsesCompletionProvider,
+  openaiResponsesProvider,
+} from "./openai-responses/index.js";
 export {
   isTlsOrProxyFailure,
   providerFetch,

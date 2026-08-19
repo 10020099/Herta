@@ -68,11 +68,7 @@ import {
   selectPromptExclusions,
 } from "@herta/knowledge";
 import { FileMemoryManager } from "@herta/memory";
-import {
-  type ApiKey,
-  deepseekCompletionProvider,
-  deepseekProvider,
-} from "@herta/providers";
+import type { ApiKey } from "@herta/providers";
 import {
   createMinimalTools,
   createMvpTools,
@@ -84,7 +80,11 @@ import {
   registerWriteNewFileRule,
   shellWorkspaceHint,
 } from "@herta/tools";
-import type { AppServerConfig } from "./types.js";
+import {
+  createChatProvider,
+  createCompletionProvider,
+} from "./provider-factory.js";
+import type { AppServerConfig, ProviderType, ThinkingEffort } from "./types.js";
 
 // ── Backend stack ───────────────────────────────────────────────────────────
 
@@ -243,6 +243,12 @@ export interface ActorStackOpts {
   readonly apiKey: ApiKey;
   /** Dev-only chaos/staging lever; spread into every provider built here. */
   readonly baseUrl?: string;
+  /** Provider backend to build adapters for. Absent → "deepseek". */
+  readonly providerType?: ProviderType;
+  /** Chat model for the router/supervisor sidecars (flash-equivalent). */
+  readonly routerModel?: string;
+  /** Unified reasoning effort for the actor + sidecars. */
+  readonly thinking?: ThinkingEffort;
   /** Supervisor toggle (default ON in both front-ends). */
   readonly supervisorEnabled: boolean;
   /** Dream config for the reopen own-dream filter (app-server settings;
@@ -285,7 +291,6 @@ export async function createActorStack(
 ): Promise<ActorStack> {
   const { workspaceRoot, sessionId, lang, initialRecord } = opts;
   const overrides = opts.overrides ?? {};
-  const baseUrl = opts.baseUrl !== undefined ? { baseUrl: opts.baseUrl } : {};
 
   // Fresh-workspace bootstrap (M-prompts-1): materialize the compiled seed
   // 废案 into the live narrative dir so the static prefix below finds a
@@ -360,21 +365,31 @@ export async function createActorStack(
         }
       : null;
 
-  // Providers. Router: flash at thinking "low" (owner decision 2026-08-03; a
-  // 7-way mood pick needs thinking MODE, not depth). Supervisor: its own
-  // flash adapter at "high" — a precision gate (misses buried-rule shapes
-  // ~1/3 even at high, trigger-gate 2026-07-29); the recap summarizer rides
-  // this adapter for the same reason.
+  // Providers. Router: flash-equivalent at thinking "low" (owner decision
+  // 2026-08-03; a 7-way mood pick needs thinking MODE, not depth).
+  // Supervisor: its own flash-equivalent adapter at "high" — a precision
+  // gate (misses buried-rule shapes ~1/3 even at high, trigger-gate
+  // 2026-07-29); the recap summarizer rides this adapter for the same
+  // reason. Per-provider dispatch + effort mapping live in
+  // provider-factory.ts.
+  const providerType: ProviderType = opts.providerType ?? "deepseek";
+  const routerModel = opts.routerModel ?? "deepseek-v4-flash";
   const actorProvider =
     overrides.actorProvider ??
-    deepseekCompletionProvider({ apiKey: opts.apiKey, ...baseUrl });
+    createCompletionProvider({
+      type: providerType,
+      apiKey: opts.apiKey,
+      ...(opts.baseUrl !== undefined ? { baseUrl: opts.baseUrl } : {}),
+      ...(opts.thinking !== undefined ? { thinking: opts.thinking } : {}),
+    });
   const routerProvider =
     overrides.routerProvider ??
-    deepseekProvider({
+    createChatProvider({
+      type: providerType,
       apiKey: opts.apiKey,
-      model: "deepseek-v4-flash",
+      model: routerModel,
       thinking: "low",
-      ...baseUrl,
+      ...(opts.baseUrl !== undefined ? { baseUrl: opts.baseUrl } : {}),
     });
   // Test seam preserved: with only a router override present, the
   // supervisor (and recap, which takes this adapter) still receive that
@@ -382,11 +397,12 @@ export async function createActorStack(
   const supervisorProvider =
     overrides.supervisorProvider ??
     overrides.routerProvider ??
-    deepseekProvider({
+    createChatProvider({
+      type: providerType,
       apiKey: opts.apiKey,
-      model: "deepseek-v4-flash",
+      model: routerModel,
       thinking: "high",
-      ...baseUrl,
+      ...(opts.baseUrl !== undefined ? { baseUrl: opts.baseUrl } : {}),
     });
 
   // Compiled prompt assets (M-prompts-1): hints and the meta-think corpus
