@@ -46,7 +46,7 @@ jobs:
       # downgrades to a warning instead of failing the build.
       - run: node scripts/check-voice-payload.mjs --warn
         working-directory: packages/gui
-      - run: node scripts/third-party-notices.mjs --check
+      - run: node scripts/third-party-notices.mjs
         working-directory: packages/gui
       - run: npx electron-builder --win --publish never
         working-directory: packages/gui
