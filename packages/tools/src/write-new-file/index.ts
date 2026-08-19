@@ -16,6 +16,7 @@ import type {
   ToolResult,
   ToolSchema,
 } from "@herta/core";
+import { errResult } from "../errors.js";
 import { formatInputIssues } from "../input-issues.js";
 import { resolveSafePath } from "../path-safety.js";
 import { writeNewFileInputSchema, writeNewFileJsonSchema } from "./schema.js";
@@ -30,21 +31,6 @@ export interface WriteNewFileData {
   relPath: string;
   bytesWritten: number;
   sha256: string;
-}
-
-function errResult(
-  code: string,
-  message: string,
-  suggestion: string | undefined,
-  summary: string,
-  retryable = false,
-): ToolResult<WriteNewFileData> {
-  return {
-    ok: false,
-    error: { code, message, retryable },
-    suggestion,
-    summary,
-  };
 }
 
 function basenameOf(p: string): string {

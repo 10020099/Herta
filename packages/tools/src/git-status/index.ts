@@ -5,6 +5,7 @@ import type {
   ToolResult,
   ToolSchema,
 } from "@herta/core";
+import { errResult } from "../errors.js";
 import {
   type GitStatusData,
   parseStatusPorcelain,
@@ -15,20 +16,6 @@ import { gitStatusInputSchema, gitStatusJsonSchema } from "./schema.js";
 
 export type { GitStatusData, GitStatusFile } from "../git/parse-status.js";
 export type { GitStatusInput } from "./schema.js";
-
-function errResult(
-  code: string,
-  message: string,
-  suggestion: string,
-  summary: string,
-): ToolResult<GitStatusData> {
-  return {
-    ok: false,
-    error: { code, message, retryable: false },
-    suggestion,
-    summary,
-  };
-}
 
 export function gitStatusTool(): HertaTool {
   return {

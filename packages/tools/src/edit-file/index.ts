@@ -9,6 +9,7 @@ import type {
   ToolResult,
   ToolSchema,
 } from "@herta/core";
+import { errResult } from "../errors.js";
 import { formatInputIssues } from "../input-issues.js";
 import { resolveSafePath } from "../path-safety.js";
 import {
@@ -226,21 +227,6 @@ export function editFileTool(): HertaTool {
         summary: `patched ${safe.relative} (${data.hunkCount} hunks, +${addCount}/-${delCount} lines)`,
       };
     },
-  };
-}
-
-function errResult(
-  code: string,
-  message: string,
-  suggestion: string | undefined,
-  summary: string,
-  retryable = false,
-): ToolResult<EditFileData> {
-  return {
-    ok: false,
-    error: { code, message, retryable },
-    suggestion,
-    summary,
   };
 }
 

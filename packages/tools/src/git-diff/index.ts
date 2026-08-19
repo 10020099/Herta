@@ -5,6 +5,7 @@ import type {
   ToolResult,
   ToolSchema,
 } from "@herta/core";
+import { errResult } from "../errors.js";
 import { type GitDiffFile, parseDiffStat } from "../git/parse-diff-stat.js";
 import { spawnGit } from "../git/spawn-git.js";
 import { formatInputIssues } from "../input-issues.js";
@@ -20,20 +21,6 @@ export interface GitDiffData {
   totalAdditions: number;
   totalDeletions: number;
   empty: boolean;
-}
-
-function errResult(
-  code: string,
-  message: string,
-  suggestion: string,
-  summary: string,
-): ToolResult<GitDiffData> {
-  return {
-    ok: false,
-    error: { code, message, retryable: false },
-    suggestion,
-    summary,
-  };
 }
 
 export function gitDiffTool(): HertaTool {

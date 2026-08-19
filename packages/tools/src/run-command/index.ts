@@ -6,6 +6,7 @@ import type {
   ToolResult,
   ToolSchema,
 } from "@herta/core";
+import { errResult } from "../errors.js";
 import { formatInputIssues } from "../input-issues.js";
 import { resolveSafePath } from "../path-safety.js";
 import { SpawnedBackgroundProcess } from "./background-process.js";
@@ -48,18 +49,6 @@ function truncateForReturn(text: string): {
   return {
     out: `${head}\n... [${elided} bytes elided] ...\n${tail}`,
     truncated: true,
-  };
-}
-
-function errResult(
-  code: string,
-  message: string,
-  retryable = false,
-): ToolResult<RunCommandData> {
-  return {
-    ok: false,
-    error: { code, message, retryable },
-    summary: `failed: ${code}`,
   };
 }
 

@@ -20,11 +20,6 @@ export {
   selectPromptExclusions,
 } from "./dream/index.js";
 export {
-  CANONICAL_TERMS,
-  type CanonicalTerm,
-  canonicalTermFor,
-} from "./glossary/canonical-terms.js";
-export {
   type AlignedTerm,
   defaultTextMapDir,
   type GlossarySearchOptions,
@@ -97,24 +92,12 @@ export {
   type PersonaPersistence,
 } from "./persona/components.js";
 export { PersonaStore } from "./persona/persona-store.js";
-export type { EntityCandidate } from "./retrieval/disambiguate.js";
 export {
   type ExtractScenesOpts,
   extractHertaScenes,
   type Scene,
   type SceneTurn,
 } from "./retrieval/extract-scenes.js";
-export {
-  type LoreSearchQuery,
-  type LoreSearchResult,
-  searchLore,
-} from "./retrieval/lore-search.js";
-export {
-  type RenderHertaSelfInput,
-  renderHertaSelf,
-  renderSelfModel,
-  renderVoiceAsSelfNotes,
-} from "./retrieval/render-self-model.js";
 export * from "./schema.js";
 export {
   type HertaSelfModelV1,
@@ -126,6 +109,7 @@ export {
 export {
   type CanonEdgeRow,
   type ChunkWithDocument,
+  type EntityCandidate,
   SqliteKnowledgeStore,
 } from "./store/sqlite-knowledge-store.js";
 export {
