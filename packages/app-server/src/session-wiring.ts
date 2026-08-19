@@ -34,6 +34,7 @@ import {
   type CompletionProviderAdapter,
   dreamDirFor,
   type EventBus,
+  type HertaTool,
   InMemoryEventBus,
   InMemoryToolRegistry,
   narrativeDirFor,
@@ -101,6 +102,9 @@ export interface BackendStackOpts {
    *  `contract` / `bashPath` so the caller can warn where it sees fit. */
   readonly wantMinimal: boolean;
   readonly backendProvider: ProviderAdapter;
+  /** Extra tools (e.g. MCP) registered AFTER the contract's built-in set.
+   *  Absent/empty → none. */
+  readonly extraTools?: readonly HertaTool[];
   /** Builds the front-end's ask resolver once the cache and rule store it
    *  consults exist. The returned resolver is the permission engine's. */
   readonly makeAsk: (deps: {
@@ -169,6 +173,9 @@ export function createBackendStack(opts: BackendStackOpts): BackendStack {
   } else {
     for (const t of createMvpTools()) backendTools.register(t);
   }
+  // Extra tools (MCP) join after the contract set; their `mcp__` prefix
+  // keeps them from shadowing a built-in.
+  for (const t of opts.extraTools ?? []) backendTools.register(t);
 
   const backendBuilder = new BackendContextBuilder({
     tools: backendTools,

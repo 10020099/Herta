@@ -23,6 +23,7 @@
     "@herta/memory": "workspace:*",
     "@herta/providers": "workspace:*",
     "@herta/tools": "workspace:*",
+    "@modelcontextprotocol/sdk": "1.30.0",
     "fflate": "^0.8.3",
     "pdfjs-dist": "^6.2.108"
   },

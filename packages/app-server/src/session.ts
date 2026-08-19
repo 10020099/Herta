@@ -50,6 +50,8 @@ import {
   BusActorStreamingSink,
   SLOW_MS_PER_CHAR,
 } from "./bus-streaming-sink.js";
+import { connectMcpServers } from "./mcp/connect.js";
+import { loadMcpConfig } from "./mcp/mcp-config.js";
 import { OverlayAskResolver } from "./overlay-ask-resolver.js";
 import { createChatProvider } from "./provider-factory.js";
 import { recordTail } from "./record-window.js";
@@ -329,6 +331,10 @@ export class SessionImpl implements Session {
   // Live DeepSeek key getter (the host's mutable holder). submitText reads it to
   // detect the no-key case; the providers were built with the same getter.
   private readonly deepSeekKey: () => string;
+
+  /** Closes any connected MCP servers on session close (方案 A). Optional —
+   *  absent when no MCP servers were configured. */
+  private readonly mcpDispose?: () => Promise<void>;
 
   // Per-turn abort tracking. Set at the start of submitText; cleared in
   // finally. interrupt() aborts this controller; close() calls interrupt()
@@ -1338,6 +1344,14 @@ export class SessionImpl implements Session {
 
     this.projector.close();
     // V2RecordPersister has no explicit close — it appends synchronously.
+    // Close any connected MCP servers so their stdio processes never leak.
+    if (this.mcpDispose !== undefined) {
+      try {
+        await this.mcpDispose();
+      } catch {
+        // Best-effort: an MCP close failure must not block session teardown.
+      }
+    }
   }
 
   // ── Async factory ─────────────────────────────────────────────────────────
@@ -1425,6 +1439,12 @@ export class SessionImpl implements Session {
     //    returns the SessionImpl to the caller.
     const sessionHolder: { session: SessionImpl | null } = { session: null };
     let overlayResolver: OverlayAskResolver | undefined;
+    // MCP tools (方案 A, stdio): connect once at session start; the returned
+    // dispose is registered on the session's close path so spawned MCP server
+    // processes never leak past the session.
+    const mcp = await connectMcpServers(
+      loadMcpConfig(workspaceRoot).mcpServers,
+    );
     const backend = createBackendStack({
       wsHolder,
       workspaceRoot,
@@ -1436,6 +1456,7 @@ export class SessionImpl implements Session {
       // made rather than as a record note.
       wantMinimal: config.backendContract === "minimal",
       backendProvider,
+      extraTools: mcp.tools,
       makeAsk: ({ cache, rules }) => {
         overlayResolver = new OverlayAskResolver({
           cache,
@@ -1809,6 +1830,7 @@ export class SessionImpl implements Session {
       easterEggRandom,
       easterEggNow,
       deepSeekKey,
+      mcpDispose: mcp.dispose,
       lang,
     });
     sessionHolder.session = session;
