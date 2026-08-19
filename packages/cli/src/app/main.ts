@@ -1,63 +1,18 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { createActorStack, createBackendStack } from "@herta/app-server/wiring";
 import {
-  type AgentEvent,
-  BackendContextBuilder,
-  type BackendContract,
-  CodingAgentRuntime,
-  dreamDirFor,
   ensureHertaGitignore,
-  InMemoryEventBus,
   InMemoryToolRegistry,
   listSessions,
-  narrativeDirFor,
-  ProjectCommandRuleStore,
-  RulePermissionEngine,
   readSessionFile,
   resolveEffectiveWorkspace,
-  SessionApprovalCache,
   SessionFileError,
-  wireTaskScopedApprovalCache,
 } from "@herta/core";
-import {
-  buildRecapRuntime,
-  buildStaticHertaPrefix,
-  loadActorHints,
-  loadMetaThinkCorpus,
-  materializeSeedFeian,
-  type PromptLang,
-  pickOpening,
-  readRecapCache,
-  type StaticHertaPrefix,
-  supervisorReferenceFor,
-  V2ActorDriver,
-} from "@herta/herta";
-import {
-  readManifest,
-  resolveDreamConfig,
-  selectPromptExclusions,
-} from "@herta/knowledge";
-import { FileMemoryManager } from "@herta/memory";
-import {
-  deepseekCompletionProvider,
-  deepseekProvider,
-  resolveDeepSeekKey,
-} from "@herta/providers";
-import {
-  canonicalWorkspaceRoot,
-  createMinimalTools,
-  createMvpTools,
-  findBash,
-  PersistentShell,
-  registerEditFileRule,
-  registerMinimalRules,
-  registerRunCommandRule,
-  registerWriteNewFileRule,
-  shellWorkspaceHint,
-} from "@herta/tools";
+import { type PromptLang, V2ActorDriver } from "@herta/herta";
+import { deepseekProvider, resolveDeepSeekKey } from "@herta/providers";
+import { canonicalWorkspaceRoot } from "@herta/tools";
 import { CachingAskResolver } from "../render/caching-ask-resolver.js";
 import { NarrativeRenderer } from "../render/narrative-renderer.js";
 import { CliAskResolver } from "../render/permission-prompt.js";
@@ -280,85 +235,39 @@ export async function main(
         : workspaceRoot,
   };
 
-  const approvalCache = new SessionApprovalCache();
-  // Project-scoped command allow rules (ADR 0030) — persisted under the
-  // EFFECTIVE workspace's .herta/permissions.json.
-  const commandRules = new ProjectCommandRuleStore(() => wsHolder.current);
-  const cliAsk = new CliAskResolver(stdin as NodeJS.ReadStream, stdout, style);
-  const ask = new CachingAskResolver(
-    cliAsk,
-    approvalCache,
-    stdout,
-    style,
-    commandRules,
-  );
-  const permissions = new RulePermissionEngine({ ask });
-
-  const memory = new FileMemoryManager({ workspaceRoot });
-
-  // Single shared bus across actor, backend, transcript renderer, dialogue
-  // renderer, permission rules.
-  const bus = new InMemoryEventBus<AgentEvent>();
-  // Task-scope approval lifetime (ADR 0026): the remember cache clears when
-  // each backend brief ends, so a [a] remember never outlives the task.
-  wireTaskScopedApprovalCache(bus, approvalCache);
-
-  // Backend's tool registry (ADR 0040): the trained two-tool shape (+ the
-  // two record channels) is the DEFAULT when a bash exists on this machine
-  // (owner flip 2026-08-17, parity with the GUI); the standard 15-tool set
-  // otherwise, or with HERTA_BACKEND_CONTRACT=standard. The CLI takes the
-  // knob from the environment like its model knobs; the GUI has a row.
-  const wantMinimal = process.env.HERTA_BACKEND_CONTRACT !== "standard";
-  const bashPath = wantMinimal ? findBash() : null;
-  const backendContract: BackendContract =
-    wantMinimal && bashPath !== null ? "minimal" : "standard";
-  if (process.env.HERTA_BACKEND_CONTRACT === "minimal" && bashPath === null) {
+  // Backend stack (shared wiring with the app-server host — see
+  // @herta/app-server's session-wiring.ts): tools for the contract asked
+  // for, permission engine + rules, context builder, per-dispatch runtime
+  // factory, the shared bus. The contract knob (ADR 0040): the trained
+  // two-tool shape (+ the two record channels) is the DEFAULT when a bash
+  // exists on this machine (owner flip 2026-08-17, parity with the GUI); the
+  // standard 15-tool set otherwise, or with HERTA_BACKEND_CONTRACT=standard.
+  // The CLI takes the knob from the environment like its model knobs.
+  const backend = createBackendStack({
+    wsHolder,
+    workspaceRoot,
+    lang,
+    wantMinimal: process.env.HERTA_BACKEND_CONTRACT !== "standard",
+    backendProvider,
+    makeAsk: ({ cache, rules }) =>
+      new CachingAskResolver(
+        new CliAskResolver(stdin as NodeJS.ReadStream, stdout, style),
+        cache,
+        stdout,
+        style,
+        rules,
+      ),
+  });
+  if (
+    process.env.HERTA_BACKEND_CONTRACT === "minimal" &&
+    backend.bashPath === null
+  ) {
     // Warn only on an EXPLICIT request; the default falls back silently.
     stderr.write(
       "herta: HERTA_BACKEND_CONTRACT=minimal but no bash found (install Git for Windows or set HERTA_BASH); running the standard contract\n",
     );
   }
-  const backendTools = new InMemoryToolRegistry();
-  const workspaceShellPath = (): string =>
-    bashPath === null
-      ? wsHolder.current
-      : new PersistentShell({ bashPath, workspaceRoot: wsHolder.current })
-          .workspaceShellPath;
-  if (backendContract === "minimal") {
-    for (const t of createMinimalTools({
-      bashPath: bashPath as string,
-      workspaceShellPath,
-    }))
-      backendTools.register(t);
-  } else {
-    for (const t of createMvpTools()) backendTools.register(t);
-  }
-
-  // Backend builder for prompt-frame construction.
-  const backendBuilder = new BackendContextBuilder({
-    tools: backendTools,
-    contract: backendContract,
-    workspaceHint: () =>
-      backendContract === "minimal"
-        ? shellWorkspaceHint(bashPath, wsHolder.current, lang)
-        : undefined,
-  });
-
-  // Factory: per-invocation CodingAgentRuntime. Each run_coding_task call
-  // gets a fresh one (per ADR 0007). Reads `wsHolder.current` at call time
-  // so `/workspace set` takes effect on the next `@板砖` dispatch.
-  const codingAgentFactory = (): CodingAgentRuntime =>
-    new CodingAgentRuntime({
-      sessionId: randomUUID(),
-      provider: backendProvider,
-      tools: backendTools,
-      permissions,
-      backendBuilder,
-      bus,
-      clock: () => new Date(),
-      workspaceRoot: wsHolder.current,
-      memory,
-    });
+  const { bus, approvalCache, commandRules } = backend;
 
   // Actor session ID — for new sessions, a fresh uuid; for resumes, the
   // original session's id from the loaded file's header. Reusing the
@@ -388,165 +297,44 @@ export async function main(
   // file reads / directory listings are delegated to the backend via
   // `@板砖`). The empty registry exists only so the `/tools` slash
   // command can render with no entries; the backend's full tool set
-  // is owned by `backendTools` and remains the source of truth for
+  // is owned by the backend stack and remains the source of truth for
   // what the coding agent can do.
   const actorTools = new InMemoryToolRegistry();
 
-  // Permission rules attach to the shared engine.
-  if (backendContract === "minimal") {
-    registerMinimalRules(permissions, { bus, bashPath });
-  } else {
-    registerEditFileRule(permissions, { bus });
-    registerWriteNewFileRule(permissions, { bus });
-    registerRunCommandRule(permissions);
-  }
-
   const input = new Input(stdin as NodeJS.ReadStream, stdout);
 
-  // Fresh-workspace bootstrap (M-prompts-1): materialize the compiled seed
-  // 废案 into the live narrative dir so the static prefix below finds a
-  // starting memory corpus. No-op once ANY 废案 exists.
-  await materializeSeedFeian(workspaceRoot, lang);
-
-  // Reopen own-dream filter: on --resume, 废案 distilled from THIS session's
-  // episodes stay out of the prefix while their source content is still
-  // verbatim in the loaded record (behind the recap boundary they return as
-  // recovered memory). Fail-open — any error means no exclusions.
-  let excludeFewShotFiles: ReadonlySet<string> | undefined;
-  if (resumeTarget !== undefined) {
-    try {
-      const record = resumeTarget.record;
-      // Mirror the recap runtime's cache validation: a cached boundary must
-      // index a user block inside this record, else the runtime treats the
-      // session as uncompacted — the prefix filter must see the same view.
-      const cached =
-        readRecapCache(workspaceRoot, resumeTarget.sessionId)?.boundaryIndex ??
-        0;
-      const recapBoundaryIndex =
-        cached > 0 && cached < record.length && record[cached]?.kind === "user"
-          ? cached
-          : 0;
-      const excluded = selectPromptExclusions({
-        // Lang-aware dream manifest — an EN session must read its own dream
-        // corpus (.herta/dream-en), not the zh one (mirrors app-server
-        // session.ts:285). Hardcoding the zh dir here fed an --lang en session
-        // the wrong dream exclusions (same split-brain class fixed for the GUI).
-        manifest: readManifest(dreamDirFor(workspaceRoot, lang)),
-        sessionId: resumeTarget.sessionId,
-        record,
-        recapBoundaryIndex,
-        config: resolveDreamConfig(),
-      });
-      if (excluded.size > 0) excludeFewShotFiles = excluded;
-    } catch {
-      // fall through with no exclusions
-    }
-  }
-
-  // v0.2 path — narrative-completion actor via V2ActorDriver.
-  const staticPrefix = await buildStaticHertaPrefix({
+  // Actor stack (shared wiring with the app-server host): static prefix
+  // (seed 废案 materialized on a fresh workspace; on --resume, this
+  // session's own dreamed 废案 withheld while their source is still in the
+  // loaded record), the opening for a new session, router/supervisor
+  // providers, meta-think corpus + hints, recap runtime, prompt dump.
+  //
+  // Supervisor toggle (M-prompts-1): default ON; HERTA_SUPERVISOR=0
+  // disables it for dev runs. It disables MORE than the veto (audit BL16):
+  // the `@板砖` trigger re-pass gates in actor-turn live inside the same
+  // `supervisorReference !== ""` block, so HERTA_SUPERVISOR=0 also turns off
+  // the check that a rhetorical `@板砖` does not fire a real dispatch — while
+  // the dispatch itself, keyed on the literal token, stays unconditional.
+  // Dev-only: no shipped UI reaches this env var.
+  const actor = await createActorStack({
     workspaceRoot,
+    sessionId: actorSessionId,
     lang,
+    initialRecord: resumeTarget?.record ?? [],
+    apiKey,
+    ...baseUrl,
+    supervisorEnabled: process.env.HERTA_SUPERVISOR !== "0",
+    promptDumpDir: transcriptDir,
     // A dropped few-shot (audit BL3) is otherwise invisible — the prefix just
     // silently loses a memory. stderr, not the record: this is a fact about
     // the workspace's files, not something Herta observed.
     onFewShotDropped: (name, reason) => {
       stderr.write(`herta: skipped ${name} — ${reason}\n`);
     },
-    readFile: async (relPath) =>
-      readFile(join(workspaceRoot, relPath), "utf-8"),
-    readNarrativeDir: async () => {
-      try {
-        // Lang-aware living-memory 废案 dir — an EN session reads its own
-        // few-shots (.herta/narrative-en), not the zh corpus. Must stay
-        // consistent with buildStaticHertaPrefix's lang-derived relPath prefix
-        // (mirrors app-server session.ts:1117).
-        return await readdir(narrativeDirFor(workspaceRoot, lang));
-      } catch (err) {
-        const code = (err as { code?: string }).code;
-        if (code === "ENOENT") return [];
-        throw err;
-      }
+    onPromptDump: (note) => {
+      stderr.write(style.dim(`herta: ${note}\n`));
     },
-    ...(excludeFewShotFiles !== undefined ? { excludeFewShotFiles } : {}),
   });
-
-  // Pick an opening for new sessions only. Resumed sessions skip this —
-  // the loaded record already contains its own seed block as block 0.
-  // The corpus is compiled in (M-prompts-1): no disk I/O, no failure path.
-  const opening: ReturnType<typeof pickOpening> =
-    resumeTarget === undefined ? pickOpening({ lang }) : undefined;
-
-  // Effective static prefix: append the opening's preamble after the
-  // cache-stable head if we picked one. The preamble is session-zero
-  // scaffolding visible only to the model — not persisted, not rendered.
-  // The `### 此刻` marker parallels the few-shot corpus convention
-  // (`### 废案：xxx`, `### 记录：xxx`) and frames the preamble as the
-  // current scene Herta finds herself in, just before the running record.
-  //
-  // Driver now accepts `StaticHertaPrefix` directly. The opening
-  // preamble (when present) lands on the `opening` field; the
-  // serializer prepends `### 此刻\n\n` at flatten time.
-  const effectiveStaticPrefix: StaticHertaPrefix =
-    opening !== undefined
-      ? { ...staticPrefix, opening: opening.preamble }
-      : staticPrefix;
-
-  // Completion-mode provider for the v0.2 actor.
-  const completionProvider = deepseekCompletionProvider({ apiKey, ...baseUrl });
-
-  // Slice 13: meta-think corpus (mood routing). Loaded once at startup;
-  // missing files yield empty strings and the actor falls back to
-  // Slice 10 single-phase mode for that iteration.
-  const metaThinkCorpus = loadMetaThinkCorpus(lang);
-  const actorHints = loadActorHints(lang);
-
-  // Slice 13 (chat-mode escalation): router uses a dedicated chat-mode
-  // provider with thinking enabled. The previous completion-mode router
-  // (sharing the actor's completionProvider) could not classify reliably
-  // — non-thinking flash either collided with the stop sequence to
-  // produce empty output, or emitted schema-descriptive metalanguage
-  // instead of an actual state name. Thinking-mode chat gives the
-  // model enough cognitive headroom to follow the classifier
-  // instructions.
-  //
-  // Pinned to deepseek-v4-flash with thinking="low" — since the 2026-07-31
-  // DeepSeek update flash takes "low" | "high" | "max", and a 7-class mood
-  // pick needs thinking MODE (the non-thinking completion router was
-  // retired for unreliability, see above) but not depth. Not
-  // operator-tunable; raise back to "high" here if routing regresses.
-  const routerProvider = deepseekProvider({
-    apiKey,
-    model: "deepseek-v4-flash",
-    thinking: "low",
-    ...baseUrl,
-  });
-
-  // Supervisor keeps "high" — it is a precision gate (receipt-claim and
-  // dispatch checks already miss buried-rule shapes ~1/3 at high; see the
-  // 2026-07-29 trigger-gate finding), so it no longer shares the router's
-  // now-cheaper adapter. Same model, own thinking budget. The recap
-  // summarizer below rides this adapter for the same reason.
-  // See SPEC v0.2 Supervisor design §3.4.
-  const supervisorProvider = deepseekProvider({
-    apiKey,
-    model: "deepseek-v4-flash",
-    thinking: "high",
-    ...baseUrl,
-  });
-  // Supervisor toggle (M-prompts-1): default ON; HERTA_SUPERVISOR=0
-  // disables it for dev runs. Replaces the old workspace-file
-  // existence-toggle (supervisor_reference.txt).
-  //
-  // It disables MORE than the veto (audit BL16). The `@板砖` trigger re-pass
-  // gates in actor-turn live inside the same `supervisorReference !== ""`
-  // block, so HERTA_SUPERVISOR=0 also turns off the check that a rhetorical
-  // `@板砖` does not fire a real dispatch — while the dispatch itself, keyed
-  // on the literal token, stays unconditional. A dev run with the toggle off
-  // will dispatch on a mention. Dev-only: no shipped UI reaches this env var.
-  const supervisorReference = supervisorReferenceFor(
-    process.env.HERTA_SUPERVISOR !== "0",
-  );
 
   // Default to deepseek-v4-pro for the v0.2 narrative-completion actor.
   // The actor is the user's primary touchpoint with Herta — voice fidelity
@@ -575,86 +363,21 @@ export async function main(
     }
   });
 
-  // Optional prompt-dump for debugging. Enabled via `HERTA_DUMP_PROMPTS`
-  // (any truthy value). Each LLM call writes its literal prompt bytes to
-  // `<transcriptDir>/<sessionId>.prompts/turn-NNN-<label>.txt`. Off by
-  // default — production sessions stay uncluttered.
-  let onPrompt:
-    | ((
-        label:
-          | "primary"
-          | "primary-out"
-          | "beat"
-          | "beat-out"
-          | "phase2"
-          | "phase2-out"
-          | "state"
-          | "state-out"
-          | "supervisor"
-          | "supervisor-out"
-          | "supervisor-retry"
-          | "supervisor-retry-out",
-        prompt: string,
-      ) => void)
-    | undefined;
-  if (process.env.HERTA_DUMP_PROMPTS) {
-    const promptsDir = join(transcriptDir, `${actorSessionId}.prompts`);
-    try {
-      mkdirSync(promptsDir, { recursive: true });
-      let promptCounter = 0;
-      onPrompt = (label, prompt): void => {
-        try {
-          promptCounter += 1;
-          const filename = `turn-${String(promptCounter).padStart(3, "0")}-${label}.txt`;
-          writeFileSync(join(promptsDir, filename), prompt, "utf-8");
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          stderr.write(style.dim(`herta: prompt dump failed: ${msg}\n`));
-        }
-      };
-      stderr.write(style.dim(`herta: dumping prompts to ${promptsDir}/\n`));
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      stderr.write(
-        style.dim(`herta: prompt dump disabled (mkdir failed: ${msg})\n`),
-      );
-    }
-  }
-
-  // Recap runtime — automatic long-session compaction (spec 2026-06-19,
-  // ADR 0009). Enabled. NOTE: the default thresholds engage only at ~800K
-  // tokens (1M window × bufferFraction 0.2), so on normal sessions this stays
-  // effectively inert until the budgets are tuned to realistic sizes (a
-  // separate, validation-gated change; see session-recap.ts §"STARTING
-  // POINTS"). The manual /compact path bypasses `enabled`. Built via the shared
-  // @herta/herta factory so this and the app-server bootstrap can't drift on
-  // config or the guide path (the factory reads 黑塔's HertaGuide.txt with a
-  // safe fallback to "").
-  const recap = await buildRecapRuntime({
-    // The supervisor's "high" adapter, NOT the low-effort router: recap
-    // distills voice anchors and rolls (ADR 0009) — precision work.
-    routerProvider: supervisorProvider,
-    workspaceRoot,
-    sessionId: actorSessionId,
-    enabled: true,
-    lang,
-  });
-
   const driver = new V2ActorDriver({
-    provider: completionProvider,
+    provider: actor.actorProvider,
     model,
-    staticPrefix: effectiveStaticPrefix,
+    staticPrefix: actor.staticPrefix,
     bus,
-    runtimeFactory: codingAgentFactory,
+    runtimeFactory: backend.runtimeFactory,
     persister,
     sink: v2Renderer,
-    onPrompt,
-    routerProvider,
-    metaThinkCorpus,
-    hints: actorHints,
-    supervisorProvider,
-    supervisorReference,
-    recap,
+    onPrompt: actor.onPrompt,
+    routerProvider: actor.routerProvider,
+    metaThinkCorpus: actor.metaThinkCorpus,
+    hints: actor.actorHints,
+    supervisorProvider: actor.supervisorProvider,
+    supervisorReference: actor.supervisorReference,
+    recap: actor.recap,
     lang,
   });
 
@@ -663,22 +386,15 @@ export async function main(
     stdout.write(
       `${style.dim(`resumed session — ${resumeTarget.record.length} block${resumeTarget.record.length === 1 ? "" : "s"} restored`)}\n`,
     );
-  } else if (opening !== undefined) {
+  } else if (actor.seedBlock !== null) {
     // New session with an opening: inject the seed block as TerminalRecord
     // block 0 AND persist it to the JSONL so it survives across resumes.
-    // The preamble is already folded into effectiveStaticPrefix above; it
-    // does NOT enter TerminalRecord (per Slice 8 §3 decision B).
-    const seedBlock = {
-      kind: "herta" as const,
-      surface: "speech" as const,
-      text: opening.seedText,
-      // Stamp at construction so the in-memory seed matches the persisted one
-      // (the persister won't double-stamp). The CLI doesn't render timestamps,
-      // but a CLI-created session opened in the GUI shows the opening line's time.
-      at: new Date().toISOString(),
-    };
-    driver.loadRecord([seedBlock]);
-    persister.appendBlock(seedBlock);
+    // The preamble is already folded into the static prefix; it does NOT
+    // enter TerminalRecord (per Slice 8 §3 decision B). The CLI doesn't
+    // render timestamps, but a CLI-created session opened in the GUI shows
+    // the opening line's time.
+    driver.loadRecord([actor.seedBlock]);
+    persister.appendBlock(actor.seedBlock);
   }
 
   await repl({

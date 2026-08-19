@@ -1,4 +1,11 @@
 export {
+  type ApprovalPersistence,
+  ApprovalPolicy,
+  type ApprovalPreflight,
+  commandArgv,
+  commandCwd,
+} from "./approval-policy.js";
+export {
   BACKEND_EXECUTION_CONTRACT,
   BACKEND_EXECUTION_CONTRACT_EN,
   type BackendBuildInput,

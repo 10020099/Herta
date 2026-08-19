@@ -106,8 +106,9 @@ export const NEVER_RULABLE: ReadonlySet<string> = new Set([
 ]);
 
 /** argv[0] normalized for SET MEMBERSHIP checks only (dir + `.exe` stripped,
- *  lowercased) — rule tokens themselves are stored and compared verbatim. */
-function binaryBasename(a0: string): string {
+ *  lowercased) — rule tokens themselves are stored and compared verbatim.
+ *  Shared with the approval cache's interpreter/wrapper checks. */
+export function binaryBasename(a0: string): string {
   const base = a0.split(/[\\/]/).pop() ?? a0;
   return base.toLowerCase().replace(/\.exe$/, "");
 }

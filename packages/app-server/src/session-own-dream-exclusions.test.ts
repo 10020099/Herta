@@ -16,7 +16,7 @@ import {
   segmentSession,
 } from "@herta/knowledge";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ownDreamExclusions } from "./session.js";
+import { ownDreamExclusions } from "./session-wiring.js";
 
 const u = (text: string, at: string): TerminalRecordBlock => ({
   kind: "user",

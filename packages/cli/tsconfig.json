@@ -8,6 +8,7 @@
   },
   "include": ["src", "package.json"],
   "references": [
+    { "path": "../app-server" },
     { "path": "../core" },
     { "path": "../knowledge" },
     { "path": "../tools" },

@@ -1,6 +1,7 @@
 import type { EventBus } from "./event-bus.js";
 import type { RiskLevel } from "./permission-engine.js";
 import {
+  binaryBasename,
   deriveProjectCommandRule,
   NEVER_RULABLE,
   SCRIPT_INTERPRETERS,
@@ -151,11 +152,6 @@ const UNCACHEABLE_INTERPRETERS: ReadonlySet<string> = new Set([
   "zsh",
   "nodejs",
 ]);
-
-function binaryBasename(a0: string): string {
-  const base = a0.split(/[\\/]/).pop() ?? a0;
-  return base.toLowerCase().replace(/\.exe$/, "");
-}
 
 /**
  * The per-call cache SCOPE for a permission request, computed identically by

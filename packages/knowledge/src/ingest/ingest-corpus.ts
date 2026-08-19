@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { readdir, readFile, stat, unlink } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { isMissingFsError } from "../fs-utils.js";
@@ -13,6 +12,7 @@ import { defaultDbPath, defaultReviewDir } from "../paths.js";
 import type { CanonEntityId } from "../schema.js";
 import { HERTA_NAME_AMBIGUOUS } from "../schema.js";
 import { SqliteKnowledgeStore } from "../store/sqlite-knowledge-store.js";
+import { sha1 } from "../text-utils.js";
 import { applyLlmAnnotations } from "./apply-llm-annotations.js";
 import { chunkParsedDocument, classifyDocumentKind } from "./chunker.js";
 import { labelDocument } from "./deterministic-labeler.js";
@@ -335,8 +335,4 @@ async function runLlmPass(
     await Promise.all(promises);
   }
   return out;
-}
-
-function sha1(s: string): string {
-  return createHash("sha1").update(s, "utf8").digest("hex");
 }

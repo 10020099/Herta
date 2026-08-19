@@ -1,3 +1,4 @@
+import { stripMarkdownFence } from "../text-utils.js";
 import { type HertaSelfModelV1, hertaSelfModelV1Schema } from "./schema.js";
 
 export type SynthesisWarning =
@@ -117,14 +118,4 @@ export function parseSynthesisOutput(raw: string): ParseSynthesisOutputResult {
   }
 
   return { ok: true, selfModel, warnings };
-}
-
-function stripMarkdownFence(raw: string): string {
-  const trimmed = raw.trim();
-  const fenceMatch = /^```(?:json)?\s*\n?/i.exec(trimmed);
-  if (fenceMatch === null) return trimmed;
-  let body = trimmed.slice(fenceMatch[0].length);
-  const endIdx = body.lastIndexOf("```");
-  if (endIdx !== -1) body = body.slice(0, endIdx);
-  return body.trim();
 }

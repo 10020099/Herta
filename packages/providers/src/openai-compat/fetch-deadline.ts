@@ -1,4 +1,5 @@
 import { ProviderError } from "../errors.js";
+import { isAbortError } from "./abort.js";
 
 export const DEFAULT_HEADERS_TIMEOUT_MS = 30_000;
 
@@ -99,12 +100,6 @@ export async function readErrorBodyBounded(
 }
 
 function rethrowAbortElseEmpty(cause: unknown): "" {
-  if (
-    cause instanceof Error &&
-    (cause.name === "AbortError" ||
-      (cause as { code?: string }).code === "ABORT_ERR")
-  ) {
-    throw cause;
-  }
+  if (isAbortError(cause)) throw cause;
   return "";
 }

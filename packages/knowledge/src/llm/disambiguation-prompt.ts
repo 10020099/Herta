@@ -1,4 +1,5 @@
 import type { CanonDocumentKind } from "../schema.js";
+import { stableStringify } from "../text-utils.js";
 import type { DisambiguationBatchInput } from "./types.js";
 
 export const DISAMBIGUATION_SYSTEM_PROMPT = `You are labeling local Star Rail canon chunks for a Herta-specific knowledge database.
@@ -74,18 +75,3 @@ export function buildDisambiguationRequest(
 }
 
 // Stable JSON.stringify with sorted keys so identical input produces byte-identical output.
-function stableStringify(value: unknown): string {
-  return JSON.stringify(value, sortedReplacer);
-}
-
-function sortedReplacer(_key: string, value: unknown): unknown {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    return value;
-  }
-  const obj = value as Record<string, unknown>;
-  const sorted: Record<string, unknown> = {};
-  for (const k of Object.keys(obj).sort()) {
-    sorted[k] = obj[k];
-  }
-  return sorted;
-}
