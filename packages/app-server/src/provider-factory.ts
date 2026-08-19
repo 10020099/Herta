@@ -61,9 +61,10 @@ function deepseekThinking(
   t: ThinkingEffort | undefined,
 ): false | "low" | "high" | "max" {
   if (t === "off") return false;
+  if (t === undefined) return "high"; // owner default (Settings → Coprocessor)
   if (t === "none" || t === "minimal" || t === "low") return "low";
   if (t === "medium" || t === "high") return "high";
-  return "max";
+  return "max"; // xhigh / max
 }
 
 function openaiEffort(t: ThinkingEffort | undefined): string | undefined {
