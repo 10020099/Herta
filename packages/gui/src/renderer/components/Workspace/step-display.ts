@@ -31,8 +31,9 @@ export function middleTruncateName(name: string, max = 44): string {
 }
 
 /** Localized display verbs for projected op steps, keyed by the digest's
- *  harness-authored verb union. */
-const VERB_KEY: Record<string, MessageKey> = {
+ *  harness-authored verb union. Exported for the rail 操作轨迹 card
+ *  (2026-08-17), which renders the same verbs outside a record row. */
+export const VERB_KEY: Record<string, MessageKey> = {
   Reading: "activity.verb.reading",
   Writing: "activity.verb.writing",
   Running: "activity.verb.running",
