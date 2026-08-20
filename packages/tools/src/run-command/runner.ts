@@ -72,9 +72,53 @@ export interface RawRunResult {
   spawnError?: NodeJS.ErrnoException;
 }
 
-function combinedSignal(external: AbortSignal, timeoutMs: number): AbortSignal {
-  const timer = AbortSignal.timeout(timeoutMs);
-  return AbortSignal.any([external, timer]);
+interface CombinedSignal {
+  readonly signal: AbortSignal;
+  dispose(): void;
+}
+
+/**
+ * Combine a caller-owned abort signal with a timeout that remains strongly
+ * referenced until the child command closes. `AbortSignal.timeout()` uses an
+ * unref'ed internal timer; under successive Vitest child-process runs that
+ * timer could fail to wake the second command, leaving it alive until the
+ * test framework's outer timeout. An explicit timer makes timeout ownership
+ * and cleanup deterministic for both CLI and test callers.
+ */
+function combinedSignal(
+  external: AbortSignal,
+  timeoutMs: number,
+): CombinedSignal {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  const abortFromExternal = () => {
+    if (timer !== undefined) clearTimeout(timer);
+    controller.abort(external.reason);
+  };
+  const timeout = () => {
+    const reason = new Error(`command timed out after ${timeoutMs}ms`);
+    reason.name = "TimeoutError";
+    controller.abort(reason);
+  };
+
+  if (external.aborted) {
+    abortFromExternal();
+  } else {
+    external.addEventListener("abort", abortFromExternal, { once: true });
+    timer = setTimeout(timeout, timeoutMs);
+  }
+
+  return {
+    signal: controller.signal,
+    dispose(): void {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+      external.removeEventListener("abort", abortFromExternal);
+    },
+  };
 }
 
 function isTimeoutReason(reason: unknown): boolean {
@@ -94,7 +138,8 @@ export async function runCommand(
   options: RunOptions,
 ): Promise<RawRunResult> {
   const start = process.hrtime.bigint();
-  const signal = combinedSignal(options.signal, options.timeoutMs);
+  const combined = combinedSignal(options.signal, options.timeoutMs);
+  const { signal } = combined;
 
   return new Promise<RawRunResult>((resolve) => {
     let resolved = false;
@@ -113,6 +158,7 @@ export async function runCommand(
     ) => {
       if (resolved) return;
       resolved = true;
+      combined.dispose();
       const durationMs = Number((process.hrtime.bigint() - start) / 1_000_000n);
       resolve({
         ...partial,
