@@ -8,6 +8,7 @@ import { ApprovalPanel } from "../Approval/ApprovalPanel.js";
 import { Composer } from "./Composer.js";
 import { ConnectStation } from "./ConnectStation.js";
 import { Conversation } from "./Conversation.js";
+import { SendArrowIcon } from "./SendArrowIcon.js";
 import { useConnectMorph } from "./useConnectMorph.js";
 import { useReconnectMorph } from "./useReconnectMorph.js";
 import { useWorkspaceRefs, WorkspaceRefsProvider } from "./WorkspaceRefs.js";
@@ -76,7 +77,9 @@ function WorkspaceInner(): JSX.Element {
               <span className="connect-morph-clone-placeholder">
                 {t("composer.placeholder")}
               </span>
-              <span className="connect-morph-clone-send">↑</span>
+              <span className="connect-morph-clone-send">
+                <SendArrowIcon />
+              </span>
             </div>
             <span className="connect-morph-clone-label">
               {t("connect.button")}
@@ -101,7 +104,9 @@ function WorkspaceInner(): JSX.Element {
               <span className="reconnect-morph-clone-label">
                 {t("connect.button")}
               </span>
-              <span className="reconnect-morph-clone-arrow">↑</span>
+              <span className="reconnect-morph-clone-arrow">
+                <SendArrowIcon />
+              </span>
             </div>
           </div>,
           overlayRef.current,

@@ -12,6 +12,7 @@ import { submitMessage } from "../../lib/submit-message.js";
 import { stopAllVoice } from "../../voice/play-voice.js";
 import { Tooltip } from "../Tooltip/Tooltip.js";
 import { AuraVisual } from "../UtilityRail/AuraVisual.js";
+import { SendArrowIcon } from "./SendArrowIcon.js";
 import { useWorkspaceRefs } from "./WorkspaceRefs.js";
 
 /** Whether the ghost hint should show: caret is at the END of `value`, the
@@ -56,7 +57,27 @@ export function Composer(): JSX.Element {
   // the wire token "@板砖" before dispatch.
   const lang = useSessionLang();
   const [text, setText] = useState("");
-  const [sent, setSent] = useState(false);
+  // Focus-keyed height (owner 2026-08-20, superseding shrink-after-send):
+  // the composer RESTS shrunk and holds full height only while it is
+  // engaged. The two sides are deliberately ASYMMETRIC:
+  //   - EXPAND only when the TEXTAREA gains focus (the caret is the
+  //     expansion) — focus landing on the attach/send button from outside
+  //     must NOT expand, or clicking attach in the resting state bounced
+  //     the composer up and back down around the native file dialog
+  //     (owner screenshots, same day).
+  //   - HOLD while focus stays anywhere inside the FORM: clicking attach
+  //     from the textarea blurs it while the pointer is still inside the
+  //     composer, and shrinking there would move the button 18px under the
+  //     cursor mid-click. Only a blur that leaves the form shrinks.
+  // The disable-blur at turn start shrinks (set on the busy edge below —
+  // Chrome fires no blur for it); an unsent draft keeps its first line
+  // visible and survives; the turn-end auto-refocus expands again.
+  const [focusWithin, setFocusWithin] = useState(false);
+  // While the OS file picker is up it steals WINDOW focus, firing
+  // focusout/focusin churn that says nothing about the user's intent —
+  // freeze the height until the picker resolves (then the caret handoff
+  // below decides).
+  const pickerOpen = useRef(false);
   const [hintActive, setHintActive] = useState(false);
   // The index of an `@` whose hint the user dismissed with Esc; re-enabled
   // once the text changes. -1 means "none dismissed".
@@ -66,7 +87,6 @@ export function Composer(): JSX.Element {
   // applied post-render via this ref (React owns the controlled value).
   const pendingCaret = useRef<number | null>(null);
   const busy = status !== "idle";
-  const shrunk = sent && text.trim().length === 0;
   const suppressed = overlay?.kind === "pending-permission";
 
   // Shared submit path for the ↑ button (form submit) and Enter-to-send.
@@ -82,7 +102,6 @@ export function Composer(): JSX.Element {
     // reports needsKey and submitMessage opens the no-key onboarding card.
     submitMessage(bridge, sessionStore, dispatched);
     setText("");
-    setSent(true);
     // The rewind file-edit notice persists through editing; clear it once the
     // (re-)send actually goes out (a session switch clears it via onReset).
     if (composerNotice !== null) sessionStore.clearComposerNotice();
@@ -96,7 +115,22 @@ export function Composer(): JSX.Element {
   useEffect(() => {
     const was = prevBusy.current;
     prevBusy.current = busy;
-    if (was && !busy && !suppressed) taRef.current?.focus();
+    if (!was && busy) {
+      // Turn start disables the textarea, which SILENTLY drops focus —
+      // Chrome moves activeElement off a disabled element without firing
+      // blur/focusout (verified live 2026-08-20), so the form handler never
+      // learns focus left. Clear the state here: the composer is shrunk for
+      // the whole reply, which is the reading-room the shrink exists for.
+      setFocusWithin(false);
+    }
+    if (was && !busy && !suppressed) {
+      taRef.current?.focus();
+      // "Caret back, ready to type" includes the height: expand directly
+      // rather than relying on the focus() call's focusin reaching the form
+      // handler (browsers deliver it; jsdom does not, and a focus() that
+      // fails to take should still leave the composer ready).
+      setFocusWithin(true);
+    }
   }, [busy, suppressed]);
 
   // The rewind file-edit notice is animated in AND out. composerNotice (store) is
@@ -114,7 +148,6 @@ export function Composer(): JSX.Element {
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset is keyed on sessionId; the setters/ref are stable
   useEffect(() => {
     setText("");
-    setSent(false);
     setHintActive(false);
     escDismissed.current = -1;
   }, [sessionId]);
@@ -136,7 +169,6 @@ export function Composer(): JSX.Element {
   useEffect(() => {
     if (composerDraft === null) return;
     setText(composerDraft);
-    setSent(false);
     setHintActive(false);
     pendingCaret.current = composerDraft.length;
     taRef.current?.focus();
@@ -183,6 +215,10 @@ export function Composer(): JSX.Element {
   const dragDepth = useRef(0);
   const [dragOver, setDragOver] = useState(false);
 
+  // A file drag over the composer also expands it — a drop target should
+  // not be at its smallest exactly while the user is aiming at it.
+  const shrunk = !focusWithin && !dragOver;
+
   const sendAttachments = (paths: readonly string[]): void => {
     if (paths.length === 0 || sessionId === null) return;
     void bridge
@@ -207,9 +243,23 @@ export function Composer(): JSX.Element {
   };
 
   const onPickAttachments = (): void => {
-    void bridge.pickAttachments().then((paths) => {
-      if (paths !== null) sendAttachments(paths);
-    });
+    pickerOpen.current = true;
+    void bridge
+      .pickAttachments()
+      .then((paths) => {
+        if (paths !== null) sendAttachments(paths);
+      })
+      .finally(() => {
+        pickerOpen.current = false;
+        // Caret handoff: whether the user picked files or cancelled, the
+        // next act is typing — put the caret in the field. Any expansion the
+        // dialog's close causes is then explained by a visible caret (the
+        // owner's report: cancel re-expanded the composer with focus stuck
+        // on the attach button and no caret anywhere). Explicit set beside
+        // focus(), same rationale as the turn-end refocus.
+        taRef.current?.focus();
+        setFocusWithin(true);
+      });
   };
 
   return (
@@ -219,6 +269,18 @@ export function Composer(): JSX.Element {
       onSubmit={(e) => {
         e.preventDefault();
         doSubmit();
+      }}
+      onBlur={(e) => {
+        // Height frozen while the OS picker is up — its window-focus churn
+        // is not the user leaving the composer.
+        if (pickerOpen.current) return;
+        // Focus moving BETWEEN the form's own controls (textarea → attach,
+        // attach → send) fires blur with the new holder as relatedTarget —
+        // still inside, still expanded. Only a genuine exit (relatedTarget
+        // outside the form, or null for a click on non-focusable ground /
+        // the window deactivating) shrinks.
+        if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+        setFocusWithin(false);
       }}
       onDragEnter={(e) => {
         if (!e.dataTransfer.types.includes("Files")) return;
@@ -245,6 +307,13 @@ export function Composer(): JSX.Element {
           .map((f) => bridge.pathForFile(f))
           .filter((p) => p.length > 0);
         sendAttachments(paths);
+        // Same caret handoff as the picker: after a drop you type the
+        // message that goes with the files. Busy drops surface a refusal
+        // notice instead — a disabled textarea can't take the caret.
+        if (!busy) {
+          taRef.current?.focus();
+          setFocusWithin(true);
+        }
       }}
     >
       {/* Herta's tide wave living at the composer's floor (glass-wave merge,
@@ -276,6 +345,7 @@ export function Composer(): JSX.Element {
           ref={taRef}
           className="composer-input"
           placeholder={t("composer.placeholder")}
+          onFocus={() => setFocusWithin(true)}
           value={text}
           onChange={(e) => {
             escDismissed.current = -1;
@@ -404,7 +474,7 @@ export function Composer(): JSX.Element {
           className="composer-send__glyph composer-send__glyph--send"
           aria-hidden="true"
         >
-          ↑
+          <SendArrowIcon />
         </span>
         <span
           className="composer-send__glyph composer-send__glyph--stop"

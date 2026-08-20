@@ -321,18 +321,127 @@ describe("Composer", () => {
     expect(document.activeElement).toBe(input);
   });
 
-  it("shrinks after sending (empty) and un-shrinks when typing resumes", () => {
+  it("rests shrunk; focus expands; blur outside re-shrinks, draft kept (owner 2026-08-20)", () => {
     renderComposer();
     const form = document.querySelector(".composer") as HTMLFormElement;
     const input = screen.getByPlaceholderText(
       "Message Herta…",
     ) as HTMLTextAreaElement;
+    // The resting state is shrunk — full height belongs to active focus.
+    expect(form.classList.contains("is-shrunk")).toBe(true);
+    fireEvent.focus(input);
+    expect(form.classList.contains("is-shrunk")).toBe(false);
+    // An UNSENT draft does not hold the height: clicking away (relatedTarget
+    // outside the form / null) shrinks, and the draft survives.
+    fireEvent.change(input, { target: { value: "draft, not sent" } });
+    fireEvent.blur(input);
+    expect(form.classList.contains("is-shrunk")).toBe(true);
+    expect(input.value).toBe("draft, not sent");
+  });
+
+  it("focus moving WITHIN the form (textarea → attach) does not shrink", () => {
+    renderComposer();
+    const form = document.querySelector(".composer") as HTMLFormElement;
+    const input = screen.getByPlaceholderText(
+      "Message Herta…",
+    ) as HTMLTextAreaElement;
+    const attach = document.querySelector(
+      ".composer-attach",
+    ) as HTMLButtonElement;
+    fireEvent.focus(input);
+    expect(form.classList.contains("is-shrunk")).toBe(false);
+    // Clicking the attach button blurs the textarea with the button as
+    // relatedTarget — still inside the form, so the height must hold
+    // (a shrink here would move the button under the pointer mid-click).
+    fireEvent.blur(input, { relatedTarget: attach });
+    expect(form.classList.contains("is-shrunk")).toBe(false);
+  });
+
+  it("focus landing on the attach BUTTON from outside does not expand (owner 2026-08-20)", () => {
+    renderComposer();
+    const form = document.querySelector(".composer") as HTMLFormElement;
+    const attach = document.querySelector(
+      ".composer-attach",
+    ) as HTMLButtonElement;
+    expect(form.classList.contains("is-shrunk")).toBe(true);
+    // Only the CARET expands; a button holding focus is not "ready to
+    // type" — this was the expand half of the attach-button bounce.
+    fireEvent.focus(attach);
+    expect(form.classList.contains("is-shrunk")).toBe(true);
+  });
+
+  it("the file picker freezes the height; its close hands the caret to the field", async () => {
+    // Hanging picker promise: resolves when the test says the dialog closed.
+    let resolvePick: (p: readonly string[] | null) => void = () => {};
+    const mock = createMockHertaBridge();
+    mock.bridge.pickAttachments = () =>
+      new Promise((resolve) => {
+        resolvePick = resolve;
+      });
+    renderComposer(mock);
+    const form = document.querySelector(".composer") as HTMLFormElement;
+    const input = screen.getByPlaceholderText(
+      "Message Herta…",
+    ) as HTMLTextAreaElement;
+    const attach = document.querySelector(
+      ".composer-attach",
+    ) as HTMLButtonElement;
+    // From the textarea, open the picker (focus moves within — held).
+    fireEvent.focus(input);
+    fireEvent.blur(input, { relatedTarget: attach });
+    fireEvent.click(attach);
+    expect(form.classList.contains("is-shrunk")).toBe(false);
+    // The native dialog steals WINDOW focus: focusout with relatedTarget
+    // null. While the picker is open this must NOT shrink.
+    fireEvent.blur(attach);
+    expect(form.classList.contains("is-shrunk")).toBe(false);
+    // Cancel: the caret lands in the field and the height stays expanded —
+    // never the owner-reported "expanded with focus stuck on the button".
+    await act(async () => {
+      resolvePick(null);
+    });
+    expect(document.activeElement).toBe(input);
+    expect(form.classList.contains("is-shrunk")).toBe(false);
+  });
+
+  it("the turn-end auto-refocus restores the height by itself", () => {
+    const { mock } = renderComposer();
+    const form = document.querySelector(".composer") as HTMLFormElement;
+    const input = screen.getByPlaceholderText(
+      "Message Herta…",
+    ) as HTMLTextAreaElement;
+    act(() => {
+      mock.emitReset({
+        sessionId: "s",
+        workspaceRoot: "/r",
+        record: [],
+        overlay: null,
+        backendWorkspace: "/r",
+        backendWorkspaceIsDefault: true,
+      });
+    });
+    act(() => {
+      input.focus();
+    });
     fireEvent.change(input, { target: { value: "hi" } });
     act(() => {
       fireEvent.submit(form);
+      mock.emitTurn({ kind: "started", turnId: "t1" });
     });
+    // The turn-start edge shrinks WITHOUT any blur event: Chrome drops focus
+    // from a disabled element silently (no blur/focusout — live 2026-08-20),
+    // so the busy effect clears the state itself.
     expect(form.classList.contains("is-shrunk")).toBe(true);
-    fireEvent.change(input, { target: { value: "next" } });
+    // Native blur so activeElement really moves (jsdom keeps focus on
+    // disable) and the turn-end refocus below is a genuine focus change.
+    act(() => {
+      input.blur();
+    });
+    act(() => {
+      mock.emitTurn({ kind: "finished", turnId: "t1" });
+    });
+    // The refocus effect put the caret back → focus-within expands again.
+    expect(document.activeElement).toBe(input);
     expect(form.classList.contains("is-shrunk")).toBe(false);
   });
 });

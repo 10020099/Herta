@@ -1554,7 +1554,6 @@ body:after{
   place-items: center;
   background: var(--ink-a72);
   color: var(--ink-inverse);
-  font-size: 18px;
   line-height: 1;
   cursor: pointer;
   /* background included: the disabled grey ↔ active dark change rides the
@@ -1563,6 +1562,31 @@ body:after{
   transition:
     opacity 0.15s,
     background 0.2s ease;
+}
+/* The arrow is DRAWN (SendArrowIcon), not the ↑ text character — font
+   metrics rendered the character thin and small inside the circle and
+   varied per font (same failure mode as the stop square below; owner
+   2026-08-19 against Codex's button). 23px box + 2.1 viewBox-unit stroke
+   are the owner's pick from the design-gallery playground (2026-08-20).
+   Shared by the two morph clones that impersonate this button so the glyph
+   cannot drift between them; the smaller connect-clone circle scales it
+   down below (30/38 of the real button — the stroke, in viewBox units,
+   scales with it). */
+.composer-send__glyph--send svg,
+.connect-morph-clone-send svg,
+.reconnect-morph-clone-arrow svg {
+  display: block;
+  width: 23px;
+  height: 23px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.1;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.connect-morph-clone-send svg {
+  width: 18px;
+  height: 18px;
 }
 .composer-send:disabled {
   background: rgba(154, 160, 181, 0.55);
@@ -2213,8 +2237,6 @@ button.agent-preview:active {
   --morph-shadow-rest: 0 8px 22px rgba(32, 45, 58, 0.045);
   --morph-shadow-float: 0 18px 42px rgba(32, 45, 58, 0.08);
   --morph-shadow-duration: 320ms;
-  --composer-h: 78px;
-  --composer-h-empty: 60px;
 }
 
 .workspace-footer {
@@ -2439,8 +2461,6 @@ button.agent-preview:active {
   place-items: center;
   background: var(--ink-a72);
   color: var(--ink-inverse);
-  font-size: 16px;
-  line-height: 1;
 }
 /* Centred button label — hidden at the start, fades IN as the morph targets
    (cross-fading with the `-input` row). Slightly delayed so the label appears
@@ -2530,8 +2550,6 @@ button.agent-preview:active {
   letter-spacing: 0.5px;
 }
 .reconnect-morph-clone-arrow {
-  font-size: 18px;
-  line-height: 1;
   opacity: 0;
 }
 
@@ -2672,8 +2690,14 @@ button.agent-preview:active {
 .composer.is-glass .composer-input {
   opacity: 0;
 }
+/* Focus-keyed height (owner 2026-08-20, superseding shrink-after-send):
+   the composer RESTS at this height and holds the full 78px only while
+   focus is inside the form or a file drag is over it (Composer.tsx
+   `shrunk`). The disable-blur at turn start shrinks it for the whole
+   reply; the turn-end auto-refocus expands it again. Rides .composer's
+   0.44s signature height transition both ways. */
 .composer.is-shrunk {
-  height: var(--composer-h-empty);
+  height: 60px;
 }
 
 /* Galaxy transfer entrance. Opacity is deliberately LATE-weighted (user
