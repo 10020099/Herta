@@ -395,6 +395,7 @@ export async function createActorStack(
       type: providerType,
       apiKey: opts.apiKey,
       model: routerModel,
+      actorModel: routerModel,
       thinking: "low",
       ...(opts.baseUrl !== undefined ? { baseUrl: opts.baseUrl } : {}),
     });
@@ -408,6 +409,7 @@ export async function createActorStack(
       type: providerType,
       apiKey: opts.apiKey,
       model: routerModel,
+      actorModel: routerModel,
       thinking: "high",
       ...(opts.baseUrl !== undefined ? { baseUrl: opts.baseUrl } : {}),
     });
