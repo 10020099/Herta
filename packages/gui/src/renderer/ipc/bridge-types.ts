@@ -123,6 +123,40 @@ export interface ModelConfig {
   readonly backend: ModelChoice;
 }
 
+/** MCP server transport choices exposed by Settings → MCP. */
+export type McpTransport = "stdio" | "sse" | "streamable-http";
+
+export interface StdioMcpServerConfig {
+  readonly transport?: "stdio";
+  readonly command: string;
+  readonly args?: readonly string[];
+  readonly env?: Readonly<Record<string, string>>;
+}
+
+interface RemoteMcpServerConfigBase {
+  readonly url: string;
+  readonly headers?: Readonly<Record<string, string>>;
+}
+
+export interface SseMcpServerConfig extends RemoteMcpServerConfigBase {
+  readonly transport: "sse";
+}
+
+export interface StreamableHttpMcpServerConfig
+  extends RemoteMcpServerConfigBase {
+  readonly transport: "streamable-http";
+}
+
+export type McpServerConfig =
+  | StdioMcpServerConfig
+  | SseMcpServerConfig
+  | StreamableHttpMcpServerConfig;
+
+/** Complete workspace-scoped MCP configuration. */
+export interface McpConfig {
+  readonly mcpServers: Readonly<Record<string, McpServerConfig>>;
+}
+
 /** The UI chrome language (Settings → Language). */
 export type Locale = "zh" | "en";
 
@@ -305,6 +339,12 @@ export interface HertaBridge {
    *  `File.path`, so only the preload can answer this — the renderer never
    *  holds a File beyond the drop handler. */
   pathForFile(file: File): string;
+  /** Read the workspace-scoped MCP configuration. OPTIONAL so the web demo
+   *  and legacy bridge fakes can omit the full MCP management page. */
+  getMcpConfig?(): Promise<McpConfig>;
+  /** Replace the workspace-scoped MCP configuration. New sessions use it; an
+   *  already-open session keeps its established MCP clients until it is closed. */
+  setMcpConfig?(config: McpConfig): Promise<void>;
   /** Read the persisted Dream config (Settings → Dream). */
   getDreamConfig(): Promise<DreamConfig>;
   /** Persist the Dream config. Restart-to-apply (the running app-server reads

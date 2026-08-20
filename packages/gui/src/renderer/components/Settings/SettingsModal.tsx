@@ -5,6 +5,7 @@ import { OVERLAY_Z, useModalOverlay } from "../../lib/overlay-stack.js";
 import { BanzhuanSettings } from "./BanzhuanSettings.js";
 import { DreamSettings } from "./DreamSettings.js";
 import { LanguageSettings } from "./LanguageSettings.js";
+import { McpSettings } from "./McpSettings.js";
 import { ProviderSettings } from "./ProviderSettings.js";
 import { UpdateSettings } from "./UpdateSettings.js";
 import { VoiceSettings } from "./VoiceSettings.js";
@@ -118,6 +119,24 @@ const ChipIcon = (): JSX.Element => (
   </svg>
 );
 
+const McpIcon = (): JSX.Element => (
+  <svg
+    width="17"
+    height="17"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.6"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M8 8V6a4 4 0 0 1 8 0v2" />
+    <path d="M6.5 8h11A2.5 2.5 0 0 1 20 10.5v3A2.5 2.5 0 0 1 17.5 16h-11A2.5 2.5 0 0 1 4 13.5v-3A2.5 2.5 0 0 1 6.5 8Z" />
+    <path d="M9 12h.01M15 12h.01M12 16v3" />
+  </svg>
+);
+
 // A download-arrow glyph for the Update section (2026-07-10).
 const UpdateIcon = (): JSX.Element => (
   <svg
@@ -215,6 +234,12 @@ const GROUPS = [
         labelKey: "nav.coprocessor" satisfies MessageKey,
         Icon: ChipIcon,
         Pane: BanzhuanSettings,
+      },
+      {
+        key: "mcp",
+        labelKey: "nav.mcp" satisfies MessageKey,
+        Icon: McpIcon,
+        Pane: McpSettings,
       },
     ],
   },

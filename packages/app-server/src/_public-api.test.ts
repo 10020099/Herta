@@ -8,10 +8,15 @@ describe("@herta/app-server — public API surface", () => {
       [
         "createSessionHost",
         "defaultDirsFor",
+        "loadMcpConfig",
+        "mcpConfigPath",
+        "parseMcpConfig",
+        "parseMcpServerConfig",
         // Long-session windowing (2026-07-12): the shared tail-slice helper
         // used by every full-record payload to the renderer.
         "RECORD_TAIL_BLOCKS",
         "recordTail",
+        "writeMcpConfig",
       ].sort(),
     );
   });

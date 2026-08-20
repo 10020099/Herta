@@ -395,4 +395,47 @@ export const en = {
     "Your session record is safe — reload the interface to continue.",
   "app.crashReload": "Reload",
   "conversation.rowError": "This entry failed to render and was skipped.",
+  "nav.mcp": "MCP services",
+  "mcp.intro":
+    "Manage MCP tool services for this workspace. Local stdio, remote Streamable HTTP, and legacy SSE are supported.",
+  "mcp.scopeNote":
+    "Changes are saved in .herta/mcp.json. New sessions use the updated configuration; open sessions keep their existing connections.",
+  "mcp.unavailable":
+    "This runtime does not provide the MCP configuration interface yet.",
+  "mcp.loading": "Loading MCP configuration…",
+  "mcp.empty":
+    "No MCP services are configured yet. Add a service to make its tools available to new sessions.",
+  "mcp.server": "Service {n}",
+  "mcp.remove": "Remove",
+  "mcp.removeAria": "Remove MCP service {name}",
+  "mcp.name": "Service name",
+  "mcp.namePlaceholder": "e.g. filesystem",
+  "mcp.transport": "Transport",
+  "mcp.transport.stdio": "Local stdio",
+  "mcp.transport.http": "Remote Streamable HTTP",
+  "mcp.transport.sse": "Remote SSE (legacy)",
+  "mcp.command": "Command",
+  "mcp.commandPlaceholder": "e.g. npx",
+  "mcp.args": "Command arguments",
+  "mcp.argsDesc":
+    "One argument per line, passed to the local server process in order.",
+  "mcp.argsPlaceholder":
+    "-y\n@modelcontextprotocol/server-filesystem\n/path/to/directory",
+  "mcp.env": "Environment variables",
+  "mcp.envDesc":
+    "One KEY=VALUE entry per line. Sensitive values are stored in the workspace configuration file.",
+  "mcp.envPlaceholder": "API_KEY=your-key",
+  "mcp.url": "Server URL",
+  "mcp.urlPlaceholder": "https://example.com/mcp",
+  "mcp.headers": "Request headers",
+  "mcp.headersDesc":
+    "One KEY=VALUE entry per line, for example Authorization=Bearer token.",
+  "mcp.headersPlaceholder": "Authorization=Bearer token",
+  "mcp.add": "Add service",
+  "mcp.save": "Save configuration",
+  "mcp.saving": "Saving…",
+  "mcp.invalid":
+    "Give every service a unique name and check its command, URL, and KEY=VALUE entries.",
+  "mcp.saved":
+    "MCP configuration saved. Create a new session to use the updated services.",
 } satisfies Record<MessageKey, string>;

@@ -29,6 +29,8 @@ export const CMD = {
   setBackendConfig: "settings:setBackendConfig",
   getModelConfig: "settings:getModelConfig",
   setModelConfig: "settings:setModelConfig",
+  getMcpConfig: "settings:getMcpConfig",
+  setMcpConfig: "settings:setMcpConfig",
   getLocale: "settings:getLocale",
   setLocale: "settings:setLocale",
   getInteractionLanguage: "settings:getInteractionLanguage",

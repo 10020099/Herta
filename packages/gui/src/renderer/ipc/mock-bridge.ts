@@ -22,6 +22,7 @@ import type {
   DreamConfig,
   HertaBridge,
   InteractionLanguageChoice,
+  McpConfig,
   ModelConfig,
   NavBlockedEvent,
   SessionError,
@@ -73,6 +74,10 @@ export interface MockHertaBridgeOpts {
   readonly getModelConfigResult?: ModelConfig;
   /** When true, setModelConfig rejects — same seam as failSetBackendConfig. */
   readonly failSetModelConfig?: boolean;
+  /** Seed for Settings → MCP. Default has no configured servers. */
+  readonly getMcpConfigResult?: McpConfig;
+  /** When true, setMcpConfig rejects (simulates a failed configuration save). */
+  readonly failSetMcpConfig?: boolean;
   /** Seed the masked DeepSeek key status. Mutated by setDeepSeekKey /
    *  clearDeepSeekKey so tests observe the live status round-trip. */
   readonly deepSeekKeyStatus?: DeepSeekKeyStatus;
@@ -137,6 +142,8 @@ export interface MockHertaBridge {
     setBackendConfig: BackendConfig[];
     getModelConfig: number;
     setModelConfig: ModelConfig[];
+    getMcpConfig: number;
+    setMcpConfig: McpConfig[];
     getDeepSeekKeyStatus: number;
     setDeepSeekKey: string[];
     clearDeepSeekKey: number;
@@ -216,6 +223,8 @@ export function createMockHertaBridge(
     setBackendConfig: [],
     getModelConfig: 0,
     setModelConfig: [],
+    getMcpConfig: 0,
+    setMcpConfig: [],
     getDeepSeekKeyStatus: 0,
     setDeepSeekKey: [],
     clearDeepSeekKey: 0,
@@ -248,6 +257,10 @@ export function createMockHertaBridge(
   // no stored choice, the real handler's default).
   let interactionLanguage: InteractionLanguageChoice =
     opts.interactionLanguageResult ?? "follow";
+
+  // Workspace-scoped MCP configuration, seeded then replaced on each successful
+  // save so tests observe the same round-trip as the main-process handler.
+  let mcpConfig: McpConfig = opts.getMcpConfigResult ?? { mcpServers: {} };
 
   // Live project command rules (ADR 0030), seeded then mutated by
   // removeCommandRule so tests observe the round-trip.
@@ -371,6 +384,17 @@ export function createMockHertaBridge(
     pathForFile: (file) => {
       calls.pathForFile += 1;
       return file.name;
+    },
+    getMcpConfig: async () => {
+      calls.getMcpConfig += 1;
+      return mcpConfig;
+    },
+    setMcpConfig: async (config) => {
+      calls.setMcpConfig.push(config);
+      if (opts.failSetMcpConfig) {
+        throw new Error("settings write failed");
+      }
+      mcpConfig = config;
     },
     getDreamConfig: async () => {
       calls.getDreamConfig += 1;

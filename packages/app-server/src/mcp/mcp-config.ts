@@ -1,21 +1,59 @@
 /**
- * MCP (Model Context Protocol) server configuration — Microsoft convention
- * shape, stdio only (方案 A). Read from `<workspaceRoot>/.herta/mcp.json`:
+ * MCP (Model Context Protocol) client configuration. It is scoped to a
+ * workspace and stored in `<workspaceRoot>/.herta/mcp.json`.
  *
- *   { "mcpServers": { "name": { "command": "npx", "args": ["-y", "…"],
- *                               "env": { "KEY": "VAL" } } } }
+ * Legacy stdio entries remain valid:
  *
- * A missing / corrupt / empty file resolves to no servers — MCP is opt-in
- * and a bad file must never wedge a session.
+ *   { "mcpServers": { "filesystem": { "command": "npx", "args": ["-y", "…"] } } }
+ *
+ * Remote servers use an explicit transport and URL:
+ *
+ *   { "mcpServers": {
+ *       "legacy-sse": { "transport": "sse", "url": "https://example.com/sse" },
+ *       "modern-http": {
+ *         "transport": "streamable-http",
+ *         "url": "https://example.com/mcp",
+ *         "headers": { "Authorization": "Bearer …" }
+ *       }
+ *   } }
+ *
+ * MCP is opt-in. A malformed on-disk entry is dropped during loading so one
+ * broken server never prevents a session from starting. Writes, on the other
+ * hand, reject malformed data so the GUI cannot silently discard a server.
  */
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 
-export interface McpServerConfig {
+export type McpTransport = "stdio" | "sse" | "streamable-http";
+
+export interface StdioMcpServerConfig {
+  /** Omitted for backwards compatibility with the original stdio-only shape. */
+  transport?: "stdio";
   command: string;
   args?: string[];
   env?: Record<string, string>;
 }
+
+interface RemoteMcpServerConfigBase {
+  url: string;
+  /** Static request headers, for example Authorization or X-API-Key. */
+  headers?: Record<string, string>;
+}
+
+export interface SseMcpServerConfig extends RemoteMcpServerConfigBase {
+  transport: "sse";
+}
+
+export interface StreamableHttpMcpServerConfig
+  extends RemoteMcpServerConfigBase {
+  transport: "streamable-http";
+}
+
+export type McpServerConfig =
+  | StdioMcpServerConfig
+  | SseMcpServerConfig
+  | StreamableHttpMcpServerConfig;
 
 export interface McpConfig {
   mcpServers: Record<string, McpServerConfig>;
@@ -25,40 +63,170 @@ export function mcpConfigPath(workspaceRoot: string): string {
   return join(workspaceRoot, ".herta", "mcp.json");
 }
 
-/** Read the MCP config. Best-effort: a missing/corrupt file (or an off-shape
- *  server entry) is dropped rather than thrown. */
+function stringMap(value: unknown): Record<string, string> | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  const out: Record<string, string> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (typeof entry === "string") out[key] = entry;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function validRemoteUrl(value: unknown): value is string {
+  if (typeof value !== "string" || value.length === 0) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Parse one configuration entry. `type` and the common `http` /
+ * `streamableHttp` spellings are accepted on read, then normalized to Herta's
+ * canonical `transport` form. This makes hand-authored configuration and other
+ * MCP client conventions interoperate without widening the internal union.
+ */
+export function parseMcpServerConfig(value: unknown): McpServerConfig | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const entry = value as {
+    transport?: unknown;
+    type?: unknown;
+    command?: unknown;
+    args?: unknown;
+    env?: unknown;
+    url?: unknown;
+    headers?: unknown;
+  };
+  const transport = entry.transport ?? entry.type;
+
+  // No transport means legacy stdio. An explicit stdio value behaves the same.
+  if (transport === undefined || transport === "stdio") {
+    if (typeof entry.command !== "string" || entry.command.length === 0) {
+      return null;
+    }
+    const cfg: StdioMcpServerConfig = {
+      ...(transport === "stdio" ? { transport: "stdio" as const } : {}),
+      command: entry.command,
+    };
+    if (
+      Array.isArray(entry.args) &&
+      entry.args.every((argument) => typeof argument === "string")
+    ) {
+      cfg.args = [...entry.args] as string[];
+    }
+    const env = stringMap(entry.env);
+    if (env !== undefined) cfg.env = env;
+    return cfg;
+  }
+
+  if (!validRemoteUrl(entry.url)) return null;
+  const headers = stringMap(entry.headers);
+  if (transport === "sse") {
+    return {
+      transport: "sse",
+      url: entry.url,
+      ...(headers !== undefined ? { headers } : {}),
+    };
+  }
+  if (
+    transport === "streamable-http" ||
+    transport === "streamableHttp" ||
+    transport === "http"
+  ) {
+    return {
+      transport: "streamable-http",
+      url: entry.url,
+      ...(headers !== undefined ? { headers } : {}),
+    };
+  }
+  return null;
+}
+
+/** Best-effort on-disk reader: invalid entries are excluded individually. */
+export function parseMcpConfig(value: unknown): McpConfig {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return { mcpServers: {} };
+  }
+  const servers = (value as { mcpServers?: unknown }).mcpServers;
+  if (
+    typeof servers !== "object" ||
+    servers === null ||
+    Array.isArray(servers)
+  ) {
+    return { mcpServers: {} };
+  }
+  const out: Record<string, McpServerConfig> = {};
+  for (const [name, entry] of Object.entries(servers)) {
+    const cfg = parseMcpServerConfig(entry);
+    if (cfg !== null) out[name] = cfg;
+  }
+  return { mcpServers: out };
+}
+
+/** Read the MCP configuration. Missing or corrupt files mean no servers. */
 export function loadMcpConfig(workspaceRoot: string): McpConfig {
   try {
-    const raw = readFileSync(mcpConfigPath(workspaceRoot), "utf-8");
-    const parsed: unknown = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null)
-      return { mcpServers: {} };
-    const servers = (parsed as { mcpServers?: unknown }).mcpServers;
-    if (typeof servers !== "object" || servers === null) {
-      return { mcpServers: {} };
-    }
-    const out: Record<string, McpServerConfig> = {};
-    for (const [name, entry] of Object.entries(
-      servers as Record<string, unknown>,
-    )) {
-      if (typeof entry !== "object" || entry === null) continue;
-      const e = entry as { command?: unknown; args?: unknown; env?: unknown };
-      if (typeof e.command !== "string" || e.command.length === 0) continue;
-      const cfg: McpServerConfig = { command: e.command };
-      if (Array.isArray(e.args) && e.args.every((a) => typeof a === "string")) {
-        cfg.args = e.args as string[];
-      }
-      if (typeof e.env === "object" && e.env !== null) {
-        const env: Record<string, string> = {};
-        for (const [k, v] of Object.entries(e.env as Record<string, unknown>)) {
-          if (typeof v === "string") env[k] = v;
-        }
-        if (Object.keys(env).length > 0) cfg.env = env;
-      }
-      out[name] = cfg;
-    }
-    return { mcpServers: out };
+    return parseMcpConfig(
+      JSON.parse(readFileSync(mcpConfigPath(workspaceRoot), "utf-8")),
+    );
   } catch {
     return { mcpServers: {} };
+  }
+}
+
+/**
+ * Persist a complete MCP configuration using a temp-file rename. Unlike the
+ * reader, this validates every named entry so callers get a clear failure
+ * rather than losing malformed data during a save.
+ */
+export async function writeMcpConfig(
+  workspaceRoot: string,
+  value: unknown,
+): Promise<void> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new TypeError("MCP configuration must be an object");
+  }
+  const servers = (value as { mcpServers?: unknown }).mcpServers;
+  if (
+    typeof servers !== "object" ||
+    servers === null ||
+    Array.isArray(servers)
+  ) {
+    throw new TypeError("MCP configuration must contain an mcpServers object");
+  }
+
+  const normalized: Record<string, McpServerConfig> = {};
+  for (const [name, entry] of Object.entries(servers)) {
+    if (name.trim().length === 0) {
+      throw new TypeError("MCP server names must not be empty");
+    }
+    const config = parseMcpServerConfig(entry);
+    if (config === null) {
+      throw new TypeError(`Invalid MCP configuration for server "${name}"`);
+    }
+    normalized[name] = config;
+  }
+
+  const path = mcpConfigPath(workspaceRoot);
+  await mkdir(dirname(path), { recursive: true });
+  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    await writeFile(
+      tmp,
+      `${JSON.stringify({ mcpServers: normalized }, null, 2)}\n`,
+      "utf-8",
+    );
+    await rename(tmp, path);
+  } catch (error) {
+    await rm(tmp, { force: true }).catch(() => {
+      /* cleanup failure must not hide the original write error */
+    });
+    throw error;
   }
 }

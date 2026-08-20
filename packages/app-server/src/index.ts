@@ -29,6 +29,21 @@ export type {
 // import it by relative path.
 export type { DefaultDirs, DefaultDirsOpts } from "./config-helpers.js";
 export { defaultDirsFor } from "./config-helpers.js";
+export type {
+  McpConfig,
+  McpServerConfig,
+  McpTransport,
+  SseMcpServerConfig,
+  StdioMcpServerConfig,
+  StreamableHttpMcpServerConfig,
+} from "./mcp/mcp-config.js";
+export {
+  loadMcpConfig,
+  mcpConfigPath,
+  parseMcpConfig,
+  parseMcpServerConfig,
+  writeMcpConfig,
+} from "./mcp/mcp-config.js";
 export type { RecordTail } from "./record-window.js";
 export { RECORD_TAIL_BLOCKS, recordTail } from "./record-window.js";
 export { createSessionHost } from "./session-host.js";

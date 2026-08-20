@@ -5529,3 +5529,78 @@ button.session-item__badge--dismiss {
   opacity: 0;
   transition: none;
 }
+
+/* ── MCP settings ──────────────────────────────────────────────────── */
+.mcp-settings-note {
+  margin: -6px 0 16px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted, #6b7280);
+}
+.mcp-empty {
+  margin: 12px 0 16px;
+  padding: 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted, #6b7280);
+  background: var(--ink-a05, rgba(0, 0, 0, .05));
+  border: 1px dashed var(--line, #d1d5db);
+  border-radius: 8px;
+}
+.mcp-server-card {
+  margin: 0 0 14px;
+  padding: 13px;
+  background: var(--glass-a60, rgba(255, 255, 255, .6));
+  border: 1px solid var(--line, #e5e7eb);
+  border-radius: 10px;
+}
+.mcp-server-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 12px;
+}
+.mcp-server-index {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink, #111);
+}
+.mcp-server-card-head .settings-key-delete { margin: 0; }
+.mcp-field-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(160px, .8fr);
+  gap: 12px;
+}
+.mcp-textarea {
+  width: 100%;
+  min-height: 70px;
+  padding: 8px 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink, #111);
+  resize: vertical;
+  background: var(--panel, #fff);
+  border: 1px solid var(--line, #d1d5db);
+  border-radius: 6px;
+  outline: none;
+  box-sizing: border-box;
+}
+.mcp-textarea:focus { border-color: var(--accent-deep, #4d86ff); }
+.mcp-textarea::placeholder { color: var(--muted, #9ca3af); }
+.mcp-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: 16px 0 0;
+}
+.mcp-saved {
+  margin: 10px 0 0;
+  font-size: 12.5px;
+  color: #1f7a3d;
+}
+@media (max-width: 620px) {
+  .mcp-field-grid { grid-template-columns: 1fr; gap: 0; }
+}

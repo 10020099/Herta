@@ -5,11 +5,14 @@ import {
   type AppServerConfig,
   createSessionHost,
   defaultDirsFor,
+  loadMcpConfig,
+  type McpConfig,
   type ProviderType,
   recordTail,
   type Session,
   type SessionHost,
   type SessionMetadata,
+  writeMcpConfig,
 } from "@herta/app-server";
 import { SessionFileError } from "@herta/core";
 import { validateDeepSeekKey } from "@herta/providers";
@@ -854,6 +857,16 @@ export function createSessionService(
         });
       },
     );
+    // Settings → MCP: one complete configuration per Herta workspace. A
+    // running session owns already-connected clients, so this applies when the
+    // next session is opened (or after the app is restarted).
+    handle(
+      CMD.getMcpConfig,
+      async (): Promise<McpConfig> => loadMcpConfig(appWorkspaceRoot()),
+    );
+    handle(CMD.setMcpConfig, async (_e, config: unknown) => {
+      await writeMcpConfig(appWorkspaceRoot(), config);
+    });
     // Settings → Language. App-global (per-user) preference; the renderer
     // applies it live, so this is just persistence. getLocale resolves a stored
     // choice, else maps the OS locale.
