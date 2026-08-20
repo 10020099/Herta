@@ -7,7 +7,7 @@
   "description": "Herta — the self that uses the agent",
   "author": "PersonaCLI",
   "type": "module",
-  "main": "./out/main/index.js",
+  "main": "./out/main/index.cjs",
   "scripts": {
     "dev": "electron-vite dev",
     "predev": "tsc -b ../..",

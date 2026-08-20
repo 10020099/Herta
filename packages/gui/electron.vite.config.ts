@@ -69,7 +69,19 @@ export default defineConfig({
   // builtins stay external automatically.
   main: {
     plugins: [bundleManifest("main")],
-    build: { outDir: "out/main" },
+    build: {
+      outDir: "out/main",
+      rollupOptions: {
+        output: {
+          // CJS, explicitly: package.json has "type":"module", so a .js
+          // output is treated as ESM where __dirname does not exist. CJS
+          // output + .cjs extension → Node treats it as CommonJS where
+          // __dirname is a global. Mirrors the preload's CJS choice.
+          format: "cjs",
+          entryFileNames: "[name].cjs",
+        },
+      },
+    },
   },
   preload: {
     plugins: [bundleManifest("preload")],
