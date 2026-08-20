@@ -2690,9 +2690,12 @@ button.agent-preview:active {
 .composer.is-glass .composer-input {
   opacity: 0;
 }
-/* Shrink-after-send (Composer.tsx `shrunk`): more reading room while the
-   reply streams. FOCUS restores the height — the turn-end auto-refocus or a
-   click into the field — not the first keystroke (owner 2026-08-19). */
+/* Focus-keyed height (owner 2026-08-20, superseding shrink-after-send):
+   the composer RESTS at this height and holds the full 78px only while
+   focus is inside the form or a file drag is over it (Composer.tsx
+   `shrunk`). The disable-blur at turn start shrinks it for the whole
+   reply; the turn-end auto-refocus expands it again. Rides .composer's
+   0.44s signature height transition both ways. */
 .composer.is-shrunk {
   height: 60px;
 }

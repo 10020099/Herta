@@ -57,12 +57,16 @@ export function Composer(): JSX.Element {
   // the wire token "@板砖" before dispatch.
   const lang = useSessionLang();
   const [text, setText] = useState("");
-  // A send with the draft emptied shrinks the composer (more reading room
-  // while the reply streams). One-shot: FOCUS restores the full height —
-  // clicking into the field, or the turn-end auto-refocus below — rather
-  // than the first keystroke (owner 2026-08-19: the caret being active in a
-  // still-shrunk composer read as "the height never came back").
-  const [sent, setSent] = useState(false);
+  // Focus-keyed height (owner 2026-08-20, superseding shrink-after-send):
+  // the composer RESTS shrunk and holds full height only while focus is
+  // inside the FORM — the textarea, the attach button, the send/stop
+  // button. Form-level, not textarea-level: clicking attach blurs the
+  // textarea while the pointer is still inside the composer, and a
+  // textarea-keyed shrink would move the button 18px under the cursor
+  // mid-click. Blur — including the disable-blur at turn start — shrinks
+  // it back (an unsent draft keeps its first line visible and survives);
+  // the turn-end auto-refocus below expands it again by itself.
+  const [focusWithin, setFocusWithin] = useState(false);
   const [hintActive, setHintActive] = useState(false);
   // The index of an `@` whose hint the user dismissed with Esc; re-enabled
   // once the text changes. -1 means "none dismissed".
@@ -72,7 +76,6 @@ export function Composer(): JSX.Element {
   // applied post-render via this ref (React owns the controlled value).
   const pendingCaret = useRef<number | null>(null);
   const busy = status !== "idle";
-  const shrunk = sent && text.trim().length === 0;
   const suppressed = overlay?.kind === "pending-permission";
 
   // Shared submit path for the ↑ button (form submit) and Enter-to-send.
@@ -88,7 +91,6 @@ export function Composer(): JSX.Element {
     // reports needsKey and submitMessage opens the no-key onboarding card.
     submitMessage(bridge, sessionStore, dispatched);
     setText("");
-    setSent(true);
     // The rewind file-edit notice persists through editing; clear it once the
     // (re-)send actually goes out (a session switch clears it via onReset).
     if (composerNotice !== null) sessionStore.clearComposerNotice();
@@ -102,7 +104,22 @@ export function Composer(): JSX.Element {
   useEffect(() => {
     const was = prevBusy.current;
     prevBusy.current = busy;
-    if (was && !busy && !suppressed) taRef.current?.focus();
+    if (!was && busy) {
+      // Turn start disables the textarea, which SILENTLY drops focus —
+      // Chrome moves activeElement off a disabled element without firing
+      // blur/focusout (verified live 2026-08-20), so the form handler never
+      // learns focus left. Clear the state here: the composer is shrunk for
+      // the whole reply, which is the reading-room the shrink exists for.
+      setFocusWithin(false);
+    }
+    if (was && !busy && !suppressed) {
+      taRef.current?.focus();
+      // "Caret back, ready to type" includes the height: expand directly
+      // rather than relying on the focus() call's focusin reaching the form
+      // handler (browsers deliver it; jsdom does not, and a focus() that
+      // fails to take should still leave the composer ready).
+      setFocusWithin(true);
+    }
   }, [busy, suppressed]);
 
   // The rewind file-edit notice is animated in AND out. composerNotice (store) is
@@ -120,7 +137,6 @@ export function Composer(): JSX.Element {
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset is keyed on sessionId; the setters/ref are stable
   useEffect(() => {
     setText("");
-    setSent(false);
     setHintActive(false);
     escDismissed.current = -1;
   }, [sessionId]);
@@ -142,7 +158,6 @@ export function Composer(): JSX.Element {
   useEffect(() => {
     if (composerDraft === null) return;
     setText(composerDraft);
-    setSent(false);
     setHintActive(false);
     pendingCaret.current = composerDraft.length;
     taRef.current?.focus();
@@ -189,6 +204,10 @@ export function Composer(): JSX.Element {
   const dragDepth = useRef(0);
   const [dragOver, setDragOver] = useState(false);
 
+  // A file drag over the composer also expands it — a drop target should
+  // not be at its smallest exactly while the user is aiming at it.
+  const shrunk = !focusWithin && !dragOver;
+
   const sendAttachments = (paths: readonly string[]): void => {
     if (paths.length === 0 || sessionId === null) return;
     void bridge
@@ -225,6 +244,16 @@ export function Composer(): JSX.Element {
       onSubmit={(e) => {
         e.preventDefault();
         doSubmit();
+      }}
+      onFocus={() => setFocusWithin(true)}
+      onBlur={(e) => {
+        // Focus moving BETWEEN the form's own controls (textarea → attach,
+        // attach → send) fires blur with the new holder as relatedTarget —
+        // still inside, still expanded. Only a genuine exit (relatedTarget
+        // outside the form, or null for a click on non-focusable ground)
+        // shrinks.
+        if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+        setFocusWithin(false);
       }}
       onDragEnter={(e) => {
         if (!e.dataTransfer.types.includes("Files")) return;
@@ -289,14 +318,6 @@ export function Composer(): JSX.Element {
             setHintActive(
               shouldHint(e.target.value, e.target.selectionStart, -1),
             );
-          }}
-          onFocus={() => {
-            // The caret arriving IS the un-shrink (owner 2026-08-19) — the
-            // click into the field, or the turn-end auto-refocus above, both
-            // land here. One-shot: blurring again does not re-shrink (only
-            // the next send does), so focus moving around the app never
-            // bounces the composer's height.
-            setSent(false);
           }}
           onSelect={(e) =>
             setHintActive(
