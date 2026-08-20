@@ -321,7 +321,7 @@ describe("Composer", () => {
     expect(document.activeElement).toBe(input);
   });
 
-  it("shrinks after sending (empty) and un-shrinks when typing resumes", () => {
+  it("shrinks after sending; FOCUS restores the height, one-shot (owner 2026-08-19)", () => {
     renderComposer();
     const form = document.querySelector(".composer") as HTMLFormElement;
     const input = screen.getByPlaceholderText(
@@ -332,7 +332,46 @@ describe("Composer", () => {
       fireEvent.submit(form);
     });
     expect(form.classList.contains("is-shrunk")).toBe(true);
-    fireEvent.change(input, { target: { value: "next" } });
+    // Clicking into the field (the caret arriving) restores the height —
+    // no keystroke required.
+    fireEvent.focus(input);
+    expect(form.classList.contains("is-shrunk")).toBe(false);
+    // One-shot: blurring again does not re-shrink; only the next send does.
+    fireEvent.blur(input);
+    expect(form.classList.contains("is-shrunk")).toBe(false);
+  });
+
+  it("the turn-end auto-refocus restores the height by itself", () => {
+    const { mock } = renderComposer();
+    const form = document.querySelector(".composer") as HTMLFormElement;
+    const input = screen.getByPlaceholderText(
+      "Message Herta…",
+    ) as HTMLTextAreaElement;
+    act(() => {
+      mock.emitReset({
+        sessionId: "s",
+        workspaceRoot: "/r",
+        record: [],
+        overlay: null,
+        backendWorkspace: "/r",
+        backendWorkspaceIsDefault: true,
+      });
+    });
+    fireEvent.change(input, { target: { value: "hi" } });
+    act(() => {
+      fireEvent.submit(form);
+      mock.emitTurn({ kind: "started", turnId: "t1" });
+    });
+    // Disabling blurred the field (simulated — jsdom keeps focus on disable).
+    act(() => {
+      input.blur();
+    });
+    expect(form.classList.contains("is-shrunk")).toBe(true);
+    act(() => {
+      mock.emitTurn({ kind: "finished", turnId: "t1" });
+    });
+    // The refocus effect put the caret back → the focus handler un-shrank.
+    expect(document.activeElement).toBe(input);
     expect(form.classList.contains("is-shrunk")).toBe(false);
   });
 });

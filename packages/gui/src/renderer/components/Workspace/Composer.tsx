@@ -12,6 +12,7 @@ import { submitMessage } from "../../lib/submit-message.js";
 import { stopAllVoice } from "../../voice/play-voice.js";
 import { Tooltip } from "../Tooltip/Tooltip.js";
 import { AuraVisual } from "../UtilityRail/AuraVisual.js";
+import { SendArrowIcon } from "./SendArrowIcon.js";
 import { useWorkspaceRefs } from "./WorkspaceRefs.js";
 
 /** Whether the ghost hint should show: caret is at the END of `value`, the
@@ -56,6 +57,11 @@ export function Composer(): JSX.Element {
   // the wire token "@板砖" before dispatch.
   const lang = useSessionLang();
   const [text, setText] = useState("");
+  // A send with the draft emptied shrinks the composer (more reading room
+  // while the reply streams). One-shot: FOCUS restores the full height —
+  // clicking into the field, or the turn-end auto-refocus below — rather
+  // than the first keystroke (owner 2026-08-19: the caret being active in a
+  // still-shrunk composer read as "the height never came back").
   const [sent, setSent] = useState(false);
   const [hintActive, setHintActive] = useState(false);
   // The index of an `@` whose hint the user dismissed with Esc; re-enabled
@@ -284,6 +290,14 @@ export function Composer(): JSX.Element {
               shouldHint(e.target.value, e.target.selectionStart, -1),
             );
           }}
+          onFocus={() => {
+            // The caret arriving IS the un-shrink (owner 2026-08-19) — the
+            // click into the field, or the turn-end auto-refocus above, both
+            // land here. One-shot: blurring again does not re-shrink (only
+            // the next send does), so focus moving around the app never
+            // bounces the composer's height.
+            setSent(false);
+          }}
           onSelect={(e) =>
             setHintActive(
               shouldHint(
@@ -404,7 +418,7 @@ export function Composer(): JSX.Element {
           className="composer-send__glyph composer-send__glyph--send"
           aria-hidden="true"
         >
-          ↑
+          <SendArrowIcon />
         </span>
         <span
           className="composer-send__glyph composer-send__glyph--stop"
