@@ -35,6 +35,7 @@ export interface ChatProviderFactoryOpts {
   readonly type: ProviderType;
   readonly apiKey: ApiKey;
   readonly model: string;
+  readonly actorModel: string;
   readonly baseUrl?: string;
   readonly thinking?: ThinkingEffort;
   readonly temperature?: number;
@@ -102,7 +103,7 @@ export function createChatProvider(
     case "openai":
       return openaiResponsesProvider({
         apiKey: opts.apiKey,
-        model: opts.model,
+        model: opts.actorModel,
         effort: openaiEffort(opts.thinking),
         ...(baseUrl ? { baseUrl } : {}),
         ...(opts.temperature !== undefined

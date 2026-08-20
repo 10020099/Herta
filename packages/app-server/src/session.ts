@@ -1428,6 +1428,7 @@ export class SessionImpl implements Session {
         type: config.providers.type ?? "deepseek",
         apiKey,
         model: config.providers.backendModel,
+        actorModel: config.providers.actorModel,
         thinking: config.thinking,
         ...baseUrl,
       });
@@ -1566,6 +1567,7 @@ export class SessionImpl implements Session {
         type: config.providers.type ?? "deepseek",
         apiKey,
         model: config.providers.routerModel,
+        actorModel: config.providers.actorModel,
         thinking: "low",
         maxTokens: 1024,
         temperature: 0.3,
