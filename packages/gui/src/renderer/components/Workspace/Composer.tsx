@@ -58,15 +58,26 @@ export function Composer(): JSX.Element {
   const lang = useSessionLang();
   const [text, setText] = useState("");
   // Focus-keyed height (owner 2026-08-20, superseding shrink-after-send):
-  // the composer RESTS shrunk and holds full height only while focus is
-  // inside the FORM — the textarea, the attach button, the send/stop
-  // button. Form-level, not textarea-level: clicking attach blurs the
-  // textarea while the pointer is still inside the composer, and a
-  // textarea-keyed shrink would move the button 18px under the cursor
-  // mid-click. Blur — including the disable-blur at turn start — shrinks
-  // it back (an unsent draft keeps its first line visible and survives);
-  // the turn-end auto-refocus below expands it again by itself.
+  // the composer RESTS shrunk and holds full height only while it is
+  // engaged. The two sides are deliberately ASYMMETRIC:
+  //   - EXPAND only when the TEXTAREA gains focus (the caret is the
+  //     expansion) — focus landing on the attach/send button from outside
+  //     must NOT expand, or clicking attach in the resting state bounced
+  //     the composer up and back down around the native file dialog
+  //     (owner screenshots, same day).
+  //   - HOLD while focus stays anywhere inside the FORM: clicking attach
+  //     from the textarea blurs it while the pointer is still inside the
+  //     composer, and shrinking there would move the button 18px under the
+  //     cursor mid-click. Only a blur that leaves the form shrinks.
+  // The disable-blur at turn start shrinks (set on the busy edge below —
+  // Chrome fires no blur for it); an unsent draft keeps its first line
+  // visible and survives; the turn-end auto-refocus expands again.
   const [focusWithin, setFocusWithin] = useState(false);
+  // While the OS file picker is up it steals WINDOW focus, firing
+  // focusout/focusin churn that says nothing about the user's intent —
+  // freeze the height until the picker resolves (then the caret handoff
+  // below decides).
+  const pickerOpen = useRef(false);
   const [hintActive, setHintActive] = useState(false);
   // The index of an `@` whose hint the user dismissed with Esc; re-enabled
   // once the text changes. -1 means "none dismissed".
@@ -232,9 +243,23 @@ export function Composer(): JSX.Element {
   };
 
   const onPickAttachments = (): void => {
-    void bridge.pickAttachments().then((paths) => {
-      if (paths !== null) sendAttachments(paths);
-    });
+    pickerOpen.current = true;
+    void bridge
+      .pickAttachments()
+      .then((paths) => {
+        if (paths !== null) sendAttachments(paths);
+      })
+      .finally(() => {
+        pickerOpen.current = false;
+        // Caret handoff: whether the user picked files or cancelled, the
+        // next act is typing — put the caret in the field. Any expansion the
+        // dialog's close causes is then explained by a visible caret (the
+        // owner's report: cancel re-expanded the composer with focus stuck
+        // on the attach button and no caret anywhere). Explicit set beside
+        // focus(), same rationale as the turn-end refocus.
+        taRef.current?.focus();
+        setFocusWithin(true);
+      });
   };
 
   return (
@@ -245,13 +270,15 @@ export function Composer(): JSX.Element {
         e.preventDefault();
         doSubmit();
       }}
-      onFocus={() => setFocusWithin(true)}
       onBlur={(e) => {
+        // Height frozen while the OS picker is up — its window-focus churn
+        // is not the user leaving the composer.
+        if (pickerOpen.current) return;
         // Focus moving BETWEEN the form's own controls (textarea → attach,
         // attach → send) fires blur with the new holder as relatedTarget —
         // still inside, still expanded. Only a genuine exit (relatedTarget
-        // outside the form, or null for a click on non-focusable ground)
-        // shrinks.
+        // outside the form, or null for a click on non-focusable ground /
+        // the window deactivating) shrinks.
         if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
         setFocusWithin(false);
       }}
@@ -280,6 +307,13 @@ export function Composer(): JSX.Element {
           .map((f) => bridge.pathForFile(f))
           .filter((p) => p.length > 0);
         sendAttachments(paths);
+        // Same caret handoff as the picker: after a drop you type the
+        // message that goes with the files. Busy drops surface a refusal
+        // notice instead — a disabled textarea can't take the caret.
+        if (!busy) {
+          taRef.current?.focus();
+          setFocusWithin(true);
+        }
       }}
     >
       {/* Herta's tide wave living at the composer's floor (glass-wave merge,
@@ -311,6 +345,7 @@ export function Composer(): JSX.Element {
           ref={taRef}
           className="composer-input"
           placeholder={t("composer.placeholder")}
+          onFocus={() => setFocusWithin(true)}
           value={text}
           onChange={(e) => {
             escDismissed.current = -1;

@@ -357,6 +357,53 @@ describe("Composer", () => {
     expect(form.classList.contains("is-shrunk")).toBe(false);
   });
 
+  it("focus landing on the attach BUTTON from outside does not expand (owner 2026-08-20)", () => {
+    renderComposer();
+    const form = document.querySelector(".composer") as HTMLFormElement;
+    const attach = document.querySelector(
+      ".composer-attach",
+    ) as HTMLButtonElement;
+    expect(form.classList.contains("is-shrunk")).toBe(true);
+    // Only the CARET expands; a button holding focus is not "ready to
+    // type" — this was the expand half of the attach-button bounce.
+    fireEvent.focus(attach);
+    expect(form.classList.contains("is-shrunk")).toBe(true);
+  });
+
+  it("the file picker freezes the height; its close hands the caret to the field", async () => {
+    // Hanging picker promise: resolves when the test says the dialog closed.
+    let resolvePick: (p: readonly string[] | null) => void = () => {};
+    const mock = createMockHertaBridge();
+    mock.bridge.pickAttachments = () =>
+      new Promise((resolve) => {
+        resolvePick = resolve;
+      });
+    renderComposer(mock);
+    const form = document.querySelector(".composer") as HTMLFormElement;
+    const input = screen.getByPlaceholderText(
+      "Message Herta…",
+    ) as HTMLTextAreaElement;
+    const attach = document.querySelector(
+      ".composer-attach",
+    ) as HTMLButtonElement;
+    // From the textarea, open the picker (focus moves within — held).
+    fireEvent.focus(input);
+    fireEvent.blur(input, { relatedTarget: attach });
+    fireEvent.click(attach);
+    expect(form.classList.contains("is-shrunk")).toBe(false);
+    // The native dialog steals WINDOW focus: focusout with relatedTarget
+    // null. While the picker is open this must NOT shrink.
+    fireEvent.blur(attach);
+    expect(form.classList.contains("is-shrunk")).toBe(false);
+    // Cancel: the caret lands in the field and the height stays expanded —
+    // never the owner-reported "expanded with focus stuck on the button".
+    await act(async () => {
+      resolvePick(null);
+    });
+    expect(document.activeElement).toBe(input);
+    expect(form.classList.contains("is-shrunk")).toBe(false);
+  });
+
   it("the turn-end auto-refocus restores the height by itself", () => {
     const { mock } = renderComposer();
     const form = document.querySelector(".composer") as HTMLFormElement;
