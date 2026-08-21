@@ -518,6 +518,9 @@ describe("minimal contract (ADR 0040)", () => {
     expect(sys).toContain("开拓者");
     expect(sys).toContain("report_finding");
     expect(sys).toContain("show_excerpt");
+    expect(sys).toContain(
+      "审查项目文件来找 bug、安全漏洞、性能、可靠性或结构风险是只读探查",
+    );
     expect(sys).toContain("不扮演黑塔");
     expect(sys).toContain("工作区：E:\\repo（bash 里写作 /e/repo）。");
     expect(sys).toContain(WORKING_HISTORY_HEADER);
@@ -552,6 +555,9 @@ describe("minimal contract (ADR 0040)", () => {
     ).toBe(true);
     expect(sys).toContain("@Brick");
     expect(sys).toContain("report_finding");
+    expect(sys).toContain(
+      "Reviewing project files for bugs, security flaws, performance, reliability, or structural risks is read-only exploration",
+    );
     expect(sys).not.toContain(BACKEND_EXECUTION_CONTRACT_EN);
     expect(sys).not.toMatch(/# Scope classification/);
   });

@@ -177,5 +177,5 @@ describe("sink cursor after a failed turn (audit finding 10)", () => {
     // the reseed: resyncRecord is willing to emit again (it no-ops when the
     // invariant is broken). We can't reach into the sink, but a functioning
     // turn 2 plus the assertions above pin the observable contract.
-  });
+  }, 15_000); // Session bootstrap + two actor turns approach Vitest's 5s default under full-suite load.
 });

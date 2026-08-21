@@ -21,6 +21,19 @@ describe("promptAssetsFor (slice 4)", () => {
     expect(PROMPT_ASSETS_EN.hertaGuide.length).toBeGreaterThan(0);
   });
 
+  it("grounds project-review capability and recorded findings in both environment prompts", () => {
+    expect(PROMPT_ASSETS.envSet).toContain("项目内的审查也在这个范围里");
+    expect(PROMPT_ASSETS.envSet).toContain(
+      "不准再把它说成「只能改代码、不能审查」",
+    );
+    expect(PROMPT_ASSETS_EN.envSet).toContain(
+      "A review of this project is inside that scope too",
+    );
+    expect(PROMPT_ASSETS_EN.envSet).toContain(
+      'I do not claim that it can "only edit code"',
+    );
+  });
+
   it("key sets are identical in every record group (codegen parity gate)", () => {
     // Mirrors the codegen's fail-loudly check so a hand-edit of the
     // generated file cannot silently break parity either.
