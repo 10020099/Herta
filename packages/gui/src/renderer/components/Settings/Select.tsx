@@ -12,6 +12,7 @@ export interface SelectProps<V extends string> {
   readonly options: readonly SelectOption<V>[];
   readonly onChange: (value: V) => void;
   readonly ariaLabel: string;
+  readonly disabled?: boolean;
 }
 
 /** Chevron for the trigger — inline SVG so CSS owns color/size. */
@@ -76,6 +77,10 @@ export function Select<V extends string>(props: SelectProps<V>): JSX.Element {
   const overlayId = useId();
   useModalOverlay(overlayId, open, OVERLAY_Z.cardMenu);
 
+  useEffect(() => {
+    if (props.disabled) setOpen(false);
+  }, [props.disabled]);
+
   // Outside click / Escape close. Listener only while open.
   useEffect(() => {
     if (!open) return;
@@ -121,6 +126,7 @@ export function Select<V extends string>(props: SelectProps<V>): JSX.Element {
         aria-label={props.ariaLabel}
         aria-haspopup="listbox"
         aria-expanded={open}
+        disabled={props.disabled}
         onClick={() => setOpen((o) => !o)}
         onKeyDown={(e) => {
           if (e.key === "ArrowDown" && open) {
@@ -157,6 +163,7 @@ export function Select<V extends string>(props: SelectProps<V>): JSX.Element {
               className={`settings-select__option${
                 o.value === props.value ? " is-selected" : ""
               }`}
+              disabled={props.disabled}
               onClick={() => {
                 setOpen(false);
                 if (o.value !== props.value) props.onChange(o.value);

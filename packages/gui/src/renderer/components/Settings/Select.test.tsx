@@ -58,6 +58,22 @@ describe("Select", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
+  it("does not open when disabled", () => {
+    renderWithLocale(
+      <Select
+        value="zh"
+        options={OPTIONS}
+        onChange={vi.fn()}
+        ariaLabel="Disabled language"
+        disabled
+      />,
+    );
+    const trigger = screen.getByLabelText("Disabled language");
+    expect(trigger).toBeDisabled();
+    fireEvent.click(trigger);
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
+
   it("Escape and outside mousedown close the menu", () => {
     renderSelect();
     const trigger = screen.getByLabelText("Display language");

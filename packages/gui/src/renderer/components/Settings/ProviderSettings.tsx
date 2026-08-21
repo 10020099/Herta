@@ -7,6 +7,7 @@ import type {
   ProviderType,
   ThinkingEffort,
 } from "../../ipc/bridge-types.js";
+import { Select } from "./Select.js";
 
 const PROVIDER_TYPES: ProviderType[] = [
   "deepseek",
@@ -354,13 +355,9 @@ export function ProviderSettings(): JSX.Element {
       <div className="settings-field">
         <span className="settings-field-label">{t("provider.thinking")}</span>
         <p className="settings-field-desc">{t("provider.thinkingDesc")}</p>
-        <select
-          className="settings-field-select"
+        <Select<ThinkingEffort>
           value={draftThinking}
-          disabled={locked}
-          onChange={(e) => setDraftThinking(e.target.value as ThinkingEffort)}
-        >
-          {(
+          options={(
             [
               "none",
               "minimal",
@@ -371,12 +368,14 @@ export function ProviderSettings(): JSX.Element {
               "max",
               "off",
             ] as ThinkingEffort[]
-          ).map((effort) => (
-            <option key={effort} value={effort}>
-              {t(`provider.thinking.${effort}`)}
-            </option>
-          ))}
-        </select>
+          ).map((effort) => ({
+            value: effort,
+            label: t(`provider.thinking.${effort}`),
+          }))}
+          onChange={setDraftThinking}
+          ariaLabel={t("provider.thinking")}
+          disabled={locked}
+        />
       </div>
 
       {/* Anthropic-specific: output effort */}
@@ -388,22 +387,18 @@ export function ProviderSettings(): JSX.Element {
           <p className="settings-field-desc">
             {t("provider.anthropicOutputEffortDesc")}
           </p>
-          <select
-            className="settings-field-select"
+          <Select<ThinkingEffort>
             value={draftAnthropicEffort}
-            disabled={locked}
-            onChange={(e) =>
-              setDraftAnthropicEffort(e.target.value as ThinkingEffort)
-            }
-          >
-            {(["low", "medium", "high", "max"] as ThinkingEffort[]).map(
-              (effort) => (
-                <option key={effort} value={effort}>
-                  {t(`provider.thinking.${effort}`)}
-                </option>
-              ),
+            options={(["low", "medium", "high", "max"] as ThinkingEffort[]).map(
+              (effort) => ({
+                value: effort,
+                label: t(`provider.thinking.${effort}`),
+              }),
             )}
-          </select>
+            onChange={setDraftAnthropicEffort}
+            ariaLabel={t("provider.anthropicOutputEffort")}
+            disabled={locked}
+          />
         </div>
       )}
 
