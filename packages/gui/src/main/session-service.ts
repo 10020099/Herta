@@ -698,6 +698,23 @@ export function createSessionService(
     handle(CMD.resyncRecord, () => {
       host?.activeSession?.resyncRecord?.();
     });
+    handle(CMD.getContextUsage, (_e, sessionId: string) => {
+      const s = host?.activeSession ?? null;
+      if (s === null || s.sessionId !== sessionId) return null;
+      return s.getContextUsage?.() ?? null;
+    });
+    handle(CMD.requestContextCompaction, (_e, sessionId: string) => {
+      const s = host?.activeSession ?? null;
+      if (s === null || s.sessionId !== sessionId) {
+        return { ok: false as const, reason: "unavailable" as const };
+      }
+      return (
+        s.requestContextCompaction?.() ?? {
+          ok: false as const,
+          reason: "unavailable" as const,
+        }
+      );
+    });
     handle(CMD.pickWorkspace, async () => {
       const r = await dialog.showOpenDialog(win, {
         properties: ["openDirectory"],
