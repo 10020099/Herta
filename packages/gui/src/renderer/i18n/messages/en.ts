@@ -487,4 +487,7 @@ export const en = {
     "Give every service a unique name and check its command, URL, and KEY=VALUE entries.",
   "mcp.saved":
     "MCP configuration saved. Create a new session to use the updated services.",
+  "mcp.status.connected": "Connected",
+  "mcp.status.failed": "Connection failed",
+  "mcp.status.unknown": "Not connected in the active session",
 } satisfies Record<MessageKey, string>;

@@ -5794,13 +5794,21 @@ button.session-item__badge--dismiss {
   border: 0;
   cursor: pointer;
 }
-.mcp-server-summary::before {
-  width: 7px;
-  height: 7px;
+.mcp-server-status {
+  width: 8px;
+  height: 8px;
   flex: 0 0 auto;
-  content: "";
-  background: #9ca3af;
   border-radius: 50%;
+  background: #9ca3af;
+  box-shadow: 0 0 0 2px rgba(156, 163, 175, .16);
+}
+.mcp-server-status.is-connected {
+  background: #22a06b;
+  box-shadow: 0 0 0 2px rgba(34, 160, 107, .16);
+}
+.mcp-server-status.is-failed {
+  background: #d14343;
+  box-shadow: 0 0 0 2px rgba(209, 67, 67, .16);
 }
 .mcp-server-summary:hover .mcp-server-index,
 .mcp-server-summary:focus-visible .mcp-server-index { color: var(--accent-deep, #4d86ff); }

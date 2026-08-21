@@ -459,4 +459,7 @@ export const zh = {
   "mcp.invalid":
     "请为每个服务填写唯一名称，并检查命令、地址与 KEY=VALUE 条目。",
   "mcp.saved": "MCP 配置已保存。新建会话即可使用更新后的服务。",
+  "mcp.status.connected": "已连接",
+  "mcp.status.failed": "连接失败",
+  "mcp.status.unknown": "当前会话尚未连接",
 } as const;

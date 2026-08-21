@@ -69,6 +69,7 @@ import type {
   AttachedFile,
   AttachResult,
   ContextUsage,
+  McpConnectionStatus,
   OverlayEvent,
   RecordEvent,
   RemoveAttachmentResult,
@@ -337,6 +338,12 @@ export class SessionImpl implements Session {
   /** Closes any connected MCP servers on session close (方案 A). Optional —
    *  absent when no MCP servers were configured. */
   private readonly mcpDispose?: () => Promise<void>;
+  /** Outcomes from the one-time MCP connection attempts performed at session
+   * creation. Entries only exist for configured servers; GUI maps absence to
+   * an intentionally neutral `unknown` state. */
+  private readonly mcpConnectionStatus: Readonly<
+    Record<string, McpConnectionStatus>
+  >;
 
   // Per-turn abort tracking. Set at the start of submitText; cleared in
   // finally. interrupt() aborts this controller; close() calls interrupt()
@@ -411,6 +418,7 @@ export class SessionImpl implements Session {
     easterEggNow: () => number;
     deepSeekKey: () => string;
     mcpDispose?: () => Promise<void>;
+    mcpConnectionStatus: Readonly<Record<string, McpConnectionStatus>>;
     lang: PromptLang;
     lastTurnEnd?: LastTurnEnd;
   }) {
@@ -441,6 +449,7 @@ export class SessionImpl implements Session {
     this.openingBaseMs = opts.openingBaseMs;
     this.deepSeekKey = opts.deepSeekKey;
     if (opts.mcpDispose !== undefined) this.mcpDispose = opts.mcpDispose;
+    this.mcpConnectionStatus = opts.mcpConnectionStatus;
     this.easterEggClips = opts.easterEggClips;
     this.easterEggRandom = opts.easterEggRandom;
     this.easterEggNow = opts.easterEggNow;
@@ -500,6 +509,10 @@ export class SessionImpl implements Session {
 
   getContextUsage(): ContextUsage {
     return this.driver.getContextUsage();
+  }
+
+  getMcpConnectionStatus(): Readonly<Record<string, McpConnectionStatus>> {
+    return this.mcpConnectionStatus;
   }
 
   requestContextCompaction() {
@@ -1863,6 +1876,7 @@ export class SessionImpl implements Session {
       easterEggNow,
       deepSeekKey,
       mcpDispose: mcp.dispose,
+      mcpConnectionStatus: mcp.connectionStatus,
       lang,
     });
     sessionHolder.session = session;

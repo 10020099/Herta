@@ -100,6 +100,20 @@ describe("app-global-settings", () => {
     expect(await readGlobalSettings(dir)).toEqual({});
   });
 
+  it("round-trips the one-time legacy MCP migration decision and rejects invalid values", async () => {
+    const dir = tmp();
+    await writeGlobalSettings(dir, { legacyMcpMigrationHandled: true });
+    expect(await readGlobalSettings(dir)).toEqual({
+      legacyMcpMigrationHandled: true,
+    });
+    writeFileSync(
+      join(dir, "settings.json"),
+      '{"legacyMcpMigrationHandled":"yes"}',
+      "utf-8",
+    );
+    expect(await readGlobalSettings(dir)).toEqual({});
+  });
+
   it("resolveInteractionLang: stored wins, else follow the UI locale", () => {
     // Explicit choice wins over any locale.
     expect(resolveInteractionLang({ interactionLanguage: "en" }, "zh")).toBe(

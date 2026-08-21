@@ -4,6 +4,8 @@ import { useT } from "../../i18n/LocaleProvider.js";
 import type {
   McpConfig,
   McpConfigScope,
+  McpConnectionStatus,
+  McpConnectionStatusMap,
   McpServerConfig,
   McpTransport,
 } from "../../ipc/bridge-types.js";
@@ -151,6 +153,8 @@ export function McpSettings(): JSX.Element {
   const [invalid, setInvalid] = useState(false);
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [connectionStatus, setConnectionStatus] =
+    useState<McpConnectionStatusMap>({});
 
   useEffect(() => {
     if (!supported) return;
@@ -175,6 +179,24 @@ export function McpSettings(): JSX.Element {
       alive = false;
     };
   }, [bridge, scope, supported]);
+
+  useEffect(() => {
+    if (bridge.getMcpConnectionStatus === undefined) return;
+    let alive = true;
+    void bridge.getMcpConnectionStatus().then(
+      (status) => {
+        if (alive) setConnectionStatus(status);
+      },
+      () => {
+        // A status query is presentation-only. Keep the neutral indicators when
+        // the current runtime has no active session or refuses the read.
+        if (alive) setConnectionStatus({});
+      },
+    );
+    return () => {
+      alive = false;
+    };
+  }, [bridge]);
 
   const updateServer = (
     id: number,
@@ -220,6 +242,10 @@ export function McpSettings(): JSX.Element {
       () => {
         setSaving(false);
         setSaved(true);
+        // Saved configuration applies only to newly created sessions. Any
+        // current status is for the old clients, so avoid implying it tested
+        // the edited service until a later session start reports new results.
+        setConnectionStatus({});
       },
       () => {
         setSaving(false);
@@ -273,6 +299,8 @@ export function McpSettings(): JSX.Element {
         servers.map((server, index) => {
           const prefix = `mcp-server-${server.id}`;
           const remote = server.transport !== "stdio";
+          const status: McpConnectionStatus =
+            connectionStatus[server.name.trim()] ?? "unknown";
           return (
             <div className="mcp-server-card" key={server.id}>
               <div className="mcp-server-card-head">
@@ -286,6 +314,12 @@ export function McpSettings(): JSX.Element {
                   }
                   aria-expanded={expandedServer === server.id}
                 >
+                  <span
+                    className={`mcp-server-status is-${status}`}
+                    role="img"
+                    aria-label={t(`mcp.status.${status}`)}
+                    title={t(`mcp.status.${status}`)}
+                  />
                   <span className="mcp-server-index">
                     {server.name ||
                       t("mcp.server").replace("{n}", String(index + 1))}

@@ -9,11 +9,16 @@ import { Client } from "@modelcontextprotocol/sdk/client";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { McpConnectionStatus } from "../types.js";
 import type { McpServerConfig } from "./mcp-config.js";
 import { McpTool } from "./mcp-tool.js";
 
 export interface McpConnection {
   readonly tools: HertaTool[];
+  /** Per configured server, captured after the session-start connection attempt.
+   *  A server is `connected` only after both the transport handshake and tool
+   *  listing succeed; otherwise it is `failed` and contributes no tools. */
+  readonly connectionStatus: Readonly<Record<string, McpConnectionStatus>>;
   dispose(): Promise<void>;
 }
 
@@ -52,6 +57,7 @@ export async function connectMcpServers(
   servers: Record<string, McpServerConfig>,
 ): Promise<McpConnection> {
   const tools: HertaTool[] = [];
+  const connectionStatus: Record<string, McpConnectionStatus> = {};
   const disposeClient: Array<() => Promise<void>> = [];
 
   for (const [serverName, config] of Object.entries(servers)) {
@@ -63,6 +69,7 @@ export async function connectMcpServers(
       for (const tool of listed.tools) {
         tools.push(new McpTool(client, serverName, tool));
       }
+      connectionStatus[serverName] = "connected";
       disposeClient.push(async () => {
         // Streamable HTTP servers may retain a session after the transport closes.
         // Ask them to release it first; a server may decline DELETE (405), which
@@ -79,12 +86,14 @@ export async function connectMcpServers(
       console.warn(
         `[herta] mcp server "${serverName}" failed to connect: ${message}`,
       );
+      connectionStatus[serverName] = "failed";
       // Best-effort: skip this server, keep the others.
     }
   }
 
   return {
     tools,
+    connectionStatus,
     async dispose(): Promise<void> {
       for (const close of disposeClient) {
         try {

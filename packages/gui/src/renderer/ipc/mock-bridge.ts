@@ -26,6 +26,7 @@ import type {
   HertaBridge,
   InteractionLanguageChoice,
   McpConfig,
+  McpConnectionStatusMap,
   ModelConfig,
   NavBlockedEvent,
   ProjectRuleFile,
@@ -87,6 +88,8 @@ export interface MockHertaBridgeOpts {
   readonly getMcpConfigResult?: McpConfig;
   /** When true, setMcpConfig rejects (simulates a failed configuration save). */
   readonly failSetMcpConfig?: boolean;
+  /** Seed for the active session's MCP connection outcomes. Default empty. */
+  readonly mcpConnectionStatus?: McpConnectionStatusMap;
   /** Seed for Settings → Project rules. Mutated by save/delete operations. */
   readonly projectRules?: readonly ProjectRuleFile[];
   /** Seed the masked DeepSeek key status. Mutated by setDeepSeekKey /
@@ -159,6 +162,7 @@ export interface MockHertaBridge {
     setModelConfig: ModelConfig[];
     getMcpConfig: number;
     setMcpConfig: McpConfig[];
+    getMcpConnectionStatus: number;
     listProjectRules: number;
     saveProjectRule: Array<[string, string]>;
     deleteProjectRule: string[];
@@ -247,6 +251,7 @@ export function createMockHertaBridge(
     setModelConfig: [],
     getMcpConfig: 0,
     setMcpConfig: [],
+    getMcpConnectionStatus: 0,
     listProjectRules: 0,
     saveProjectRule: [],
     deleteProjectRule: [],
@@ -286,6 +291,8 @@ export function createMockHertaBridge(
   // Workspace-scoped MCP configuration, seeded then replaced on each successful
   // save so tests observe the same round-trip as the main-process handler.
   let mcpConfig: McpConfig = opts.getMcpConfigResult ?? { mcpServers: {} };
+  const mcpConnectionStatus: McpConnectionStatusMap =
+    opts.mcpConnectionStatus ?? {};
   let contextCompactionConfig: ContextCompactionConfig =
     opts.contextCompactionConfig ?? { level: "standard" };
   let projectRules: ProjectRuleFile[] = [...(opts.projectRules ?? [])];
@@ -431,6 +438,10 @@ export function createMockHertaBridge(
         throw new Error("settings write failed");
       }
       mcpConfig = config;
+    },
+    getMcpConnectionStatus: async () => {
+      calls.getMcpConnectionStatus += 1;
+      return mcpConnectionStatus;
     },
     listProjectRules: async () => {
       calls.listProjectRules += 1;

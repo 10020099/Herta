@@ -401,6 +401,10 @@ export type ContextCompactionRequestResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly reason: "turn_in_progress" | "unavailable" };
 
+/** The outcome of a configured MCP server's session-start connection attempt.
+ * A missing map entry is represented as `unknown` at the GUI boundary. */
+export type McpConnectionStatus = "connected" | "failed";
+
 export interface Session {
   readonly sessionId: string;
   readonly workspaceRoot: string;
@@ -437,6 +441,9 @@ export interface Session {
   /** Schedule a one-shot recap before the next submitted message. This never
    * deletes the full JSONL transcript. */
   requestContextCompaction?(): ContextCompactionRequestResult;
+  /** Results from this session's one-time MCP server connection attempts.
+   * Optional so external Session implementations remain compatible. */
+  getMcpConnectionStatus?(): Readonly<Record<string, McpConnectionStatus>>;
   /**
    * D2 (resume recovery): if this session ends on an ORPHANED user message — a
    * reply lost to a mid-stream app-close — regenerate the reply as a normal

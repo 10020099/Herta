@@ -69,6 +69,7 @@ const bridge: HertaBridge = {
   getMcpConfig: (scope) => ipcRenderer.invoke(CMD.getMcpConfig, scope),
   setMcpConfig: (config, scope) =>
     ipcRenderer.invoke(CMD.setMcpConfig, config, scope),
+  getMcpConnectionStatus: () => ipcRenderer.invoke(CMD.getMcpConnectionStatus),
   listProjectRules: () => ipcRenderer.invoke(CMD.listProjectRules),
   saveProjectRule: (name, content) =>
     ipcRenderer.invoke(CMD.saveProjectRule, name, content),

@@ -35,6 +35,7 @@ export const CMD = {
   setModelConfig: "settings:setModelConfig",
   getMcpConfig: "settings:getMcpConfig",
   setMcpConfig: "settings:setMcpConfig",
+  getMcpConnectionStatus: "settings:getMcpConnectionStatus",
   listProjectRules: "settings:listProjectRules",
   saveProjectRule: "settings:saveProjectRule",
   deleteProjectRule: "settings:deleteProjectRule",

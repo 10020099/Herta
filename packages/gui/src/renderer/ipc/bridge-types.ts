@@ -174,6 +174,14 @@ export interface McpConfig {
 /** The visible user layer or the active workspace layer of MCP configuration. */
 export type McpConfigScope = "global" | "project";
 
+/** Renderer-facing MCP connection state. `unknown` means no active session has
+ * attempted this server yet, or this configured layer is not part of the
+ * active effective configuration. */
+export type McpConnectionStatus = "connected" | "failed" | "unknown";
+export type McpConnectionStatusMap = Readonly<
+  Record<string, McpConnectionStatus>
+>;
+
 /** One editable `.herta/rules*.md` project-rule file. */
 export interface ProjectRuleFile {
   readonly name: string;
@@ -386,6 +394,9 @@ export interface HertaBridge {
   /** Replace the selected MCP layer. New sessions use it; an already-open
    *  session keeps its established MCP clients until it is closed. */
   setMcpConfig?(config: McpConfig, scope?: McpConfigScope): Promise<void>;
+  /** Read the active session's MCP connection outcomes. Unconfigured or not-yet
+   *  attempted services are returned as no map entry and render as `unknown`. */
+  getMcpConnectionStatus?(): Promise<McpConnectionStatusMap>;
   /** List editable project rules for the active effective workspace. */
   listProjectRules?(): Promise<readonly ProjectRuleFile[]>;
   /** Save exactly `rules.md` or `rules` followed by digits and `.md`. */

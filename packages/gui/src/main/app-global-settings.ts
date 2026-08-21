@@ -41,6 +41,10 @@ export interface GlobalSettings {
    *  ABSENT = follow the UI locale (`resolveInteractionLang`); an explicit
    *  "zh"/"en" persists. EN sessions have no opening voice in v1. */
   readonly interactionLanguage?: InteractionLang;
+  /** The user has made a one-time decision about copying the pre-layered MCP
+   *  config from Electron userData into the visible global `~/.herta` layer.
+   *  The legacy file is always retained; true means the prompt must not recur. */
+  readonly legacyMcpMigrationHandled?: boolean;
 }
 
 export interface WindowStateSnapshot {
@@ -72,6 +76,7 @@ export async function readGlobalSettings(
       theme,
       windowState,
       interactionLanguage,
+      legacyMcpMigrationHandled,
     } = parsed as {
       locale?: unknown;
       closeToTray?: unknown;
@@ -79,6 +84,7 @@ export async function readGlobalSettings(
       theme?: unknown;
       windowState?: unknown;
       interactionLanguage?: unknown;
+      legacyMcpMigrationHandled?: unknown;
     };
     if (locale !== undefined && locale !== "zh" && locale !== "en") return {};
     if (
@@ -103,6 +109,12 @@ export async function readGlobalSettings(
       return {};
     }
     if (windowState !== undefined && !isValidWindowState(windowState)) {
+      return {};
+    }
+    if (
+      legacyMcpMigrationHandled !== undefined &&
+      typeof legacyMcpMigrationHandled !== "boolean"
+    ) {
       return {};
     }
     return parsed as GlobalSettings;

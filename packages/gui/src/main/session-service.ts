@@ -1,10 +1,18 @@
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  constants as fsConstants,
+  mkdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { copyFile, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   type AppServerConfig,
   createSessionHost,
   defaultDirsFor,
+  globalMcpConfigPath,
   isProjectRuleFileName,
   listProjectRuleFiles,
   loadGlobalMcpConfig,
@@ -122,6 +130,40 @@ export function appWorkspaceRoot(): string {
   return resolveWorkspaceRoot(
     app.isPackaged ? app.getPath("userData") : undefined,
   );
+}
+
+/** Legacy GUI versions incorrectly stored the only MCP layer below Electron's
+ * private `userData` directory. Keep this path explicit instead of deriving it
+ * from `appWorkspaceRoot()`: development builds used a project cwd there while
+ * installed builds used userData, whereas the legacy source is always userData. */
+export function legacyMcpConfigPath(userDataDir: string): string {
+  return join(userDataDir, ".herta", "mcp.json");
+}
+
+/** The migration prompt is offered only when it can safely copy a genuine legacy
+ * file into an as-yet-uncreated visible global layer. An explicit prior decision
+ * (including Skip) must suppress every later prompt. Exported for unit tests. */
+export function shouldOfferLegacyMcpMigration(
+  legacyPath: string,
+  globalPath: string,
+  handled: boolean | undefined,
+): boolean {
+  return (
+    handled !== true &&
+    legacyPath !== globalPath &&
+    existsSync(legacyPath) &&
+    !existsSync(globalPath)
+  );
+}
+
+/** Copy, never move, the legacy MCP configuration. The original remains intact
+ * for rollback; callers persist the one-time decision only after this succeeds. */
+export async function copyLegacyMcpConfig(
+  legacyPath: string,
+  globalPath: string,
+): Promise<void> {
+  await mkdir(dirname(globalPath), { recursive: true });
+  await copyFile(legacyPath, globalPath, fsConstants.COPYFILE_EXCL);
 }
 
 /** How many sessions the sidebar listing returns (audit BL11). Newest-first,
@@ -930,6 +972,14 @@ export function createSessionService(
         else await writeMcpConfig(mcpWorkspace(), config);
       },
     );
+    // The connection attempt belongs to SessionImpl.create(), because it owns
+    // MCP client lifetimes. The settings surface reads its current session's
+    // immutable outcomes; no session (or a newly saved, not-yet-started server)
+    // yields an empty map and therefore a neutral `unknown` indicator.
+    handle(
+      CMD.getMcpConnectionStatus,
+      () => host?.activeSession?.getMcpConnectionStatus?.() ?? {},
+    );
     // Settings → Project rules. Unlike app-wide settings, these follow the
     // active session's EFFECTIVE workspace, exactly like the runtime getters
     // which inject them into Herta and Brick on each new request.
@@ -1140,6 +1190,64 @@ export function createSessionService(
     // session:reset, not a silent unhandled rejection that leaves the
     // renderer stuck on an empty workbench.
     try {
+      // One-time migration from the hidden pre-layered GUI location to the
+      // visible global configuration. Never silently copy, never overwrite a
+      // new global config, and never remove the old file. Do this BEFORE
+      // creating the host, so the first session can use an accepted migration.
+      const userDataDir = app.getPath("userData");
+      const globalSettings = await readGlobalSettings(userDataDir);
+      const legacyPath = legacyMcpConfigPath(userDataDir);
+      const globalPath = globalMcpConfigPath();
+      if (
+        shouldOfferLegacyMcpMigration(
+          legacyPath,
+          globalPath,
+          globalSettings.legacyMcpMigrationHandled,
+        )
+      ) {
+        const locale = resolveInitialLocale(globalSettings, app.getLocale());
+        const copyLabel =
+          locale === "zh" ? "复制并保留原文件" : "Copy and keep original";
+        const skipLabel = locale === "zh" ? "跳过" : "Skip";
+        const decision = await dialog.showMessageBox(win, {
+          type: "question",
+          buttons: [copyLabel, skipLabel],
+          defaultId: 0,
+          cancelId: 1,
+          noLink: true,
+          title:
+            locale === "zh"
+              ? "迁移旧版 MCP 配置"
+              : "Migrate legacy MCP configuration",
+          message:
+            locale === "zh"
+              ? "发现旧版 MCP 配置"
+              : "Legacy MCP configuration found",
+          detail:
+            locale === "zh"
+              ? "Herta 现在将用户级 MCP 配置保存到 ~/.herta/mcp.json。是否复制旧配置到该位置？原文件会被保留，且不会覆盖已有的全局配置。"
+              : "Herta now stores user-level MCP configuration in ~/.herta/mcp.json. Copy the legacy configuration there? The original file will be kept and an existing global configuration will never be overwritten.",
+        });
+        if (decision.response === 0) {
+          try {
+            await copyLegacyMcpConfig(legacyPath, globalPath);
+            await updateGlobalSettings(userDataDir, (current) => ({
+              ...current,
+              legacyMcpMigrationHandled: true,
+            }));
+          } catch (error) {
+            // Leave the decision unset so a failed copy can be retried at the
+            // next launch; the source file has never been altered.
+            console.warn("[herta] legacy MCP migration failed:", error);
+          }
+        } else {
+          await updateGlobalSettings(userDataDir, (current) => ({
+            ...current,
+            legacyMcpMigrationHandled: true,
+          }));
+        }
+      }
+
       const workspaceRoot = appWorkspaceRoot();
       const config = await buildConfig(
         workspaceRoot,

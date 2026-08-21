@@ -1,7 +1,10 @@
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -11,15 +14,48 @@ import type { Session, SessionMetadata } from "@herta/app-server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildConfig,
+  copyLegacyMcpConfig,
   findProjectRoot,
   handleSetWorkspace,
   isSafeSessionId,
+  legacyMcpConfigPath,
   mainNavigationBlock,
   pickLatest,
   resolveWorkspaceRoot,
   sanitizeCreateOpts,
+  shouldOfferLegacyMcpMigration,
   startForwarders,
 } from "./session-service.js";
+
+describe("legacy MCP migration", () => {
+  it("offers only a pending legacy file, copies it without removing the source, and honors the one-time decision", async () => {
+    const root = mkdtempSync(join(tmpdir(), "herta-mcp-migration-"));
+    try {
+      const legacyPath = legacyMcpConfigPath(root);
+      const globalPath = join(root, "home", ".herta", "mcp.json");
+      const content = '{"mcpServers":{"legacy":{"command":"npx"}}}\n';
+      mkdirSync(join(root, ".herta"), { recursive: true });
+      writeFileSync(legacyPath, content, "utf-8");
+
+      expect(
+        shouldOfferLegacyMcpMigration(legacyPath, globalPath, undefined),
+      ).toBe(true);
+      expect(shouldOfferLegacyMcpMigration(legacyPath, globalPath, true)).toBe(
+        false,
+      );
+
+      await copyLegacyMcpConfig(legacyPath, globalPath);
+      expect(readFileSync(globalPath, "utf-8")).toBe(content);
+      expect(readFileSync(legacyPath, "utf-8")).toBe(content);
+      expect(existsSync(legacyPath)).toBe(true);
+      expect(
+        shouldOfferLegacyMcpMigration(legacyPath, globalPath, undefined),
+      ).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("isSafeSessionId (IPC boundary, audit 2026-07-13 T1.2)", () => {
   it("accepts host-minted UUIDs and plain stems", () => {
