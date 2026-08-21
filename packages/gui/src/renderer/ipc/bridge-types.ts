@@ -1,6 +1,8 @@
 import type {
   ApprovalOverlayState,
   ApprovalResult,
+  ContextCompactionRequestResult,
+  ContextUsage,
   CreateSessionOpts,
   OverlayEvent,
   RecordEvent,
@@ -245,6 +247,12 @@ export interface HertaBridge {
   readonly platform: string;
   submitText(text: string): Promise<SubmitTextResult>;
   interrupt(turnId?: string): Promise<{ readonly ok: boolean }>;
+  /** Current estimate for the actor prompt that Herta will send next. */
+  getContextUsage?(sessionId: string): Promise<ContextUsage | null>;
+  /** Queue one recap before the next submitted message; the full transcript is retained. */
+  requestContextCompaction?(
+    sessionId: string,
+  ): Promise<ContextCompactionRequestResult>;
   /** Withdraw the latest 开拓者 turn (record-only, idle-only). Resolves with the
    *  withdrawn user text to restore into the composer, or a failure reason.
    *  `sessionId` binds the destructive call to the session the user clicked in:

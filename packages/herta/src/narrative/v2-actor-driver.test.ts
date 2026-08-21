@@ -1952,6 +1952,18 @@ describe("V2ActorDriver — recap dependency", () => {
     });
   }
 
+  it("reports a prompt-projection usage snapshot and pending manual compaction", () => {
+    const driver = mkRecapDriver(mkRecapRuntime());
+    const before = driver.getContextUsage();
+    expect(before.contextWindowTokens).toBe(1_000_000);
+    expect(before.compactThresholdTokens).toBe(800_000);
+    expect(before.usedTokens).toBeGreaterThan(0);
+    expect(before.compactionPending).toBe(false);
+
+    driver.forceCompactNextTurn();
+    expect(driver.getContextUsage().compactionPending).toBe(true);
+  });
+
   it("computes the recap from the configured runtime BEFORE the turn and threads it as precomputedRecap", async () => {
     // prepareTurnRecap(record, staticPrefix, rt, forceCompact, signal, notify)
     const recapSpy = vi.spyOn(recapRuntime, "prepareTurnRecap");

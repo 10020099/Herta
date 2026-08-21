@@ -1,4 +1,10 @@
-import { act, cleanup, fireEvent, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HertaBridgeProvider } from "../../context/HertaBridgeContext.js";
 import { renderWithLocale } from "../../i18n/test-util.js";
@@ -29,6 +35,36 @@ describe("Composer", () => {
     renderComposer();
     expect(screen.getByPlaceholderText("Message Herta…")).toBeInTheDocument();
     expect(screen.getByLabelText("Send message")).toBeInTheDocument();
+  });
+
+  it("shows actual context use and queues a manual recap from the ring", async () => {
+    const { mock } = renderComposer(
+      createMockHertaBridge({
+        contextUsageResult: {
+          usedTokens: 101_200,
+          contextWindowTokens: 1_000_000,
+          compactThresholdTokens: 200_000,
+          recapCharacters: 0,
+          compactionPending: false,
+        },
+      }),
+    );
+    activate(mock, "en");
+    await waitFor(() => expect(mock.calls.getContextUsage).toContain("s-en"));
+
+    const ring = screen.getByLabelText("Context usage");
+    fireEvent.pointerEnter(ring);
+    await waitFor(() =>
+      expect(screen.getByText("101k Context used")).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Compress" }));
+    await waitFor(() =>
+      expect(mock.calls.requestContextCompaction).toEqual(["s-en"]),
+    );
+    expect(
+      screen.getByText("Compaction is queued for your next message."),
+    ).toBeInTheDocument();
   });
 
   it("disables the send button when input is empty or whitespace", () => {

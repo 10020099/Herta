@@ -12,6 +12,7 @@ import { submitMessage } from "../../lib/submit-message.js";
 import { stopAllVoice } from "../../voice/play-voice.js";
 import { Tooltip } from "../Tooltip/Tooltip.js";
 import { AuraVisual } from "../UtilityRail/AuraVisual.js";
+import { ContextIndicator } from "./ContextIndicator.js";
 import { SendArrowIcon } from "./SendArrowIcon.js";
 import { useWorkspaceRefs } from "./WorkspaceRefs.js";
 
@@ -449,6 +450,11 @@ export function Composer(): JSX.Element {
           </svg>
         </button>
       </Tooltip>
+      <ContextIndicator
+        sessionId={sessionId}
+        busy={busy}
+        onQueued={(notice) => sessionStore.setComposerNotice(notice)}
+      />
       <button
         ref={sendButtonRef}
         type={busy ? "button" : "submit"}

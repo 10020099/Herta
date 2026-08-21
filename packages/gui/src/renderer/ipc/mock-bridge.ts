@@ -1,5 +1,7 @@
 import type {
   ApprovalResult,
+  ContextCompactionRequestResult,
+  ContextUsage,
   CreateSessionOpts,
   OverlayEvent,
   RecordEvent,
@@ -59,6 +61,9 @@ export interface MockHertaBridgeOpts {
   readonly pickAttachmentsResult?: readonly string[] | null;
   /** Lets a test drive the refusal paths (turn in progress, too many). */
   readonly attachFilesResult?: { ok: boolean; message?: string };
+  /** Seed for the composer context ring. Null means the feature is unavailable. */
+  readonly contextUsageResult?: ContextUsage | null;
+  readonly requestContextCompactionResult?: ContextCompactionRequestResult;
   readonly removeAttachmentResult?: { ok: boolean; message?: string };
   readonly getDreamConfigResult?: DreamConfig;
   /** Seed for getBackendConfig (Settings → Coprocessor). Default
@@ -124,6 +129,8 @@ export interface MockHertaBridge {
     listCommandRules: number;
     removeCommandRule: string[];
     resyncRecord: number;
+    getContextUsage: string[];
+    requestContextCompaction: string[];
     checkForUpdate: number;
     restartAndInstall: number;
     listSessions: number;
@@ -211,6 +218,8 @@ export function createMockHertaBridge(
     listCommandRules: 0,
     removeCommandRule: [],
     resyncRecord: 0,
+    getContextUsage: [],
+    requestContextCompaction: [],
     checkForUpdate: 0,
     restartAndInstall: 0,
     listSessions: 0,
@@ -296,6 +305,14 @@ export function createMockHertaBridge(
     interrupt: async (turnId) => {
       calls.interrupt.push(turnId);
       return opts.interruptResult ?? { ok: true };
+    },
+    getContextUsage: async (sessionId) => {
+      calls.getContextUsage.push(sessionId);
+      return opts.contextUsageResult ?? null;
+    },
+    requestContextCompaction: async (sessionId) => {
+      calls.requestContextCompaction.push(sessionId);
+      return opts.requestContextCompactionResult ?? { ok: true };
     },
     rewindLastTurn: async (_sessionId) => {
       calls.rewindLastTurn += 1;

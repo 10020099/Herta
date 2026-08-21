@@ -379,6 +379,20 @@ export type SubmitTextResult =
   | { readonly turnId: string }
   | { readonly needsKey: true };
 
+/** Renderer-safe context projection metadata. The transcript is never deleted
+ * by compaction; these values describe the prompt Herta will send next. */
+export interface ContextUsage {
+  readonly usedTokens: number;
+  readonly contextWindowTokens: number;
+  readonly compactThresholdTokens: number;
+  readonly recapCharacters: number;
+  readonly compactionPending: boolean;
+}
+
+export type ContextCompactionRequestResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: "turn_in_progress" | "unavailable" };
+
 export interface Session {
   readonly sessionId: string;
   readonly workspaceRoot: string;
@@ -410,6 +424,11 @@ export interface Session {
   readonly turnInFlight: boolean;
 
   submitText(text: string): Promise<SubmitTextResult>;
+  /** Returns the current actor-prompt estimate for the active session. */
+  getContextUsage?(): ContextUsage;
+  /** Schedule a one-shot recap before the next submitted message. This never
+   * deletes the full JSONL transcript. */
+  requestContextCompaction?(): ContextCompactionRequestResult;
   /**
    * D2 (resume recovery): if this session ends on an ORPHANED user message — a
    * reply lost to a mid-stream app-close — regenerate the reply as a normal

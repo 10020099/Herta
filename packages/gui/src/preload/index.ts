@@ -17,6 +17,10 @@ const bridge: HertaBridge = {
   platform: process.platform,
   submitText: (text) => ipcRenderer.invoke(CMD.submitText, text),
   interrupt: (turnId) => ipcRenderer.invoke(CMD.interrupt, turnId),
+  getContextUsage: (sessionId) =>
+    ipcRenderer.invoke(CMD.getContextUsage, sessionId),
+  requestContextCompaction: (sessionId) =>
+    ipcRenderer.invoke(CMD.requestContextCompaction, sessionId),
   rewindLastTurn: (sessionId) =>
     ipcRenderer.invoke(CMD.rewindLastTurn, sessionId),
   maybePlayEasterEgg: () => ipcRenderer.invoke(CMD.maybePlayEasterEgg),

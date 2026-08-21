@@ -68,6 +68,7 @@ import type {
   AppServerConfig,
   AttachedFile,
   AttachResult,
+  ContextUsage,
   OverlayEvent,
   RecordEvent,
   RemoveAttachmentResult,
@@ -494,6 +495,21 @@ export class SessionImpl implements Session {
 
   get turnInFlight(): boolean {
     return this.currentTurn !== null;
+  }
+
+  getContextUsage(): ContextUsage {
+    return this.driver.getContextUsage();
+  }
+
+  requestContextCompaction() {
+    if (this.currentTurn !== null) {
+      return { ok: false as const, reason: "turn_in_progress" as const };
+    }
+    if (this.driver.getContextUsage().contextWindowTokens <= 0) {
+      return { ok: false as const, reason: "unavailable" as const };
+    }
+    this.driver.forceCompactNextTurn();
+    return { ok: true as const };
   }
 
   async submitText(

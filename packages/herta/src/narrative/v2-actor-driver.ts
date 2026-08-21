@@ -11,7 +11,10 @@ import type {
   V2RecordPersister,
 } from "@herta/core";
 import type { ActorHints } from "./actor-hints.js";
-import type { StaticHertaPrefix } from "./actor-prompt.js";
+import {
+  type StaticHertaPrefix,
+  serializeActorPrompt,
+} from "./actor-prompt.js";
 import { ActorTurnAbortedError, runActorCompletionTurn } from "./actor-turn.js";
 import { classifyIntent, lastNSpeechTurns } from "./intent-router.js";
 import {
@@ -21,6 +24,7 @@ import {
   resolveMetaThink,
 } from "./meta-think.js";
 import type { PromptLang } from "./prompt-lang.js";
+import { compactThreshold, estimatePromptTokens } from "./session-recap.js";
 import {
   type PreparedRecap,
   prepareTurnRecap,
@@ -208,6 +212,17 @@ export interface V2ActorDriverDeps {
  *
  * SPEC v0.2 §6 / Slice 6 Task 3 / Slice 7b §5.
  */
+/** A renderer-safe snapshot of the prompt projection currently used by Herta.
+ * The full transcript remains untouched; this measures the compacted prompt
+ * that will be sent on the next normal actor turn. */
+export interface ContextUsageSnapshot {
+  readonly usedTokens: number;
+  readonly contextWindowTokens: number;
+  readonly compactThresholdTokens: number;
+  readonly recapCharacters: number;
+  readonly compactionPending: boolean;
+}
+
 export class V2ActorDriver {
   private record: TerminalRecord = [];
   private persister: V2RecordPersister | undefined;
@@ -264,6 +279,49 @@ export class V2ActorDriver {
    *  by the next turn. Used by the /compact command. */
   forceCompactNextTurn(): void {
     this.forceCompactPending = true;
+  }
+
+  /** Estimate the actual compacted actor prompt instead of counting the raw
+   * transcript. This mirrors the normal turn projection: static prefix +
+   * valid persisted recap + un-compacted record tail. */
+  getContextUsage(): ContextUsageSnapshot {
+    const config = this.deps.recap?.config;
+    if (config === undefined) {
+      return {
+        usedTokens: 0,
+        contextWindowTokens: 0,
+        compactThresholdTokens: 0,
+        recapCharacters: 0,
+        compactionPending: this.forceCompactPending,
+      };
+    }
+    const rawCache = this.deps.recap?.cacheRead() ?? null;
+    const cache =
+      rawCache !== null &&
+      rawCache.lang === (this.deps.lang ?? "zh") &&
+      rawCache.boundaryIndex > 0 &&
+      rawCache.boundaryIndex < this.record.length &&
+      this.record[rawCache.boundaryIndex]?.kind === "user"
+        ? rawCache
+        : null;
+    const recap = cache?.recapText;
+    const recapBoundaryIndex = cache?.boundaryIndex ?? 0;
+    const prompt = serializeActorPrompt({
+      staticPrefix: this.deps.staticPrefix,
+      record: this.record,
+      priorTurnLength: this.record.length,
+      ...(recap !== undefined ? { recap } : {}),
+      recapBoundaryIndex,
+      openTag: "（我 说）",
+      lang: this.deps.lang ?? "zh",
+    });
+    return {
+      usedTokens: estimatePromptTokens(prompt),
+      contextWindowTokens: config.contextWindowTokens,
+      compactThresholdTokens: compactThreshold(config),
+      recapCharacters: recap?.length ?? 0,
+      compactionPending: this.forceCompactPending,
+    };
   }
 
   getCurrentIntentState(): MoodState {

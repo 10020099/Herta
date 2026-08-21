@@ -13,6 +13,8 @@ export const CMD = {
   listCommandRules: "session:listCommandRules",
   removeCommandRule: "session:removeCommandRule",
   resyncRecord: "session:resyncRecord",
+  getContextUsage: "session:getContextUsage",
+  requestContextCompaction: "session:requestContextCompaction",
   updateCheck: "update:check",
   updateRestart: "update:restartAndInstall",
   updateStatus: "update:status",
