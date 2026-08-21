@@ -405,6 +405,42 @@ export const en = {
   "app.crashReload": "Reload",
   "conversation.rowError": "This entry failed to render and was skipped.",
   "nav.mcp": "MCP services",
+  "nav.projectRules": "Project rules",
+  "nav.context": "Context",
+  "compaction.intro":
+    "Choose when Herta automatically compacts conversation history during a long session.",
+  "compaction.level": "Automatic compaction level",
+  "compaction.levelDesc":
+    "Thresholds use the estimated token usage of Herta's 1M-token context window.",
+  "compaction.minimal": "Minimal (200k)",
+  "compaction.low": "Low (400k)",
+  "compaction.standard": "Standard (600k)",
+  "compaction.balanced": "Balanced (700k)",
+  "compaction.max": "Maximum (872k)",
+  "compaction.applyNote":
+    "The change is saved; newly created or reopened sessions use this level.",
+  "compaction.unavailable":
+    "This runtime does not provide the context-compaction settings interface yet.",
+  "rules.intro":
+    "Manage rule files that are automatically injected into Herta and Brick for this project.",
+  "rules.scopeNote":
+    "Only .herta/rules.md and rules1.md, rules2.md, and similarly named files are managed. A saved change applies to the next request.",
+  "rules.unavailable":
+    "This runtime does not provide the project-rules management interface yet.",
+  "rules.loading": "Loading project rules…",
+  "rules.files": "Rule files",
+  "rules.empty":
+    "No project rules exist yet. Create one to inject it automatically into the next request.",
+  "rules.add": "Add rule",
+  "rules.content": "Markdown rule content",
+  "rules.contentDesc":
+    "Each rule file is limited to 20,000 characters. Files are combined in rules.md, rules1.md, rules2.md order.",
+  "rules.save": "Save rule",
+  "rules.saving": "Saving…",
+  "rules.saved": "Saved. It applies to the next request.",
+  "rules.saveFailed": "Could not save the project rule.",
+  "rules.delete": "Delete",
+  "rules.deleteFailed": "Could not delete the project rule.",
   "mcp.intro":
     "Manage MCP tool services for this workspace. Local stdio, remote Streamable HTTP, and legacy SSE are supported.",
   "mcp.scopeNote":

@@ -1,6 +1,7 @@
 import type { TerminalRecord, TerminalRecordBlock } from "@herta/core";
 import { describe, expect, it } from "vitest";
 import {
+  compactionConfigForLevel,
   compactThreshold,
   DEFAULT_COMPACTION_CONFIG,
   decideRecap,
@@ -67,6 +68,24 @@ describe("compactThreshold", () => {
         bufferFraction: 0.2,
       }),
     ).toBe(800);
+  });
+});
+
+describe("five-level compaction strategy", () => {
+  it.each([
+    ["minimal", 200_000, 600_000],
+    ["low", 400_000, 600_000],
+    ["standard", 600_000, 600_000],
+    ["balanced", 700_000, 690_000],
+    ["max", 872_000, 800_000],
+  ] as const)("%s uses a %i-token threshold and %i-token summarizer budget", (level, threshold, summarizerBudget) => {
+    const config = compactionConfigForLevel(level);
+    expect(compactThreshold(config)).toBe(threshold);
+    expect(config.maxSummarizerInputTokens).toBe(summarizerBudget);
+  });
+
+  it("defaults to the standard 600K strategy", () => {
+    expect(compactThreshold(DEFAULT_COMPACTION_CONFIG)).toBe(600_000);
   });
 });
 

@@ -86,6 +86,7 @@ import {
   createCompletionProvider,
 } from "./provider-factory.js";
 import type { AppServerConfig, ProviderType, ThinkingEffort } from "./types.js";
+import { loadProjectRules } from "./workspace-rules.js";
 
 // ── Backend stack ───────────────────────────────────────────────────────────
 
@@ -184,6 +185,9 @@ export function createBackendStack(opts: BackendStackOpts): BackendStack {
       contract === "minimal"
         ? shellWorkspaceHint(bashPath, wsHolder.current, lang)
         : undefined,
+    // Both agents read the same effective workspace rules on every request;
+    // the Herta half is wired in SessionImpl when it builds the actor driver.
+    projectRules: () => loadProjectRules(wsHolder.current).text,
   });
 
   // Permission rules attach to the shared engine.
@@ -261,6 +265,8 @@ export interface ActorStackOpts {
   /** Dream config for the reopen own-dream filter (app-server settings;
    *  the CLI passes nothing → defaults). */
   readonly dream?: AppServerConfig["dream"];
+  /** User-selected automatic-compaction threshold for this session. */
+  readonly compactionLevel?: AppServerConfig["compactionLevel"];
   /** Where `HERTA_DUMP_PROMPTS` writes `<sessionId>.prompts/` (transcript dir). */
   readonly promptDumpDir: string;
   /** A disk-loaded few-shot was rejected — a fact about the workspace's
@@ -429,6 +435,7 @@ export async function createActorStack(
     workspaceRoot,
     sessionId,
     enabled: true,
+    level: opts.compactionLevel,
     lang,
   });
 

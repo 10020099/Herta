@@ -49,3 +49,15 @@ export { RECORD_TAIL_BLOCKS, recordTail } from "./record-window.js";
 export { createSessionHost } from "./session-host.js";
 export type { SessionSearchHit } from "./session-search.js";
 export type * from "./types.js";
+export type {
+  ProjectRuleFile,
+  ProjectRulesSnapshot,
+} from "./workspace-rules.js";
+export {
+  isProjectRuleFileName,
+  listProjectRuleFiles,
+  loadProjectRules,
+  MAX_PROJECT_RULE_FILE_CHARS,
+  MAX_PROJECT_RULES_CHARS,
+  withProjectRules,
+} from "./workspace-rules.js";

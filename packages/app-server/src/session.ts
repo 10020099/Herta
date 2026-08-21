@@ -91,6 +91,7 @@ import {
   pickParticleClip,
 } from "./voice/particle-catalog.js";
 import { pickVetoReaction } from "./voice/veto-reaction.js";
+import { loadProjectRules, withProjectRules } from "./workspace-rules.js";
 
 /**
  * True when a withdrawn span includes a backend (板砖) done-marker that reports
@@ -1543,6 +1544,7 @@ export class SessionImpl implements Session {
       // Supervisor toggle is config-driven (default ON).
       supervisorEnabled: config.supervisor?.enabled ?? true,
       dream: config.dream,
+      compactionLevel: config.compactionLevel,
       promptDumpDir: config.transcriptDir,
       overrides: {
         ...(deps.providerOverrides?.actor !== undefined
@@ -1731,6 +1733,16 @@ export class SessionImpl implements Session {
       provider: actor.actorProvider,
       model: config.providers.actorModel,
       staticPrefix: actor.staticPrefix,
+      // Project rules are re-read for every request. The backend stack owns an
+      // equivalent getter, so Herta and Brick see the same rules even after a
+      // GUI edit or an effective-workspace switch.
+      staticPrefixForTurn: () => ({
+        ...actor.staticPrefix,
+        env: withProjectRules(
+          actor.staticPrefix.env,
+          loadProjectRules(wsHolder.current).text,
+        ),
+      }),
       bus,
       runtimeFactory,
       persister,

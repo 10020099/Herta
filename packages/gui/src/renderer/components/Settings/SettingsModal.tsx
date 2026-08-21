@@ -3,9 +3,11 @@ import type { MessageKey } from "../../i18n/keys.js";
 import { useT } from "../../i18n/LocaleProvider.js";
 import { OVERLAY_Z, useModalOverlay } from "../../lib/overlay-stack.js";
 import { BanzhuanSettings } from "./BanzhuanSettings.js";
+import { ContextSettings } from "./ContextSettings.js";
 import { DreamSettings } from "./DreamSettings.js";
 import { LanguageSettings } from "./LanguageSettings.js";
 import { McpSettings } from "./McpSettings.js";
+import { ProjectRulesSettings } from "./ProjectRulesSettings.js";
 import { ProviderSettings } from "./ProviderSettings.js";
 import { UpdateSettings } from "./UpdateSettings.js";
 import { VoiceSettings } from "./VoiceSettings.js";
@@ -240,6 +242,18 @@ const GROUPS = [
         labelKey: "nav.mcp" satisfies MessageKey,
         Icon: McpIcon,
         Pane: McpSettings,
+      },
+      {
+        key: "projectRules",
+        labelKey: "nav.projectRules" satisfies MessageKey,
+        Icon: McpIcon,
+        Pane: ProjectRulesSettings,
+      },
+      {
+        key: "context",
+        labelKey: "nav.context" satisfies MessageKey,
+        Icon: ChipIcon,
+        Pane: ContextSettings,
       },
     ],
   },

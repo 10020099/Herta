@@ -6,7 +6,10 @@ import {
   readRecapCache,
   writeRecapCache,
 } from "./recap-cache.js";
-import { DEFAULT_COMPACTION_CONFIG } from "./session-recap.js";
+import {
+  type CompactionLevel,
+  compactionConfigForLevel,
+} from "./session-recap.js";
 import {
   makeRecapSummarize,
   type RecapRuntime,
@@ -26,6 +29,8 @@ export interface BuildRecapRuntimeOpts {
   /** Whether automatic threshold compaction is on. Default `false`
    *  (wired-but-default-off; manual /compact bypasses this gate). */
   readonly enabled?: boolean;
+  /** Five-level automatic-compaction strategy. Defaults to `standard` (600K). */
+  readonly level?: CompactionLevel;
   /** Interaction language: selects the compiled prompt bundle for the
    *  guide/bio voice anchors and the recap's LLM-facing prose (summarizer
    *  instructions, elision notes, placeholder recaps) — becomes
@@ -62,9 +67,10 @@ export async function buildRecapRuntime(
     workspaceRoot,
     sessionId,
     enabled = false,
+    level,
     lang = "zh",
   } = opts;
-  const config = { ...DEFAULT_COMPACTION_CONFIG, enabled };
+  const config = { ...compactionConfigForLevel(level), enabled };
   const assets = promptAssetsFor(lang);
   // A head excerpt (序 + the self-intro) — a voice anchor, not the whole bio.
   const bio =

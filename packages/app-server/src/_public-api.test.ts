@@ -8,6 +8,15 @@ describe("@herta/app-server — public API surface", () => {
       [
         "createSessionHost",
         "defaultDirsFor",
+        // Workspace project-rule loading is shared by the session runtime and
+        // desktop GUI, so filename validation and prompt-boundary limits stay
+        // one canonical public implementation.
+        "isProjectRuleFileName",
+        "listProjectRuleFiles",
+        "loadProjectRules",
+        "MAX_PROJECT_RULE_FILE_CHARS",
+        "MAX_PROJECT_RULES_CHARS",
+        "withProjectRules",
         "loadMcpConfig",
         "mcpConfigPath",
         "parseMcpConfig",

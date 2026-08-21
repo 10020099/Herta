@@ -562,3 +562,32 @@ describe("minimal contract (ADR 0040)", () => {
     expect(sys).not.toMatch(/# Scope classification/);
   });
 });
+
+describe("BackendContextBuilder project rules", () => {
+  it("injects fresh project rules ahead of scoped repository instructions", () => {
+    let projectRules = "# 项目规则\n\n## rules.md\n\n第一次规则";
+    const builder = new BackendContextBuilder({
+      tools: new InMemoryToolRegistry(),
+      projectRules: () => projectRules,
+    });
+    const input = {
+      brief: sampleBrief,
+      userMessages: [],
+      scopedRepoInstructions: "现有项目说明",
+      scopedMemory: "",
+      messages: [],
+    };
+
+    expect(builder.build(input).scopedRepoInstructions).toBe(
+      "# 项目规则\n\n## rules.md\n\n第一次规则\n\n现有项目说明",
+    );
+
+    projectRules = "# 项目规则\n\n## rules2.md\n\n更新后的规则";
+    expect(builder.build(input).scopedRepoInstructions).toContain(
+      "更新后的规则",
+    );
+    expect(builder.build(input).scopedRepoInstructions).not.toContain(
+      "第一次规则",
+    );
+  });
+});

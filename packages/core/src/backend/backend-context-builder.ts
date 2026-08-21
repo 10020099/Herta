@@ -389,6 +389,11 @@ export interface BackendContextBuilderDeps {
    * "" → the line is omitted.
    */
   workspaceHint?: () => string | undefined;
+  /**
+   * Prompt-ready project rules. The getter is evaluated for every backend
+   * frame so edits to `.herta/rules*.md` apply on the next dispatch.
+   */
+  projectRules?: () => string;
 }
 
 export interface BackendBuildInput {
@@ -430,11 +435,13 @@ export class BackendContextBuilder {
   private readonly tools: ToolRegistry;
   private readonly contractKind: BackendContract;
   private readonly workspaceHint: (() => string | undefined) | undefined;
+  private readonly projectRules: (() => string) | undefined;
 
   constructor(deps: BackendContextBuilderDeps) {
     this.tools = deps.tools;
     this.contractKind = deps.contract ?? "standard";
     this.workspaceHint = deps.workspaceHint;
+    this.projectRules = deps.projectRules;
   }
 
   /** Which contract this builder emits (ADR 0040). */
@@ -467,9 +474,13 @@ export class BackendContextBuilder {
       sections.push(`${recentHeader}\n\n${input.recentDialogue}`);
     }
     if (userHistory.length > 0) sections.push(userHistory);
+    const projectRules = this.projectRules?.() ?? "";
+    const scopedRepoInstructions = [projectRules, input.scopedRepoInstructions]
+      .filter((section) => section.length > 0)
+      .join("\n\n");
     return {
       backendSystem: sections.join("\n\n"),
-      scopedRepoInstructions: input.scopedRepoInstructions,
+      scopedRepoInstructions,
       scopedMemory: input.scopedMemory,
       toolSchemas: this.tools.list().map((t) => t.schema()),
       messages: [...input.messages],

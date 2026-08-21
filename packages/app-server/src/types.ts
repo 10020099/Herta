@@ -98,6 +98,14 @@ export interface AppServerConfig {
    * (GUI, restart-to-apply).
    */
   readonly backendContract?: "standard" | "minimal";
+  /** Automatic context-compaction threshold for the 1M-token actor window.
+   * Defaults to `standard` (600K) when absent. */
+  readonly compactionLevel?:
+    | "minimal"
+    | "low"
+    | "standard"
+    | "balanced"
+    | "max";
   /** Anthropic: OutputConfig effort level. Sent as `output_config: { effort: "..." }`.
    *  Default "medium". */
   readonly anthropicOutputEffort?: ThinkingEffort;

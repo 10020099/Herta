@@ -5,6 +5,16 @@ import {
 } from "@herta/core";
 import type { PromptLang } from "./prompt-lang.js";
 
+/** User-selectable automatic-compaction thresholds for the 1M-token actor window. */
+export type CompactionLevel =
+  | "minimal"
+  | "low"
+  | "standard"
+  | "balanced"
+  | "max";
+
+export const DEFAULT_COMPACTION_LEVEL: CompactionLevel = "standard";
+
 export interface CompactionConfig {
   readonly enabled: boolean;
   readonly contextWindowTokens: number;
@@ -40,22 +50,29 @@ export interface CompactionConfig {
   readonly maxSummarizerInputTokens: number;
 }
 
-// Defaults sized for a chat-first WORKING SET, not for the DeepSeek V4
-// 1M-token window (retuned 2026-07-17; the original window-derived budgets
-// engaged at ~800K, which in practice meant compaction never ran — and a
-// prompt that large is a cost/latency/attention problem long before it is
-// an overflow problem). Sizing rationale: engage at ~200K estimated tokens
-// (window × 0.2 — bufferFraction is the fraction of the window kept FREE),
-// keep ~60K of recent conversation verbatim (the tail is *why* the
-// in-voice recap can be loose), and fold the older span into a ~6K-char
-// recap. The recent window (target AND cap) MUST stay well below the
-// compact threshold, with room for the static prefix + recap on top, or
-// compaction can't bring the prompt back under budget and would re-roll
-// every turn.
-export const DEFAULT_COMPACTION_CONFIG: CompactionConfig = {
+// The five levels deliberately make the 1M-token actor window a user choice.
+// `bufferFraction` remains the internal representation because the recap
+// boundary code is expressed in free-window space; the exported threshold is
+// what the GUI labels and what users reason about.
+const COMPACTION_LEVELS: Readonly<
+  Record<
+    CompactionLevel,
+    { thresholdTokens: number; maxSummarizerInputTokens: number }
+  >
+> = {
+  minimal: { thresholdTokens: 200_000, maxSummarizerInputTokens: 600_000 },
+  low: { thresholdTokens: 400_000, maxSummarizerInputTokens: 600_000 },
+  standard: { thresholdTokens: 600_000, maxSummarizerInputTokens: 600_000 },
+  balanced: { thresholdTokens: 700_000, maxSummarizerInputTokens: 690_000 },
+  max: { thresholdTokens: 872_000, maxSummarizerInputTokens: 800_000 },
+};
+
+const BASE_COMPACTION_CONFIG: Omit<
+  CompactionConfig,
+  "bufferFraction" | "maxSummarizerInputTokens"
+> = {
   enabled: true,
   contextWindowTokens: 1_000_000,
-  bufferFraction: 0.8, // engage at ~200K tokens (80% of the window kept free)
   recentWindowTokens: 60_000, // ~60K recent kept verbatim
   minRecentTurns: 4,
   maxRecentWindowTokens: 100_000, // hard cap on the verbatim tail
@@ -64,11 +81,30 @@ export const DEFAULT_COMPACTION_CONFIG: CompactionConfig = {
   rederiveEveryNAdvances: 6,
   maxConsecutiveRecapFailures: 3,
   breakerProbeEveryNSkips: 3,
-  maxSummarizerInputTokens: 600_000, // one summarizer call's raw-turns budget
 };
 
+/** Return a concrete recap configuration for one of the five UI levels. */
+export function compactionConfigForLevel(
+  level: CompactionLevel = DEFAULT_COMPACTION_LEVEL,
+): CompactionConfig {
+  const strategy = COMPACTION_LEVELS[level];
+  return {
+    ...BASE_COMPACTION_CONFIG,
+    bufferFraction:
+      1 - strategy.thresholdTokens / BASE_COMPACTION_CONFIG.contextWindowTokens,
+    maxSummarizerInputTokens: strategy.maxSummarizerInputTokens,
+  };
+}
+
+/** The standard 600K strategy is the backwards-compatible application default. */
+export const DEFAULT_COMPACTION_CONFIG: CompactionConfig =
+  compactionConfigForLevel(DEFAULT_COMPACTION_LEVEL);
+
 export function compactThreshold(cfg: CompactionConfig): number {
-  return Math.floor(cfg.contextWindowTokens * (1 - cfg.bufferFraction));
+  // Decimal free-space fractions (for example 0.8) can turn an exact 200K
+  // threshold into 199999.99999999997 in IEEE-754; strategy thresholds are
+  // contractual integers, so round to the nearest token rather than flooring.
+  return Math.round(cfg.contextWindowTokens * (1 - cfg.bufferFraction));
 }
 
 // Promoted to @herta/core (ADR 0025 slice 2) so the backend's context

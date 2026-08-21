@@ -50,6 +50,28 @@ export function isBackendContract(v: unknown): v is BackendContractChoice {
   return typeof v === "string" && BACKEND_CONTRACT_VALUES.includes(v);
 }
 
+/** Five automatic-compaction thresholds for the actor's 1M-token window. */
+export type CompactionLevelChoice =
+  | "minimal"
+  | "low"
+  | "standard"
+  | "balanced"
+  | "max";
+
+const COMPACTION_LEVEL_VALUES: readonly string[] = [
+  "minimal",
+  "low",
+  "standard",
+  "balanced",
+  "max",
+];
+
+export function isCompactionLevel(
+  value: unknown,
+): value is CompactionLevelChoice {
+  return typeof value === "string" && COMPACTION_LEVEL_VALUES.includes(value);
+}
+
 export interface AppSettings {
   readonly dream?: { readonly enabled?: boolean };
   readonly backend?: {
@@ -64,6 +86,10 @@ export interface AppSettings {
   readonly models?: {
     readonly actor?: ModelChoice;
     readonly backend?: ModelChoice;
+  };
+  /** Settings → Context: automatic-compaction threshold. */
+  readonly compaction?: {
+    readonly level?: CompactionLevelChoice;
   };
   /** Active provider type. Default "deepseek". */
   readonly activeProvider?: string;
@@ -86,10 +112,11 @@ export async function readAppSettings(
     if (typeof parsed !== "object" || parsed === null) return {};
     // A malformed nested section (e.g. a hand-edited `"dream": 5`) → fall back
     // to defaults rather than hand back a shape that violates AppSettings.
-    const { dream, backend, models } = parsed as {
+    const { dream, backend, models, compaction } = parsed as {
       dream?: unknown;
       backend?: unknown;
       models?: unknown;
+      compaction?: unknown;
     };
     if (dream !== undefined && (typeof dream !== "object" || dream === null)) {
       return {};
@@ -103,6 +130,12 @@ export async function readAppSettings(
     if (
       models !== undefined &&
       (typeof models !== "object" || models === null)
+    ) {
+      return {};
+    }
+    if (
+      compaction !== undefined &&
+      (typeof compaction !== "object" || compaction === null)
     ) {
       return {};
     }

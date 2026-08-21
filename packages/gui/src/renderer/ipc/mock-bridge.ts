@@ -20,6 +20,7 @@ import type {
 } from "@herta/app-server";
 import type {
   BackendConfig,
+  ContextCompactionConfig,
   DeepSeekKeyStatus,
   DreamConfig,
   HertaBridge,
@@ -27,6 +28,7 @@ import type {
   McpConfig,
   ModelConfig,
   NavBlockedEvent,
+  ProjectRuleFile,
   SessionError,
   SessionNoSession,
   SessionOpenFailure,
@@ -79,10 +81,14 @@ export interface MockHertaBridgeOpts {
   readonly getModelConfigResult?: ModelConfig;
   /** When true, setModelConfig rejects — same seam as failSetBackendConfig. */
   readonly failSetModelConfig?: boolean;
+  /** Seed for Settings → Context. Default `standard` (600K threshold). */
+  readonly contextCompactionConfig?: ContextCompactionConfig;
   /** Seed for Settings → MCP. Default has no configured servers. */
   readonly getMcpConfigResult?: McpConfig;
   /** When true, setMcpConfig rejects (simulates a failed configuration save). */
   readonly failSetMcpConfig?: boolean;
+  /** Seed for Settings → Project rules. Mutated by save/delete operations. */
+  readonly projectRules?: readonly ProjectRuleFile[];
   /** Seed the masked DeepSeek key status. Mutated by setDeepSeekKey /
    *  clearDeepSeekKey so tests observe the live status round-trip. */
   readonly deepSeekKeyStatus?: DeepSeekKeyStatus;
@@ -147,10 +153,15 @@ export interface MockHertaBridge {
     setDreamConfig: DreamConfig[];
     getBackendConfig: number;
     setBackendConfig: BackendConfig[];
+    getContextCompactionConfig: number;
+    setContextCompactionConfig: ContextCompactionConfig[];
     getModelConfig: number;
     setModelConfig: ModelConfig[];
     getMcpConfig: number;
     setMcpConfig: McpConfig[];
+    listProjectRules: number;
+    saveProjectRule: Array<[string, string]>;
+    deleteProjectRule: string[];
     getDeepSeekKeyStatus: number;
     setDeepSeekKey: string[];
     clearDeepSeekKey: number;
@@ -230,10 +241,15 @@ export function createMockHertaBridge(
     setDreamConfig: [],
     getBackendConfig: 0,
     setBackendConfig: [],
+    getContextCompactionConfig: 0,
+    setContextCompactionConfig: [],
     getModelConfig: 0,
     setModelConfig: [],
     getMcpConfig: 0,
     setMcpConfig: [],
+    listProjectRules: 0,
+    saveProjectRule: [],
+    deleteProjectRule: [],
     getDeepSeekKeyStatus: 0,
     setDeepSeekKey: [],
     clearDeepSeekKey: 0,
@@ -270,6 +286,9 @@ export function createMockHertaBridge(
   // Workspace-scoped MCP configuration, seeded then replaced on each successful
   // save so tests observe the same round-trip as the main-process handler.
   let mcpConfig: McpConfig = opts.getMcpConfigResult ?? { mcpServers: {} };
+  let contextCompactionConfig: ContextCompactionConfig =
+    opts.contextCompactionConfig ?? { level: "standard" };
+  let projectRules: ProjectRuleFile[] = [...(opts.projectRules ?? [])];
 
   // Live project command rules (ADR 0030), seeded then mutated by
   // removeCommandRule so tests observe the round-trip.
@@ -413,6 +432,25 @@ export function createMockHertaBridge(
       }
       mcpConfig = config;
     },
+    listProjectRules: async () => {
+      calls.listProjectRules += 1;
+      return projectRules;
+    },
+    saveProjectRule: async (name, content) => {
+      calls.saveProjectRule.push([name, content]);
+      const index = projectRules.findIndex((file) => file.name === name);
+      const next = { name, content };
+      projectRules =
+        index === -1
+          ? [...projectRules, next]
+          : projectRules.map((file, i) => (i === index ? next : file));
+      return { ok: true };
+    },
+    deleteProjectRule: async (name) => {
+      calls.deleteProjectRule.push(name);
+      projectRules = projectRules.filter((file) => file.name !== name);
+      return { ok: true };
+    },
     getDreamConfig: async () => {
       calls.getDreamConfig += 1;
       return opts.getDreamConfigResult ?? { enabled: true };
@@ -436,6 +474,14 @@ export function createMockHertaBridge(
       if (opts.failSetBackendConfig) {
         throw new Error("settings write failed");
       }
+    },
+    getContextCompactionConfig: async () => {
+      calls.getContextCompactionConfig += 1;
+      return contextCompactionConfig;
+    },
+    setContextCompactionConfig: async (cfg) => {
+      calls.setContextCompactionConfig.push(cfg);
+      contextCompactionConfig = cfg;
     },
     getModelConfig: async () => {
       calls.getModelConfig += 1;

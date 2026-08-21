@@ -114,6 +114,18 @@ export interface BackendConfig {
   readonly bashFound?: boolean;
 }
 
+/** Five automatic-compaction thresholds for Herta's 1M-token context window. */
+export type CompactionLevelChoice =
+  | "minimal"
+  | "low"
+  | "standard"
+  | "balanced"
+  | "max";
+
+export interface ContextCompactionConfig {
+  readonly level: CompactionLevelChoice;
+}
+
 /** The two DeepSeek models a stage can run on (2026-08-17). Exactly the names
  *  the completion endpoint accepts. */
 export type ModelChoice = "deepseek-v4-pro" | "deepseek-v4-flash";
@@ -157,6 +169,18 @@ export type McpServerConfig =
 /** Complete workspace-scoped MCP configuration. */
 export interface McpConfig {
   readonly mcpServers: Readonly<Record<string, McpServerConfig>>;
+}
+
+/** One editable `.herta/rules*.md` project-rule file. */
+export interface ProjectRuleFile {
+  readonly name: string;
+  readonly content: string;
+}
+
+/** Result of a restricted project-rule write. */
+export interface ProjectRuleSaveResult {
+  readonly ok: boolean;
+  readonly message?: string;
 }
 
 /** The UI chrome language (Settings → Language). */
@@ -353,6 +377,15 @@ export interface HertaBridge {
   /** Replace the workspace-scoped MCP configuration. New sessions use it; an
    *  already-open session keeps its established MCP clients until it is closed. */
   setMcpConfig?(config: McpConfig): Promise<void>;
+  /** List editable project rules for the active effective workspace. */
+  listProjectRules?(): Promise<readonly ProjectRuleFile[]>;
+  /** Save exactly `rules.md` or `rules` followed by digits and `.md`. */
+  saveProjectRule?(
+    name: string,
+    content: string,
+  ): Promise<ProjectRuleSaveResult>;
+  /** Delete one explicitly named project-rule file. */
+  deleteProjectRule?(name: string): Promise<ProjectRuleSaveResult>;
   /** Read the persisted Dream config (Settings → Dream). */
   getDreamConfig(): Promise<DreamConfig>;
   /** Persist the Dream config. Restart-to-apply (the running app-server reads
@@ -365,6 +398,10 @@ export interface HertaBridge {
   /** Persist the backend reasoning effort. Restart-to-apply (buildConfig
    *  reads it at the next bootstrap). Optional alongside getBackendConfig. */
   setBackendConfig?(cfg: BackendConfig): Promise<void>;
+  /** Read the saved automatic-compaction threshold. */
+  getContextCompactionConfig?(): Promise<ContextCompactionConfig>;
+  /** Persist the automatic-compaction threshold for subsequently opened sessions. */
+  setContextCompactionConfig?(cfg: ContextCompactionConfig): Promise<void>;
   /** Read the persisted per-stage model choice (Settings → DeepSeek → 模型,
    *  2026-08-17). OPTIONAL like the backend-config pair; the rows hide with
    *  it. */

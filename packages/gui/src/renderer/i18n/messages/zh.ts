@@ -388,6 +388,37 @@ export const zh = {
   "app.crashReload": "重新载入",
   "conversation.rowError": "这条记录渲染失败，已跳过。",
   "nav.mcp": "MCP 服务",
+  "nav.projectRules": "项目规则",
+  "nav.context": "上下文",
+  "compaction.intro": "设置黑塔在长对话中自动压缩历史的时机。",
+  "compaction.level": "自动压缩档位",
+  "compaction.levelDesc":
+    "阈值按黑塔 100 万 token 上下文窗口的实际估算用量计算。",
+  "compaction.minimal": "极低（200k）",
+  "compaction.low": "低（400k）",
+  "compaction.standard": "标准（600k）",
+  "compaction.balanced": "均衡（700k）",
+  "compaction.max": "最大（872k）",
+  "compaction.applyNote": "改动会保存；新建或重新打开的会话会使用该档位。",
+  "compaction.unavailable": "当前运行环境尚未提供上下文压缩设置接口。",
+  "rules.intro": "管理当前项目中自动注入黑塔与板砖上下文的规则文件。",
+  "rules.scopeNote":
+    "仅管理 .herta/rules.md 与 rules1.md、rules2.md 等规范文件名；保存后下一次请求立即生效。",
+  "rules.unavailable": "当前运行环境尚未提供项目规则管理接口。",
+  "rules.loading": "正在载入项目规则…",
+  "rules.files": "规则文件",
+  "rules.empty":
+    "尚未创建项目规则。新建规则文件后，它会在下一次请求自动注入上下文。",
+  "rules.add": "新建规则",
+  "rules.content": "Markdown 规则内容",
+  "rules.contentDesc":
+    "单个规则文件最多 20,000 个字符；多个文件按 rules.md、rules1.md、rules2.md 的顺序拼接。",
+  "rules.save": "保存规则",
+  "rules.saving": "保存中…",
+  "rules.saved": "已保存，下一次请求生效。",
+  "rules.saveFailed": "保存项目规则失败。",
+  "rules.delete": "删除",
+  "rules.deleteFailed": "删除项目规则失败。",
   "mcp.intro":
     "管理本工作区的 MCP 工具服务。支持本地 stdio、远程 Streamable HTTP 和兼容旧服务的 SSE。",
   "mcp.scopeNote":

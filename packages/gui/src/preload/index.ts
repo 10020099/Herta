@@ -60,10 +60,18 @@ const bridge: HertaBridge = {
   setDreamConfig: (cfg) => ipcRenderer.invoke(CMD.setDreamConfig, cfg),
   getBackendConfig: () => ipcRenderer.invoke(CMD.getBackendConfig),
   setBackendConfig: (cfg) => ipcRenderer.invoke(CMD.setBackendConfig, cfg),
+  getContextCompactionConfig: () =>
+    ipcRenderer.invoke(CMD.getContextCompactionConfig),
+  setContextCompactionConfig: (cfg) =>
+    ipcRenderer.invoke(CMD.setContextCompactionConfig, cfg),
   getModelConfig: () => ipcRenderer.invoke(CMD.getModelConfig),
   setModelConfig: (cfg) => ipcRenderer.invoke(CMD.setModelConfig, cfg),
   getMcpConfig: () => ipcRenderer.invoke(CMD.getMcpConfig),
   setMcpConfig: (config) => ipcRenderer.invoke(CMD.setMcpConfig, config),
+  listProjectRules: () => ipcRenderer.invoke(CMD.listProjectRules),
+  saveProjectRule: (name, content) =>
+    ipcRenderer.invoke(CMD.saveProjectRule, name, content),
+  deleteProjectRule: (name) => ipcRenderer.invoke(CMD.deleteProjectRule, name),
   getLocale: () => ipcRenderer.invoke(CMD.getLocale),
   setLocale: (locale) => ipcRenderer.invoke(CMD.setLocale, locale),
   getInteractionLanguage: () => ipcRenderer.invoke(CMD.getInteractionLanguage),

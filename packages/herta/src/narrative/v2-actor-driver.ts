@@ -85,6 +85,12 @@ export interface V2ActorDriverDeps {
   /** Structured static Herta prefix. See `StaticHertaPrefix` in
    *  `@herta/herta`'s narrative/actor-prompt. */
   readonly staticPrefix: StaticHertaPrefix;
+  /**
+   * Optional per-request static-prefix refresher. It is used for project-local
+   * rules that may change while a session stays open; all other prefix assets
+   * remain the stable bootstrap value above.
+   */
+  readonly staticPrefixForTurn?: () => StaticHertaPrefix;
   readonly bus: EventBus<AgentEvent>;
   readonly runtimeFactory: () => CodingAgentRuntime;
   /**
@@ -281,6 +287,10 @@ export class V2ActorDriver {
     this.forceCompactPending = true;
   }
 
+  private staticPrefixForCurrentRequest(): StaticHertaPrefix {
+    return this.deps.staticPrefixForTurn?.() ?? this.deps.staticPrefix;
+  }
+
   /** Estimate the actual compacted actor prompt instead of counting the raw
    * transcript. This mirrors the normal turn projection: static prefix +
    * valid persisted recap + un-compacted record tail. */
@@ -307,7 +317,7 @@ export class V2ActorDriver {
     const recap = cache?.recapText;
     const recapBoundaryIndex = cache?.boundaryIndex ?? 0;
     const prompt = serializeActorPrompt({
-      staticPrefix: this.deps.staticPrefix,
+      staticPrefix: this.staticPrefixForCurrentRequest(),
       record: this.record,
       priorTurnLength: this.record.length,
       ...(recap !== undefined ? { recap } : {}),
@@ -371,6 +381,7 @@ export class V2ActorDriver {
     voiceEligible = true,
   ): Promise<TerminalRecord> {
     const prevLen = this.record.length;
+    const staticPrefix = this.staticPrefixForCurrentRequest();
 
     // Slice 13: classify intent before the actor runs. Router failure
     // is non-fatal — we keep the prior state and proceed.
@@ -388,7 +399,7 @@ export class V2ActorDriver {
     this.forceCompactPending = false;
     const precomputedRecap: PreparedRecap = await prepareTurnRecap(
       prelimRecord,
-      this.deps.staticPrefix,
+      staticPrefix,
       this.deps.recap,
       forceCompact,
       signal,
@@ -540,7 +551,7 @@ export class V2ActorDriver {
       result = await runActorCompletionTurn({ record: this.record }, text, {
         provider: this.deps.provider,
         model: this.deps.model,
-        staticPrefix: this.deps.staticPrefix,
+        staticPrefix,
         bus: this.deps.bus,
         runtimeFactory: this.deps.runtimeFactory,
         sink: this.deps.sink,

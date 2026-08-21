@@ -1,11 +1,14 @@
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   type AppServerConfig,
   createSessionHost,
   defaultDirsFor,
+  isProjectRuleFileName,
+  listProjectRuleFiles,
   loadMcpConfig,
+  MAX_PROJECT_RULE_FILE_CHARS,
   type McpConfig,
   type ProviderType,
   recordTail,
@@ -46,6 +49,7 @@ import {
 import {
   isBackendContract,
   isBackendThinking,
+  isCompactionLevel,
   isModelChoice,
   readAppSettings,
   readAppSettingsSync,
@@ -253,6 +257,11 @@ export async function buildConfig(
         : isBackendContract(settings.backend?.contract)
           ? settings.backend.contract
           : "minimal",
+    // Five automatic-compaction strategies. Hand-edited / old settings fall
+    // back to the balanced default: standard (600K of the 1M actor window).
+    compactionLevel: isCompactionLevel(settings.compaction?.level)
+      ? settings.compaction.level
+      : "standard",
   };
 }
 
@@ -847,6 +856,29 @@ export function createSessionService(
         });
       },
     );
+    // Settings → Context: the automatic recap threshold. This mirrors the
+    // restart-to-apply settings above; a session's recap runtime is immutable
+    // once constructed, while subsequent sessions read the saved level.
+    handle(CMD.getContextCompactionConfig, async () => {
+      const s = await readAppSettings(appWorkspaceRoot());
+      return {
+        level: isCompactionLevel(s.compaction?.level)
+          ? s.compaction.level
+          : "standard",
+      };
+    });
+    handle(
+      CMD.setContextCompactionConfig,
+      async (_e, cfg: { level?: unknown }) => {
+        if (!isCompactionLevel(cfg?.level)) return;
+        const ws = appWorkspaceRoot();
+        const s = await readAppSettings(ws);
+        await writeAppSettings(ws, {
+          ...s,
+          compaction: { ...s.compaction, level: cfg.level },
+        });
+      },
+    );
     // Settings → DeepSeek → 模型: per-stage model (2026-08-17). Same
     // restart-to-apply contract; buildConfig reads it at the next bootstrap
     // (an env override, if set, still wins there — it is the dev/lab knob).
@@ -883,6 +915,49 @@ export function createSessionService(
     );
     handle(CMD.setMcpConfig, async (_e, config: unknown) => {
       await writeMcpConfig(appWorkspaceRoot(), config);
+    });
+    // Settings → Project rules. Unlike app-wide settings, these follow the
+    // active session's EFFECTIVE workspace, exactly like the runtime getters
+    // which inject them into Herta and Brick on each new request.
+    const projectRulesWorkspace = (): string =>
+      host?.activeSession?.backendWorkspace ?? appWorkspaceRoot();
+    handle(CMD.listProjectRules, async () =>
+      listProjectRuleFiles(projectRulesWorkspace()),
+    );
+    handle(CMD.saveProjectRule, async (_e, name: unknown, content: unknown) => {
+      if (typeof name !== "string" || !isProjectRuleFileName(name)) {
+        return { ok: false, message: "invalid rule filename" };
+      }
+      if (typeof content !== "string") {
+        return { ok: false, message: "rule content must be text" };
+      }
+      if (content.length > MAX_PROJECT_RULE_FILE_CHARS) {
+        return {
+          ok: false,
+          message: `rule files are limited to ${MAX_PROJECT_RULE_FILE_CHARS} characters`,
+        };
+      }
+      try {
+        const rulesDir = join(projectRulesWorkspace(), ".herta");
+        mkdirSync(rulesDir, { recursive: true });
+        writeFileSync(join(rulesDir, name), content, "utf-8");
+        return { ok: true };
+      } catch {
+        return { ok: false, message: "could not save project rule" };
+      }
+    });
+    handle(CMD.deleteProjectRule, async (_e, name: unknown) => {
+      if (typeof name !== "string" || !isProjectRuleFileName(name)) {
+        return { ok: false, message: "invalid rule filename" };
+      }
+      try {
+        rmSync(join(projectRulesWorkspace(), ".herta", name), {
+          force: true,
+        });
+        return { ok: true };
+      } catch {
+        return { ok: false, message: "could not delete project rule" };
+      }
     });
     // Settings → Language. App-global (per-user) preference; the renderer
     // applies it live, so this is just persistence. getLocale resolves a stored
