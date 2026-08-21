@@ -19,13 +19,15 @@ import { app, safeStorage } from "electron";
 
 export interface ProviderStatus {
   readonly type: ProviderType;
-  /** Whether a non-empty key is stored for this provider. */
   readonly set: boolean;
-  /** Last 4 characters of the key, for the "Connected · …last4" UI. Null when
-   *  unset. The full key is never sent to the renderer. */
   readonly hint: string | null;
-  /** False when the key is stored as plaintext (encryption unavailable). */
   readonly encrypted: boolean;
+  /** Safe-to-render configuration; API keys never cross IPC. */
+  readonly baseUrl?: string;
+  readonly actorModel?: string;
+  readonly backendModel?: string;
+  readonly thinking?: ThinkingEffort;
+  readonly anthropicOutputEffort?: ThinkingEffort;
 }
 
 export interface ProviderConfig {
@@ -136,11 +138,26 @@ function setKeyPlain(type: ProviderType, key: string): { encrypted: boolean } {
 /** Get the masked status for a provider. */
 export function getProviderStatus(type: ProviderType): ProviderStatus {
   const key = readKeyPlain(type);
-  if (key === null) return { type, set: false, hint: null, encrypted: false };
+  const stored = readConfigFile()[type];
+  const common = {
+    ...(stored?.baseUrl !== undefined ? { baseUrl: stored.baseUrl } : {}),
+    ...(stored?.actorModel !== undefined
+      ? { actorModel: stored.actorModel }
+      : {}),
+    ...(stored?.backendModel !== undefined
+      ? { backendModel: stored.backendModel }
+      : {}),
+    ...(stored?.thinking !== undefined ? { thinking: stored.thinking } : {}),
+    ...(stored?.anthropicOutputEffort !== undefined
+      ? { anthropicOutputEffort: stored.anthropicOutputEffort }
+      : {}),
+  };
+  if (key === null)
+    return { type, set: false, hint: null, encrypted: false, ...common };
   const encrypted =
     existsSync(keyEncPath(type)) && safeStorage.isEncryptionAvailable();
   const hint = key.length >= 4 ? key.slice(-4) : null;
-  return { type, set: true, hint, encrypted };
+  return { type, set: true, hint, encrypted, ...common };
 }
 
 /** Get the full provider config (including raw key — main process only). */
@@ -212,6 +229,19 @@ export function setProviderKey(
   };
   writeConfigFile(configs);
   return { encrypted };
+}
+
+/** Update saved non-secret settings while retaining the provider's stored key. */
+export function updateProviderConfig(
+  type: ProviderType,
+  opts: Omit<ProviderConfig, "type" | "apiKey">,
+): void {
+  if (readKeyPlain(type) === null) {
+    throw new Error(`Cannot update unconfigured provider "${type}"`);
+  }
+  const configs = readConfigFile();
+  configs[type] = { type, apiKey: "", ...opts };
+  writeConfigFile(configs);
 }
 
 /** Delete the stored key and config for a provider. */

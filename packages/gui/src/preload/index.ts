@@ -66,8 +66,9 @@ const bridge: HertaBridge = {
     ipcRenderer.invoke(CMD.setContextCompactionConfig, cfg),
   getModelConfig: () => ipcRenderer.invoke(CMD.getModelConfig),
   setModelConfig: (cfg) => ipcRenderer.invoke(CMD.setModelConfig, cfg),
-  getMcpConfig: () => ipcRenderer.invoke(CMD.getMcpConfig),
-  setMcpConfig: (config) => ipcRenderer.invoke(CMD.setMcpConfig, config),
+  getMcpConfig: (scope) => ipcRenderer.invoke(CMD.getMcpConfig, scope),
+  setMcpConfig: (config, scope) =>
+    ipcRenderer.invoke(CMD.setMcpConfig, config, scope),
   listProjectRules: () => ipcRenderer.invoke(CMD.listProjectRules),
   saveProjectRule: (name, content) =>
     ipcRenderer.invoke(CMD.saveProjectRule, name, content),
@@ -91,6 +92,8 @@ const bridge: HertaBridge = {
   getProviderStatus: (type) => ipcRenderer.invoke(CMD.getProviderStatus, type),
   setProviderKey: (type, key, opts) =>
     ipcRenderer.invoke(CMD.setProviderKey, type, key, opts),
+  updateProviderConfig: (type, opts) =>
+    ipcRenderer.invoke(CMD.updateProviderConfig, type, opts),
   clearProviderKey: (type) => ipcRenderer.invoke(CMD.clearProviderKey, type),
   windowMinimize: () => ipcRenderer.send(CMD.windowMinimize),
   windowToggleMaximize: () => ipcRenderer.send(CMD.windowToggleMaximize),

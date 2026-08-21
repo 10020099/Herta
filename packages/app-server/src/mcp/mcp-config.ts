@@ -24,6 +24,7 @@
 import { readFileSync } from "node:fs";
 import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { hertaHomeDir, projectHertaDir } from "../config-scope.js";
 
 export type McpTransport = "stdio" | "sse" | "streamable-http";
 
@@ -59,8 +60,29 @@ export interface McpConfig {
   mcpServers: Record<string, McpServerConfig>;
 }
 
+/** Project-scoped MCP configuration path. */
 export function mcpConfigPath(workspaceRoot: string): string {
-  return join(workspaceRoot, ".herta", "mcp.json");
+  return join(projectHertaDir(workspaceRoot), "mcp.json");
+}
+
+/** Visible user-scoped MCP configuration path (`~/.herta/mcp.json` by default). */
+export function globalMcpConfigPath(
+  opts: {
+    readonly home?: string;
+    readonly hertaHome?: string | undefined;
+  } = {},
+): string {
+  return join(hertaHomeDir(opts), "mcp.json");
+}
+
+/** Provenance retained for GUI override indicators without exposing secrets. */
+export type McpConfigScope = "global" | "project";
+
+export interface MergedMcpConfig extends McpConfig {
+  /** The winning layer for every server definition. */
+  readonly scopes: Readonly<Record<string, McpConfigScope>>;
+  /** Project names that replaced equally named global definitions. */
+  readonly overrides: readonly string[];
 }
 
 function stringMap(value: unknown): Record<string, string> | undefined {
@@ -169,7 +191,7 @@ export function parseMcpConfig(value: unknown): McpConfig {
   return { mcpServers: out };
 }
 
-/** Read the MCP configuration. Missing or corrupt files mean no servers. */
+/** Read one MCP configuration file. Missing or corrupt files mean no servers. */
 export function loadMcpConfig(workspaceRoot: string): McpConfig {
   try {
     return parseMcpConfig(
@@ -180,13 +202,65 @@ export function loadMcpConfig(workspaceRoot: string): McpConfig {
   }
 }
 
+/** Read the user-wide MCP configuration without consulting Electron userData. */
+export function loadGlobalMcpConfig(
+  opts: {
+    readonly home?: string;
+    readonly hertaHome?: string | undefined;
+  } = {},
+): McpConfig {
+  try {
+    return parseMcpConfig(
+      JSON.parse(readFileSync(globalMcpConfigPath(opts), "utf-8")),
+    );
+  } catch {
+    return { mcpServers: {} };
+  }
+}
+
+/**
+ * Merge user-wide and project MCP entries for a new session. Project entries
+ * win on a name collision, so a repository can override a personal default
+ * without changing any other project.
+ */
+export function mergeMcpConfigs(
+  global: McpConfig,
+  project: McpConfig,
+): MergedMcpConfig {
+  const mcpServers: Record<string, McpServerConfig> = { ...global.mcpServers };
+  const scopes: Record<string, McpConfigScope> = Object.fromEntries(
+    Object.keys(global.mcpServers).map((name) => [name, "global" as const]),
+  );
+  const overrides: string[] = [];
+  for (const [name, config] of Object.entries(project.mcpServers)) {
+    if (Object.hasOwn(mcpServers, name)) overrides.push(name);
+    mcpServers[name] = config;
+    scopes[name] = "project";
+  }
+  return { mcpServers, scopes, overrides };
+}
+
+/** Load the complete effective MCP set for one workspace. */
+export function loadEffectiveMcpConfig(
+  workspaceRoot: string,
+  opts: {
+    readonly home?: string;
+    readonly hertaHome?: string | undefined;
+  } = {},
+): MergedMcpConfig {
+  return mergeMcpConfigs(
+    loadGlobalMcpConfig(opts),
+    loadMcpConfig(workspaceRoot),
+  );
+}
+
 /**
  * Persist a complete MCP configuration using a temp-file rename. Unlike the
  * reader, this validates every named entry so callers get a clear failure
  * rather than losing malformed data during a save.
  */
-export async function writeMcpConfig(
-  workspaceRoot: string,
+async function writeMcpConfigAtPath(
+  path: string,
   value: unknown,
 ): Promise<void> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -200,7 +274,6 @@ export async function writeMcpConfig(
   ) {
     throw new TypeError("MCP configuration must contain an mcpServers object");
   }
-
   const normalized: Record<string, McpServerConfig> = {};
   for (const [name, entry] of Object.entries(servers)) {
     if (name.trim().length === 0) {
@@ -212,8 +285,6 @@ export async function writeMcpConfig(
     }
     normalized[name] = config;
   }
-
-  const path = mcpConfigPath(workspaceRoot);
   await mkdir(dirname(path), { recursive: true });
   const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
   try {
@@ -224,9 +295,26 @@ export async function writeMcpConfig(
     );
     await rename(tmp, path);
   } catch (error) {
-    await rm(tmp, { force: true }).catch(() => {
-      /* cleanup failure must not hide the original write error */
-    });
+    await rm(tmp, { force: true }).catch(() => undefined);
     throw error;
   }
+}
+
+/** Persist one project-scoped MCP configuration. */
+export async function writeMcpConfig(
+  workspaceRoot: string,
+  value: unknown,
+): Promise<void> {
+  await writeMcpConfigAtPath(mcpConfigPath(workspaceRoot), value);
+}
+
+/** Persist the visible user-scoped MCP configuration. */
+export async function writeGlobalMcpConfig(
+  value: unknown,
+  opts: {
+    readonly home?: string;
+    readonly hertaHome?: string | undefined;
+  } = {},
+): Promise<void> {
+  await writeMcpConfigAtPath(globalMcpConfigPath(opts), value);
 }

@@ -29,6 +29,7 @@ export const en = {
   "provider.replaceKey": "Replace key…",
   "provider.keyAria": "{provider} API Key",
   "provider.save": "Save",
+  "provider.saveConfig": "Save configuration",
   "provider.verifying": "Verifying…",
   "provider.deleteKey": "Delete key",
   "provider.deleting": "Deleting…",
@@ -443,6 +444,9 @@ export const en = {
   "rules.deleteFailed": "Could not delete the project rule.",
   "mcp.intro":
     "Manage MCP tool services for this workspace. Local stdio, remote Streamable HTTP, and legacy SSE are supported.",
+  "mcp.scopeLabel": "MCP configuration scope",
+  "mcp.scopeGlobal": "Global (all workspaces)",
+  "mcp.scopeProject": "Project (current workspace)",
   "mcp.scopeNote":
     "Changes are saved in .herta/mcp.json. New sessions use the updated configuration; open sessions keep their existing connections.",
   "mcp.unavailable":

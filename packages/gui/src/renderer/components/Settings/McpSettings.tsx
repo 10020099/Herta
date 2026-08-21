@@ -3,6 +3,7 @@ import { useHertaBridge } from "../../context/HertaBridgeContext.js";
 import { useT } from "../../i18n/LocaleProvider.js";
 import type {
   McpConfig,
+  McpConfigScope,
   McpServerConfig,
   McpTransport,
 } from "../../ipc/bridge-types.js";
@@ -142,6 +143,8 @@ export function McpSettings(): JSX.Element {
     bridge.getMcpConfig !== undefined && bridge.setMcpConfig !== undefined;
   const nextId = useRef(1);
   const [servers, setServers] = useState<McpServerDraft[]>([]);
+  const [scope, setScope] = useState<McpConfigScope>("project");
+  const [expandedServer, setExpandedServer] = useState<number | null>(null);
   const [loading, setLoading] = useState(supported);
   const [loadFailed, setLoadFailed] = useState(false);
   const [saveFailed, setSaveFailed] = useState(false);
@@ -152,7 +155,7 @@ export function McpSettings(): JSX.Element {
   useEffect(() => {
     if (!supported) return;
     let alive = true;
-    void bridge.getMcpConfig?.().then(
+    void bridge.getMcpConfig?.(scope).then(
       (config) => {
         if (!alive) return;
         setServers(
@@ -171,7 +174,7 @@ export function McpSettings(): JSX.Element {
     return () => {
       alive = false;
     };
-  }, [bridge, supported]);
+  }, [bridge, scope, supported]);
 
   const updateServer = (
     id: number,
@@ -190,12 +193,15 @@ export function McpSettings(): JSX.Element {
   const addServer = (): void => {
     setSaved(false);
     setInvalid(false);
-    setServers((current) => [...current, emptyDraft(nextId.current++)]);
+    const draft = emptyDraft(nextId.current++);
+    setExpandedServer(draft.id);
+    setServers((current) => [...current, draft]);
   };
 
   const removeServer = (id: number): void => {
     setSaved(false);
     setInvalid(false);
+    setExpandedServer((current) => (current === id ? null : current));
     setServers((current) => current.filter((server) => server.id !== id));
   };
 
@@ -210,7 +216,7 @@ export function McpSettings(): JSX.Element {
     setInvalid(false);
     setSaveFailed(false);
     setSaved(false);
-    void bridge.setMcpConfig(config).then(
+    void bridge.setMcpConfig(config, scope).then(
       () => {
         setSaving(false);
         setSaved(true);
@@ -235,6 +241,23 @@ export function McpSettings(): JSX.Element {
     <section className="mcp-settings" aria-busy={loading}>
       <p className="settings-intro">{t("mcp.intro")}</p>
       <p className="mcp-settings-note">{t("mcp.scopeNote")}</p>
+      <fieldset className="mcp-scope-tabs">
+        <legend className="sr-only">{t("mcp.scopeLabel")}</legend>
+        <button
+          className={`provider-tab${scope === "global" ? " is-active" : ""}`}
+          type="button"
+          onClick={() => setScope("global")}
+        >
+          {t("mcp.scopeGlobal")}
+        </button>
+        <button
+          className={`provider-tab${scope === "project" ? " is-active" : ""}`}
+          type="button"
+          onClick={() => setScope("project")}
+        >
+          {t("mcp.scopeProject")}
+        </button>
+      </fieldset>
 
       {loading && <p className="settings-note">{t("mcp.loading")}</p>}
       {!loading && loadFailed && (
@@ -253,9 +276,28 @@ export function McpSettings(): JSX.Element {
           return (
             <div className="mcp-server-card" key={server.id}>
               <div className="mcp-server-card-head">
-                <span className="mcp-server-index">
-                  {t("mcp.server").replace("{n}", String(index + 1))}
-                </span>
+                <button
+                  className="mcp-server-summary"
+                  type="button"
+                  onClick={() =>
+                    setExpandedServer((current) =>
+                      current === server.id ? null : server.id,
+                    )
+                  }
+                  aria-expanded={expandedServer === server.id}
+                >
+                  <span className="mcp-server-index">
+                    {server.name ||
+                      t("mcp.server").replace("{n}", String(index + 1))}
+                  </span>
+                  <span className="mcp-server-summary-transport">
+                    {server.transport === "stdio"
+                      ? t("mcp.transport.stdio")
+                      : server.transport === "sse"
+                        ? t("mcp.transport.sse")
+                        : t("mcp.transport.http")}
+                  </span>
+                </button>
                 <button
                   className="settings-key-delete"
                   type="button"
@@ -269,161 +311,175 @@ export function McpSettings(): JSX.Element {
                 </button>
               </div>
 
-              <div className="mcp-field-grid">
-                <div className="settings-field">
-                  <label
-                    className="settings-field-label"
-                    htmlFor={`${prefix}-name`}
-                  >
-                    {t("mcp.name")}
-                  </label>
-                  <input
-                    id={`${prefix}-name`}
-                    className="settings-field-input"
-                    type="text"
-                    value={server.name}
-                    onChange={(event) =>
-                      updateServer(server.id, { name: event.target.value })
-                    }
-                    placeholder={t("mcp.namePlaceholder")}
-                    autoComplete="off"
-                  />
-                </div>
-                <div className="settings-field">
-                  <label
-                    className="settings-field-label"
-                    htmlFor={`${prefix}-transport`}
-                  >
-                    {t("mcp.transport")}
-                  </label>
-                  <select
-                    id={`${prefix}-transport`}
-                    className="settings-field-select"
-                    value={server.transport}
-                    onChange={(event) =>
-                      updateServer(server.id, {
-                        transport: event.target.value as McpTransport,
-                      })
-                    }
-                  >
-                    <option value="stdio">{t("mcp.transport.stdio")}</option>
-                    <option value="streamable-http">
-                      {t("mcp.transport.http")}
-                    </option>
-                    <option value="sse">{t("mcp.transport.sse")}</option>
-                  </select>
-                </div>
-              </div>
+              {expandedServer === server.id && (
+                <div className="mcp-server-details">
+                  <div className="mcp-field-grid">
+                    <div className="settings-field">
+                      <label
+                        className="settings-field-label"
+                        htmlFor={`${prefix}-name`}
+                      >
+                        {t("mcp.name")}
+                      </label>
+                      <input
+                        id={`${prefix}-name`}
+                        className="settings-field-input"
+                        type="text"
+                        value={server.name}
+                        onChange={(event) =>
+                          updateServer(server.id, { name: event.target.value })
+                        }
+                        placeholder={t("mcp.namePlaceholder")}
+                        autoComplete="off"
+                      />
+                    </div>
+                    <div className="settings-field">
+                      <label
+                        className="settings-field-label"
+                        htmlFor={`${prefix}-transport`}
+                      >
+                        {t("mcp.transport")}
+                      </label>
+                      <select
+                        id={`${prefix}-transport`}
+                        className="settings-field-select"
+                        value={server.transport}
+                        onChange={(event) =>
+                          updateServer(server.id, {
+                            transport: event.target.value as McpTransport,
+                          })
+                        }
+                      >
+                        <option value="stdio">
+                          {t("mcp.transport.stdio")}
+                        </option>
+                        <option value="streamable-http">
+                          {t("mcp.transport.http")}
+                        </option>
+                        <option value="sse">{t("mcp.transport.sse")}</option>
+                      </select>
+                    </div>
+                  </div>
 
-              {!remote ? (
-                <>
-                  <div className="settings-field">
-                    <label
-                      className="settings-field-label"
-                      htmlFor={`${prefix}-command`}
-                    >
-                      {t("mcp.command")}
-                    </label>
-                    <input
-                      id={`${prefix}-command`}
-                      className="settings-field-input"
-                      type="text"
-                      value={server.command}
-                      onChange={(event) =>
-                        updateServer(server.id, { command: event.target.value })
-                      }
-                      placeholder={t("mcp.commandPlaceholder")}
-                      autoComplete="off"
-                    />
-                  </div>
-                  <div className="settings-field">
-                    <label
-                      className="settings-field-label"
-                      htmlFor={`${prefix}-args`}
-                    >
-                      {t("mcp.args")}
-                    </label>
-                    <p className="settings-field-desc">{t("mcp.argsDesc")}</p>
-                    <textarea
-                      id={`${prefix}-args`}
-                      className="mcp-textarea"
-                      value={server.argsText}
-                      onChange={(event) =>
-                        updateServer(server.id, {
-                          argsText: event.target.value,
-                        })
-                      }
-                      placeholder={t("mcp.argsPlaceholder")}
-                      rows={3}
-                    />
-                  </div>
-                  <div className="settings-field">
-                    <label
-                      className="settings-field-label"
-                      htmlFor={`${prefix}-env`}
-                    >
-                      {t("mcp.env")}
-                    </label>
-                    <p className="settings-field-desc">{t("mcp.envDesc")}</p>
-                    <textarea
-                      id={`${prefix}-env`}
-                      className="mcp-textarea"
-                      value={server.envText}
-                      onChange={(event) =>
-                        updateServer(server.id, { envText: event.target.value })
-                      }
-                      placeholder={t("mcp.envPlaceholder")}
-                      rows={3}
-                      spellCheck={false}
-                    />
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className="settings-field">
-                    <label
-                      className="settings-field-label"
-                      htmlFor={`${prefix}-url`}
-                    >
-                      {t("mcp.url")}
-                    </label>
-                    <input
-                      id={`${prefix}-url`}
-                      className="settings-field-input"
-                      type="url"
-                      value={server.url}
-                      onChange={(event) =>
-                        updateServer(server.id, { url: event.target.value })
-                      }
-                      placeholder={t("mcp.urlPlaceholder")}
-                      autoComplete="url"
-                    />
-                  </div>
-                  <div className="settings-field">
-                    <label
-                      className="settings-field-label"
-                      htmlFor={`${prefix}-headers`}
-                    >
-                      {t("mcp.headers")}
-                    </label>
-                    <p className="settings-field-desc">
-                      {t("mcp.headersDesc")}
-                    </p>
-                    <textarea
-                      id={`${prefix}-headers`}
-                      className="mcp-textarea"
-                      value={server.headersText}
-                      onChange={(event) =>
-                        updateServer(server.id, {
-                          headersText: event.target.value,
-                        })
-                      }
-                      placeholder={t("mcp.headersPlaceholder")}
-                      rows={3}
-                      spellCheck={false}
-                    />
-                  </div>
-                </>
+                  {!remote ? (
+                    <>
+                      <div className="settings-field">
+                        <label
+                          className="settings-field-label"
+                          htmlFor={`${prefix}-command`}
+                        >
+                          {t("mcp.command")}
+                        </label>
+                        <input
+                          id={`${prefix}-command`}
+                          className="settings-field-input"
+                          type="text"
+                          value={server.command}
+                          onChange={(event) =>
+                            updateServer(server.id, {
+                              command: event.target.value,
+                            })
+                          }
+                          placeholder={t("mcp.commandPlaceholder")}
+                          autoComplete="off"
+                        />
+                      </div>
+                      <div className="settings-field">
+                        <label
+                          className="settings-field-label"
+                          htmlFor={`${prefix}-args`}
+                        >
+                          {t("mcp.args")}
+                        </label>
+                        <p className="settings-field-desc">
+                          {t("mcp.argsDesc")}
+                        </p>
+                        <textarea
+                          id={`${prefix}-args`}
+                          className="mcp-textarea"
+                          value={server.argsText}
+                          onChange={(event) =>
+                            updateServer(server.id, {
+                              argsText: event.target.value,
+                            })
+                          }
+                          placeholder={t("mcp.argsPlaceholder")}
+                          rows={3}
+                        />
+                      </div>
+                      <div className="settings-field">
+                        <label
+                          className="settings-field-label"
+                          htmlFor={`${prefix}-env`}
+                        >
+                          {t("mcp.env")}
+                        </label>
+                        <p className="settings-field-desc">
+                          {t("mcp.envDesc")}
+                        </p>
+                        <textarea
+                          id={`${prefix}-env`}
+                          className="mcp-textarea"
+                          value={server.envText}
+                          onChange={(event) =>
+                            updateServer(server.id, {
+                              envText: event.target.value,
+                            })
+                          }
+                          placeholder={t("mcp.envPlaceholder")}
+                          rows={3}
+                          spellCheck={false}
+                        />
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="settings-field">
+                        <label
+                          className="settings-field-label"
+                          htmlFor={`${prefix}-url`}
+                        >
+                          {t("mcp.url")}
+                        </label>
+                        <input
+                          id={`${prefix}-url`}
+                          className="settings-field-input"
+                          type="url"
+                          value={server.url}
+                          onChange={(event) =>
+                            updateServer(server.id, { url: event.target.value })
+                          }
+                          placeholder={t("mcp.urlPlaceholder")}
+                          autoComplete="url"
+                        />
+                      </div>
+                      <div className="settings-field">
+                        <label
+                          className="settings-field-label"
+                          htmlFor={`${prefix}-headers`}
+                        >
+                          {t("mcp.headers")}
+                        </label>
+                        <p className="settings-field-desc">
+                          {t("mcp.headersDesc")}
+                        </p>
+                        <textarea
+                          id={`${prefix}-headers`}
+                          className="mcp-textarea"
+                          value={server.headersText}
+                          onChange={(event) =>
+                            updateServer(server.id, {
+                              headersText: event.target.value,
+                            })
+                          }
+                          placeholder={t("mcp.headersPlaceholder")}
+                          rows={3}
+                          spellCheck={false}
+                        />
+                      </div>
+                    </>
+                  )}
+                </div>
               )}
             </div>
           );

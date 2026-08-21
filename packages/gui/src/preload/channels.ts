@@ -55,6 +55,7 @@ export const CMD = {
   setActiveProvider: "settings:setActiveProvider",
   getProviderStatus: "settings:getProviderStatus",
   setProviderKey: "settings:setProviderKey",
+  updateProviderConfig: "settings:updateProviderConfig",
   clearProviderKey: "settings:clearProviderKey",
   windowMinimize: "window:minimize",
   windowToggleMaximize: "window:toggleMaximize",

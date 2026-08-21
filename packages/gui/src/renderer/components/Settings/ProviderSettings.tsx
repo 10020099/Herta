@@ -136,12 +136,13 @@ export function ProviderSettings(): JSX.Element {
   useEffect(() => {
     const status = statuses[selectedProvider];
     if (status?.set) {
+      const defaults = PROVIDER_DEFAULTS[selectedProvider];
       setDraftKey("");
-      setDraftBaseUrl("");
-      setDraftActorModel("");
-      setDraftBackendModel("");
-      setDraftThinking("high");
-      setDraftAnthropicEffort("medium");
+      setDraftBaseUrl(status.baseUrl ?? defaults.baseUrl);
+      setDraftActorModel(status.actorModel ?? defaults.actorModel);
+      setDraftBackendModel(status.backendModel ?? defaults.backendModel);
+      setDraftThinking(status.thinking ?? "high");
+      setDraftAnthropicEffort(status.anthropicOutputEffort ?? "medium");
     } else {
       const defaults = PROVIDER_DEFAULTS[selectedProvider];
       setDraftKey("");
@@ -158,20 +159,26 @@ export function ProviderSettings(): JSX.Element {
 
   const onSave = async (): Promise<void> => {
     const key = draftKey.trim();
-    if (key.length === 0 || locked) return;
+    if ((key.length === 0 && !statuses[selectedProvider]?.set) || locked)
+      return;
     setSaving(true);
     setFailed(false);
     setRejected(false);
     setUnverified(false);
     try {
-      await bridge.setProviderKey?.(selectedProvider, key, {
+      const config = {
         baseUrl: draftBaseUrl.trim() || undefined,
         actorModel: draftActorModel.trim() || undefined,
         backendModel: draftBackendModel.trim() || undefined,
         thinking: draftThinking === "high" ? undefined : draftThinking,
         anthropicOutputEffort:
           selectedProvider === "anthropic" ? draftAnthropicEffort : undefined,
-      });
+      };
+      if (key.length > 0) {
+        await bridge.setProviderKey?.(selectedProvider, key, config);
+      } else {
+        await bridge.updateProviderConfig?.(selectedProvider, config);
+      }
       // Refresh status
       const newStatus =
         (await bridge.getProviderStatus?.(selectedProvider)) ?? null;
@@ -303,10 +310,14 @@ export function ProviderSettings(): JSX.Element {
         <button
           type="button"
           className="settings-key-save"
-          disabled={draftKey.trim().length === 0 || locked}
+          disabled={(draftKey.trim().length === 0 && !status?.set) || locked}
           onClick={() => void onSave()}
         >
-          {saving ? t("provider.verifying") : t("provider.save")}
+          {saving
+            ? t("provider.verifying")
+            : status?.set && draftKey.trim().length === 0
+              ? t("provider.saveConfig")
+              : t("provider.save")}
         </button>
       </div>
 

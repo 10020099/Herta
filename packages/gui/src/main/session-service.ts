@@ -7,6 +7,7 @@ import {
   defaultDirsFor,
   isProjectRuleFileName,
   listProjectRuleFiles,
+  loadGlobalMcpConfig,
   loadMcpConfig,
   MAX_PROJECT_RULE_FILE_CHARS,
   type McpConfig,
@@ -15,6 +16,7 @@ import {
   type Session,
   type SessionHost,
   type SessionMetadata,
+  writeGlobalMcpConfig,
   writeMcpConfig,
 } from "@herta/app-server";
 import { SessionFileError } from "@herta/core";
@@ -66,6 +68,7 @@ import {
   readProviderConfig,
   setDeepSeekKey,
   setProviderKey,
+  updateProviderConfig,
 } from "./key-store.js";
 import { resolveVoiceRoot } from "./voice-path.js";
 
@@ -906,16 +909,27 @@ export function createSessionService(
         });
       },
     );
-    // Settings → MCP: one complete configuration per Herta workspace. A
-    // running session owns already-connected clients, so this applies when the
-    // next session is opened (or after the app is restarted).
+    // Settings → MCP: project scope follows the active session's effective
+    // workspace; global scope is the visible `~/.herta/mcp.json` layer.
+    const mcpWorkspace = (): string =>
+      host?.activeSession?.backendWorkspace ?? appWorkspaceRoot();
     handle(
       CMD.getMcpConfig,
-      async (): Promise<McpConfig> => loadMcpConfig(appWorkspaceRoot()),
+      async (
+        _e,
+        scope: "global" | "project" = "project",
+      ): Promise<McpConfig> =>
+        scope === "global"
+          ? loadGlobalMcpConfig()
+          : loadMcpConfig(mcpWorkspace()),
     );
-    handle(CMD.setMcpConfig, async (_e, config: unknown) => {
-      await writeMcpConfig(appWorkspaceRoot(), config);
-    });
+    handle(
+      CMD.setMcpConfig,
+      async (_e, config: unknown, scope: "global" | "project" = "project") => {
+        if (scope === "global") await writeGlobalMcpConfig(config);
+        else await writeMcpConfig(mcpWorkspace(), config);
+      },
+    );
     // Settings → Project rules. Unlike app-wide settings, these follow the
     // active session's EFFECTIVE workspace, exactly like the runtime getters
     // which inject them into Herta and Brick on each new request.
@@ -1095,6 +1109,10 @@ export function createSessionService(
         return { encrypted };
       },
     );
+    handle(CMD.updateProviderConfig, async (_e, type: ProviderType, opts) => {
+      updateProviderConfig(type, opts);
+      return getProviderStatus(type);
+    });
     handle(CMD.clearProviderKey, (_e, type: ProviderType) => {
       clearProviderKey(type);
       const s = readAppSettingsSync(appWorkspaceRoot());

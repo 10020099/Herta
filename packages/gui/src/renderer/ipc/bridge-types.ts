@@ -171,6 +171,9 @@ export interface McpConfig {
   readonly mcpServers: Readonly<Record<string, McpServerConfig>>;
 }
 
+/** The visible user layer or the active workspace layer of MCP configuration. */
+export type McpConfigScope = "global" | "project";
+
 /** One editable `.herta/rules*.md` project-rule file. */
 export interface ProjectRuleFile {
   readonly name: string;
@@ -243,6 +246,12 @@ export interface ProviderStatus {
   readonly set: boolean;
   readonly hint: string | null;
   readonly encrypted: boolean;
+  /** Non-secret fields read back from the saved provider configuration. */
+  readonly baseUrl?: string;
+  readonly actorModel?: string;
+  readonly backendModel?: string;
+  readonly thinking?: ThinkingEffort;
+  readonly anthropicOutputEffort?: ThinkingEffort;
 }
 
 /** Thinking/reasoning effort level.
@@ -371,12 +380,12 @@ export interface HertaBridge {
    *  `File.path`, so only the preload can answer this — the renderer never
    *  holds a File beyond the drop handler. */
   pathForFile(file: File): string;
-  /** Read the workspace-scoped MCP configuration. OPTIONAL so the web demo
-   *  and legacy bridge fakes can omit the full MCP management page. */
-  getMcpConfig?(): Promise<McpConfig>;
-  /** Replace the workspace-scoped MCP configuration. New sessions use it; an
-   *  already-open session keeps its established MCP clients until it is closed. */
-  setMcpConfig?(config: McpConfig): Promise<void>;
+  /** Read a visible global or active-workspace MCP layer. OPTIONAL so the web
+   *  demo and legacy bridge fakes can omit the full MCP management page. */
+  getMcpConfig?(scope?: McpConfigScope): Promise<McpConfig>;
+  /** Replace the selected MCP layer. New sessions use it; an already-open
+   *  session keeps its established MCP clients until it is closed. */
+  setMcpConfig?(config: McpConfig, scope?: McpConfigScope): Promise<void>;
   /** List editable project rules for the active effective workspace. */
   listProjectRules?(): Promise<readonly ProjectRuleFile[]>;
   /** Save exactly `rules.md` or `rules` followed by digits and `.md`. */
@@ -481,6 +490,18 @@ export interface HertaBridge {
       anthropicOutputEffort?: ThinkingEffort;
     },
   ): Promise<{ encrypted: boolean }>;
+  /** Update a configured provider's non-secret settings without replacing its key. */
+  updateProviderConfig?(
+    type: ProviderType,
+    opts: {
+      baseUrl?: string;
+      actorModel?: string;
+      backendModel?: string;
+      routerModel?: string;
+      thinking?: ThinkingEffort;
+      anthropicOutputEffort?: ThinkingEffort;
+    },
+  ): Promise<ProviderStatus>;
   /** Delete a provider's stored key. */
   clearProviderKey?(type: ProviderType): Promise<void>;
   /** Custom caption buttons (the native titleBarOverlay was dropped — its

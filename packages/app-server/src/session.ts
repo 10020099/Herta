@@ -51,7 +51,7 @@ import {
   SLOW_MS_PER_CHAR,
 } from "./bus-streaming-sink.js";
 import { connectMcpServers } from "./mcp/connect.js";
-import { loadMcpConfig } from "./mcp/mcp-config.js";
+import { loadEffectiveMcpConfig } from "./mcp/mcp-config.js";
 import { OverlayAskResolver } from "./overlay-ask-resolver.js";
 import { createChatProvider } from "./provider-factory.js";
 import { recordTail } from "./record-window.js";
@@ -91,7 +91,7 @@ import {
   pickParticleClip,
 } from "./voice/particle-catalog.js";
 import { pickVetoReaction } from "./voice/veto-reaction.js";
-import { loadProjectRules, withProjectRules } from "./workspace-rules.js";
+import { loadEffectiveRules, withProjectRules } from "./workspace-rules.js";
 
 /**
  * True when a withdrawn span includes a backend (板砖) done-marker that reports
@@ -1463,7 +1463,7 @@ export class SessionImpl implements Session {
     // dispose is registered on the session's close path so spawned MCP server
     // processes never leak past the session.
     const mcp = await connectMcpServers(
-      loadMcpConfig(workspaceRoot).mcpServers,
+      loadEffectiveMcpConfig(opts.effectiveWorkspace).mcpServers,
     );
     const backend = createBackendStack({
       wsHolder,
@@ -1740,7 +1740,7 @@ export class SessionImpl implements Session {
         ...actor.staticPrefix,
         env: withProjectRules(
           actor.staticPrefix.env,
-          loadProjectRules(wsHolder.current).text,
+          loadEffectiveRules(wsHolder.current).text,
         ),
       }),
       bus,

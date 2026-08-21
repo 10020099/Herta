@@ -29,19 +29,32 @@ export type {
 // import it by relative path.
 export type { DefaultDirs, DefaultDirsOpts } from "./config-helpers.js";
 export { defaultDirsFor } from "./config-helpers.js";
+export type { HertaConfigScope } from "./config-scope.js";
+export {
+  hertaConfigDir,
+  hertaHomeDir,
+  projectHertaDir,
+} from "./config-scope.js";
 export type {
   McpConfig,
+  McpConfigScope,
   McpServerConfig,
   McpTransport,
+  MergedMcpConfig,
   SseMcpServerConfig,
   StdioMcpServerConfig,
   StreamableHttpMcpServerConfig,
 } from "./mcp/mcp-config.js";
 export {
+  globalMcpConfigPath,
+  loadEffectiveMcpConfig,
+  loadGlobalMcpConfig,
   loadMcpConfig,
   mcpConfigPath,
+  mergeMcpConfigs,
   parseMcpConfig,
   parseMcpServerConfig,
+  writeGlobalMcpConfig,
   writeMcpConfig,
 } from "./mcp/mcp-config.js";
 export type { RecordTail } from "./record-window.js";
@@ -56,6 +69,8 @@ export type {
 export {
   isProjectRuleFileName,
   listProjectRuleFiles,
+  listRuleFiles,
+  loadEffectiveRules,
   loadProjectRules,
   MAX_PROJECT_RULE_FILE_CHARS,
   MAX_PROJECT_RULES_CHARS,

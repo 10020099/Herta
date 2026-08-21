@@ -86,7 +86,7 @@ import {
   createCompletionProvider,
 } from "./provider-factory.js";
 import type { AppServerConfig, ProviderType, ThinkingEffort } from "./types.js";
-import { loadProjectRules } from "./workspace-rules.js";
+import { loadEffectiveRules } from "./workspace-rules.js";
 
 // ── Backend stack ───────────────────────────────────────────────────────────
 
@@ -187,7 +187,7 @@ export function createBackendStack(opts: BackendStackOpts): BackendStack {
         : undefined,
     // Both agents read the same effective workspace rules on every request;
     // the Herta half is wired in SessionImpl when it builds the actor driver.
-    projectRules: () => loadProjectRules(wsHolder.current).text,
+    projectRules: () => loadEffectiveRules(wsHolder.current).text,
   });
 
   // Permission rules attach to the shared engine.

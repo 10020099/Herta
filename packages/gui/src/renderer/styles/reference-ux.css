@@ -5779,3 +5779,39 @@ button.session-item__badge--dismiss {
   font-size: 12.5px;
   color: #1f7a3d;
 }
+
+/* Collapsible MCP service cards: keep a multi-server configuration scannable. */
+.mcp-server-summary {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 9px;
+  padding: 5px 0;
+  text-align: left;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+.mcp-server-summary::before {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  content: "";
+  background: #9ca3af;
+  border-radius: 50%;
+}
+.mcp-server-summary:hover .mcp-server-index,
+.mcp-server-summary:focus-visible .mcp-server-index { color: var(--accent-deep, #4d86ff); }
+.mcp-server-summary:focus-visible { border-radius: 5px; outline: 2px solid rgba(77, 134, 255, .32); outline-offset: 2px; }
+.mcp-server-summary-transport {
+  overflow: hidden;
+  margin-left: auto;
+  color: var(--muted, #6b7280);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mcp-server-details { padding-top: 3px; }
+.mcp-server-card:has(.mcp-server-summary[aria-expanded="true"]) { border-color: rgba(77, 134, 255, .38); box-shadow: 0 4px 16px rgba(35, 62, 105, .07); }

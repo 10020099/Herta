@@ -26,6 +26,7 @@ export const zh = {
   "provider.replaceKey": "更换密钥…",
   "provider.keyAria": "{provider} API 密钥",
   "provider.save": "保存",
+  "provider.saveConfig": "保存配置",
   "provider.verifying": "验证中…",
   "provider.deleteKey": "删除密钥",
   "provider.deleting": "删除中…",
@@ -421,6 +422,9 @@ export const zh = {
   "rules.deleteFailed": "删除项目规则失败。",
   "mcp.intro":
     "管理本工作区的 MCP 工具服务。支持本地 stdio、远程 Streamable HTTP 和兼容旧服务的 SSE。",
+  "mcp.scopeLabel": "MCP 配置范围",
+  "mcp.scopeGlobal": "全局（所有工作区）",
+  "mcp.scopeProject": "项目（当前工作区）",
   "mcp.scopeNote":
     "更改保存到 .herta/mcp.json；新建会话会使用新的配置，已打开的会话保持现有连接。",
   "mcp.unavailable": "当前运行环境尚未提供 MCP 配置接口。",
