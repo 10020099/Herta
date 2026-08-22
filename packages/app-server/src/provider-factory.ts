@@ -80,6 +80,15 @@ function anthropicEffort(t: ThinkingEffort | undefined): string | undefined {
   return t;
 }
 
+/** Normalize the two base-URL forms third-party OpenAI-compatible dashboards
+ * commonly publish. The runtime only ever appends `/chat/completions`, so it
+ * must receive a canonical `/v1` prefix exactly once. */
+export function normalizeOpenAICompatibleBaseUrl(baseUrl: string): string {
+  const normalized = baseUrl.trim().replace(/\/+$/, "");
+  if (normalized.length === 0) return normalized;
+  return normalized.endsWith("/v1") ? normalized : `${normalized}/v1`;
+}
+
 /** Chat-mode adapter for the coding backend / router / supervisor / title. */
 export function createChatProvider(
   opts: ChatProviderFactoryOpts,
@@ -127,7 +136,7 @@ export function createChatProvider(
       });
     case "openai-compat":
       return new OpenAICompatibleProvider({
-        baseUrl,
+        baseUrl: normalizeOpenAICompatibleBaseUrl(baseUrl),
         apiKey: opts.apiKey,
         model: opts.model,
         ...(opts.temperature !== undefined
@@ -182,7 +191,7 @@ export function createCompletionProvider(
       // DeepSeek on its dedicated legacy adapter; this mode instead shares
       // `/v1/chat/completions` with backend, router, supervisor and title.
       return new OpenAICompatibleChatCompletionProvider({
-        baseUrl,
+        baseUrl: normalizeOpenAICompatibleBaseUrl(baseUrl),
         apiKey: opts.apiKey,
       });
     default: {
