@@ -39,6 +39,9 @@ describe("ProviderSettings model discovery", () => {
     const { mock, bridge } = configuredBridge(["model-z", "model-a"]);
     renderPane(bridge);
 
+    // The status query and its draft-value reset are asynchronous; wait for
+    // the saved address before exercising the draft-forwarding contract.
+    await screen.findByDisplayValue("https://api.example.com/v1");
     const fetch = await screen.findByRole("button", { name: "Fetch models" });
     fireEvent.click(fetch);
     await waitFor(() =>
