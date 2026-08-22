@@ -1,6 +1,9 @@
 import type { CompletionEvent } from "@herta/core";
 import { describe, expect, it } from "vitest";
-import { OpenAICompatibleCompletionProvider } from "./completion-provider.js";
+import {
+  OpenAICompatibleChatCompletionProvider,
+  OpenAICompatibleCompletionProvider,
+} from "./completion-provider.js";
 
 function sseResponse(chunks: string[]): Response {
   const body = `${chunks.map((c) => `data: ${c}\n\n`).join("")}data: [DONE]\n\n`;
@@ -177,5 +180,45 @@ describe("OpenAICompatibleCompletionProvider", () => {
       }
     }).rejects.toBeDefined();
     expect(ac.signal.aborted).toBe(true);
+  });
+});
+
+describe("OpenAICompatibleChatCompletionProvider", () => {
+  it("uses chat completions for a /v1 third-party base URL", async () => {
+    let capturedUrl = "";
+    let capturedBody: Record<string, unknown> | undefined;
+    const provider = new OpenAICompatibleChatCompletionProvider({
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "sk",
+      fetchImpl: async (url, init) => {
+        capturedUrl = String(url);
+        capturedBody = JSON.parse(String(init?.body));
+        return sseResponse([
+          JSON.stringify({
+            choices: [{ delta: { content: "黑塔。" }, finish_reason: null }],
+          }),
+          JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] }),
+        ]);
+      },
+    });
+
+    await expect(
+      collect(
+        provider.streamCompletion(
+          { model: "third-party-model", prompt: "p", stop: ["END"] },
+          new AbortController().signal,
+        ),
+      ),
+    ).resolves.toEqual([
+      { type: "text-delta", text: "黑塔。" },
+      { type: "finish", reason: "stop" },
+    ]);
+    expect(capturedUrl).toBe("https://api.example.com/v1/chat/completions");
+    expect(capturedBody).toMatchObject({
+      model: "third-party-model",
+      messages: [{ role: "user", content: "p" }],
+      stop: ["END"],
+      stream: true,
+    });
   });
 });

@@ -95,6 +95,10 @@ export interface MockHertaBridgeOpts {
   /** Seed the masked DeepSeek key status. Mutated by setDeepSeekKey /
    *  clearDeepSeekKey so tests observe the live status round-trip. */
   readonly deepSeekKeyStatus?: DeepSeekKeyStatus;
+  /** Safe model IDs returned by the main-process model discovery method. */
+  readonly providerModels?: readonly string[];
+  /** Make model discovery reject for settings error-state tests. */
+  readonly failFetchProviderModels?: boolean;
   /** When true, setDeepSeekKey rejects every key (simulates a wrong key that
    *  fails the validation check) — returns `{ ok: false, reason: "rejected" }`
    *  and leaves the status unchanged. */
@@ -167,6 +171,7 @@ export interface MockHertaBridge {
     saveProjectRule: Array<[string, string]>;
     deleteProjectRule: string[];
     getDeepSeekKeyStatus: number;
+    fetchProviderModels: Array<[string, string | undefined]>;
     setDeepSeekKey: string[];
     clearDeepSeekKey: number;
     getCloseToTray: number;
@@ -256,6 +261,7 @@ export function createMockHertaBridge(
     saveProjectRule: [],
     deleteProjectRule: [],
     getDeepSeekKeyStatus: 0,
+    fetchProviderModels: [],
     setDeepSeekKey: [],
     clearDeepSeekKey: 0,
     getCloseToTray: 0,
@@ -548,7 +554,20 @@ export function createMockHertaBridge(
       hint: null,
       encrypted: false,
     }),
+    fetchProviderModels: async (type, baseUrl) => {
+      calls.fetchProviderModels.push([type, baseUrl]);
+      if (opts.failFetchProviderModels === true) {
+        throw new Error("model discovery failed");
+      }
+      return { models: opts.providerModels ?? [] };
+    },
     setProviderKey: async (_type, _key) => ({ encrypted: true }),
+    updateProviderConfig: async (type) => ({
+      type,
+      set: false,
+      hint: null,
+      encrypted: false,
+    }),
     clearProviderKey: async () => {},
     getLocale: async () => "en" as const,
     setLocale: async () => {},

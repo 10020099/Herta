@@ -5823,3 +5823,41 @@ button.session-item__badge--dismiss {
 }
 .mcp-server-details { padding-top: 3px; }
 .mcp-server-card:has(.mcp-server-summary[aria-expanded="true"]) { border-color: rgba(77, 134, 255, .38); box-shadow: 0 4px 16px rgba(35, 62, 105, .07); }
+
+/* ── Provider model discovery ────────────────────────────────────────────
+   The model selectors intentionally reuse `.settings-select-*`: their
+   inline-flex trigger takes the selected model's natural width instead of a
+   fixed long input, matching the Coprocessor selector. */
+.provider-models-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.provider-models-fetch {
+  flex: 0 0 auto;
+  padding: 4px 9px;
+  border: 1px solid var(--hairline, rgba(0, 0, 0, 0.12));
+  border-radius: 8px;
+  background: var(--glass-a55);
+  color: var(--accent, #2f7d92);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    background-color 120ms ease;
+}
+.provider-models-fetch:hover:not(:disabled) {
+  border-color: var(--accent, #2f7d92);
+  background: var(--glass-a82);
+}
+.provider-models-fetch:disabled {
+  color: var(--muted-4);
+  cursor: not-allowed;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .provider-models-fetch { transition: none; }
+}

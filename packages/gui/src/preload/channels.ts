@@ -55,6 +55,7 @@ export const CMD = {
   getActiveProvider: "settings:getActiveProvider",
   setActiveProvider: "settings:setActiveProvider",
   getProviderStatus: "settings:getProviderStatus",
+  fetchProviderModels: "settings:fetchProviderModels",
   setProviderKey: "settings:setProviderKey",
   updateProviderConfig: "settings:updateProviderConfig",
   clearProviderKey: "settings:clearProviderKey",

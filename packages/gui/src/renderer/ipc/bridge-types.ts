@@ -248,6 +248,11 @@ export type ProviderType =
   | "anthropic"
   | "openai-compat";
 
+/** Safe model-list payload returned from main; credentials never cross this boundary. */
+export interface ProviderModelList {
+  readonly models: readonly string[];
+}
+
 /** Provider masked status for the renderer. */
 export interface ProviderStatus {
   readonly type: ProviderType;
@@ -488,6 +493,12 @@ export interface HertaBridge {
   setActiveProvider?(type: ProviderType): Promise<void>;
   /** Get masked status for a specific provider. */
   getProviderStatus?(type: ProviderType): Promise<ProviderStatus>;
+  /** Fetch model IDs with the provider key held in the main process. */
+  fetchProviderModels?(
+    type: ProviderType,
+    /** Optional not-yet-saved base URL draft. */
+    baseUrl?: string,
+  ): Promise<ProviderModelList>;
   /** Set API key + optional config for a provider. */
   setProviderKey?(
     type: ProviderType,

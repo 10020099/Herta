@@ -78,6 +78,7 @@ import {
   setProviderKey,
   updateProviderConfig,
 } from "./key-store.js";
+import { fetchProviderModels } from "./provider-models.js";
 import { resolveVoiceRoot } from "./voice-path.js";
 
 type Send = (channel: string, payload: unknown) => void;
@@ -258,6 +259,25 @@ export async function buildConfig(
     (devBaseUrl !== undefined && devBaseUrl !== "" ? devBaseUrl : undefined) ??
     defaults.baseUrl;
 
+  const actorModel =
+    providerConfig?.actorModel ??
+    process.env.HERTA_ACTOR_MODEL ??
+    (isModelChoice(settings.models?.actor)
+      ? settings.models.actor
+      : defaults.actorModel);
+  const backendModel =
+    providerConfig?.backendModel ??
+    process.env.HERTA_BACKEND_MODEL ??
+    (isModelChoice(settings.models?.backend)
+      ? settings.models.backend
+      : defaults.backendModel);
+  // Provider defaults supply an explicit router model where one exists. For
+  // third-party OpenAI-compatible services it is intentionally absent, so use
+  // the chosen backend model rather than sending `model: ""` on mood-routing,
+  // recap and title requests.
+  const routerModel =
+    providerConfig?.routerModel ?? (defaults.routerModel || backendModel);
+
   return {
     workspaceRoot: cwd,
     ...dirs,
@@ -271,19 +291,9 @@ export async function buildConfig(
       // Per-provider dispatch (DeepSeek completion, OpenAI responses, Anthropic
       // messages, openai-compat chat) happens in @herta/app-server's
       // provider-factory, keyed on `providers.type`.
-      actorModel:
-        providerConfig?.actorModel ??
-        process.env.HERTA_ACTOR_MODEL ??
-        (isModelChoice(settings.models?.actor)
-          ? settings.models.actor
-          : defaults.actorModel),
-      backendModel:
-        providerConfig?.backendModel ??
-        process.env.HERTA_BACKEND_MODEL ??
-        (isModelChoice(settings.models?.backend)
-          ? settings.models.backend
-          : defaults.backendModel),
-      routerModel: defaults.routerModel,
+      actorModel,
+      backendModel,
+      routerModel,
       ...(baseUrl ? { baseUrl } : {}),
     },
     // Backend reasoning effort — supports all three major providers' "max" mode.
@@ -1147,6 +1157,20 @@ export function createSessionService(
     handle(CMD.getProviderStatus, (_e, type: ProviderType) => {
       return getProviderStatus(type);
     });
+    handle(
+      CMD.fetchProviderModels,
+      async (_e, type: ProviderType, draftBaseUrl?: string) => {
+        const config = readProviderConfig(type);
+        if (config === null) {
+          throw new Error("Save an API key before fetching models");
+        }
+        return fetchProviderModels({
+          type,
+          apiKey: config.apiKey,
+          baseUrl: draftBaseUrl?.trim() || config.baseUrl,
+        });
+      },
+    );
     handle(
       CMD.setProviderKey,
       async (_e, type: ProviderType, key: string, opts) => {

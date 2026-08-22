@@ -24,7 +24,7 @@ import {
   anthropicProvider,
   deepseekCompletionProvider,
   deepseekProvider,
-  OpenAICompatibleCompletionProvider,
+  OpenAICompatibleChatCompletionProvider,
   OpenAICompatibleProvider,
   openaiResponsesCompletionProvider,
   openaiResponsesProvider,
@@ -174,10 +174,13 @@ export function createCompletionProvider(
         ...(opts.maxTokens !== undefined ? { maxTokens: opts.maxTokens } : {}),
       });
     case "openai-compat":
-      return new OpenAICompatibleCompletionProvider({
+      // Third-party "OpenAI-compatible" gateways commonly implement the
+      // chat-completions protocol but not legacy text completions. Keep
+      // DeepSeek on its dedicated legacy adapter; this mode instead shares
+      // `/v1/chat/completions` with backend, router, supervisor and title.
+      return new OpenAICompatibleChatCompletionProvider({
         baseUrl,
         apiKey: opts.apiKey,
-        path: "/v1/completions",
       });
     default: {
       const _exhaustive: never = opts.type;

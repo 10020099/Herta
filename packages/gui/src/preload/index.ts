@@ -91,6 +91,8 @@ const bridge: HertaBridge = {
   getActiveProvider: () => ipcRenderer.invoke(CMD.getActiveProvider),
   setActiveProvider: (type) => ipcRenderer.invoke(CMD.setActiveProvider, type),
   getProviderStatus: (type) => ipcRenderer.invoke(CMD.getProviderStatus, type),
+  fetchProviderModels: (type, baseUrl) =>
+    ipcRenderer.invoke(CMD.fetchProviderModels, type, baseUrl),
   setProviderKey: (type, key, opts) =>
     ipcRenderer.invoke(CMD.setProviderKey, type, key, opts),
   updateProviderConfig: (type, opts) =>

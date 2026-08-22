@@ -91,7 +91,22 @@ export function ProviderSettings(): JSX.Element {
   const [unverified, setUnverified] = useState(false);
   const [statusFailed, setStatusFailed] = useState(false);
 
+  // `/v1/models` is queried only through main after a key is saved. The
+  // renderer receives model IDs, never credentials or provider response bodies.
+  const [fetchedModels, setFetchedModels] = useState<readonly string[]>([]);
+  const [fetchingModels, setFetchingModels] = useState(false);
+  const [modelFetchFailed, setModelFetchFailed] = useState(false);
+
   const locked = busy || saving;
+  const status = statuses[selectedProvider];
+  const isActive = activeProvider === selectedProvider;
+  const defaults = PROVIDER_DEFAULTS[selectedProvider];
+  const needsThinkingBudget = selectedProvider === "anthropic";
+
+  const modelOptionsFor = (current: string) =>
+    [...new Set([current.trim(), ...fetchedModels])]
+      .filter((model) => model.length > 0)
+      .map((model) => ({ value: model, label: model }));
 
   // Load statuses on mount
   useEffect(() => {
@@ -155,6 +170,8 @@ export function ProviderSettings(): JSX.Element {
     setRejected(false);
     setUnverified(false);
     setFailed(false);
+    setFetchedModels([]);
+    setModelFetchFailed(false);
   }, [selectedProvider, statuses]);
 
   const onSave = async (): Promise<void> => {
@@ -195,6 +212,27 @@ export function ProviderSettings(): JSX.Element {
     }
   };
 
+  const onFetchModels = async (): Promise<void> => {
+    if (locked || status?.set !== true) return;
+    setFetchingModels(true);
+    setModelFetchFailed(false);
+    try {
+      const result = await bridge.fetchProviderModels?.(
+        selectedProvider,
+        draftBaseUrl.trim() || undefined,
+      );
+      if (result === undefined || result.models.length === 0) {
+        throw new Error("model discovery returned no models");
+      }
+      setFetchedModels(result.models);
+    } catch {
+      setFetchedModels([]);
+      setModelFetchFailed(true);
+    } finally {
+      setFetchingModels(false);
+    }
+  };
+
   const onDelete = async (): Promise<void> => {
     if (locked) return;
     setSaving(true);
@@ -219,11 +257,6 @@ export function ProviderSettings(): JSX.Element {
       // ignore
     }
   };
-
-  const status = statuses[selectedProvider];
-  const isActive = activeProvider === selectedProvider;
-  const defaults = PROVIDER_DEFAULTS[selectedProvider];
-  const needsThinkingBudget = selectedProvider === "anthropic";
 
   return (
     <>
@@ -334,32 +367,79 @@ export function ProviderSettings(): JSX.Element {
         />
       </div>
 
-      {/* Actor model (optional) */}
-      <div className="settings-field">
-        <span className="settings-field-label">{t("provider.actorModel")}</span>
-        <input
-          type="text"
-          className="settings-field-input"
-          placeholder={defaults.actorModel || "model-name"}
-          value={draftActorModel}
-          disabled={locked}
-          onChange={(e) => setDraftActorModel(e.target.value)}
-        />
+      {/* Model discovery + role choices. The custom Select shares the
+          Coprocessor's interaction language and sizes to the chosen model. */}
+      <div className="settings-field provider-models-field">
+        <div className="provider-models-heading">
+          <span className="settings-field-label">{t("provider.models")}</span>
+          <button
+            type="button"
+            className="provider-models-fetch"
+            disabled={locked || status?.set !== true || fetchingModels}
+            onClick={() => void onFetchModels()}
+          >
+            {fetchingModels
+              ? t("provider.models.fetching")
+              : t("provider.models.fetch")}
+          </button>
+        </div>
+        <p className="settings-field-desc">{t("provider.models.desc")}</p>
+        {modelFetchFailed && (
+          <p className="settings-note is-error">
+            {t("provider.models.failed")}
+          </p>
+        )}
+        {status?.set !== true && (
+          <p className="settings-note">{t("provider.models.saveFirst")}</p>
+        )}
       </div>
 
-      {/* Backend model (optional) */}
+      {/* Actor model */}
+      <div className="settings-field">
+        <span className="settings-field-label">{t("provider.actorModel")}</span>
+        {fetchedModels.length > 0 ? (
+          <Select<string>
+            value={draftActorModel}
+            options={modelOptionsFor(draftActorModel)}
+            onChange={setDraftActorModel}
+            ariaLabel={t("provider.actorModel")}
+            disabled={locked}
+          />
+        ) : (
+          <input
+            type="text"
+            className="settings-field-input"
+            placeholder={defaults.actorModel || "model-name"}
+            value={draftActorModel}
+            disabled={locked}
+            onChange={(e) => setDraftActorModel(e.target.value)}
+          />
+        )}
+      </div>
+
+      {/* Backend model */}
       <div className="settings-field">
         <span className="settings-field-label">
           {t("provider.backendModel")}
         </span>
-        <input
-          type="text"
-          className="settings-field-input"
-          placeholder={defaults.backendModel || "model-name"}
-          value={draftBackendModel}
-          disabled={locked}
-          onChange={(e) => setDraftBackendModel(e.target.value)}
-        />
+        {fetchedModels.length > 0 ? (
+          <Select<string>
+            value={draftBackendModel}
+            options={modelOptionsFor(draftBackendModel)}
+            onChange={setDraftBackendModel}
+            ariaLabel={t("provider.backendModel")}
+            disabled={locked}
+          />
+        ) : (
+          <input
+            type="text"
+            className="settings-field-input"
+            placeholder={defaults.backendModel || "model-name"}
+            value={draftBackendModel}
+            disabled={locked}
+            onChange={(e) => setDraftBackendModel(e.target.value)}
+          />
+        )}
       </div>
 
       {/* Thinking effort */}

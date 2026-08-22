@@ -10,6 +10,14 @@ export const zh = {
   "provider.model": "模型（可选）",
   "provider.actorModel": "黑塔模型",
   "provider.backendModel": "板砖模型",
+  "provider.models": "可用模型",
+  "provider.models.fetch": "获取模型",
+  "provider.models.fetching": "获取中…",
+  "provider.models.desc":
+    "使用已保存的密钥拉取服务商模型列表；若服务商不支持发现，仍可手动填写模型名。",
+  "provider.models.saveFirst": "请先保存 API 密钥，再获取模型列表。",
+  "provider.models.failed":
+    "无法获取模型。请检查 API 地址与权限，或改为手动填写模型名。",
   "provider.thinking": "思考强度",
   "provider.thinkingDesc": "推理时的思考强度，下次启动生效。",
   "provider.anthropicOutputEffort": "输出强度（Anthropic）",

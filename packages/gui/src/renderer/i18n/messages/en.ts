@@ -12,6 +12,14 @@ export const en = {
   "provider.model": "Model (optional)",
   "provider.actorModel": "Herta Model",
   "provider.backendModel": "Brick Model",
+  "provider.models": "Available models",
+  "provider.models.fetch": "Fetch models",
+  "provider.models.fetching": "Fetching…",
+  "provider.models.desc":
+    "Fetches the provider's model list using the saved key. You can still type a model name if discovery is unavailable.",
+  "provider.models.saveFirst": "Save an API key first to fetch models.",
+  "provider.models.failed":
+    "Could not fetch models. Check the API address and permissions, or enter a model name manually.",
   "provider.thinking": "Thinking Effort",
   "provider.thinkingDesc":
     "Reasoning effort for the model. Applies on next start.",

@@ -28,7 +28,10 @@ export { ProviderError } from "./errors.js";
 export type { ApiKey } from "./openai-compat/api-key.js";
 export { resolveApiKey } from "./openai-compat/api-key.js";
 export type { OpenAICompatibleCompletionProviderOpts } from "./openai-compat/completion-provider.js";
-export { OpenAICompatibleCompletionProvider } from "./openai-compat/completion-provider.js";
+export {
+  OpenAICompatibleChatCompletionProvider,
+  OpenAICompatibleCompletionProvider,
+} from "./openai-compat/completion-provider.js";
 export type { OpenAICompatibleProviderOpts } from "./openai-compat/provider.js";
 export { OpenAICompatibleProvider } from "./openai-compat/provider.js";
 export type {
