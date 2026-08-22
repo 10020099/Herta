@@ -103,7 +103,10 @@ export function createChatProvider(
     case "openai":
       return openaiResponsesProvider({
         apiKey: opts.apiKey,
-        model: opts.actorModel,
+        // `createChatProvider` serves backend, router, supervisor and title;
+        // their caller-selected role model is `opts.model`. The actor model is
+        // carried by the separate completion adapter below.
+        model: opts.model,
         effort: openaiEffort(opts.thinking),
         ...(baseUrl ? { baseUrl } : {}),
         ...(opts.temperature !== undefined
