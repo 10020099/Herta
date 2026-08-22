@@ -13,6 +13,8 @@ export interface SelectProps<V extends string> {
   readonly onChange: (value: V) => void;
   readonly ariaLabel: string;
   readonly disabled?: boolean;
+  /** Long lists can participate in document flow instead of covering fields below. */
+  readonly menuLayout?: "popover" | "inline";
 }
 
 /** Chevron for the trigger — inline SVG so CSS owns color/size. */
@@ -119,7 +121,12 @@ export function Select<V extends string>(props: SelectProps<V>): JSX.Element {
   };
 
   return (
-    <div className="settings-select-wrap" ref={rootRef}>
+    <div
+      className={`settings-select-wrap${
+        props.menuLayout === "inline" ? " is-inline" : ""
+      }`}
+      ref={rootRef}
+    >
       <button
         type="button"
         className={`settings-select-trigger${open ? " is-open" : ""}`}
@@ -141,7 +148,9 @@ export function Select<V extends string>(props: SelectProps<V>): JSX.Element {
       {menu.mounted && (
         <div
           ref={listRef}
-          className={`settings-select-menu${menu.open ? " is-open" : ""}`}
+          className={`settings-select-menu${menu.open ? " is-open" : ""}${
+            props.menuLayout === "inline" ? " is-inline" : ""
+          }`}
           role="listbox"
           aria-label={props.ariaLabel}
           onKeyDown={(e) => {

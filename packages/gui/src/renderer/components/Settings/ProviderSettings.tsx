@@ -404,6 +404,7 @@ export function ProviderSettings(): JSX.Element {
             onChange={setDraftActorModel}
             ariaLabel={t("provider.actorModel")}
             disabled={locked}
+            menuLayout="inline"
           />
         ) : (
           <input
@@ -429,6 +430,7 @@ export function ProviderSettings(): JSX.Element {
             onChange={setDraftBackendModel}
             ariaLabel={t("provider.backendModel")}
             disabled={locked}
+            menuLayout="inline"
           />
         ) : (
           <input

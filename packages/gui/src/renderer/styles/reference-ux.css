@@ -5861,3 +5861,34 @@ button.session-item__badge--dismiss {
 @media (prefers-reduced-motion: reduce) {
   .provider-models-fetch { transition: none; }
 }
+
+/* Long model IDs and provider catalogs belong to the settings document flow.
+   Their menu may grow naturally for short names, but never beyond the pane;
+   long IDs wrap and a tall catalog scrolls inside the menu instead of covering
+   subsequent fields. */
+.settings-select-wrap.is-inline {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+}
+.settings-select-menu.is-inline {
+  position: relative;
+  top: auto;
+  right: auto;
+  box-sizing: border-box;
+  width: fit-content;
+  max-width: 100%;
+  max-height: 248px;
+  margin-top: 6px;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+.settings-select-menu.is-inline .settings-select__option {
+  min-width: 0;
+  white-space: normal;
+}
+.settings-select-menu.is-inline .settings-select__option-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}

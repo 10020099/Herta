@@ -57,6 +57,33 @@ describe("ProviderSettings model discovery", () => {
     expect(actor.textContent).toContain("model-a");
   });
 
+  it("keeps long model IDs inside an inline, scrollable settings menu", async () => {
+    const longModel =
+      "openrouter/organization/very-long-model-family-with-a-descriptive-release-name-and-reasoning-variant";
+    const catalog = [
+      longModel,
+      ...Array.from({ length: 48 }, (_, index) => `provider/model-${index}`),
+    ];
+    const { bridge } = configuredBridge(catalog);
+    renderPane(bridge);
+
+    await screen.findByDisplayValue("https://api.example.com/v1");
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Fetch models" }),
+    );
+    const actor = await screen.findByLabelText("Herta Model");
+    fireEvent.click(actor);
+
+    const menu = await screen.findByRole("listbox", { name: "Herta Model" });
+    await waitFor(() =>
+      expect(menu).toHaveClass("settings-select-menu", "is-inline", "is-open"),
+    );
+    expect(menu.closest(".settings-select-wrap")).toHaveClass("is-inline");
+    expect(
+      screen.getByRole("option", { name: longModel }).textContent,
+    ).toContain(longModel);
+  });
+
   it("keeps manual model inputs available when discovery fails", async () => {
     const mock = createMockHertaBridge({ failFetchProviderModels: true });
     const bridge: HertaBridge = {
