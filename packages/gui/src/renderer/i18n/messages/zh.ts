@@ -188,7 +188,8 @@ export const zh = {
   "banzhuan.contract": "工具契约",
   "banzhuan.contractDesc":
     "板砖使用的工具组合。标准：一套专用工具集；极简：精简工具组，大幅降低执行成本，需要本机已安装 bash。下次启动生效。",
-  "banzhuan.contract.noBash": "本机未检测到 bash，选极简也会按标准运行。",
+  "banzhuan.contract.noBash":
+    "本机未检测到 bash，选极简也会按标准运行；装上 Git for Windows 后重启即可用。",
   "banzhuan.contract.standard": "标准",
   "banzhuan.contract.minimal": "极简",
   "approval.title": "请求权限",
@@ -214,6 +215,8 @@ export const zh = {
   "approval.reason.commandProcess": "该命令会结束进程，请核对目标",
   "approval.reason.commandCwdEscape":
     "该命令会切到工作区之外，之后的相对路径不受工作区保护",
+  "approval.reason.commandUnresolved":
+    "这条命令里有黑塔读不出来的部分（变量、通配、展开），不能确定它到底会做什么",
   // A chained line with more than one ask class: the other classes, named.
   "approval.alsoClasses": "另含：{list}",
   "app.fanNotice":
@@ -279,6 +282,11 @@ export const zh = {
   "activity.verb.savingMemory": "保存记忆",
   "activity.verb.searching": "检索",
   "activity.verb.stopping": "停止",
+  /** digest_document (ADR 0043): a side-model pass over a whole document. */
+  "activity.verb.digesting": "摘要",
+  "activity.result.digest": "摘要",
+  "activity.result.chunks": "段",
+  "activity.result.cached": "已有",
   "activity.result.tests": "测试",
   "activity.result.failed": "失败",
   "activity.result.exit": "退出",
@@ -320,6 +328,8 @@ export const zh = {
   "activity.attachment.format.docx": "Word 文档",
   "activity.attachment.pages": "页",
   "activity.attachment.extracted": "已提取文本",
+  /** The document's own outline, stored beside the text (2026-08-23). */
+  "activity.attachment.outline": "目录 {n} 条",
   "activity.attachment.remove": "移除这个附件",
   "activity.attachment.removeFailed": "没能移除这个附件。",
   "activity.plan.more": "还有 {n} 项",
@@ -338,9 +348,14 @@ export const zh = {
   "evidence.attachment": "附件",
   /** Noted under a head excerpt so neither reader takes it for the whole file. */
   "evidence.attachment.clipped": "（仅开头部分，正文更长）",
+  /** The outline pane (2026-08-23): `↳ 目录 N 条（前 M 条）` + one line per entry. */
+  "evidence.outline": "目录 {n} 条",
+  "evidence.outline.shown": "（前 {n} 条）",
   /** The search-hit pane (2026-08-17): `↳ 匹配 /pattern/:` + one line per hit. */
   "evidence.matches": "匹配",
   "evidence.matches.omitted": "（另有 {n} 处未列出）",
+  /** The digest overview pane (ADR 0043); "模型生成" is part of the evidence. */
+  "evidence.digest": "摘要 {source}（模型生成，共 {n} 段，分段摘要见 {path}）",
   /** The done-marker's conclusions section (ADR 0039). */
   "evidence.findings": "结论",
   /** A failed tool call's own suggestion (2026-08-17). */

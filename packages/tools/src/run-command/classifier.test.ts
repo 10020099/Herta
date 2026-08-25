@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { classifyCommand, readerPathCandidates } from "./classifier.js";
+import {
+  classifyCommand,
+  classifyShellBody,
+  readerPathCandidates,
+} from "./classifier.js";
 
 describe("classifyCommand — block phase", () => {
   it("blocks rm -rf /", () => {
@@ -750,6 +754,272 @@ describe("classifyShellBody — every command in a compound body (audit S4)", ()
       "cat a | grep x",
     ]) {
       expect(classifyCommand(["sh", "-c", body]).kind).toBe("ask");
+    }
+  });
+});
+
+/**
+ * Uncommitted work is the one thing the harness cannot get back.
+ *
+ * Every non-read git subcommand used to be `command_ask_vcs`, which is
+ * rule-eligible — so approving ONE `git checkout -b x` with "always allow in
+ * this project" persisted `{argvPrefix:['git','checkout'], anyArgs:true}`, and
+ * that rule then covered `git checkout -- .` with no card, forever
+ * (reproduced end to end, 2026-08-25). The destructive class is neither
+ * rule-eligible nor cacheable, so reclassifying shuts both doors.
+ */
+describe("git shapes that discard work or rewrite history (2026-08-25)", () => {
+  const code = (argv: string[]) => {
+    const v = classifyCommand(argv);
+    return v.kind === "ask" ? v.code : v.kind;
+  };
+  const risk = (argv: string[]) => {
+    const v = classifyCommand(argv);
+    return v.kind === "ask" ? v.risk : v.kind;
+  };
+
+  it("discarding uncommitted work is destructive, not ordinary vcs", () => {
+    for (const argv of [
+      ["git", "checkout", "--", "."],
+      ["git", "checkout", "--", "src/a.ts"],
+      ["git", "checkout", "."],
+      ["git", "switch", "--", "."],
+      ["git", "restore", "."],
+      ["git", "restore", "--worktree", "src/a.ts"],
+      ["git", "stash", "drop"],
+      ["git", "stash", "clear"],
+    ]) {
+      expect(code(argv), argv.join(" ")).toBe("command_ask_destructive");
+      expect(risk(argv), argv.join(" ")).toBe("workspace_destructive");
+    }
+  });
+
+  it("rewriting history or a ref is destructive", () => {
+    for (const argv of [
+      ["git", "commit", "--amend", "-m", "x"],
+      ["git", "rebase", "-i", "HEAD~2"],
+      ["git", "push", "--force"],
+      ["git", "push", "-f", "origin", "main"],
+      ["git", "push", "--force-with-lease", "origin", "main"],
+      ["git", "branch", "-D", "feature/x"],
+      ["git", "branch", "-M", "main"],
+      ["git", "tag", "-d", "v1"],
+      ["git", "update-ref", "-d", "refs/heads/x"],
+      ["git", "reflog", "expire", "--all"],
+      ["git", "filter-branch", "--all"],
+    ]) {
+      expect(code(argv), argv.join(" ")).toBe("command_ask_destructive");
+    }
+  });
+
+  it("the everyday shapes stay vcs, so ADR 0030 rules still derive", () => {
+    for (const argv of [
+      ["git", "add", "-A"],
+      ["git", "commit", "-m", "x"],
+      ["git", "checkout", "-b", "feature/x"],
+      ["git", "switch", "-c", "feature/x"],
+      ["git", "checkout", "main"],
+      ["git", "merge", "main"],
+      ["git", "cherry-pick", "abc123"],
+      ["git", "fetch", "origin"],
+      ["git", "pull"],
+      ["git", "push", "origin", "main"],
+      ["git", "mv", "a", "b"],
+      ["git", "tag", "-a", "v1", "-m", "one"],
+      ["git", "rebase", "--abort"],
+      ["git", "restore", "--staged", "src/a.ts"],
+    ]) {
+      expect(code(argv), argv.join(" ")).toBe("command_ask_vcs");
+    }
+  });
+
+  it("a tree-ish plus a path is path mode, without needing `--`", () => {
+    // The spelling an agent reaches for to revert one file. Reading only `--`
+    // and a bare `.` left these on the rule-eligible tier, where a remembered
+    // `git checkout:*` auto-approved them with no card (2026-08-25).
+    for (const argv of [
+      ["git", "checkout", "main", "src/foo.ts"],
+      ["git", "checkout", "HEAD~1", "notes.md"],
+      ["git", "checkout", "HEAD", "a.ts", "b.ts"],
+      ["git", "switch", "main", "src/foo.ts"],
+    ]) {
+      expect(code(argv), argv.join(" ")).toBe("command_ask_destructive");
+    }
+    // The benign twins: one operand is branch-vs-path ambiguous and stays
+    // ordinary, and creating a branch takes a name plus a start point.
+    for (const argv of [
+      ["git", "checkout", "main"],
+      ["git", "checkout", "-b", "feature/x", "origin/main"],
+      ["git", "switch", "-c", "feature/x", "origin/main"],
+    ]) {
+      expect(code(argv), argv.join(" ")).toBe("command_ask_vcs");
+    }
+  });
+
+  it("`git clean` force is a BUNDLED short flag, not the exact token `-f`", () => {
+    // Bare `-f` will not remove a directory, so the only spelling the exact
+    // match caught was the one nobody types; `-fd` and `-fdx` classified as an
+    // ordinary repository change and rode a `git clean:*` rule (2026-08-25).
+    for (const argv of [
+      ["git", "clean", "-f"],
+      ["git", "clean", "-fd"],
+      ["git", "clean", "-fdx"],
+      ["git", "clean", "-df"],
+      ["git", "clean", "--force"],
+    ]) {
+      expect(code(argv), argv.join(" ")).toBe("command_ask_destructive");
+    }
+    for (const argv of [
+      ["git", "clean", "-n"],
+      ["git", "clean", "--dry-run"],
+      ["git", "clean", "-nd"],
+    ]) {
+      expect(code(argv), argv.join(" ")).toBe("command_ask_vcs");
+    }
+  });
+
+  it("a global option does not hide the subcommand", () => {
+    // Every destructive check read `argv[1]`, so one leading global option hid
+    // the subcommand from all of them at once — and `-C` is exactly how an
+    // agent works on a sub-repository.
+    for (const argv of [
+      ["git", "-C", "subdir", "checkout", "--", "."],
+      ["git", "-C", "subdir", "reset", "--hard"],
+      ["git", "-C", "subdir", "clean", "-fd"],
+      ["git", "--no-pager", "checkout", "--", "."],
+      ["git", "--git-dir=.git", "reset", "--hard"],
+      ["git", "-c", "k=v", "checkout", "--", "."],
+      ["git", "--work-tree", "..", "clean", "-fdx"],
+    ]) {
+      expect(code(argv), argv.join(" ")).toBe("command_ask_destructive");
+    }
+    // `-C` steps over its VALUE, so the subcommand is read correctly rather
+    // than off by one — `commit` is still ordinary vcs.
+    expect(code(["git", "-C", "subdir", "commit", "-m", "x"])).toBe(
+      "command_ask_vcs",
+    );
+    // But the READ allow-list is deliberately NOT taught about global options:
+    // `-C` names another directory, so `git -C ../../other-repo log -p` would
+    // read a tree outside the workspace. Escalating the destructive tier
+    // through the prefix while leaving the allow tier anchored is the correct
+    // asymmetry — peeling only ever makes a verdict stricter.
+    expect(code(["git", "-C", "subdir", "status"])).toBe("command_ask_vcs");
+  });
+
+  it("an unresolvable PROGRAM NAME asks even with no shell expansion", () => {
+    // A glob needs no variable, so it never set `unresolved` and skipped the
+    // earned-allow gate entirely: `/bin/r? -rf /` landed on the cacheable,
+    // rule-eligible unknown class while its bare spelling blocked.
+    expect(classifyCommand(["/bin/r?", "-rf", "/"]).kind).toBe("ask");
+    expect(code(["/bin/r?", "-rf", "/"])).toBe("command_ask_unresolved");
+    expect(classifyCommand(["rm", "-rf", "/"]).kind).toBe("block");
+  });
+
+  it("keeps the two shapes deliberately pinned as NON-destructive", () => {
+    // `stash pop` RESTORES work; `branch -d` refuses an unmerged branch.
+    // Both were settled on 2026-08-17 and must not drift into destructive.
+    expect(code(["git", "stash", "pop"])).toBe("command_ask_vcs");
+    expect(code(["git", "stash"])).toBe("command_ask_vcs");
+    expect(code(["git", "branch", "-d", "merged"])).toBe("command_ask_vcs");
+  });
+
+  it("`-c` is a config injection only BEFORE the subcommand", () => {
+    // `git -c core.pager=… diff` names a program for git to run; `git switch
+    // -c branch` creates a branch. Treating both as the config flag turned an
+    // everyday command into an ask.
+    expect(code(["git", "-c", "diff.external=evil", "diff"])).toBe(
+      "command_ask_unknown",
+    );
+    expect(code(["git", "--config-env=x=Y", "log"])).toBe(
+      "command_ask_unknown",
+    );
+    expect(code(["git", "switch", "-c", "feature/x"])).toBe("command_ask_vcs");
+    expect(code(["git", "checkout", "-b", "feature/x"])).toBe(
+      "command_ask_vcs",
+    );
+  });
+
+  it("the read-only subcommands are untouched", () => {
+    for (const argv of [
+      ["git", "status"],
+      ["git", "diff"],
+      ["git", "log", "--oneline"],
+      ["git", "show", "HEAD"],
+    ]) {
+      expect(classifyCommand(argv).kind, argv.join(" ")).toBe("allow");
+    }
+  });
+});
+
+describe("classifyShellBody — exec-wrappers and quoted nesting (2026-08-24)", () => {
+  // A wrapper is a program whose job is to run another program. The block tier
+  // was reading the WRAPPER's name and concluding nothing catastrophic was
+  // happening, so six spellings downgraded the no-override tier to a plain
+  // "unrecognized command" ask (codex study; cf. Codex's recursive peel).
+  it("peels exec-wrappers before the catastrophic check", () => {
+    for (const body of [
+      "sudo rm -rf /",
+      "sudo -u root rm -rf /",
+      "doas rm -rf /",
+      "env rm -rf /",
+      "env FOO=bar rm -rf /",
+      "nice rm -rf /",
+      "nice -n 19 rm -rf /",
+      "nohup rm -rf /",
+      "setsid rm -rf /",
+      "stdbuf -oL rm -rf /",
+      "timeout 5 rm -rf /",
+      "timeout -k 1 5 rm -rf /",
+      "xargs rm -rf /",
+      "command rm -rf /",
+      "builtin rm -rf /",
+      "sudo env timeout 5 rm -rf /", // a chain, peeled to the end
+    ]) {
+      expect(classifyCommand(["bash", "-c", body]).kind).toBe("block");
+    }
+  });
+
+  it("a quoted inner command survives as one token so re-entry can recurse", () => {
+    // Whitespace-splitting tore the body apart, so the re-entry read `sh` as
+    // the whole inner command and found nothing.
+    expect(classifyCommand(["bash", "-c", `sh -c 'rm -rf /'`]).kind).toBe(
+      "block",
+    );
+    expect(classifyCommand(["bash", "-c", `sudo sh -c "rm -rf ~"`]).kind).toBe(
+      "block",
+    );
+  });
+
+  it("fails closed once the nesting outruns the depth cap", () => {
+    // Each layer wraps the previous one as a single backslash-escaped word.
+    // A few layers still resolve to the benign innermost command; past the cap
+    // the scan refuses rather than reporting "nothing catastrophic found",
+    // which is what it used to do. Four interpreter layers is not something
+    // honest work does.
+    const esc = (s: string) => s.replace(/([\\"' `])/g, "\\$1");
+    const nest = (layers: number) => {
+      let body = "echo x";
+      for (let i = 0; i < layers; i += 1) body = `bash -c ${esc(body)}`;
+      return body;
+    };
+    expect(classifyShellBody(nest(2), 0).hit).toBe(false);
+    const deep = classifyShellBody(nest(4), 0);
+    expect(deep.hit).toBe(true);
+    expect(deep.reason).toMatch(/deeper than the classifier can inspect/);
+    expect(classifyCommand(["bash", "-c", nest(4)]).kind).toBe("block");
+  });
+
+  it("does not blanket-block ordinary wrapper use", () => {
+    // False positives here are unappealable, so the benign twins are pinned.
+    for (const body of [
+      "sudo npm test",
+      "env NODE_ENV=test npm test",
+      "timeout 600 npm test",
+      "nice -n 10 npm run build",
+      "xargs grep foo",
+      "command -v git",
+    ]) {
+      expect(classifyCommand(["bash", "-c", body]).kind).toBe("ask");
     }
   });
 });

@@ -14,6 +14,7 @@ export {
   type BackendContract,
   minimalBackendContract,
   serializeUserHistory,
+  windowsBackendHostNote,
 } from "./backend/backend-context-builder.js";
 export {
   type BackendTurnDeps,
@@ -30,6 +31,7 @@ export {
 export {
   CodingAgentRuntime,
   type CodingAgentRuntimeDeps,
+  type RepoSnapshot,
   type RunBriefOptions,
 } from "./backend/coding-agent-runtime.js";
 export {
@@ -141,11 +143,17 @@ export {
   INLINE_CODE_SPAN,
   mapOutsideInlineSpans,
 } from "./text/banzhuan-alias.js";
+export { countDiffLines, countDiffLinesFor } from "./text/diff-lines.js";
 export { estimatePromptTokens } from "./text/estimate-prompt-tokens.js";
 export {
   composeMarkerSummary,
   type MarkerSummaryLabels,
 } from "./text/marker-summary.js";
+export {
+  type PageMarkerLang,
+  pageMarkerLine,
+  pageMarkerShape,
+} from "./text/page-marker.js";
 export { stripDisplayUnsafe } from "./text-sanitize.js";
 export { renderTodoState, TodoStore } from "./todo-store.js";
 export type { ToolRegistry } from "./tool-registry.js";

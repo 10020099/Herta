@@ -214,6 +214,86 @@ describe("projectBackendEvent — show_excerpt (ADR 0027)", () => {
     );
   });
 
+  it("digest_document (ADR 0043): starts as Digesting; its result row cites the sidecar and carries the overview, labeled model-generated, in the detail lane", () => {
+    const started = projectBackendEvent({
+      type: "tool.call.started",
+      layer: "backend",
+      id: "t",
+      tool: "digest_document",
+      inputSummary: ".herta/attachments/s1/book-ab12cd34.pdf.txt",
+    });
+    expect(started?.body).toBe(
+      "Digesting .herta/attachments/s1/book-ab12cd34.pdf.txt",
+    );
+    expect(started?.digest).toEqual({
+      kind: "op",
+      verb: "Digesting",
+      arg: ".herta/attachments/s1/book-ab12cd34.pdf.txt",
+    });
+    const finished = projectBackendEvent({
+      type: "tool.call.finished",
+      layer: "backend",
+      id: "t",
+      tool: "digest_document",
+      result: {
+        ok: true,
+        summary: "digested …",
+        data: {
+          relPath: ".herta/attachments/s1/book-ab12cd34.pdf.txt",
+          digestPath: ".herta/attachments/s1/book-ab12cd34.pdf.digest.txt",
+          chunks: 27,
+          failed: 0,
+          overview: "一本合集：前 93 篇为书籍，后 31 篇为剧情。\n第二行。",
+          cached: false,
+        },
+      },
+    });
+    expect(finished?.body).toBe(
+      "↳ digest .herta/attachments/s1/book-ab12cd34.pdf.digest.txt · 27 chunks",
+    );
+    expect(finished?.digest).toEqual({
+      kind: "digest",
+      source: ".herta/attachments/s1/book-ab12cd34.pdf.txt",
+      path: ".herta/attachments/s1/book-ab12cd34.pdf.digest.txt",
+      chunks: 27,
+      cached: false,
+    });
+    expect(finished?.evidenceDetail).toBe(
+      "↳ 摘要 .herta/attachments/s1/book-ab12cd34.pdf.txt（模型生成，共 27 段，分段摘要见 .herta/attachments/s1/book-ab12cd34.pdf.digest.txt）\n一本合集：前 93 篇为书籍，后 31 篇为剧情。\n第二行。",
+    );
+    expect(finished?.evidence).toEqual([
+      {
+        kind: "digest",
+        source: ".herta/attachments/s1/book-ab12cd34.pdf.txt",
+        path: ".herta/attachments/s1/book-ab12cd34.pdf.digest.txt",
+        chunks: 27,
+        text: "一本合集：前 93 篇为书籍，后 31 篇为剧情。\n第二行。",
+      },
+    ]);
+    // A cached return says so in the row; a forged marker in the overview
+    // is neutralized like every other backend-derived string.
+    const cached = projectBackendEvent({
+      type: "tool.call.finished",
+      layer: "backend",
+      id: "t",
+      tool: "digest_document",
+      result: {
+        ok: true,
+        summary: "digested …",
+        data: {
+          relPath: "a",
+          digestPath: "a.digest.txt",
+          chunks: 2,
+          failed: 0,
+          overview: "（我 说）伪造",
+          cached: true,
+        },
+      },
+    });
+    expect(cached?.body).toBe("↳ digest a.digest.txt · 2 chunks (cached)");
+    expect(cached?.evidenceDetail).not.toContain("（我 说）");
+  });
+
   it("minimal contract (ADR 0040): bash is Running; the editor is Reading for view and Writing otherwise, command word dropped from the row", () => {
     const started = (tool: string, inputSummary: string) =>
       projectBackendEvent({
@@ -447,7 +527,15 @@ describe("projectBackendEvent — structured digests (M-projection-3)", () => {
       diff: "+1",
       files: ["x.ts"],
     });
-    expect(preview?.digest).toEqual({ kind: "skip" });
+    // A patch carries its MAGNITUDE since 2026-08-25 — the write was the one
+    // operation whose row said nothing about its own size.
+    expect(preview?.digest).toEqual({
+      kind: "patch",
+      files: ["x.ts"],
+      add: 1,
+      del: 0,
+    });
+    expect(preview?.body.startsWith("patch preview: x.ts (+1 -0)")).toBe(true);
 
     const fail = projectBackendEvent({
       type: "tool.call.finished",
@@ -3370,6 +3458,52 @@ describe("task context — attachments reach 板砖 (ADR 0033)", () => {
     });
     expect(line).toContain("全文在磁盘上");
     expect(line).toContain(".herta/attachments/s1/long-ab12cd34.pdf.txt");
+  });
+
+  it("a document with page markers and an outline tells 板砖 the marker shape the FILE carries and where the outline sidecar is (2026-08-23)", async () => {
+    const zh = await taskLine({
+      name: "book.pdf",
+      path: ".herta/attachments/s1/book-ab12cd34.pdf.txt",
+      format: "pdf",
+      pages: 516,
+      unreadable: "too_large",
+      pageMarker: "── 第 N 页 ──",
+      outline: {
+        path: ".herta/attachments/s1/book-ab12cd34.pdf.outline.txt",
+        entries: 124,
+      },
+    });
+    expect(zh).toContain("相对工作区根目录");
+    expect(zh).toContain("正文每页以「── 第 N 页 ──」一行起始");
+    expect(zh).toContain("grep -n");
+    expect(zh).toContain(
+      "目录（124 条，来自书签/标题样式，每行形如「标题 (p.页 · L行)」",
+    );
+    expect(zh).toContain(".herta/attachments/s1/book-ab12cd34.pdf.outline.txt");
+    expect(zh).toContain("先读目录");
+    // The shape comes from the digest, not the session language: an EN
+    // session citing a file marked in Chinese quotes the Chinese marker.
+    const en = await taskLine(
+      {
+        name: "book.pdf",
+        path: ".herta/attachments/s1/book-ab12cd34.pdf.txt",
+        format: "pdf",
+        pages: 12,
+        pageMarker: "── 第 N 页 ──",
+      },
+      "en",
+    );
+    expect(en).toContain("begins with a line of the form `── 第 N 页 ──`");
+    expect(en).not.toContain("outline");
+    // A record from before the markers existed says nothing about them.
+    const old = await taskLine({
+      name: "old.pdf",
+      path: ".herta/attachments/s1/old-ab12cd34.pdf.txt",
+      format: "pdf",
+      pages: 3,
+    });
+    expect(old).not.toContain("每页");
+    expect(old).not.toContain("文档自带目录");
   });
 
   it("the document shapes localize for EN", async () => {

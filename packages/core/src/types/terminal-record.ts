@@ -108,6 +108,15 @@ export interface DoneMarkerSummary {
   readonly tests?: { readonly passed: number; readonly failed: number };
   /** Count of residual risks flagged by the backend (0 when none). */
   readonly riskCount: number;
+  /**
+   * Total lines added / removed across the changed files (2026-08-25).
+   *
+   * Present only when EVERY changed file carried a per-file diff. A dispatch
+   * that changed anything through a command — `sed -i`, a heredoc, an `mv` —
+   * has no diff for that file, and a partial total would read as the whole
+   * truth. Absent is the honest answer; the file count still stands.
+   */
+  readonly lines?: { readonly add: number; readonly del: number };
   /** Set (only ever `true`) when the run TERMINATED ABNORMALLY — runBrief
    *  itself threw rather than returning a report (the bridge-failure marker,
    *  canonical body `失败 · 运行异常中止`). Neutral machine field (D2):
@@ -157,8 +166,26 @@ export type SystemBlockDigest =
         | "Searching"
         /** command_stop (2026-08-17; was `Running bg-N`, which read as a
          *  second launch — Herta reads these rows). */
-        | "Stopping";
+        | "Stopping"
+        /** digest_document (ADR 0043): a side-model pass over a whole
+         *  attached document — neither a read nor a run, and worth its own
+         *  word because it spends model tokens. */
+        | "Digesting";
       readonly arg: string;
+    }
+  | {
+      /** A `digest_document` result (ADR 0043). The overview rides
+       *  `evidenceDetail` (the two-state lane, like an excerpt); the digest
+       *  keeps the citation — which document, where the sidecar is, how
+       *  many chunks — so a later turn can send 板砖 back to the sidecar
+       *  rather than re-digest. `cached` says no model ran this time. */
+      readonly kind: "digest";
+      /** The attachment's stored text (source). */
+      readonly source: string;
+      /** The `.digest.txt` sidecar. */
+      readonly path: string;
+      readonly chunks: number;
+      readonly cached: boolean;
     }
   | {
       /** A recognized test run (run_command + detectTestRun). */
@@ -179,8 +206,28 @@ export type SystemBlockDigest =
       readonly message?: string;
     }
   | {
-      /** Contributes no digest line (patch previews — Writing covers them). */
+      /** Contributes no digest line. Kept for records persisted before the
+       *  `patch` digest below existed — the patch preview used to be the only
+       *  producer, and a renderer must still fall back to its body. */
       readonly kind: "skip";
+    }
+  | {
+      /**
+       * A patch preview, with its MAGNITUDE (2026-08-25).
+       *
+       * The diff itself stays in the block body; the digest carries the
+       * counts so a renderer can say `↳ +96 −5` without re-parsing the fence,
+       * and so Herta reads the same number the user sees.
+       *
+       * `add`/`del` are absent when the change reached the tree through a
+       * COMMAND rather than an editor — a `sed -i`, a heredoc, an `mv`. There
+       * is no per-file diff for those, and rendering them as `+0 −0` would
+       * state a number nobody measured.
+       */
+      readonly kind: "patch";
+      readonly files: readonly string[];
+      readonly add?: number;
+      readonly del?: number;
     }
   | {
       /** A managed background command's lifecycle row (ADR 0025 slice 4;
@@ -292,6 +339,24 @@ export type SystemBlockDigest =
         | "removed"
         | "encrypted"
         | "unsupported";
+      /** The exact page-marker line shape the stored text carries, with `N`
+       *  for the number (`── 第 N 页 ──` / `── page N ──`; `pageMarkerShape`
+       *  in core). PDF only, 2026-08-23: the ingest opens every page with
+       *  that line so a page is a greppable, citable location rather than an
+       *  estimate. Recorded here — not re-derived from the session language
+       *  — so 板砖's citation quotes the shape the FILE has. Absent for
+       *  Word/text attachments and on records persisted before it existed. */
+      readonly pageMarker?: string;
+      /** A deterministic outline stored beside the text (2026-08-23): PDF
+       *  bookmarks (`getOutline`) or Word heading styles, one line per entry
+       *  with the page (PDF) and the line it starts at. Absent when the
+       *  document carries none — Chrome-printed PDFs, plain letters — so its
+       *  presence is itself a fact about the file, never a guess. */
+      readonly outline?: {
+        /** Workspace-relative sidecar path (`…pdf.outline.txt`). */
+        readonly path: string;
+        readonly entries: number;
+      };
     }
   | {
       /** A search_text result (2026-08-17). Same lifecycle split as `excerpt`:
@@ -408,6 +473,31 @@ export type EvidenceSection =
        *  Rendered as a note so neither reader mistakes the head for the whole
        *  document. */
       readonly clipped: boolean;
+    }
+  | {
+      /** An attached document's outline (`↳ 目录`), 2026-08-23 — the first
+       *  entries of the sidecar the ingest wrote from the PDF's bookmarks or
+       *  the Word heading styles, verbatim. Bounded like the head; `total`
+       *  says how many the sidecar holds so a preview never reads as the
+       *  whole table of contents. Rides `evidenceDetail`'s lifecycle: in
+       *  front of Herta while the attachment is fresh, a citation after. */
+      readonly kind: "outline";
+      readonly name: string;
+      /** The sidecar's workspace-relative path. */
+      readonly path: string;
+      readonly items: readonly string[];
+      readonly total: number;
+    }
+  | {
+      /** A document digest's overview (`↳ 摘要`), ADR 0043 — MODEL-GENERATED,
+       *  unlike every other section here, and labeled so in the record: a
+       *  reader must not take it for the document. `source` names the text
+       *  it summarizes; `path` the sidecar holding the per-chunk entries. */
+      readonly kind: "digest";
+      readonly source: string;
+      readonly path: string;
+      readonly chunks: number;
+      readonly text: string;
     }
   | {
       /** The done-marker's conclusions (`↳ 结论:`) — the backend's own cited

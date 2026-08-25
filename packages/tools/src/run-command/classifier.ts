@@ -31,13 +31,190 @@ function hasRecursiveForce(argv: readonly string[]): boolean {
   return r && f;
 }
 
+/**
+ * Word-split a shell body for the BLOCK scan — quote-aware.
+ *
+ * This used to whitespace-split and then strip quotes off each token, which
+ * tore a QUOTED inner command into pieces: `bash -c "sh -c 'rm -rf /'"` became
+ * `[bash, -c, sh, -c, rm, -rf, /]`, so `extractShellReentry` read the body as
+ * the single word `sh` and the catastrophic payload never re-entered the scan.
+ * The no-override block tier degraded to a user-approvable ask (codex study
+ * 2026-08-24; the same class the 2026-07-10 `cmd /c` and 2026-08-05 `&&`
+ * findings closed in other spellings).
+ *
+ * Keeping a quoted run together is the whole point: the body must survive as
+ * ONE token so the re-entry can recurse into it.
+ */
 function shellBodyTokens(body: string): string[] {
-  return body
-    .trim()
-    .split(/\s+/)
-    .map((t) => t.replace(/^["']+|["']+$/g, ""))
-    .filter((t) => t.length > 0);
+  const out: string[] = [];
+  let cur = "";
+  let has = false;
+  let quote: "'" | '"' | null = null;
+  const s = body.trim();
+  for (let i = 0; i < s.length; i += 1) {
+    const ch = s[i] as string;
+    if (quote !== null) {
+      if (ch === quote) quote = null;
+      else cur += ch;
+      has = true;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      has = true;
+      continue;
+    }
+    if (ch === "\\" && i + 1 < s.length) {
+      cur += s[i + 1];
+      has = true;
+      i += 1;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (has) {
+        out.push(cur);
+        cur = "";
+        has = false;
+      }
+      continue;
+    }
+    cur += ch;
+    has = true;
+  }
+  if (has) out.push(cur);
+  return out.filter((t) => t.length > 0);
 }
+
+/** How a wrapper program's own arguments are laid out before the command it
+ *  goes on to execute. */
+interface WrapperSpec {
+  /** Flags that consume the NEXT word as their value (`sudo -u root …`). */
+  valueFlags?: ReadonlySet<string>;
+  /** Bare operands the wrapper eats before the command (`timeout 5 …`). */
+  operands?: number;
+  /** Leading `K=V` words belong to the wrapper (`env FOO=bar …`). */
+  assignments?: boolean;
+}
+
+/**
+ * Programs whose job is to run ANOTHER program. Peeling them is what lets the
+ * catastrophic check see the real command underneath (codex study 2026-08-24;
+ * cf. Codex's recursive wrapper peel in `is_dangerous_command.rs`).
+ *
+ * Block tier only, and peeling only ever ESCALATES: a benign payload never
+ * upgrades a wrapper to allow, exactly as `extractShellReentry` is documented
+ * to work. Widening the ALLOW tier through these wrappers would be a different
+ * decision — `sudo npm test` must not become a silent allow — so the ask/allow
+ * classifier deliberately still sees `sudo` itself and asks.
+ */
+const EXEC_WRAPPERS: ReadonlyMap<string, WrapperSpec> = new Map<
+  string,
+  WrapperSpec
+>([
+  ["sudo", { valueFlags: new Set(["-u", "-g", "-p", "-C", "-U", "-t", "-r"]) }],
+  ["doas", { valueFlags: new Set(["-u", "-C", "-a"]) }],
+  ["pkexec", { valueFlags: new Set(["--user"]) }],
+  [
+    "env",
+    { valueFlags: new Set(["-u", "--unset", "-C", "-S"]), assignments: true },
+  ],
+  ["nice", { valueFlags: new Set(["-n", "--adjustment"]) }],
+  ["ionice", { valueFlags: new Set(["-c", "-n", "-p"]) }],
+  ["nohup", {}],
+  ["setsid", {}],
+  ["stdbuf", { valueFlags: new Set(["-i", "-o", "-e"]) }],
+  [
+    "timeout",
+    {
+      valueFlags: new Set(["-k", "-s", "--signal", "--kill-after"]),
+      operands: 1,
+    },
+  ],
+  [
+    "xargs",
+    {
+      valueFlags: new Set([
+        "-n",
+        "-P",
+        "-I",
+        "-i",
+        "-d",
+        "-s",
+        "-E",
+        "-a",
+        "-L",
+        "--max-args",
+        "--max-procs",
+        "--replace",
+        "--delimiter",
+      ]),
+    },
+  ],
+  ["command", { valueFlags: new Set() }],
+  ["builtin", {}],
+  ["time", {}],
+  // Second batch (red team 2026-08-24): every one of these reached ask with a
+  // CACHEABLE scope while carrying a catastrophic payload.
+  ["su", { valueFlags: new Set(["-c", "-s", "-l", "--command", "--shell"]) }],
+  ["runuser", { valueFlags: new Set(["-u", "-c", "-s"]) }],
+  ["chroot", { valueFlags: new Set(["--userspec", "--groups"]), operands: 1 }],
+  ["strace", { valueFlags: new Set(["-o", "-e", "-p", "-s"]) }],
+  ["ltrace", { valueFlags: new Set(["-o", "-e", "-p", "-s"]) }],
+  ["watch", { valueFlags: new Set(["-n", "--interval", "-d"]) }],
+  ["flock", { valueFlags: new Set(["-w", "--timeout", "-E"]), operands: 1 }],
+  ["script", { valueFlags: new Set(["-c", "--command", "-f", "-t"]) }],
+  ["taskset", { valueFlags: new Set(["-c", "-p"]), operands: 1 }],
+  [
+    "unshare",
+    { valueFlags: new Set(["--map-user", "--map-group", "-S", "-G"]) },
+  ],
+  ["busybox", { operands: 1 }],
+  ["proot", { valueFlags: new Set(["-r", "-b", "-w"]) }],
+]);
+
+/** Bounded wrapper peel: the command a chain of exec-wrappers ends up running,
+ *  or null when the head was not a wrapper. */
+function peelExecWrappers(tokens: readonly string[]): string[] | null {
+  let cur: readonly string[] = tokens;
+  let peeled = false;
+  for (let round = 0; round < 4 && cur.length > 0; round += 1) {
+    const spec = EXEC_WRAPPERS.get(interpreterName(cur[0] as string));
+    if (spec === undefined) break;
+    let i = 1;
+    let operands = spec.operands ?? 0;
+    while (i < cur.length) {
+      const t = cur[i] as string;
+      if (t === "--") {
+        i += 1;
+        break;
+      }
+      if (t.startsWith("-") && t.length > 1) {
+        i += 1;
+        if (spec.valueFlags?.has(t) === true && i < cur.length) i += 1;
+        continue;
+      }
+      if (spec.assignments === true && /^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) {
+        i += 1;
+        continue;
+      }
+      if (operands > 0) {
+        operands -= 1;
+        i += 1;
+        continue;
+      }
+      break;
+    }
+    if (i >= cur.length) break; // wrapper with no command behind it
+    cur = cur.slice(i);
+    peeled = true;
+  }
+  return peeled ? [...cur] : null;
+}
+
+/** A variable whose NAME says it holds a location, so `ls $HOME` is a path
+ *  claim even without a separator — unlike `sed -n $p`. */
+const PATHISH_VAR =
+  /\$\{?(HOME|USERPROFILE|APPDATA|LOCALAPPDATA|PWD|OLDPWD|TMP|TEMP|TMPDIR|XDG_[A-Z_]+|SystemRoot|windir|ProgramData|ProgramFiles[A-Za-z()0-9]*)\}?/i;
 
 /** Escape-hatch guard for allow-listed read-only commands: their ARGUMENTS
  *  took no path check at all, so absolute/parent-escaping paths and
@@ -50,21 +227,62 @@ function shellBodyTokens(body: string): string[] {
  *  innocent-basename symlink whose realpath leaves the repo — is caught by
  *  the async checkReaderArgvPaths (reader-guard.ts) in the rule/tool, which
  *  the classifier structurally cannot see (audit T3.4). */
-function readerArgvGuard(argv: readonly string[]): Verdict | null {
-  for (const a of argv.slice(1)) {
-    if (a.startsWith("-")) continue; // flags
+function readerArgvGuard(
+  argv: readonly string[],
+  live = false,
+): Verdict | null {
+  for (const raw of argv.slice(1)) {
+    // A path GLUED to an option is still a path. Skipping every `-`-prefixed
+    // token wholesale meant `wc --files0-from=/…/.ssh/id_rsa`,
+    // `grep -f/…/id_rsa .`, `pytest --basetemp=/outside`, `go test -o=/…` and
+    // `node --test --redirect-warnings=/…` all read as inert flags (red team
+    // round 3). Unglue the value and judge THAT; a flag with no path-shaped
+    // value is still skipped.
+    let a = raw;
+    if (raw.startsWith("-")) {
+      const eq = raw.indexOf("=");
+      const value =
+        eq > 0
+          ? raw.slice(eq + 1)
+          : /^-[A-Za-z]/.test(raw) && raw.length > 2
+            ? raw.slice(2)
+            : "";
+      if (value.length === 0 || !/[\\/~]|^\.{1,2}$|^\$/.test(value)) continue;
+      a = value;
+    }
+    // Windows-style switches (`tasklist //FI …`, `where /R …`) are flags, not
+    // absolute paths. UPPERCASE only: the first spelling of this rule accepted
+    // any letters and so swallowed `ls //etc`, which is the very thing the
+    // comment claimed it would not do.
+    if (/^\/\/[A-Z]+$|^\/[A-Z]$/.test(a)) continue;
     // Match a Windows drive prefix WITH OR WITHOUT a separator: `E:.env` is
     // DRIVE-RELATIVE (resolves against drive E's cwd, i.e. the workspace) yet
     // has no separator, so it slipped the old `X:[\/]` form and read a
     // workspace credential unprompted (audit T3.4 review).
     const absolute = /^([A-Za-z]:|[\\/]|~)/.test(a);
     const parentEscape = a === ".." || a.includes("../") || a.includes("..\\");
-    if (absolute || parentEscape || isCredentialPath(a)) {
+    // An operand the guard cannot evaluate is not an operand the guard may
+    // pass (red team 2026-08-24). Each spelling below read as an ordinary
+    // in-workspace relative path and defeated both this check and the async
+    // realpath half, which skips operands that do not resolve.
+    //
+    // Scoped to tokens that can actually BE a path: a bare `$p` is a sed
+    // script and `^第[0-9]*篇` is a grep pattern, and treating those as paths
+    // made six honest commands ask. So a variable counts only with a path
+    // separator or a path-ish name, and a plain glob is left to the credential
+    // denylist (which knows `.env*` from `*.ts`) rather than asked about here.
+    const unknowable =
+      a.includes("__SUBST__") ||
+      (live && /[$`]/.test(a) && (/[\\/]/.test(a) || PATHISH_VAR.test(a))) ||
+      (/\{[^}]*,[^}]*\}/.test(a) && /[\\/]|\.\./.test(a));
+    if (absolute || parentEscape || unknowable || isCredentialPath(a)) {
       return {
         kind: "ask",
         risk: "workspace_read",
         code: "command_ask_reader_path",
-        reason: `read-only command targets a sensitive or out-of-workspace path: ${a}`,
+        reason: unknowable
+          ? `read-only command targets a path the harness cannot resolve statically: ${a}`
+          : `read-only command targets a sensitive or out-of-workspace path: ${a}`,
       };
     }
   }
@@ -212,7 +430,10 @@ const SED_READ_FLAGS = new Set([
  * these, or when the shape is not the read-only one — the caller's later
  * phases (the generic ask) then apply.
  */
-function textFilterVerdict(argv: readonly string[]): Verdict | null {
+function textFilterVerdict(
+  argv: readonly string[],
+  live = false,
+): Verdict | null {
   const a0 = argv[0] as string;
   const writeAsk = (reason: string): Verdict => ({
     kind: "ask",
@@ -231,16 +452,16 @@ function textFilterVerdict(argv: readonly string[]): Verdict | null {
       // Bundled short flags: `-o FILE`, `-uo FILE`, `-oFILE`.
       if (/^-[a-zA-Z]*o/.test(a)) return writeAsk("sort -o writes a file");
     }
-    return readerArgvGuard(argv) ?? { kind: "allow" };
+    return readerArgvGuard(argv, live) ?? { kind: "allow" };
   }
   if (a0 === "uniq") {
     let operands = 0;
     for (const a of argv.slice(1)) if (!a.startsWith("-")) operands += 1;
     if (operands >= 2) return writeAsk("uniq with an OUTPUT operand");
-    return readerArgvGuard(argv) ?? { kind: "allow" };
+    return readerArgvGuard(argv, live) ?? { kind: "allow" };
   }
   if (a0 === "cut" || a0 === "tr" || a0 === "nl") {
-    return readerArgvGuard(argv) ?? { kind: "allow" };
+    return readerArgvGuard(argv, live) ?? { kind: "allow" };
   }
   if (a0 === "sed") {
     const scripts: string[] = [];
@@ -267,12 +488,14 @@ function textFilterVerdict(argv: readonly string[]): Verdict | null {
     }
     if (scripts.length === 0) return null;
     if (!scripts.every((s) => SED_PRINT_SCRIPT.test(s))) return null;
-    return readerArgvGuard(argv) ?? { kind: "allow" };
+    return readerArgvGuard(argv, live) ?? { kind: "allow" };
   }
   return null;
 }
 
 const SH_FAMILY = new Set(["sh", "bash", "zsh", "dash", "ksh"]);
+/** Not shells themselves, but they hand a shell command string to one. */
+const COMMAND_STRING_WRAPPERS = new Set(["su", "runuser", "script"]);
 const POWERSHELL_FAMILY = new Set(["powershell", "pwsh"]);
 
 /** Deletion commands Windows shells reach for; `Remove-Item -Recurse -Force
@@ -316,11 +539,43 @@ function extractShellReentry(argv: readonly string[]): Reentry | null {
     for (let i = 1; i < argv.length; i++) {
       const a = argv[i] as string;
       if (a === "--") continue;
+      // A shell also takes its script on STDIN, and `<<<` puts a string
+      // there: `bash <<< 'rm -rf /'` runs exactly what `bash -c` would, and
+      // recognising only `-c` let it through as a plain ask (red team round 3).
+      if (a === "<<<") {
+        const body = argv[i + 1];
+        return typeof body === "string" && body.length > 0
+          ? { kind: "body", via: `${name} <<<`, body }
+          : null;
+      }
       if (/^-[A-Za-z]+$/.test(a)) {
         if (a.includes("c")) sawC = true;
         continue;
       }
       return sawC ? { kind: "body", via: `${name} -c`, body: a } : null;
+    }
+    return null;
+  }
+
+  // Wrappers that take their payload as the VALUE of `-c` rather than as
+  // following operands, so the operand-style peel cannot reach it:
+  // `su -c 'rm -rf /'`, `runuser -u root -c '…'`, `script -qec '…' /dev/null`.
+  if (COMMAND_STRING_WRAPPERS.has(name)) {
+    for (let i = 1; i < argv.length; i++) {
+      const a = argv[i] as string;
+      if (a === "-c" || a === "--command") {
+        const body = argv[i + 1];
+        return typeof body === "string" && body.length > 0
+          ? { kind: "body", via: `${name} -c`, body }
+          : null;
+      }
+      // Bundled short options (`-qec`) and an attached value (`-c'…'`).
+      if (/^-[A-Za-z]+$/.test(a) && a.includes("c")) {
+        const body = argv[i + 1];
+        return typeof body === "string" && body.length > 0
+          ? { kind: "body", via: `${name} -c`, body }
+          : null;
+      }
     }
     return null;
   }
@@ -423,6 +678,28 @@ function isCatastrophic(argv: readonly string[]): {
   // the human-readable reason strings.
   const a0 = commandIdentity(raw);
 
+  // `find <system root> -delete` empties the machine just as `rm -rf /` does,
+  // and dispatching this tier on argv[0] alone meant it arrived as an ordinary
+  // approval card — one click from the same outcome (red team 2026-08-24).
+  // The repo already accepts this equivalence: WINDOWS_DELETE_CMDS exists
+  // because `Remove-Item -Recurse -Force C:\` is `rm -rf /` in another coat.
+  if (a0 === "find") {
+    const destructive = argv.some(
+      (a) => a === "-delete" || a === "-exec" || a === "-execdir",
+    );
+    if (destructive) {
+      for (const a of argv.slice(1)) {
+        if (a.startsWith("-")) continue;
+        if (isSystemRootPath(a)) {
+          return {
+            hit: true,
+            reason: `find with a delete/exec action on system path: ${a}`,
+          };
+        }
+      }
+    }
+  }
+
   if (a0 === "rm" && hasRecursiveForce(argv)) {
     for (const a of argv.slice(1)) {
       if (isSystemRootPath(a)) {
@@ -486,9 +763,14 @@ export function splitShellSegments(body: string): string[] {
   const out: string[] = [];
   let current = "";
   let quote: '"' | "'" | null = null;
-  for (let i = 0; i < body.length; i += 1) {
-    const ch = body[i] as string;
-    const prev = i > 0 ? body[i - 1] : "";
+  // A backslash-newline is a LINE CONTINUATION — bash joins the two halves
+  // into one command. Splitting on the newline regardless meant
+  // `rm \<newline>-rf /` was scanned as two harmless fragments and the
+  // catastrophic check never saw a whole command (red team round 3).
+  const joined = body.replace(/\\\r?\n/g, " ");
+  for (let i = 0; i < joined.length; i += 1) {
+    const ch = joined[i] as string;
+    const prev = i > 0 ? joined[i - 1] : "";
     if (quote !== null) {
       current += ch;
       // A backslash-escaped quote does not close the string (POSIX single
@@ -513,9 +795,405 @@ export function splitShellSegments(body: string): string[] {
   return out.map((s) => s.trim()).filter((s) => s.length > 0);
 }
 
-/** Block-tier scan of a whole shell body — every segment, nested
- *  interpreters unwrapped. Shared with the minimal contract's shell-string
- *  classifier (ADR 0040), which layers the ask/allow tiers on top. */
+/**
+ * git's own options, which come BEFORE the subcommand. The ones listed here
+ * take their value as a SEPARATE argument, so locating the subcommand means
+ * stepping over two tokens, not one. (`--git-dir=x` and friends carry their
+ * value inline and need no entry.)
+ */
+const GIT_GLOBAL_VALUE_FLAGS: ReadonlySet<string> = new Set([
+  "-C",
+  "-c",
+  "--git-dir",
+  "--work-tree",
+  "--namespace",
+  "--super-prefix",
+  "--exec-path",
+  "--config-env",
+  "--attr-source",
+]);
+
+/**
+ * Where the subcommand actually is — `git -C sub reset --hard` puts it at 3,
+ * not 1.
+ *
+ * Every destructive check used to read `argv[1]`, so one leading global option
+ * hid the subcommand from all of them at once and `git -C subdir clean -fd`
+ * classified as an ordinary repository change. `-C` is exactly how an agent
+ * works on a sub-repository, so this was not a corner.
+ *
+ * Returns null when there is no subcommand at all (`git --version`).
+ */
+function gitSubcommandIndex(argv: readonly string[]): number | null {
+  let i = 1;
+  while (i < argv.length) {
+    const a = argv[i];
+    if (typeof a !== "string") return null;
+    if (!a.startsWith("-")) return i;
+    i += GIT_GLOBAL_VALUE_FLAGS.has(a) ? 2 : 1;
+  }
+  return null;
+}
+
+/**
+ * True when a short-option CLUSTER carries `letter` — `-fd`, `-fdx`, `-df` all
+ * carry `f`.
+ *
+ * Exact-token matching is why `git clean -f` was caught and `git clean -fd` was
+ * not, which is precisely backwards: bare `-f` will not remove a directory, so
+ * the spelling the harness recognised is the one nobody types. Case matters —
+ * `git branch -m` renames, `-M` force-renames.
+ */
+function hasShortFlag(args: readonly string[], letter: string): boolean {
+  return args.some(
+    (a) =>
+      a.length > 1 &&
+      a.startsWith("-") &&
+      !a.startsWith("--") &&
+      /^-[A-Za-z]+$/.test(a) &&
+      a.includes(letter),
+  );
+}
+
+/**
+ * git shapes that DISCARD uncommitted work or REWRITE history, described so
+ * the card says which — or null for the ordinary repository changes, which
+ * stay `command_ask_vcs`.
+ *
+ * Why this is its own tier rather than prose in a prompt. `command_ask_vcs` is
+ * rule-eligible, so approving ONE benign git line with "always allow in this
+ * project" persists `{argvPrefix:['git','checkout'], anyArgs:true}` — and that
+ * rule then covers `git checkout -- .`, which throws away everything the user
+ * has not committed, with no card, in that project, forever. Reproduced end to
+ * end on 2026-08-25. Moving these to `command_ask_destructive` shuts both
+ * persistence doors at once: the class is absent from RULE_ELIGIBLE_ASK_CODES,
+ * and `SessionApprovalCache.isCacheable` only ever caches `workspace_write`.
+ *
+ * Uncommitted work is the one thing the harness cannot get back, and it cannot
+ * tell "precious" from "scratch" — so the ask class is the only place that
+ * judgement can live (D4).
+ *
+ * Deliberately NOT here, and pinned by tests that say so: `git stash pop`
+ * (RESTORES work), `git branch -d` (refuses an unmerged branch), and the
+ * everyday `add`/`commit`/`merge`/`fetch`/`pull`/`mv`/`rm`/`checkout -b`,
+ * so ADR 0030's `git commit:*` rules still derive exactly as before.
+ */
+function destructiveGitShape(argv: readonly string[]): string | null {
+  const at = gitSubcommandIndex(argv);
+  if (at === null) return null;
+  const sub = argv[at] as string;
+  const rest = argv.slice(at + 1);
+  const has = (...flags: string[]) => rest.some((a) => flags.includes(a));
+
+  // ── discards uncommitted work ──
+  if (sub === "checkout" || sub === "switch") {
+    // Creating or moving to a branch is ordinary; PATH mode overwrites files
+    // from the index or a commit. `--` is the unambiguous marker; a bare `.`
+    // or a path operand with no branch-creating flag is the same thing.
+    const creating = has("-b", "-B", "-c", "-C", "--orphan", "--guess");
+    // A tree-ish FOLLOWED BY operands is path mode too, and it is the spelling
+    // an agent reaches for to revert one file (`git checkout main src/x.ts`,
+    // `git checkout HEAD~1 notes.md`). Reading only `--` and a bare `.` left
+    // it on the rule-eligible tier, where a remembered `git checkout:*` then
+    // auto-approved it with no card — the very door this tier exists to shut.
+    const operands = rest.filter((a) => !a.startsWith("-"));
+    const pathMode =
+      rest.includes("--") ||
+      (!creating &&
+        (operands.length >= 2 || rest.some((a) => a === "." || a === "*")));
+    if (pathMode) {
+      return `git ${sub} in path mode overwrites uncommitted changes in those paths`;
+    }
+    // A SINGLE operand stays ordinary, deliberately: `git checkout main` and
+    // `git checkout main.ts` are the same string shape, and git itself decides
+    // by asking whether the name resolves as a ref — which this classifier
+    // cannot do. Guessing either way is wrong, so the residue is handled where
+    // it can be handled honestly: `deriveProjectCommandRule` refuses to hand
+    // `checkout`/`switch`/`restore` a `:*` wildcard, so an ambiguous operand
+    // asks every time instead of riding a grant earned by a different one.
+    return null;
+  }
+  if (sub === "restore") {
+    // `--staged` alone only unstages; anything else rewrites the worktree.
+    const stagedOnly = has("--staged", "-S") && !has("--worktree", "-W");
+    if (!stagedOnly) return "git restore overwrites uncommitted changes";
+    return null;
+  }
+  if (sub === "stash" && (rest[0] === "drop" || rest[0] === "clear")) {
+    return `git stash ${rest[0]} deletes stashed work`;
+  }
+
+  // ── rewrites history or a ref ──
+  if (sub === "commit" && has("--amend")) {
+    return "git commit --amend rewrites the last commit";
+  }
+  if (sub === "rebase" && rest[0] !== "--abort" && rest[0] !== "--quit") {
+    return "git rebase rewrites history";
+  }
+  if (sub === "push" && has("-f", "--force")) {
+    return "git push --force overwrites the remote branch";
+  }
+  if (sub === "push" && rest.some((a) => a.startsWith("--force-with-lease"))) {
+    return "git push --force-with-lease overwrites the remote branch";
+  }
+  if (
+    // NOT `--delete`/`-d`: that refuses an unmerged branch, and the 2026-08-25
+    // decision pinned it as ordinary. Only the FORCING spellings land here.
+    sub === "branch" &&
+    (has("--force") ||
+      hasShortFlag(rest, "D") ||
+      hasShortFlag(rest, "M") ||
+      hasShortFlag(rest, "f"))
+  ) {
+    return "git branch -D/-M/-f force-deletes, force-renames or moves a branch";
+  }
+  if (
+    sub === "tag" &&
+    (has("--delete", "--force") ||
+      hasShortFlag(rest, "d") ||
+      hasShortFlag(rest, "f"))
+  ) {
+    return "git tag -d/-f deletes or moves a tag";
+  }
+  if (sub === "update-ref" && has("-d", "--delete")) {
+    return "git update-ref -d deletes a ref";
+  }
+  if (sub === "reflog" && rest[0] === "expire") {
+    return "git reflog expire discards the recovery log";
+  }
+  if (sub === "filter-branch" || sub === "filter-repo") {
+    return `git ${sub} rewrites the whole history`;
+  }
+  return null;
+}
+
+/** How many interpreter layers the block scan will unwrap before it refuses
+ *  to keep guessing. */
+const MAX_REENTRY_DEPTH = 3;
+
+/** `find` predicates that RUN a program or WRITE a file for every match —
+ *  the whole family, not the two spellings that were enumerated first. */
+const FIND_ACTION_PREDICATES: ReadonlySet<string> = new Set([
+  "-delete",
+  "-exec",
+  "-execdir",
+  "-ok",
+  "-okdir",
+  "-fprint",
+  "-fprint0",
+  "-fprintf",
+  "-fls",
+]);
+
+/**
+ * Options that turn an allow-listed program into an arbitrary-program
+ * launcher, a file writer, or a config-injection vector — keyed by the
+ * program the allow tier trusts.
+ *
+ * Every entry is a knob the harness's mental model of that program did not
+ * account for: "git grep searches the tracked set" is true of its READS and
+ * silent about the pager it spawns; "npm test runs the workspace's tests" was
+ * never enforced by anything; `node --test`'s deny-list enumerated the
+ * module-loading flags it knew. Matched as an exact token or as `--flag=value`
+ * (both spellings shipped, and for `node --env-file` the space form asked
+ * while the `=` form allowed).
+ */
+const ESCAPE_HATCH_FLAGS: ReadonlyMap<string, ReadonlySet<string>> = new Map<
+  string,
+  ReadonlySet<string>
+>([
+  [
+    "git",
+    new Set([
+      "-O",
+      "--open-files-in-pager", // git grep: runs a command on the matches
+      "--output", // git diff/log/show: writes an arbitrary file
+      "--output-indicator-new",
+      "--contents", // git blame: reads an arbitrary file
+      "--upload-pack",
+      "--receive-pack",
+      "--exec-path",
+      // The external-diff / textconv family: each runs a command named by
+      // repo config, so a line that first appends to `.git/config` and then
+      // reads with one of these is arbitrary execution (red team round 3).
+      "--ext-diff",
+      "--textconv",
+      "--no-textconv",
+    ]),
+  ],
+  ["rg", new Set(["--pre", "--hostname-bin"])],
+  ["grep", new Set(["--devices"])],
+  [
+    "npm",
+    new Set([
+      "--prefix",
+      "-C",
+      "--script-shell",
+      "--node-options",
+      "--userconfig",
+      "--globalconfig",
+      "--ignore-scripts=false",
+    ]),
+  ],
+  [
+    "pnpm",
+    new Set([
+      "--prefix",
+      "-C",
+      "--dir",
+      "--script-shell",
+      "--use-node-version",
+    ]),
+  ],
+  ["yarn", new Set(["--cwd", "--use-yarnrc"])],
+  ["cargo", new Set(["--config", "--manifest-path", "--target-dir"])],
+  ["go", new Set(["-exec", "-toolexec", "-overlay", "-o"])],
+  [
+    "node",
+    new Set([
+      "--test-reporter",
+      "--env-file",
+      "--env-file-if-exists",
+      "--conditions",
+      "--watch-path",
+    ]),
+  ],
+  [
+    "pytest",
+    new Set(["-p", "--pyargs", "--rootdir", "-c", "--co", "--basetemp"]),
+  ],
+  // Text filters that can be pointed at a file list or an output path.
+  ["sort", new Set(["--files0-from", "--output", "--compress-program", "-o"])],
+  ["wc", new Set(["--files0-from"])],
+  ["du", new Set(["--files0-from"])],
+]);
+
+/** A token carrying a shell expansion the classifier cannot resolve, so any
+ *  deny-list decision made by reading argv LITERALLY is unsound. */
+function hasUnresolvedExpansion(argv: readonly string[]): boolean {
+  return argv.slice(1).some(isUnresolvable);
+}
+
+function isUnresolvable(a: string): boolean {
+  return (
+    a.includes("${") ||
+    a.includes("$(") ||
+    a.includes("`") ||
+    // `$1`, `$@`, `$*`, `$?`, `$#`, `$!`, `$-` expand to text the harness
+    // never saw, exactly like `$HOME` — but requiring an IDENTIFIER after the
+    // `$` said they were already resolved. `set -- /etc/passwd` then `cat "$1"`
+    // is two allow-tier commands, and a persistent shell carries the
+    // positionals from the first into the second.
+    LIVE_PARAMETER.test(a) ||
+    /\{[^}]*,[^}]*\}/.test(a)
+  );
+}
+
+/** A parameter expansion of ANY kind, not only the `$name` spelling. */
+const LIVE_PARAMETER = /\$[A-Za-z_0-9@*?#!$-]/;
+
+/**
+ * What the classifier cannot resolve about the PROGRAM NAME — so it cannot
+ * know what will run at all.
+ *
+ * `${x:-rm} -rf /`, `{rm,-rf,/}` and `/bin/r?` each reached the ask tier only
+ * because no rule recognised them, and landed on `command_ask_unknown`, which
+ * is both cacheable and rule-eligible. An unknowable program is the one thing
+ * that must never be either.
+ */
+export function unresolvedProgramName(a0: string): string | null {
+  if (/[$`]/.test(a0)) return "a variable or command substitution";
+  if (/\{[^}]*,[^}]*\}/.test(a0)) return "a brace expansion";
+  if (/[*?]|\[[^\]]*\]/.test(a0)) return "a glob";
+  return null;
+}
+
+/**
+ * Programs whose ARGUMENTS cannot change what they do to the machine.
+ *
+ * The allow tier is earned by reading a command; these are the few where
+ * there is nothing in the arguments left to read. Everything else must be
+ * able to account for its operands before it may skip the approval card.
+ */
+const ARG_INDEPENDENT_PROGRAMS: ReadonlySet<string> = new Set([
+  "echo",
+  "true",
+  "false",
+  ":",
+  "pwd",
+  "date",
+  "whoami",
+  "hostname",
+  "uname",
+  "sleep",
+  "printenv",
+  "id",
+  "tty",
+]);
+
+/**
+ * git's CONFIG flags, which set arbitrary repo config on the command line and
+ * can therefore name a program for git to run.
+ *
+ * They only mean that BEFORE the subcommand — `git -c k=v diff`. After it they
+ * belong to the subcommand and mean something else entirely, which is how a
+ * first pass turned the everyday `git switch -c feature/x` into an ask.
+ */
+const GIT_CONFIG_FLAGS: ReadonlySet<string> = new Set([
+  "-c",
+  "--config-env",
+  "--exec-path",
+]);
+
+/** A git config flag used BEFORE the subcommand, or null. */
+function gitConfigFlag(argv: readonly string[]): string | null {
+  for (let i = 1; i < argv.length; i += 1) {
+    const a = argv[i] as string;
+    if (!a.startsWith("-")) return null; // reached the subcommand
+    if (GIT_CONFIG_FLAGS.has(a)) return a;
+    const eq = a.indexOf("=");
+    if (eq > 0 && GIT_CONFIG_FLAGS.has(a.slice(0, eq))) return a.slice(0, eq);
+  }
+  return null;
+}
+
+/** The escape-hatch flag an argv carries for its own program, or null. */
+function escapeHatchFlag(
+  argv: readonly string[],
+  shell: boolean,
+): string | null {
+  const program = interpreterName(argv[0] as string);
+  if (program === "git") {
+    const cfg = gitConfigFlag(argv);
+    if (cfg !== null) return cfg;
+  }
+  const flags = ESCAPE_HATCH_FLAGS.get(program);
+  if (flags === undefined) return null;
+  // A deny-list read against literal tokens cannot survive expansion: bash
+  // turns `${x:--r}` and `{-O./pager.sh,needle}` into the very flags this
+  // list exists to catch, and every literal comparison below misses them
+  // (red team round 3). For a program whose safety rests on such a list, an
+  // unresolvable token is itself the finding — under a shell, at least; an
+  // argv spawned with shell:false expands nothing.
+  if (shell && hasUnresolvedExpansion(argv))
+    return "an unresolved shell expansion";
+  for (const a of argv.slice(1)) {
+    if (flags.has(a)) return a;
+    const eq = a.indexOf("=");
+    if (eq > 0 && flags.has(a.slice(0, eq))) return a.slice(0, eq);
+    // Attached short-option value: `git grep -Ocurl`, `-O'sh -c "…"'`.
+    if (a.length > 2 && a.startsWith("-") && !a.startsWith("--")) {
+      const short = a.slice(0, 2);
+      if (flags.has(short)) return short;
+    }
+  }
+  return null;
+}
+
+/** Block-tier scan of a whole shell body — every segment, exec-wrappers
+ *  peeled, nested interpreters unwrapped. Shared with the minimal contract's
+ *  shell-string classifier (ADR 0040), which layers the ask/allow tiers on
+ *  top. */
 export function classifyShellBody(
   body: string,
   depth = 0,
@@ -527,25 +1205,64 @@ export function classifyShellBody(
   for (const segment of splitShellSegments(body)) {
     const tokens = shellBodyTokens(segment);
     if (tokens.length === 0) continue;
-    const direct = isCatastrophic(tokens);
-    if (direct.hit) return direct;
-    // Nested wrapping (`cmd /c "powershell -Command shutdown /s"`) unwraps one
-    // interpreter per level; the depth cap bounds a crafted chain.
-    if (depth < 3) {
-      const nested = extractShellReentry(tokens);
-      if (nested?.kind === "body") {
-        const inner = classifyShellBody(nested.body, depth + 1);
-        if (inner.hit) return inner;
-      }
-      if (nested?.kind === "refused") {
+    // The segment as written, and the command it runs once exec-wrappers are
+    // peeled off (`sudo`/`env`/`timeout`/`nice`/`xargs`/`command` …). Both are
+    // checked: peeling only ever escalates.
+    const candidates: Array<readonly string[]> = [tokens];
+    const unwrapped = peelExecWrappers(tokens);
+    if (unwrapped !== null && unwrapped.length > 0) candidates.push(unwrapped);
+
+    for (const cand of candidates) {
+      const direct = isCatastrophic(cand);
+      if (direct.hit) return direct;
+      // Nested wrapping (`cmd /c "powershell -Command shutdown /s"`) unwraps
+      // one interpreter per level; the depth cap bounds a crafted chain.
+      const nested = extractShellReentry(cand);
+      if (nested === null) continue;
+      if (nested.kind === "refused") {
         return { hit: true, reason: nested.reason };
       }
+      if (depth < MAX_REENTRY_DEPTH) {
+        const inner = classifyShellBody(nested.body, depth + 1);
+        if (inner.hit) return inner;
+        continue;
+      }
+      // At the cap with an interpreter still to unwrap: FAIL CLOSED. The scan
+      // cannot see what runs down there, and "cannot see" must not read as
+      // "nothing catastrophic" — that is the one direction a block tier is
+      // never allowed to guess in. Legitimate work never nests shells this
+      // deep (codex study 2026-08-24; cf. Codex's depth-capped peel).
+      return {
+        hit: true,
+        reason: `shell nesting deeper than the classifier can inspect (via ${nested.via})`,
+      };
     }
   }
   return { hit: false, reason: "" };
 }
 
-export function classifyCommand(argv: readonly string[]): Verdict {
+/** `shell: true` when a SHELL will expand this argv before running it — the
+ *  minimal contract's `bash`. `run_command` spawns argv directly (shell:false),
+ *  where an unexpanded `$VAR` is literal text and must not be treated as an
+ *  expansion. */
+export interface ClassifyCommandOpts {
+  shell?: boolean;
+  /** Whether the shell will actually PERFORM an expansion in this command —
+   *  the caller decides, because quoting settles it and only the caller still
+   *  has the raw text (`sed -n '$p'` expands nothing). Defaults to false, so
+   *  `run_command`'s literal argv is never treated as expanding. */
+  unresolved?: boolean;
+}
+
+export function classifyCommand(
+  argv: readonly string[],
+  opts?: ClassifyCommandOpts,
+): Verdict {
+  // Whether an expansion in this argv is LIVE (a shell will perform it). The
+  // caller settles it, because quoting decides and only the caller still has
+  // the raw text. `run_command` passes nothing: its argv is spawned with
+  // shell:false and expands nothing at all.
+  const live = opts?.unresolved === true;
   if (argv.length === 0) {
     return {
       kind: "block",
@@ -597,7 +1314,10 @@ export function classifyCommand(argv: readonly string[]): Verdict {
       reason: `rm -rf inside repo: ${argv.slice(1).join(" ")}`,
     };
   }
-  if (id === "git" && argv[1] === "reset" && argv.includes("--hard")) {
+  const gitSub = id === "git" ? gitSubcommandIndex(argv) : null;
+  const gitSubName = gitSub === null ? null : (argv[gitSub] as string);
+  const gitSubArgs = gitSub === null ? [] : argv.slice(gitSub + 1);
+  if (gitSubName === "reset" && gitSubArgs.includes("--hard")) {
     return {
       kind: "ask",
       risk: "workspace_destructive",
@@ -606,16 +1326,26 @@ export function classifyCommand(argv: readonly string[]): Verdict {
     };
   }
   if (
-    id === "git" &&
-    argv[1] === "clean" &&
-    (argv.includes("-f") || argv.includes("--force"))
+    gitSubName === "clean" &&
+    (gitSubArgs.includes("--force") || hasShortFlag(gitSubArgs, "f"))
   ) {
     return {
       kind: "ask",
       risk: "workspace_destructive",
       code: "command_ask_destructive",
-      reason: "git clean -f",
+      reason: "git clean -f deletes untracked files",
     };
+  }
+  if (id === "git") {
+    const destructiveGit = destructiveGitShape(argv);
+    if (destructiveGit !== null) {
+      return {
+        kind: "ask",
+        risk: "workspace_destructive",
+        code: "command_ask_destructive",
+        reason: destructiveGit,
+      };
+    }
   }
   if (id === "chmod") {
     return {
@@ -680,13 +1410,89 @@ export function classifyCommand(argv: readonly string[]): Verdict {
       reason: `${reentry.via} with redirection`,
     };
   }
-  if (a0 === "find" && (argv.includes("-delete") || argv.includes("-exec"))) {
+  // `find`'s action predicates. This tested exactly two strings, so the four
+  // siblings that also spawn a process or write a file were invisible and fell
+  // through to the Phase-5 `find` allow: `-execdir` made find a general
+  // arbitrary-program launcher with no card at all, and `-fprintf` overwrote
+  // any file (red team 2026-08-24). Enumerating two members of a family is how
+  // that family gets used.
+  if (a0 === "find") {
+    const action = argv.find((a) => FIND_ACTION_PREDICATES.has(a));
+    if (action !== undefined) {
+      return {
+        kind: "ask",
+        risk: "workspace_write",
+        code: "command_ask_write",
+        reason: `find with ${action} — it runs a command or writes a file for every match`,
+      };
+    }
+  }
+
+  // An allow-listed program carrying one of its own escape hatches is not the
+  // program the allow tier was written for. Checked ONCE here, ahead of every
+  // Phase-5 branch, so a new allow entry cannot forget it (red team
+  // 2026-08-24: `git grep -Ocurl`, `git diff --output=/c/…/evil.bat`,
+  // `git blame --contents ~/.ssh/id_rsa`, `rg --pre ./x.sh`,
+  // `npm test --prefix ../evil`, `cargo test --config build.rustc-wrapper=…`,
+  // `go test -exec 'sh -c …'`, `node --test --test-reporter ./r.mjs` —
+  // all allow, all arbitrary execution or arbitrary file access).
+  const hatch = escapeHatchFlag(
+    argv,
+    opts?.shell === true && opts.unresolved === true,
+  );
+  if (hatch !== null) {
     return {
       kind: "ask",
       risk: "workspace_write",
-      code: "command_ask_write",
-      reason: "find with -delete or -exec",
+      code: "command_ask_unknown",
+      reason: `${interpreterName(a0)} ${hatch} runs or loads something the harness cannot see — review it`,
     };
+  }
+
+  // ── PHASE 4b — AN ALLOW MUST BE EARNED (ADR 0045, the inversion) ──
+  //
+  // Everything past this point can return `allow`, which runs with NO approval
+  // card at all. The tier therefore may only rest on tokens the classifier
+  // actually READ. Three sweeps of this file found 83 ways to hand it a token
+  // that was never read; the rule below stops the CLASS rather than the
+  // instances — whatever the next unmodelled construct turns out to be, it
+  // arrives as an ask instead of an allow.
+  //
+  // Only under a SHELL. `run_command` spawns an argv with shell:false, so a
+  // `$HOME` in its arguments is the four literal characters and expands to
+  // nothing — gating on it there would be a pure false positive.
+  //
+  // Deliberately not the block tier either: refusing outright would be
+  // unappealable and these are honest shapes most of the time. The user sees
+  // the verbatim command and decides.
+  // The PROGRAM NAME is checked unconditionally, ahead of that gate. A glob
+  // never sets `unresolved` — it needs no shell variable — so `/bin/r? -rf /`
+  // skipped this and landed on the rule-eligible, cacheable
+  // `command_ask_unknown` while its bare spelling blocked. Nothing legitimate
+  // spells a program with `*`, `?` or a bracket class, and under shell:false
+  // such a name simply does not exist, so there is no honest command to lose.
+  const unresolvedHead = unresolvedProgramName(a0);
+  if (unresolvedHead !== null) {
+    return {
+      kind: "ask",
+      risk: "workspace_write",
+      code: "command_ask_unresolved",
+      reason: `the program name is ${unresolvedHead} — the harness cannot tell what would run`,
+    };
+  }
+  if (opts?.shell === true && opts.unresolved === true) {
+    if (
+      !ARG_INDEPENDENT_PROGRAMS.has(interpreterName(a0)) &&
+      hasUnresolvedExpansion(argv)
+    ) {
+      return {
+        kind: "ask",
+        risk: "workspace_read",
+        code: "command_ask_unresolved",
+        reason:
+          "an argument expands to something the harness cannot read, so it cannot vouch for what this touches",
+      };
+    }
   }
 
   // PHASE 5 — ALLOW
@@ -704,16 +1510,21 @@ export function classifyCommand(argv: readonly string[]): Verdict {
   // does (which is allowed); the arbitrary-code shapes (`-e`/`--eval`/`-p`/
   // `--print`, an `--import`/`-r` preload, a script path) stay asks.
   // `node --version` / `npm -v` execute nothing.
+  // The deny regex below is anchored at `^` against LITERAL tokens, so an
+  // expansion that produces `-r` (`${x:--r}`, `{-r,./evil.cjs}`) walks past it
+  // and node preloads the module — arbitrary code, zero cards (red team round
+  // 3). An argv this branch cannot read literally is one it cannot clear.
   if (
     (a0 === "node" || a0 === "nodejs") &&
     argv[1] === "--test" &&
+    !(opts?.unresolved === true && hasUnresolvedExpansion(argv)) &&
     !argv.some((a) =>
       /^(-e|--eval|-p|--print|--import|-r|--require|--loader|--experimental-loader)(=|$)/.test(
         a,
       ),
     )
   ) {
-    return readerArgvGuard(argv) ?? { kind: "allow" };
+    return readerArgvGuard(argv, live) ?? { kind: "allow" };
   }
   if (
     ["node", "nodejs", "npm", "pnpm", "npx", "git"].includes(a0) &&
@@ -729,7 +1540,7 @@ export function classifyCommand(argv: readonly string[]): Verdict {
     (argv[1] === "--check" || argv[1] === "-c") &&
     argv.length === 3
   ) {
-    return readerArgvGuard(argv) ?? { kind: "allow" };
+    return readerArgvGuard(argv, live) ?? { kind: "allow" };
   }
   // Read-only process / port listings — the server-flow briefs check whether
   // the thing they started is up and which pid owns the port; today's
@@ -751,16 +1562,26 @@ export function classifyCommand(argv: readonly string[]): Verdict {
       "where",
     ].includes(a0)
   ) {
-    return { kind: "allow" };
+    // The one allow branch written without a reader guard, so `where /R
+    // C:\Users\victim *.pem` enumerated a stranger's private keys unprompted
+    // (red team 2026-08-24). Name disclosure is the same class find's
+    // `-L`/`-follow` ask already exists for.
+    return readerArgvGuard(argv, live) ?? { kind: "allow" };
   }
-  if (a0 === "pytest") return { kind: "allow" };
+  // These three ran the workspace's tests — as long as the operands ARE the
+  // workspace. Each was an unconditional allow with no path check at all, so
+  // `pytest ../evil` imported and executed arbitrary Python from outside it,
+  // and cargo/go compiled and ran an out-of-tree manifest.
+  if (a0 === "pytest") return readerArgvGuard(argv, live) ?? { kind: "allow" };
   if (
     a0 === "cargo" &&
     (argv[1] === "test" || argv[1] === "build" || argv[1] === "check")
   ) {
-    return { kind: "allow" };
+    return readerArgvGuard(argv, live) ?? { kind: "allow" };
   }
-  if (a0 === "go" && argv[1] === "test") return { kind: "allow" };
+  if (a0 === "go" && argv[1] === "test") {
+    return readerArgvGuard(argv, live) ?? { kind: "allow" };
+  }
   if (
     a0 === "git" &&
     typeof argv[1] === "string" &&
@@ -867,7 +1688,8 @@ export function classifyCommand(argv: readonly string[]): Verdict {
   }
   if (a0 === "grep" || a0 === "rg" || a0 === "ripgrep") {
     return (
-      recursiveContentRead(argv) ?? readerArgvGuard(argv) ?? { kind: "allow" }
+      recursiveContentRead(argv) ??
+      readerArgvGuard(argv, live) ?? { kind: "allow" }
     );
   }
   if (a0 === "find") {
@@ -885,9 +1707,9 @@ export function classifyCommand(argv: readonly string[]): Verdict {
           "find -L/-follow dereferences symlinks during traversal, escaping the workspace guard",
       };
     }
-    return readerArgvGuard(argv) ?? { kind: "allow" };
+    return readerArgvGuard(argv, live) ?? { kind: "allow" };
   }
-  const filter = textFilterVerdict(argv);
+  const filter = textFilterVerdict(argv, live);
   if (filter !== null) return filter;
   if (
     [
@@ -905,7 +1727,7 @@ export function classifyCommand(argv: readonly string[]): Verdict {
       "whoami",
     ].includes(a0)
   ) {
-    return readerArgvGuard(argv) ?? { kind: "allow" };
+    return readerArgvGuard(argv, live) ?? { kind: "allow" };
   }
 
   // PHASE 6 — DEFAULT

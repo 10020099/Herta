@@ -204,7 +204,7 @@ export const en = {
   "banzhuan.contractDesc":
     "The toolset Brick works with. Standard: a full set of dedicated tools; Minimal: a lean toolset that cuts running cost sharply and needs bash installed on this machine. Applies on the next launch.",
   "banzhuan.contract.noBash":
-    "No bash was found on this machine; Minimal will run as Standard.",
+    "No bash was found on this machine; Minimal will run as Standard. Install Git for Windows and restart to enable it.",
   "banzhuan.contract.standard": "Standard",
   "banzhuan.contract.minimal": "Minimal",
   "approval.title": "Permission request",
@@ -238,6 +238,8 @@ export const en = {
     "This command ends processes — check the target",
   "approval.reason.commandCwdEscape":
     "This command leaves the workspace directory — later relative paths are unguarded",
+  "approval.reason.commandUnresolved":
+    "Part of this command is unreadable to Herta (a variable, glob or expansion) — it cannot tell what it would do",
   "approval.alsoClasses": "Also: {list}",
   "app.fanNotice":
     "Herta is a character from Honkai: Star Rail, © HoYoverse. Unofficial fan project, unaffiliated with and not endorsed by HoYoverse.",
@@ -303,6 +305,10 @@ export const en = {
   "activity.verb.inspecting": "Inspecting",
   "activity.verb.searching": "Searching",
   "activity.verb.stopping": "Stopping",
+  "activity.verb.digesting": "Digesting",
+  "activity.result.digest": "digest",
+  "activity.result.chunks": "chunks",
+  "activity.result.cached": "cached",
   "activity.verb.savingMemory": "Saving memory",
   "activity.result.tests": "tests",
   "activity.result.failed": "failed",
@@ -340,6 +346,7 @@ export const en = {
   "activity.attachment.format.docx": "Word document",
   "activity.attachment.pages": "pages",
   "activity.attachment.extracted": "text extracted",
+  "activity.attachment.outline": "outline · {n} entries",
   "activity.attachment.remove": "Remove this attachment",
   "activity.attachment.removeFailed": "Couldn't remove that attachment.",
   "activity.plan.more": "+{n} more",
@@ -353,8 +360,12 @@ export const en = {
   "evidence.excerpt": "excerpt",
   "evidence.attachment": "attachment",
   "evidence.attachment.clipped": "(head only — the file continues)",
+  "evidence.outline": "outline · {n} entries",
+  "evidence.outline.shown": "(first {n})",
   "evidence.matches": "matches",
   "evidence.matches.omitted": "({n} more not listed)",
+  "evidence.digest":
+    "digest of {source} (model-generated, {n} chunks — per-chunk entries in {path})",
   "evidence.findings": "findings",
   "evidence.hint": "hint",
   "evidence.files": "changed files",

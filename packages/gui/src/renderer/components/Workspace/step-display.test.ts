@@ -52,6 +52,56 @@ const sys = (body: string, digest?: SystemBlock["digest"]): SystemBlock => ({
   ...(digest !== undefined ? { digest } : {}),
 });
 
+/**
+ * A write was the ONE operation with no `↳` outcome row: its patch block said
+ * `patch preview: <files>`, which restates the `Writing` row above it and says
+ * nothing about size. Every other operation answers itself.
+ *
+ * Since 2026-08-25 evening a preview normally FOLDS into the write it previews
+ * (`activityRows`), so this path renders only the standalone case: a DENIED
+ * edit, previewed by the permission rule but never written.
+ */
+describe("stepDisplayBody — patch magnitude (2026-08-25)", () => {
+  const body = "patch preview: a.ts (+96 -5)\n\n```diff\n+x\n-y\n```";
+
+  it("leads with the magnitude and keeps the diff beneath it", () => {
+    const out = stepDisplayBody(
+      sys(body, { kind: "patch", files: ["a.ts"], add: 96, del: 5 }),
+      t,
+    );
+    expect(out.split("\n")[0]).toBe("↳ +96 −5");
+    // The fence is untouched — the existing expander still opens it.
+    expect(out).toContain("```diff");
+    expect(out).toContain("+x");
+  });
+
+  it("leaves the canonical line alone when there is nothing to count", () => {
+    // Owner, 2026-08-25 evening: this used to read `↳ 已改动（命令，无逐行差异）`
+    // — a sentence about the absence of a number, where the canonical line at
+    // least names the file. A `+0 −0` is still never acceptable.
+    const out = stepDisplayBody(
+      sys("patch preview: a.ts\n\n```diff\n```", {
+        kind: "patch",
+        files: ["a.ts"],
+      }),
+      t,
+    );
+    expect(out.split("\n")[0]).toBe("patch preview: a.ts");
+    expect(out).not.toContain("+0");
+  });
+
+  it("still renders a pre-2026-08-25 record's skip digest", () => {
+    expect(
+      stepDisplayBody(
+        sys("patch preview: a.ts\n\n```diff\n+x\n```", {
+          kind: "skip",
+        }),
+        t,
+      ),
+    ).toContain("补丁预览");
+  });
+});
+
 describe("stepDisplayBody — bg + todo digests (2026-07-23)", () => {
   it("localizes background lifecycle rows, incl. the signal case", () => {
     expect(
@@ -341,6 +391,7 @@ describe("stepDisplayBody — attachment rows, incl. PDF / Word (ADR 0038)", () 
     "activity.attachment.unreadable.encrypted": "文档已加密，未取正文",
     "activity.attachment.unreadable.unsupported": "暂不支持的文档格式",
     "activity.attachment.unreadable.readError": "读取失败",
+    "activity.attachment.outline": "目录 {n} 条",
   };
   const ta = (key: MessageKey): string => A[key] ?? `MISSING:${key}`;
   const att = (digest: Record<string, unknown>): SystemBlock =>
@@ -373,6 +424,41 @@ describe("stepDisplayBody — attachment rows, incl. PDF / Word (ADR 0038)", () 
         ta,
       ),
     ).toBe("附件 report.pdf · PDF · 12 页 · 已提取文本 · 340 行 · 18,000 字");
+  });
+
+  it("a document with an outline shows the entry count after the body counts — and after the reason for an over-cap one (2026-08-23)", () => {
+    const outline = {
+      path: ".herta/attachments/s/book-ab12cd34.pdf.outline.txt",
+      entries: 124,
+    };
+    expect(
+      stepDisplayBody(
+        att({
+          name: "book.pdf",
+          format: "pdf",
+          pages: 216,
+          lines: 5149,
+          chars: 116049,
+          pageMarker: "── 第 N 页 ──",
+          outline,
+        }),
+        ta,
+      ),
+    ).toBe(
+      "附件 book.pdf · PDF · 216 页 · 已提取文本 · 5,149 行 · 116,049 字 · 目录 124 条",
+    );
+    expect(
+      stepDisplayBody(
+        att({
+          name: "book.pdf",
+          format: "pdf",
+          pages: 516,
+          unreadable: "too_large",
+          outline,
+        }),
+        ta,
+      ),
+    ).toBe("附件 book.pdf · PDF · 516 页 · 正文过长，未取正文 · 目录 124 条");
   });
 
   it("a Word document has no page count", () => {
@@ -547,6 +633,99 @@ describe("stepDisplayDetail — the evidence pane localizes (2026-08-01)", () =>
         tEn,
       ),
     ).toBe("↳ error: mkdir EACCES");
+  });
+
+  it("localizes the outline section and keeps its preview note (2026-08-23)", () => {
+    const block: SystemBlock = {
+      kind: "system",
+      label: "系统",
+      body: "附件 book.pdf · …",
+      evidenceDetail:
+        "↳ 目录 124 条（前 2 条）\nChapter 1 (p.1 · L1)\n  Section 1.1 (p.2 · L4)",
+      evidence: [
+        {
+          kind: "outline",
+          name: "book.pdf",
+          path: ".herta/attachments/s/book-ab12cd34.pdf.outline.txt",
+          items: ["Chapter 1 (p.1 · L1)", "  Section 1.1 (p.2 · L4)"],
+          total: 124,
+        },
+      ],
+    };
+    const tOutline = (key: MessageKey): string =>
+      key === "evidence.outline"
+        ? "outline · {n} entries"
+        : key === "evidence.outline.shown"
+          ? "(first {n})"
+          : tEn(key);
+    expect(stepDisplayDetail(block, tOutline)).toBe(
+      "↳ outline · 124 entries (first 2)\nChapter 1 (p.1 · L1)\n  Section 1.1 (p.2 · L4)",
+    );
+    // A complete preview carries no "(first N)".
+    const whole: SystemBlock = {
+      ...block,
+      evidence: [
+        {
+          kind: "outline",
+          name: "book.pdf",
+          path: ".herta/attachments/s/book-ab12cd34.pdf.outline.txt",
+          items: ["Chapter 1 (p.1 · L1)", "  Section 1.1 (p.2 · L4)"],
+          total: 2,
+        },
+      ],
+    };
+    expect(stepDisplayDetail(whole, tOutline)).toBe(
+      "↳ outline · 2 entries\nChapter 1 (p.1 · L1)\n  Section 1.1 (p.2 · L4)",
+    );
+  });
+
+  it("a digest row and its overview pane localize, and the pane keeps the model-generated label (ADR 0043)", () => {
+    const block: SystemBlock = {
+      kind: "system",
+      label: "差分协处理器",
+      body: "↳ digest .herta/attachments/s/b-ab12cd34.pdf.digest.txt · 27 chunks (cached)",
+      digest: {
+        kind: "digest",
+        source: ".herta/attachments/s/b-ab12cd34.pdf.txt",
+        path: ".herta/attachments/s/b-ab12cd34.pdf.digest.txt",
+        chunks: 27,
+        cached: true,
+      },
+      evidenceDetail: "↳ 摘要 …\n总览一\n总览二",
+      evidence: [
+        {
+          kind: "digest",
+          source: ".herta/attachments/s/b-ab12cd34.pdf.txt",
+          path: ".herta/attachments/s/b-ab12cd34.pdf.digest.txt",
+          chunks: 27,
+          text: "总览一\n总览二",
+        },
+      ],
+    };
+    const tD = (key: MessageKey): string =>
+      key === "activity.result.digest"
+        ? "digest"
+        : key === "activity.result.chunks"
+          ? "chunks"
+          : key === "activity.result.cached"
+            ? "cached"
+            : key === "evidence.digest"
+              ? "digest of {source} (model-generated, {n} chunks — per-chunk entries in {path})"
+              : tEn(key);
+    expect(stepDisplayBody(block, tD)).toBe(
+      "↳ digest .herta/attachments/s/b-ab12cd34.pdf.digest.txt · 27 chunks (cached)",
+    );
+    expect(stepDisplayDetail(block, tD)).toBe(
+      "↳ digest of .herta/attachments/s/b-ab12cd34.pdf.txt (model-generated, 27 chunks — per-chunk entries in .herta/attachments/s/b-ab12cd34.pdf.digest.txt)\n总览一\n总览二",
+    );
+    // The op row's verb localizes through VERB_KEY like every other verb.
+    expect(
+      stepDisplayBody(
+        sys("Digesting x", { kind: "op", verb: "Digesting", arg: "x" }),
+        (key: MessageKey) =>
+          key === "activity.verb.digesting" ? "摘要" : tEn(key),
+      ),
+    ).toBe("摘要 x");
   });
 
   it("falls back to the canonical string for records without sections", () => {

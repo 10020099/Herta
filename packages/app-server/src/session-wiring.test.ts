@@ -34,6 +34,7 @@ describe("createBackendStack", () => {
       lang: "zh",
       wantMinimal: false,
       backendProvider: new FakeProvider({ turns: [] }),
+      digestModel: null,
       makeAsk: ({ cache, rules }) => {
         seen = { cacheSize: cache.size(), rulesListed: rules.list().length };
         return noAsk;
@@ -48,6 +49,9 @@ describe("createBackendStack", () => {
     expect(names).toContain("edit_file");
     expect(names).toContain("run_command");
     expect(names).toContain("report_finding");
+    // Both contracts mount the digest tool (ADR 0043) — with a null model it
+    // answers `unavailable` instead of disappearing.
+    expect(names).toContain("digest_document");
     expect(names).not.toContain("bash");
     expect(names).not.toContain("str_replace_editor");
   });
@@ -63,10 +67,78 @@ describe("createBackendStack", () => {
       lang: "en",
       wantMinimal: true,
       backendProvider: new FakeProvider({ turns: [] }),
+      digestModel: null,
       makeAsk: () => noAsk,
     });
     expect(stack.contract).toBe("standard");
     expect(stack.bashPath).toBeNull();
     expect(stack.backendTools.list().map((t) => t.name)).not.toContain("bash");
+  });
+
+  // ADR 0044: the standard contract on a Windows host carries the host note
+  // (what the machine is, where the Unix habits go); other platforms and the
+  // minimal contract never do. Platform injected — these run everywhere.
+  describe("host note (ADR 0044)", () => {
+    const buildInput = {
+      brief: { taskId: "t-1" },
+      userMessages: [{ text: "hi" }],
+      scopedRepoInstructions: "",
+      scopedMemory: "",
+      messages: [],
+    };
+    const mkStack = (
+      platform: NodeJS.Platform,
+      wantMinimal: boolean,
+      root: string,
+    ) =>
+      createBackendStack({
+        wsHolder: { current: root },
+        workspaceRoot: root,
+        lang: "zh",
+        wantMinimal,
+        backendProvider: new FakeProvider({ turns: [] }),
+        digestModel: null,
+        platform,
+        makeAsk: () => noAsk,
+      });
+
+    it("win32 + standard: the frame carries the host-environment section", () => {
+      const stack = mkStack("win32", false, mkWorkspace());
+      expect(stack.contract).toBe("standard");
+      const sys = stack.backendBuilder.build(buildInput).backendSystem;
+      expect(sys).toContain("# 主机环境");
+      expect(sys).toContain("search_text");
+    });
+
+    it("win32 + minimal-fallen-back-to-standard: carries it too (this IS the bash-less machine)", () => {
+      const root = mkWorkspace();
+      process.env.HERTA_BASH = join(root, "no-such-bash.exe");
+      const stack = mkStack("win32", true, root);
+      expect(stack.contract).toBe("standard");
+      expect(stack.backendBuilder.build(buildInput).backendSystem).toContain(
+        "# 主机环境",
+      );
+    });
+
+    it("win32 + minimal (bash present): no note — the shell provides the Unix environment", () => {
+      const root = mkWorkspace();
+      // Any EXISTING path satisfies findBash's override check; the shell is
+      // never spawned by stack construction.
+      process.env.HERTA_BASH = root;
+      const stack = mkStack("win32", true, root);
+      expect(stack.contract).toBe("minimal");
+      expect(
+        stack.backendBuilder.build(buildInput).backendSystem,
+      ).not.toContain("# 主机环境");
+    });
+
+    it("non-Windows platforms: no note", () => {
+      for (const platform of ["linux", "darwin"] as const) {
+        const stack = mkStack(platform, false, mkWorkspace());
+        expect(
+          stack.backendBuilder.build(buildInput).backendSystem,
+        ).not.toContain("# 主机环境");
+      }
+    });
   });
 });

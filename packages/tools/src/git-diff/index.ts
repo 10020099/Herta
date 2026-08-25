@@ -6,13 +6,17 @@ import type {
   ToolSchema,
 } from "@herta/core";
 import { errResult } from "../errors.js";
-import { type GitDiffFile, parseDiffStat } from "../git/parse-diff-stat.js";
-import { spawnGit } from "../git/spawn-git.js";
+import { type GitDiffFile, parseDiffStatZ } from "../git/parse-diff-stat.js";
+import { hardenedGitArgs, spawnGit } from "../git/spawn-git.js";
 import { formatInputIssues } from "../input-issues.js";
 import { gitDiffInputSchema, gitDiffJsonSchema } from "./schema.js";
 
 export type { GitDiffFile } from "../git/parse-diff-stat.js";
 export type { GitDiffInput } from "./schema.js";
+
+/** git's empty tree — the well-known hash of a tree with no entries, which is
+ *  what "before the first commit" means to `git diff`. */
+const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 export interface GitDiffData {
   mode: "working-tree" | "staged" | "ref";
@@ -31,7 +35,7 @@ export function gitDiffTool(): HertaTool {
       return {
         name: "git_diff",
         description:
-          "Return structured git diff --stat summary. Defaults to working-tree-vs-HEAD. Pass { staged: true } for staged-only or { ref } for vs-ref. ref and staged are mutually exclusive. Read-only.",
+          "Return a structured per-file diff summary: exact added/deleted line counts and full repo-relative paths. Defaults to working-tree-vs-HEAD. Pass { staged: true } for staged-only or { ref } for vs-ref (a ref, not an option). ref and staged are mutually exclusive. Read-only.",
         inputSchema: gitDiffJsonSchema,
       };
     },
@@ -50,20 +54,49 @@ export function gitDiffTool(): HertaTool {
       }
       const input = parsed.data;
 
+      // `--numstat -z` rather than `--stat`: real counts and full paths (see
+      // parseDiffStatZ). `--no-ext-diff` / `--no-textconv` stop a REPOSITORY's
+      // own config turning this read-only tool into a program launcher, and
+      // the trailing `--` ends the revision list so nothing after it can be
+      // read as an option.
+      const base = [
+        "diff",
+        "--numstat",
+        "-z",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+      ];
       let mode: GitDiffData["mode"];
       let argv: string[];
       if (input.staged === true) {
         mode = "staged";
-        argv = ["diff", "--stat", "--no-color", "--cached"];
+        argv = [...base, "--cached", "--"];
       } else if (input.ref !== undefined) {
         mode = "ref";
-        argv = ["diff", "--stat", "--no-color", input.ref];
+        argv = [...base, input.ref, "--"];
       } else {
         mode = "working-tree";
-        argv = ["diff", "--stat", "--no-color", "HEAD"];
+        // Before the first commit `HEAD` does not resolve, and diffing against
+        // it fails with "bad revision" — so a freshly initialised project, the
+        // state a coding agent most often starts a repository in, answered
+        // "git failed" while `git_status` and the staged diff both worked.
+        // git's empty-tree object is what `HEAD` would mean if it existed.
+        const born = await spawnGit(
+          ctx.workspaceRoot,
+          hardenedGitArgs(["rev-parse", "--verify", "--quiet", "HEAD"]),
+          ctx.signal,
+          { allowExitCodes: [1] },
+        );
+        const unborn = born.ok && born.stdout.trim().length === 0;
+        argv = [...base, unborn ? EMPTY_TREE : "HEAD", "--"];
       }
 
-      const r = await spawnGit(ctx.workspaceRoot, argv, ctx.signal);
+      const r = await spawnGit(
+        ctx.workspaceRoot,
+        hardenedGitArgs(argv),
+        ctx.signal,
+      );
       if (!r.ok) {
         if (r.code === "not_a_repo") {
           return errResult(
@@ -73,23 +106,33 @@ export function gitDiffTool(): HertaTool {
             "not a git repo",
           );
         }
+        if (r.code === "git_timeout") {
+          return errResult(
+            "git_timeout",
+            r.message,
+            undefined,
+            "git timed out",
+          );
+        }
         if (r.code === "spawn_failed") {
+          // Say which failure it was. Overriding this with a blanket "git is
+          // not on PATH" told a user whose workspace drive had vanished to
+          // install software they already had.
           return errResult(
             "spawn_failed",
             r.message,
-            "git is not on PATH",
+            r.cause === "git_not_found"
+              ? "install git, or add it to PATH, and restart"
+              : r.cause === "workspace_missing"
+                ? "the workspace path is gone — reopen the project"
+                : undefined,
             "spawn failed",
           );
         }
-        return errResult(
-          "git_failed",
-          r.message,
-          "git exited non-zero; check the message",
-          "git failed",
-        );
+        return errResult("git_failed", r.message, undefined, "git failed");
       }
 
-      const stat = parseDiffStat(r.stdout);
+      const stat = parseDiffStatZ(r.stdout);
       const data: GitDiffData = {
         mode,
         ...(mode === "ref" && input.ref !== undefined

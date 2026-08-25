@@ -44,6 +44,7 @@ import {
   SessionApprovalCache,
   type TerminalRecord,
   type TerminalRecordBlock,
+  windowsBackendHostNote,
   wireTaskScopedApprovalCache,
 } from "@herta/core";
 import {
@@ -73,8 +74,10 @@ import type { ApiKey } from "@herta/providers";
 import {
   createMinimalTools,
   createMvpTools,
+  type DigestModel,
   findBash,
   PersistentShell,
+  probeRepoState,
   registerEditFileRule,
   registerMinimalRules,
   registerRunCommandRule,
@@ -89,6 +92,57 @@ import type { AppServerConfig, ProviderType, ThinkingEffort } from "./types.js";
 import { loadEffectiveRules } from "./workspace-rules.js";
 
 // ── Backend stack ───────────────────────────────────────────────────────────
+
+/**
+ * The digest tool's side model (ADR 0043): one chat call in, plain text out.
+ * Flash with thinking OFF — a chunk summary is extraction, not reasoning,
+ * and the reasoning chain would cost more tokens than the answer (the title
+ * provider's lesson: a reasoning model's maxTokens must cover the chain).
+ * `maxTokens` bounds a runaway summary; `temperature` low for stability
+ * across the parallel calls. Built from a ProviderAdapter so the chaos
+ * proxy / provider overrides see it like every other sidecar.
+ */
+export function digestModelFrom(provider: ProviderAdapter): DigestModel {
+  return async ({ system, user }, signal) => {
+    let out = "";
+    for await (const ev of provider.streamChat(
+      {
+        stableSystem: system,
+        repoInstructions: "",
+        memoryContext: "",
+        retrievedLore: "",
+        messages: [{ role: "user", text: user, ts: new Date().toISOString() }],
+        toolSchemas: [],
+      },
+      signal,
+    )) {
+      if (ev.type === "text-delta") out += ev.text;
+      else if (ev.type === "finish") {
+        if (ev.reason === "error") throw new Error("digest model error");
+        break;
+      }
+    }
+    return out;
+  };
+}
+
+export function makeDigestProvider(
+  apiKey: ApiKey,
+  baseUrl: { baseUrl?: string } = {},
+): ProviderAdapter {
+  // CLI remains DeepSeek-only; the GUI host builds this sidecar through
+  // createChatProvider with the user's configured provider instead.
+  return createChatProvider({
+    type: "deepseek",
+    apiKey,
+    model: "deepseek-v4-flash",
+    actorModel: "deepseek-v4-flash",
+    thinking: "off",
+    temperature: 0.2,
+    maxTokens: 1024,
+    ...baseUrl,
+  });
+}
 
 export interface BackendStackOpts {
   /** The ONE mutable holder of the effective 板砖 workspace. Shared with the
@@ -106,6 +160,14 @@ export interface BackendStackOpts {
   /** Extra tools (e.g. MCP) registered AFTER the contract's built-in set.
    *  Absent/empty → none. */
   readonly extraTools?: readonly HertaTool[];
+  /** The digest tool's side model (ADR 0043); null mounts the tool as
+   *  `unavailable` (no key, tests). */
+  readonly digestModel: DigestModel | null;
+  /** Test seam for the host-note decision (ADR 0044); defaults to
+   *  `process.platform`. On "win32" the STANDARD contract carries
+   *  `windowsBackendHostNote` — the minimal contract never does (it runs on
+   *  bash by construction). */
+  readonly platform?: NodeJS.Platform;
   /** Builds the front-end's ask resolver once the cache and rule store it
    *  consults exist. The returned resolver is the permission engine's. */
   readonly makeAsk: (deps: {
@@ -169,10 +231,13 @@ export function createBackendStack(opts: BackendStackOpts): BackendStack {
     for (const t of createMinimalTools({
       bashPath: bashPath as string,
       workspaceShellPath,
+      digestModel: opts.digestModel,
+      lang,
     }))
       backendTools.register(t);
   } else {
-    for (const t of createMvpTools()) backendTools.register(t);
+    for (const t of createMvpTools({ digestModel: opts.digestModel, lang }))
+      backendTools.register(t);
   }
   // Extra tools (MCP) join after the contract set; their `mcp__` prefix
   // keeps them from shadowing a built-in.
@@ -188,6 +253,14 @@ export function createBackendStack(opts: BackendStackOpts): BackendStack {
     // Both agents read the same effective workspace rules on every request;
     // the Herta half is wired in SessionImpl when it builds the actor driver.
     projectRules: () => loadEffectiveRules(wsHolder.current).text,
+    // ADR 0044: the standard contract on Windows says what the host is —
+    // without it the backend's Unix habits (grep/sed/ls) are a not_found
+    // each, which is what a bash-less machine's user reads as "很多命令
+    // 执行不了". win32-only, standard-only; the note text lives in core.
+    ...((opts.platform ?? process.platform) === "win32" &&
+    contract === "standard"
+      ? { hostNote: windowsBackendHostNote(lang) }
+      : {}),
   });
 
   // Permission rules attach to the shared engine.
@@ -212,6 +285,13 @@ export function createBackendStack(opts: BackendStackOpts): BackendStack {
       // is picked up on the next dispatch.
       workspaceRoot: wsHolder.current,
       memory,
+      // The dispatch baseline (2026-08-25). INJECTED because the probe needs
+      // git and core cannot import `@herta/tools` — tools already depends on
+      // core, so importing the other way would close a cycle. Without it the
+      // report only ever learns about a path from one of the three editors,
+      // and `bash` is not one of them: on the DEFAULT contract every shell
+      // write, move and delete was invisible to `changedFiles`.
+      repoProbe: (signal) => probeRepoState(wsHolder.current, signal),
     });
 
   return {

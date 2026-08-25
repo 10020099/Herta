@@ -5,6 +5,10 @@ import type {
   RulePermissionEngine,
 } from "@herta/core";
 import { bashTool, registerBashRule, shellPathsFor } from "./bash/index.js";
+import {
+  type DigestModel,
+  digestDocumentTool,
+} from "./digest-document/index.js";
 import { editFileTool } from "./edit-file/index.js";
 import { gitDiffTool } from "./git-diff/index.js";
 import { gitStatusTool } from "./git-status/index.js";
@@ -54,6 +58,21 @@ export {
   isCredentialBasename,
   isSensitiveSegment,
 } from "./credential-denylist.js";
+export {
+  chunkDocument,
+  DIGEST_CHUNK_CHARS,
+  type DocumentChunk,
+} from "./digest-document/chunker.js";
+export {
+  DIGEST_CONCURRENCY,
+  type DigestDocumentData,
+  type DigestDocumentToolOpts,
+  type DigestModel,
+  digestDocumentTool,
+  digestSidecarFor,
+  isDigestSidecar,
+  MAX_DIGEST_CHUNKS,
+} from "./digest-document/index.js";
 export type { EditFileData, EditFileRuleDeps } from "./edit-file/index.js";
 export {
   editFileTool,
@@ -63,6 +82,7 @@ export {
 export type { EditFileInput } from "./edit-file/schema.js";
 export type { ToolErrorCode } from "./errors.js";
 export { TOOL_ERROR_CODES } from "./errors.js";
+export { probeRepoState } from "./git/repo-probe.js";
 export type { GitDiffData, GitDiffFile } from "./git-diff/index.js";
 export { gitDiffTool } from "./git-diff/index.js";
 export type { GitDiffInput } from "./git-diff/schema.js";
@@ -151,7 +171,16 @@ export {
 } from "./write-new-file/index.js";
 export type { WriteNewFileInput } from "./write-new-file/schema.js";
 
-export interface MinimalToolsOpts {
+/** The document-digest seam both contracts share (ADR 0043): the side model
+ *  and the summary language. `model: null` mounts the tool in its
+ *  `unavailable` state (no key / tests) rather than leaving it out, so the
+ *  model learns the refusal instead of inventing a workaround. */
+export interface DigestToolsOpts {
+  readonly digestModel: DigestModel | null;
+  readonly lang?: "zh" | "en";
+}
+
+export interface MinimalToolsOpts extends DigestToolsOpts {
   /** From `findBash()`; the minimal contract cannot run without one. */
   bashPath: string;
   /** How the shell spells the workspace (schema example paths). Getter —
@@ -161,10 +190,12 @@ export interface MinimalToolsOpts {
 
 /**
  * The minimal contract's tool set (ADR 0040): the trained shape's two tools
- * plus the two record channels a shell cannot replace — `report_finding`
+ * plus the record channels a shell cannot replace — `report_finding`
  * (conclusions reach the record and the report; the model's final prose
- * reaches nobody, D6) and `show_excerpt` (lines the user asked to SEE; a
- * `view` is silent to the record like read_file is).
+ * reaches nobody, D6), `show_excerpt` (lines the user asked to SEE; a
+ * `view` is silent to the record like read_file is), and `digest_document`
+ * (ADR 0043: a whole attached document's content in one call — a shell can
+ * only read it end to end).
  */
 export function createMinimalTools(opts: MinimalToolsOpts): HertaTool[] {
   // The two record channels accept the SHELL's path spelling too — the model
@@ -182,6 +213,11 @@ export function createMinimalTools(opts: MinimalToolsOpts): HertaTool[] {
     }),
     reportFindingTool({ mapPath }),
     showExcerptTool({ mapPath }),
+    digestDocumentTool({
+      model: opts.digestModel,
+      mapPath,
+      ...(opts.lang !== undefined ? { lang: opts.lang } : {}),
+    }),
   ];
 }
 
@@ -195,7 +231,9 @@ export function registerMinimalRules(
   registerStrReplaceEditorRule(engine, deps);
 }
 
-export function createMvpTools(): HertaTool[] {
+export function createMvpTools(
+  opts: DigestToolsOpts = { digestModel: null },
+): HertaTool[] {
   return [
     readFileTool(),
     // Presentation, not navigation: read_file is silent to the user and to
@@ -216,6 +254,11 @@ export function createMvpTools(): HertaTool[] {
     // The backend's channel for CONCLUSIONS (ADR 0039): its final prose has
     // none by design, so an analysis brief needs this or it delivers nothing.
     reportFindingTool(),
+    // A whole attached document's content in one call (ADR 0043).
+    digestDocumentTool({
+      model: opts.digestModel,
+      ...(opts.lang !== undefined ? { lang: opts.lang } : {}),
+    }),
   ];
 }
 

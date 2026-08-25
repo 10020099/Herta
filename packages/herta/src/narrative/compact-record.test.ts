@@ -124,6 +124,55 @@ describe("digestSystemBlock — 差分协处理器 entries", () => {
     expect(digestSystemBlock(block)).toBe("（板砖无产出）");
   });
 
+  it("an attachment digest keeps the outline sidecar by citation (2026-08-23), in both languages", () => {
+    const block: SystemBlock = {
+      kind: "system",
+      label: "系统",
+      body: "附件 book.pdf · PDF · 516 页 · 正文过长，未取正文 · 目录 124 条 · .herta/attachments/s1/book-ab12cd34.pdf.txt",
+      digest: {
+        kind: "attachment",
+        name: "book.pdf",
+        path: ".herta/attachments/s1/book-ab12cd34.pdf.txt",
+        lines: 14603,
+        chars: 318437,
+        format: "pdf",
+        pages: 516,
+        unreadable: "too_large",
+        pageMarker: "── 第 N 页 ──",
+        outline: {
+          path: ".herta/attachments/s1/book-ab12cd34.pdf.outline.txt",
+          entries: 124,
+        },
+      },
+    };
+    expect(digestSystemBlock(block)).toBe(
+      "Attachment book.pdf (.herta/attachments/s1/book-ab12cd34.pdf.txt) · 文件过大，未取正文 · 目录 124 条在 .herta/attachments/s1/book-ab12cd34.pdf.outline.txt",
+    );
+    expect(digestSystemBlock(block, "en")).toBe(
+      "Attachment book.pdf (.herta/attachments/s1/book-ab12cd34.pdf.txt) · file too large, no body taken · outline of 124 entries at .herta/attachments/s1/book-ab12cd34.pdf.outline.txt",
+    );
+  });
+
+  it("a digest result keeps the sidecar by citation once its overview is gone (ADR 0043)", () => {
+    const block: SystemBlock = {
+      kind: "system",
+      label: "差分协处理器",
+      body: "↳ digest .herta/attachments/s1/b.pdf.digest.txt · 27 chunks",
+      digest: {
+        kind: "digest",
+        source: ".herta/attachments/s1/b.pdf.txt",
+        path: ".herta/attachments/s1/b.pdf.digest.txt",
+        chunks: 27,
+        cached: false,
+      },
+      evidenceDetail: "↳ 摘要 …\nOVERVIEW-LINE",
+    };
+    expect(digestSystemBlock(block)).toBe(
+      "Digest .herta/attachments/s1/b.pdf.txt → .herta/attachments/s1/b.pdf.digest.txt · 27 chunks · 正文已略去",
+    );
+    expect(digestSystemBlock(block, "en")).toContain("body elided");
+  });
+
   it("digests a role:noop-marker block to （板砖无产出）", () => {
     const block: SystemBlock = {
       kind: "system",

@@ -139,6 +139,13 @@ function renderStructuredDigest(
       return `${d.tool} failed (${d.code})`;
     case "skip":
       return null;
+    case "patch":
+      // Compaction keeps the MAGNITUDE, not the diff: after a compaction the
+      // patch body is gone, and "she changed 96 lines of spawn-git.ts" is the
+      // part worth carrying forward. Unmeasurable changes say so.
+      return d.add === undefined || d.del === undefined
+        ? `Patched ${d.files.join(", ")} (via a command, no line diff)`
+        : `Patched ${d.files.join(", ")} (+${d.add} -${d.del})`;
     case "bg":
       // One line per lifecycle row; the consecutive-state suppression in the
       // bridge already keeps these sparse.
@@ -191,8 +198,19 @@ function renderStructuredDigest(
         d.unreadable === undefined
           ? COMPACTION_TEXT[lang].excerptElided
           : COMPACTION_TEXT[lang].attachmentUnreadable[d.unreadable];
-      return `Attachment ${d.name} (${d.path}) · ${tail}`;
+      // The outline sidecar survives the fold by citation (2026-08-23) —
+      // path included, for the same reason the document's path is kept.
+      const outline =
+        d.outline !== undefined
+          ? ` · ${COMPACTION_TEXT[lang].attachmentOutline(d.outline.entries, d.outline.path)}`
+          : "";
+      return `Attachment ${d.name} (${d.path}) · ${tail}${outline}`;
     }
+    case "digest":
+      // The overview rode evidenceDetail and is gone; the sidecar is not —
+      // keep its path so a later turn sends 板砖 to `cat` it rather than
+      // re-digest (ADR 0043).
+      return `Digest ${d.source} → ${d.path} · ${d.chunks} chunks · ${COMPACTION_TEXT[lang].excerptElided}`;
     case "text":
       return fallbackDigest(d.text);
   }

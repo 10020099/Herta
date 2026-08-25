@@ -4,6 +4,7 @@ import type {
   AgentEvent,
   AgentExecutionReport,
   CodingAgentRuntime,
+  DigestDocumentData,
   DoneMarkerSummary,
   EventBus,
   EvidenceSection,
@@ -18,7 +19,11 @@ import type {
   TodoItem,
   TodoStatus,
 } from "@herta/core";
-import { composeMarkerSummary, type MarkerSummaryLabels } from "@herta/core";
+import {
+  composeMarkerSummary,
+  countDiffLines as countDiffLinesShared,
+  type MarkerSummaryLabels,
+} from "@herta/core";
 import {
   extractRecentDialogue,
   extractWorkingHistory,
@@ -67,6 +72,10 @@ function sanitizeDigest(digest: SystemBlockDigest): SystemBlockDigest {
     case "search":
       // The pattern is model-authored; the counts are harness-computed.
       return { ...digest, pattern: cleanBody(digest.pattern) };
+    case "patch":
+      // Paths are backend-derived; the counts are harness-computed from the
+      // diff text and pass through.
+      return { ...digest, files: digest.files.map(cleanBody) };
     case "finding":
       // Claim AND cites are model-authored (the cites were verified to
       // exist, not to be free of markers).
@@ -102,6 +111,21 @@ function sanitizeDigest(digest: SystemBlockDigest): SystemBlockDigest {
       return {
         ...digest,
         name: cleanBody(digest.name),
+        path: cleanBody(digest.path),
+        ...(digest.outline === undefined
+          ? {}
+          : {
+              outline: {
+                ...digest.outline,
+                path: cleanBody(digest.outline.path),
+              },
+            }),
+      };
+    case "digest":
+      // Two paths from the filesystem; counts and the flag are harness-made.
+      return {
+        ...digest,
+        source: cleanBody(digest.source),
         path: cleanBody(digest.path),
       };
     case "skip":
@@ -144,6 +168,24 @@ function sanitizeSection(s: EvidenceSection): EvidenceSection {
       return {
         ...s,
         name: cleanBody(s.name),
+        path: cleanBody(s.path),
+        text: cleanBody(s.text),
+      };
+    case "outline":
+      // The document's own headings — user-supplied text like the head
+      // above, and the same forgery surface.
+      return {
+        ...s,
+        name: cleanBody(s.name),
+        path: cleanBody(s.path),
+        items: s.items.map(cleanBody),
+      };
+    case "digest":
+      // Model-authored text about a user document: both untrusted origins
+      // at once, so it rides the cleaner like everything else.
+      return {
+        ...s,
+        source: cleanBody(s.source),
         path: cleanBody(s.path),
         text: cleanBody(s.text),
       };
@@ -368,6 +410,49 @@ function projectBackendEventUnsanitized(event: AgentEvent): SystemBlock | null {
           if (data === undefined || !Array.isArray(data.matches)) return null;
           return projectSearchResult(data);
         }
+        // digest_document (ADR 0043): the overview rides the two-state lane
+        // like an excerpt — in front of Herta this turn, a citation after —
+        // and the row says what the sidecar is and how many chunks it holds.
+        // Labeled MODEL-GENERATED in the detail: it is the one evidence
+        // section in the record that a model wrote about the user's document.
+        if (event.tool === "digest_document") {
+          const data = event.result.data as DigestDocumentData | undefined;
+          if (
+            data === undefined ||
+            typeof data.digestPath !== "string" ||
+            typeof data.overview !== "string"
+          )
+            return null;
+          const overview = data.overview.trim();
+          return {
+            kind: "system",
+            label: "差分协处理器",
+            body: `↳ digest ${data.digestPath} · ${data.chunks} chunks${
+              data.cached ? " (cached)" : ""
+            }`,
+            digest: {
+              kind: "digest",
+              source: data.relPath,
+              path: data.digestPath,
+              chunks: data.chunks,
+              cached: data.cached,
+            },
+            ...(overview.length > 0
+              ? {
+                  evidenceDetail: `↳ 摘要 ${data.relPath}（模型生成，共 ${data.chunks} 段，分段摘要见 ${data.digestPath}）\n${overview}`,
+                  evidence: [
+                    {
+                      kind: "digest" as const,
+                      source: data.relPath,
+                      path: data.digestPath,
+                      chunks: data.chunks,
+                      text: overview,
+                    },
+                  ],
+                }
+              : {}),
+          };
+        }
         // Success: run_command (incl. the background trio) surfaces a result
         // block — its output is otherwise invisible. The minimal contract's
         // `bash` (ADR 0040) returns the same RunCommandData and gets the same
@@ -532,16 +617,27 @@ function projectBackendEventUnsanitized(event: AgentEvent): SystemBlock | null {
 
     case "patch.preview": {
       const files = event.files.join(", ");
-      const body = [
-        `patch preview: ${files}`,
-        "",
-        "```diff",
-        event.diff.trimEnd(),
-        "```",
-      ].join("\n");
-      // skip: the preview never contributes a digest line — the Writing
-      // op that follows it covers the same ground (spec §4.1).
-      return { kind: "system", label: "系统", body, digest: { kind: "skip" } };
+      const counts = countDiffLines(event.diff);
+      // The magnitude goes in the canonical body too, not just the digest:
+      // Herta reads this record (D7) and "改了 96 行" is exactly the kind of
+      // thing she should be able to say without opening the diff.
+      const head =
+        counts === null
+          ? `patch preview: ${files}`
+          : `patch preview: ${files} (+${counts.add} -${counts.del})`;
+      const body = [head, "", "```diff", event.diff.trimEnd(), "```"].join(
+        "\n",
+      );
+      return {
+        kind: "system",
+        label: "系统",
+        body,
+        digest: {
+          kind: "patch",
+          files: [...event.files],
+          ...(counts ?? {}),
+        },
+      };
     }
 
     case "permission.requested": {
@@ -623,6 +719,8 @@ function workflowLabel(
       return "Inspecting";
     case "memory_save":
       return "Saving memory";
+    case "digest_document":
+      return "Digesting";
     default:
       return null;
   }
@@ -639,6 +737,7 @@ const CN_MARKER_LABELS = (stateWord: string): MarkerSummaryLabels => ({
       ? `测试 ${passed}/${passed}`
       : `测试 ${passed} 通过，${failed} 失败`,
   risk: (n) => `${n} 风险`,
+  lines: (add, del) => `+${add} −${del}`,
   aborted: "运行异常中止",
 });
 
@@ -662,6 +761,45 @@ const STATUS_WORD: Record<string, string> = {
  * Herta's prompt. `role: "done-marker"` lets the renderer/actor recognise the
  * end of the run.
  */
+/**
+ * Added / removed line counts of a unified diff, or null when the text is not
+ * one this can measure.
+ *
+ * `+++` / `---` are the file headers, not content — counting them would
+ * inflate every single-file patch by one on each side. The `\ ` lines the
+ * bounded differ emits (an omission marker, "no newline at end of file") are
+ * not content either.
+ */
+function countDiffLines(diff: string): { add: number; del: number } | null {
+  if (diff.trim().length === 0) return null;
+  return countDiffLinesShared(diff);
+}
+
+/**
+ * Total added / removed lines across a report's changed files — or null when
+ * ANY of them lacks a per-file diff.
+ *
+ * All-or-nothing on purpose. A file changed through a command (`sed -i`, a
+ * heredoc, an `mv`) has no diff, and since 2026-08-25 the dispatch baseline
+ * puts exactly those files into `changedFiles`. Summing only the measurable
+ * ones would present a partial number as the whole truth, which is the
+ * fabrication class this codebase has already paid to remove from `git_diff`.
+ */
+function totalChangedLines(
+  files: AgentExecutionReport["changedFiles"],
+): { add: number; del: number } | null {
+  if (files.length === 0) return null;
+  let add = 0;
+  let del = 0;
+  for (const f of files) {
+    const m = /^\s*\+(\d+)\s*[-−]\s*(\d+)\s*$/.exec(f.diffSummary ?? "");
+    if (m === null) return null;
+    add += Number.parseInt(m[1] as string, 10);
+    del += Number.parseInt(m[2] as string, 10);
+  }
+  return { add, del };
+}
+
 function buildDoneMarker(
   report: AgentExecutionReport,
   lastCommandTail: string | undefined,
@@ -682,10 +820,12 @@ function buildDoneMarker(
 
   // Structured mirror for localizing renderers (the GUI). The body below stays
   // canonical (D7); this is display-only data, never read by Herta's prompt.
+  const changedLines = totalChangedLines(report.changedFiles);
   const markerSummary: DoneMarkerSummary = {
     kind: "done",
     state: report.status,
     fileCount,
+    ...(changedLines !== null ? { lines: changedLines } : {}),
     ...(testCounts !== undefined ? { tests: testCounts } : {}),
     riskCount,
   };
@@ -1507,6 +1647,8 @@ function attachmentTaskLine(
     unreadable?: string;
     format?: "pdf" | "docx";
     pages?: number;
+    pageMarker?: string;
+    outline?: { path: string; entries: number };
   },
   lang: PromptLang,
 ): string {
@@ -1553,29 +1695,53 @@ function attachmentTaskLine(
       ? `[attachment] The Trailblazer tried to provide a file (${d.name}) but it could not be read. It is NOT on disk — do not look for it.`
       : `〔附件〕开拓者尝试提供文件（${d.name}），但读取失败，文件不在磁盘上——不要去找它。`;
   }
+  // The stored path is WORKSPACE-RELATIVE, and the line says so: in the
+  // large-document lab (2026-08-23) the actor re-spelled the citation as
+  // `~/.herta/attachments/…` in her dispatch and the backend spent four
+  // commands (one a `find /`) on a home directory that holds no such thing.
+  const where = en
+    ? `${d.path} (relative to the workspace root)`
+    : `${d.path}（相对工作区根目录）`;
   if (d.format !== undefined) {
     // Stored as extracted text. Say so, and say what "took no excerpt" means
-    // for a document — over the char cap, still readable/searchable in full.
+    // for a document — over the char cap, still readable/searchable in full,
+    // and long enough that locating first beats reading from the top.
     const noHead =
       d.unreadable !== undefined
         ? en
-          ? " The harness took no head excerpt from it (the text is long); the full text is on disk and you may still read or search it."
-          : "框架未取其开头（正文过长）；全文在磁盘上，仍可读取或检索。"
+          ? " The harness took no head excerpt from it (the text is long); the full text is on disk — search for headings or keywords to locate what the task needs, then read that range. If the task needs the WHOLE document (a summary, an index, what it covers), call digest_document on the path once instead of reading it end to end."
+          : "框架未取其开头（正文过长）；全文在磁盘上——先按标题或关键词检索定位，再分段读取需要的范围。若任务需要整份文档的内容（总结、索引、它讲了什么），对该路径调用一次 digest_document，不要从头读到尾。"
         : en
-          ? " Read it with your file tools if the task needs it."
-          : "任务需要时用文件工具自行读取。";
+          ? " Read it with your file tools if the task needs it; for the whole document's content at once (a summary, an index), call digest_document on the path."
+          : "任务需要时用文件工具自行读取；若需要整份文档的内容（总结、索引），对该路径调用 digest_document。";
+    // The navigation aids (2026-08-23): the exact page-marker shape the FILE
+    // carries (from the digest, not the session language), and the outline
+    // sidecar with its column legend. Both absent for records from before
+    // they existed, so an old citation still reads as it did.
+    const markerNote =
+      d.pageMarker !== undefined
+        ? en
+          ? ` Each page of the text begins with a line of the form \`${d.pageMarker}\`, so \`grep -n\` for that prefix is a page→line map and a cite of that line is a page cite.`
+          : ` 正文每页以「${d.pageMarker}」一行起始：按该前缀 \`grep -n\` 即得页码→行号表，引用该行即引用页码。`
+        : "";
+    const outlineNote =
+      d.outline !== undefined
+        ? en
+          ? ` Its outline (${d.outline.entries} entries — the document's own bookmarks/headings, one per line as \`title (p.<page> · L<line>)\`, nested by indent) is at ${d.outline.path}; read it first to jump to the part the task needs.`
+          : ` 文档自带目录（${d.outline.entries} 条，来自书签/标题样式，每行形如「标题 (p.页 · L行)」，缩进表层级）存于 ${d.outline.path}——先读目录，再跳到任务需要的部分。`
+        : "";
     return en
-      ? `[attachment] The Trailblazer provided a document: ${d.name}${docNote}. The harness extracted its text to ${d.path} — that path IS the document, as plain text; there is no separate ${d.format} file.${noHead}`
-      : `〔附件〕开拓者提供了文档：${d.name}${docNote}。框架已将其正文提取为纯文本，存于 ${d.path}——该路径就是这份文档的文本版，没有另外的 ${d.format === "pdf" ? "PDF" : "docx"} 文件。${noHead}`;
+      ? `[attachment] The Trailblazer provided a document: ${d.name}${docNote}. The harness extracted its text to ${where} — that path IS the document, as plain text; there is no separate ${d.format} file.${noHead}${markerNote}${outlineNote}`
+      : `〔附件〕开拓者提供了文档：${d.name}${docNote}。框架已将其正文提取为纯文本，存于 ${where}——该路径就是这份文档的文本版，没有另外的 ${d.format === "pdf" ? "PDF" : "docx"} 文件。${noHead}${markerNote}${outlineNote}`;
   }
   if (d.unreadable !== undefined) {
     return en
-      ? `[attachment] The Trailblazer provided a file: ${d.name} — at ${d.path}. The harness took no excerpt from it (${d.unreadable}); it is on disk and you may still search it.`
-      : `〔附件〕开拓者提供了文件：${d.name}，位于 ${d.path}。框架未从中取正文（${d.unreadable}）；文件在磁盘上，仍可检索。`;
+      ? `[attachment] The Trailblazer provided a file: ${d.name} — at ${where}. The harness took no excerpt from it (${d.unreadable}); it is on disk and you may still search it.`
+      : `〔附件〕开拓者提供了文件：${d.name}，位于 ${where}。框架未从中取正文（${d.unreadable}）；文件在磁盘上，仍可检索。`;
   }
   return en
-    ? `[attachment] The Trailblazer provided a file: ${d.name} — at ${d.path}. Read it with your file tools if the task needs it.`
-    : `〔附件〕开拓者提供了文件：${d.name}，位于 ${d.path}。任务需要时用文件工具自行读取。`;
+    ? `[attachment] The Trailblazer provided a file: ${d.name} — at ${where}. Read it with your file tools if the task needs it.`
+    : `〔附件〕开拓者提供了文件：${d.name}，位于 ${where}。任务需要时用文件工具自行读取。`;
 }
 
 /** Why a document (ADR 0038) never reached disk, in words 板砖 can relay. */

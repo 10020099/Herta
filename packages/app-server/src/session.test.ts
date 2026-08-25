@@ -1505,6 +1505,52 @@ describe("Session — attachFiles (ADR 0033)", () => {
     await cleanup();
   });
 
+  it("removeAttachment takes the outline sidecar with the text and drops its citation from the digest (2026-08-23)", async () => {
+    const { makePdf } = await import("./testing/document-fixtures.js");
+    const { session, backendWs, srcDir, cleanup } = await mkAttachSession();
+    writeFileSync(
+      join(srcDir, "book.pdf"),
+      makePdf([["one"], ["two"]], {
+        bookmarks: [
+          { title: "Chapter 1", page: 1 },
+          { title: "Chapter 2", page: 2 },
+        ],
+      }),
+    );
+    const a = await session.attachFiles([join(srcDir, "book.pdf")]);
+    expect(a.ok).toBe(true);
+    if (!a.ok) return;
+    const rel = a.files[0]?.path ?? "";
+    const block = session.record.find(
+      (b) => b.kind === "system" && b.digest?.kind === "attachment",
+    );
+    const digest = block?.kind === "system" ? block.digest : undefined;
+    const sidecar =
+      digest?.kind === "attachment" ? (digest.outline?.path ?? "") : "";
+    expect(sidecar).toMatch(/\.pdf\.outline\.txt$/);
+    expect(existsSync(join(backendWs, ...sidecar.split("/")))).toBe(true);
+
+    // A digest sidecar 板砖 built later (ADR 0043) goes with the text too.
+    const digestRel = rel.replace(/\.txt$/, ".digest.txt");
+    writeFileSync(join(backendWs, ...digestRel.split("/")), "# 文档摘要\n");
+
+    expect(await session.removeAttachment(rel)).toEqual({
+      ok: true,
+      removed: 1,
+    });
+    expect(existsSync(join(backendWs, ...rel.split("/")))).toBe(false);
+    expect(existsSync(join(backendWs, ...sidecar.split("/")))).toBe(false);
+    expect(existsSync(join(backendWs, ...digestRel.split("/")))).toBe(false);
+    const after = session.record.find(
+      (b) => b.kind === "system" && b.digest?.kind === "attachment",
+    );
+    if (after?.kind !== "system") throw new Error("no attachment block");
+    expect(after.digest).toMatchObject({ unreadable: "removed" });
+    expect(after.digest).not.toHaveProperty("outline");
+    expect(JSON.stringify(session.record)).not.toContain("Chapter 2");
+    await cleanup();
+  });
+
   it("the removal survives a reload — it is on disk, not just in memory", async () => {
     const { session, cfg, srcDir, cleanup } = await mkAttachSession();
     writeFileSync(join(srcDir, "spec.md"), "# spec\nbody\n");
@@ -1623,5 +1669,107 @@ describe("Session — attachFiles (ADR 0033)", () => {
     );
     expect(block?.kind === "system" && block.body).toContain("已拒收");
     await cleanup();
+  });
+});
+
+// ── Contract-fallback record note (ADR 0044) ────────────────────────────────
+//
+// types.ts had PROMISED "falls back to `standard` and projects a `→ 系统`
+// line saying so" since ADR 0040 — the implementation only console.warn'd,
+// which no GUI user sees (user report 2026-08-24). One note per NEW session,
+// naming the remedy; deferred past the opening so record order matches disk.
+
+describe("contract-fallback record note (ADR 0044)", () => {
+  const savedBash = process.env.HERTA_BASH;
+  afterEach(() => {
+    if (savedBash === undefined) delete process.env.HERTA_BASH;
+    else process.env.HERTA_BASH = savedBash;
+  });
+
+  function noteBlocks(record: TerminalRecord) {
+    return record.filter(
+      (b) => b.kind === "system" && b.body.includes("Git for Windows"),
+    );
+  }
+  /** minimal configured + deterministic no-bash (findBash override miss). */
+  function minimalCfg(): AppServerConfig {
+    const cfg = { ...mkConfig(), backendContract: "minimal" as const };
+    process.env.HERTA_BASH = join(cfg.workspaceRoot, "no-such-bash.exe");
+    return cfg;
+  }
+
+  it("one 系统 note naming the remedy, flushed AFTER the opening, one-shot", async () => {
+    const { session, cleanup } = await mkStubSession(
+      minimalCfg(),
+      undefined,
+      1,
+      { openingOverride: TEST_OPENING },
+    );
+    // Deferred, not appended at create — the record's block order must match
+    // the persisted order (the opening seed is persisted first).
+    expect(noteBlocks(session.record)).toHaveLength(0);
+    await session.playOpening();
+    const record = session.record;
+    const notes = noteBlocks(record);
+    expect(notes).toHaveLength(1);
+    const note = notes[0];
+    if (note?.kind !== "system") throw new Error("no note block");
+    expect(note.label).toBe("系统");
+    expect(note.body).toContain("极简");
+    // The opening streamed first; the note is the record's last block.
+    expect(record.length).toBeGreaterThanOrEqual(2);
+    expect(record[record.length - 1]).toBe(note);
+    // One-shot.
+    await session.playOpening();
+    expect(noteBlocks(session.record)).toHaveLength(1);
+    await cleanup();
+  });
+
+  it("a front-end that never plays openings (the CLI) gets it on the first submit, before the user block", async () => {
+    const { session, cleanup } = await mkStubSession(minimalCfg());
+    await session.submitText("hi");
+    const record = session.record;
+    expect(noteBlocks(record)).toHaveLength(1);
+    const noteIdx = record.findIndex((b) => noteBlocks([b]).length === 1);
+    const userIdx = record.findIndex((b) => b.kind === "user");
+    expect(userIdx).toBeGreaterThanOrEqual(0);
+    expect(noteIdx).toBeLessThan(userIdx);
+    await cleanup();
+  });
+
+  it("the note is persisted — and a RESUMED session does not repeat it", async () => {
+    const cfg = minimalCfg();
+    const first = await mkStubSession(cfg);
+    await first.session.playOpening();
+    expect(noteBlocks(first.session.record)).toHaveLength(1);
+    const { readSessionFile } = await import("@herta/core");
+    const onDisk = readSessionFile(
+      join(cfg.transcriptDir, `${first.session.sessionId}.jsonl`),
+    );
+    expect(noteBlocks(onDisk.record)).toHaveLength(1);
+    await first.cleanup();
+
+    // Resume with the persisted record: initialRecord non-empty → no re-add.
+    const resumed = await mkStubSession(cfg, onDisk.record);
+    await resumed.session.playOpening();
+    expect(noteBlocks(resumed.session.record)).toHaveLength(1);
+    await resumed.cleanup();
+  });
+
+  it("no note when the standard contract was configured, or when bash exists", async () => {
+    const cfgStd = { ...mkConfig(), backendContract: "standard" as const };
+    process.env.HERTA_BASH = join(cfgStd.workspaceRoot, "no-such-bash.exe");
+    const std = await mkStubSession(cfgStd);
+    await std.session.playOpening();
+    expect(noteBlocks(std.session.record)).toHaveLength(0);
+    await std.cleanup();
+
+    // "bash exists": any existing path satisfies findBash's override check.
+    const cfgMin = { ...mkConfig(), backendContract: "minimal" as const };
+    process.env.HERTA_BASH = cfgMin.workspaceRoot;
+    const min = await mkStubSession(cfgMin);
+    await min.session.playOpening();
+    expect(noteBlocks(min.session.record)).toHaveLength(0);
+    await min.cleanup();
   });
 });

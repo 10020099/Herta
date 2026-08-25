@@ -111,6 +111,43 @@ describe("stripHintScaffolding — echoed 〔hint〕 wrappers (live lab 2026-08-
     expect(retryCause(stripHintScaffolding("〔〕"))).toBe("empty");
   });
 
+  it("drops a TRAILING self-directive and keeps the answer before it (large-document lab 2026-08-23)", () => {
+    // Verbatim from the lab: two speeches in one session, each ending in a
+    // bracketed instruction the model wrote for its own next step.
+    expect(
+      stripHintScaffolding(
+        "先别催，等我重新让它把输出写到当前目录。 〔到这里，只准停，只准说这一件事。不得启动新任务，不得写任何命令。〕",
+      ),
+    ).toBe("先别催，等我重新让它把输出写到当前目录。");
+    expect(
+      stripHintScaffolding(
+        "这事不是记得记不得的问题，是没文本可对就别谈精确。 〔这句之后，只准停。`@板砖` 不写：无命令。〕",
+      ),
+    ).toBe("这事不是记得记不得的问题，是没文本可对就别谈精确。");
+    // Leading and trailing together; a trailing pair on junk rescues nothing.
+    expect(stripHintScaffolding("〔先说〕台词。〔到这里，只准停。〕")).toBe(
+      "台词。",
+    );
+    expect(
+      isUnusableBlock(stripHintScaffolding("{需要说的话}〔只准停。〕")),
+    ).toBe(true);
+  });
+
+  it("keeps a trailing CITATION — Chinese reference marks use the same bracket (the regression caught the same day)", () => {
+    // The first trailing strip ate a speech's closing list of quotes; the
+    // committed text ended at `：`. Citation-shaped pairs are not scaffolding.
+    const cited =
+      "第 300 页落在第 101 篇，两句原文：\n〔行 7902〕姬子：列车总得有人留守。\n〔行 7892-7893〕瓦尔特：站在我们现在的视角远望这颗星球。〔1〕";
+    expect(stripHintScaffolding(cited)).toBe(cited);
+    expect(
+      stripHintScaffolding("出处见〔第101篇《激「冻」人心的大冒险》〕"),
+    ).toBe("出处见〔第101篇《激「冻」人心的大冒险》〕");
+    // …while a directive-shaped trailing pair still goes, in either language.
+    expect(
+      stripHintScaffolding("Fine. 〔Stop here. Do not start a new task.〕"),
+    ).toBe("Fine.");
+  });
+
   it("leaves ordinary speech untouched, byte for byte", () => {
     for (const s of [
       "记不得了，你说。",

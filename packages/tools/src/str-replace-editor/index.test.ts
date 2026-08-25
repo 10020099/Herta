@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -363,6 +364,109 @@ describe("str_replace_editor tool", () => {
     );
     // Not a str_replace_editor input → generic fallback.
     expect(tool().summarize?.({ command: "create" }, ctx)).toBeUndefined();
+  });
+
+  // 2026-08-24 (codex study). This is the DEFAULT contract's editor, so the
+  // whole-file U+FFFD rewrite landed here first. A legacy-encoded source has
+  // no NUL, so the binary sniff passed it; every command in this tool writes
+  // the whole file back from the decoded string.
+  describe("non-UTF-8 files", () => {
+    /** `/* 测试注释 *\/` in GBK + an ASCII line. No NUL byte anywhere. */
+    const legacyBytes = () =>
+      Buffer.concat([
+        Buffer.from([
+          0x2f, 0x2a, 0x20, 0xb2, 0xe2, 0xca, 0xd4, 0xd7, 0xa2, 0xca, 0xcd,
+          0x20, 0x2a, 0x2f, 0x0a,
+        ]),
+        Buffer.from("int main(void){ return 0; }\n", "ascii"),
+      ]);
+
+    it("refuses to edit one, and leaves the bytes untouched", async () => {
+      ws = await mkTmpWorkspace({ "legacy.c": "" });
+      const original = legacyBytes();
+      await writeFile(abs("legacy.c"), original);
+      const r = await tool().run(
+        call({
+          command: "str_replace",
+          path: abs("legacy.c"),
+          // Touches only the ASCII line; the damage was never local to it.
+          old_str: "return 0",
+          new_str: "return 1",
+        }),
+        ctxFor(ws.root),
+        noopProgress,
+      );
+      expect(r.ok).toBe(false);
+      expect(r.error?.code).toBe("non_utf8_file");
+      expect(await readFile(abs("legacy.c"))).toEqual(original);
+    });
+
+    it("preserves a UTF-8 BOM, and the ledger hashes what was WRITTEN", async () => {
+      // A BOM is valid UTF-8, so this file is accepted and `lossy` is false —
+      // and then the decoder eats the three bytes and the whole-file rewrite
+      // never restores them. Same property as the refusal above: an editor
+      // does not change bytes the edit never addressed.
+      ws = await mkTmpWorkspace({ "conf.ps1": "" });
+      await writeFile(
+        abs("conf.ps1"),
+        Buffer.concat([
+          Buffer.from([0xef, 0xbb, 0xbf]),
+          Buffer.from('$port = 8080\nWrite-Host "端口配置"\n', "utf-8"),
+        ]),
+      );
+      const ctx = ctxFor(ws.root);
+      await tool().run(
+        call({ command: "view", path: abs("conf.ps1") }),
+        ctx,
+        noopProgress,
+      );
+      const r = await tool().run(
+        call({
+          command: "str_replace",
+          path: abs("conf.ps1"),
+          old_str: "$port = 8080",
+          new_str: "$port = 9090",
+        }),
+        ctx,
+        noopProgress,
+      );
+      expect(r.ok).toBe(true);
+      const after = await readFile(abs("conf.ps1"));
+      expect(after.subarray(0, 3)).toEqual(Buffer.from([0xef, 0xbb, 0xbf]));
+      expect(after.toString("utf-8")).toContain("端口配置");
+      // The read ledger must hash the BYTES ON DISK, or the next edit fails
+      // its own freshness check against our own write.
+      const onDisk = createHash("sha256").update(after).digest("hex");
+      expect(ctx.reads.get(abs("conf.ps1"))?.sha256).toBe(onDisk);
+    });
+
+    it("still VIEWS one, but says the text is lossy", async () => {
+      ws = await mkTmpWorkspace({ "legacy.c": "" });
+      await writeFile(abs("legacy.c"), legacyBytes());
+      const r = await tool().run(
+        call({ command: "view", path: abs("legacy.c") }),
+        ctxFor(ws.root),
+        noopProgress,
+      );
+      expect(r.ok).toBe(true);
+      expect(r.summary).toContain("not valid UTF-8");
+    });
+
+    it("leaves ordinary UTF-8 files — including non-ASCII ones — alone", async () => {
+      ws = await mkTmpWorkspace({ "u.txt": "α 测试 alpha\n" });
+      const r = await tool().run(
+        call({
+          command: "str_replace",
+          path: abs("u.txt"),
+          old_str: "alpha",
+          new_str: "ALPHA",
+        }),
+        ctxFor(ws.root),
+        noopProgress,
+      );
+      expect(r.ok).toBe(true);
+      expect(await readFile(abs("u.txt"), "utf-8")).toBe("α 测试 ALPHA\n");
+    });
   });
 });
 

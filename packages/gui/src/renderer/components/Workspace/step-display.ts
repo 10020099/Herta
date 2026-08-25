@@ -42,6 +42,7 @@ export const VERB_KEY: Record<string, MessageKey> = {
   "Saving memory": "activity.verb.savingMemory",
   Searching: "activity.verb.searching",
   Stopping: "activity.verb.stopping",
+  Digesting: "activity.verb.digesting",
 };
 
 /**
@@ -151,6 +152,18 @@ export function stepDisplayBody(
         }
       }
       const head = [`${label} ${name}`, ...doc].join(" · ");
+      // The outline count (2026-08-23) shows in both states, as in the
+      // canonical body: for an over-cap document it is the one thing the
+      // row can say about what is inside.
+      const outline =
+        d.outline !== undefined
+          ? [
+              t("activity.attachment.outline").replace(
+                "{n}",
+                d.outline.entries.toLocaleString(),
+              ),
+            ]
+          : [];
       if (d.unreadable !== undefined) {
         const isDoc = d.format !== undefined;
         const stored = d.path.length > 0;
@@ -180,18 +193,45 @@ export function stepDisplayBody(
                       : d.unreadable === "unsupported"
                         ? t("activity.attachment.unreadable.unsupported")
                         : t("activity.attachment.unreadable.readError");
-        return `${head} · ${why}`;
+        return [head, why, ...outline].join(" · ");
       }
       const lines = `${d.lines.toLocaleString()} ${t("activity.result.lines")}`;
       const chars = `${d.chars.toLocaleString()} ${t("activity.attachment.chars")}`;
       const extracted =
         d.format !== undefined ? [t("activity.attachment.extracted")] : [];
-      return [head, ...extracted, lines, chars].join(" · ");
+      return [head, ...extracted, lines, chars, ...outline].join(" · ");
+    }
+    case "digest":
+      // "↳ digest <path> · 27 chunks (cached)" → localized chrome; the path is
+      // data (ADR 0043).
+      return `↳ ${t("activity.result.digest")} ${d.path} · ${d.chunks} ${t(
+        "activity.result.chunks",
+      )}${d.cached ? ` (${t("activity.result.cached")})` : ""}`;
+    case "patch": {
+      // The magnitude row (2026-08-25). A write was the ONE operation with no
+      // `↳` outcome row — every other one answers itself (`↳ 5 处匹配 · 1 个
+      // 文件`, `↳ 测试: 3 passed`), and a patch said only "patch preview:
+      // <files>", which is a restatement of the Writing row above it.
+      //
+      // Since 2026-08-25 evening a preview normally FOLDS into the write it
+      // previews (`activityRows`), so this renders only the standalone case:
+      // a DENIED edit, previewed but never written. The diff body still rides
+      // this block, so the existing expander opens it; only the headline
+      // changes.
+      //
+      // Counts absent → an empty preview. The canonical first line
+      // (`patch preview: <files>`) is left alone: it at least names the file,
+      // where a sentence about the absence of a number would not (owner,
+      // 2026-08-25 evening).
+      if (d.add === undefined || d.del === undefined) return block.body;
+      const nl = block.body.indexOf("\n");
+      const head = `↳ +${d.add} −${d.del}`;
+      return nl >= 0 ? `${head}${block.body.slice(nl)}` : head;
     }
     case "skip":
-      // The patch-preview block (the only skip-digest producer): localize
-      // its first-line label, keep the files + diff fence verbatim (the
-      // collapsible diff body must stay untouched).
+      // Pre-2026-08-25 records: the patch preview was the only skip producer.
+      // Localize its first-line label, keep the files + diff fence verbatim
+      // (the collapsible diff body must stay untouched).
       if (block.body.startsWith("patch preview:")) {
         return `${t("activity.step.patchPreview")}:${block.body.slice(
           "patch preview:".length,
@@ -250,6 +290,21 @@ export function stepDisplayDetail(
           const note = s.clipped ? `\n${t("evidence.attachment.clipped")}` : "";
           return `↳ ${t("evidence.attachment")} ${s.name}\n${s.text}${note}`;
         }
+        case "outline": {
+          // Same stance as the clipped note: a preview must say it is one.
+          const shown =
+            s.items.length < s.total
+              ? ` ${t("evidence.outline.shown").replace("{n}", String(s.items.length))}`
+              : "";
+          return `↳ ${t("evidence.outline").replace("{n}", String(s.total))}${shown}\n${s.items.join("\n")}`;
+        }
+        case "digest":
+          // The "model-generated" label is part of the evidence (ADR 0043):
+          // without it a reader takes a flash précis for the document.
+          return `↳ ${t("evidence.digest")
+            .replace("{source}", s.source)
+            .replace("{n}", String(s.chunks))
+            .replace("{path}", s.path)}\n${s.text}`;
         case "matches": {
           // Same stance as the clipped note above: an omitted count is part
           // of the evidence, or the list reads as the whole result.
