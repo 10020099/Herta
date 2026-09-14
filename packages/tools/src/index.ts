@@ -115,8 +115,6 @@ export type {
   RepoContextOutcome,
   RepoProbeTransientReason,
 } from "./git/repo-probe.js";
-export type { GitReadTimeout } from "./git/spawn-git.js";
-export { GIT_READ_TIMEOUT, isGitReadTimeout } from "./git/spawn-git.js";
 export {
   classifyProbeFailure,
   describeRepoContext,
@@ -126,6 +124,8 @@ export {
   probeRepoState,
   resolveGitDir,
 } from "./git/repo-probe.js";
+export type { GitReadTimeout } from "./git/spawn-git.js";
+export { GIT_READ_TIMEOUT, isGitReadTimeout } from "./git/spawn-git.js";
 export type { WorkingDiff } from "./git/working-diff.js";
 export {
   describeWorkingDiff,

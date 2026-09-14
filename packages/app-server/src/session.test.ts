@@ -12,8 +12,8 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RepoContextSnapshot, TerminalRecord } from "@herta/core";
-import type { RepoContextOutcome } from "@herta/tools";
 import type { OpeningChoice } from "@herta/herta";
+import type { RepoContextOutcome } from "@herta/tools";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   SessionImpl,
