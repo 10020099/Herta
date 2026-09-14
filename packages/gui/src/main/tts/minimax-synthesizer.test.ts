@@ -188,3 +188,105 @@ describe("createMiniMaxSynthesizer", () => {
     expect(synth.available()).toBe(true); // a transient failure does not latch
   });
 });
+
+describe("createMiniMaxSynthesizer — a refusal (ADR 0062 §5, the review's mid-reply case)", () => {
+  const refusals = [
+    { code: 1008, msg: "insufficient balance", reason: "quota" },
+    { code: 1004, msg: "unauthorized", reason: "auth" },
+    { code: 2049, msg: "invalid api key", reason: "invalid_key" },
+  ] as const;
+
+  for (const r of refusals) {
+    it(`${r.reason}: the rest of the utterance sends no request; a new utterance probes once`, async () => {
+      const t2a = fakeT2a({ status: { code: r.code, msg: r.msg } });
+      const synth = createMiniMaxSynthesizer({
+        fetch: t2a.fetch,
+        key: () => "k",
+        voice: () => ({ voiceId: "v", host: "https://h" }),
+        enabled: () => true,
+        log: () => undefined,
+      });
+      await expect(synth.synthesize({ ...REQ, seq: 0 })).resolves.toBeNull();
+      expect(t2a.calls).toBe(1);
+      await expect(synth.synthesize({ ...REQ, seq: 1 })).resolves.toBeNull();
+      await expect(synth.synthesize({ ...REQ, seq: 2 })).resolves.toBeNull();
+      expect(t2a.calls).toBe(1); // doomed: no more requests for u1
+      expect(synth.status().lastFailure).toBe(r.reason);
+      expect(synth.status().refusal).toBe(r.reason);
+      // The next reply is a new utterance: one probe, then doomed again.
+      await expect(
+        synth.synthesize({ ...REQ, utteranceId: "u2", seq: 0 }),
+      ).resolves.toBeNull();
+      await expect(
+        synth.synthesize({ ...REQ, utteranceId: "u2", seq: 1 }),
+      ).resolves.toBeNull();
+      expect(t2a.calls).toBe(2);
+    });
+  }
+
+  it("a transient failure (rate) does not doom the utterance", async () => {
+    const t2a = fakeT2a({ status: { code: 1002, msg: "rate limit exceeded" } });
+    const synth = createMiniMaxSynthesizer({
+      fetch: t2a.fetch,
+      key: () => "k",
+      voice: () => ({ voiceId: "v", host: "https://h" }),
+      enabled: () => true,
+      log: () => undefined,
+    });
+    await expect(synth.synthesize({ ...REQ, seq: 0 })).resolves.toBeNull();
+    await expect(synth.synthesize({ ...REQ, seq: 1 })).resolves.toBeNull();
+    expect(t2a.calls).toBe(2);
+    expect(synth.status().refusal).toBeNull();
+  });
+
+  it("onRefusal fires once when the refusal is recorded and once when it clears — not per unit", async () => {
+    let status: { code: number; msg: string } | undefined = {
+      code: 1008,
+      msg: "insufficient balance",
+    };
+    const t2a = fakeT2a({
+      get status() {
+        return status;
+      },
+    } as { status?: { code: number; msg: string } });
+    const seen: (string | null)[] = [];
+    const synth = createMiniMaxSynthesizer({
+      fetch: t2a.fetch,
+      key: () => "k",
+      voice: () => ({ voiceId: "v", host: "https://h" }),
+      enabled: () => true,
+      onRefusal: (r) => seen.push(r),
+      log: () => undefined,
+    });
+    await synth.synthesize({ ...REQ, seq: 0 });
+    await synth.synthesize({ ...REQ, seq: 1 });
+    await synth.synthesize({ ...REQ, utteranceId: "u2", seq: 0 });
+    expect(seen).toEqual(["quota"]);
+    status = undefined; // the account was topped up
+    await expect(
+      synth.synthesize({ ...REQ, utteranceId: "u3", seq: 0 }),
+    ).resolves.not.toBeNull();
+    expect(seen).toEqual(["quota", null]);
+    expect(synth.status().refusal).toBeNull();
+  });
+
+  it("a refusal is about the key it was answered for: it clears when the key changes", async () => {
+    const t2a = fakeT2a({ status: { code: 1004, msg: "unauthorized" } });
+    let key = "old";
+    const seen: (string | null)[] = [];
+    const synth = createMiniMaxSynthesizer({
+      fetch: t2a.fetch,
+      key: () => key,
+      voice: () => ({ voiceId: "v", host: "https://h" }),
+      enabled: () => true,
+      onRefusal: (r) => seen.push(r),
+      log: () => undefined,
+    });
+    await synth.synthesize(REQ);
+    expect(synth.status().refusal).toBe("auth");
+    key = "new";
+    expect(synth.status().refusal).toBeNull();
+    expect(synth.status().lastFailure).toBeNull();
+    expect(seen).toEqual(["auth", null]);
+  });
+});

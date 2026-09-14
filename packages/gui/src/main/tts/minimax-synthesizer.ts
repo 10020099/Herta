@@ -24,7 +24,27 @@ import {
  * deletes clones idle for 7 days) latches the voice off and tells the clone
  * service, which re-clones; `available()` stays false until a new voice id
  * arrives.
+ *
+ * A REFUSAL — the platform answering that the key is bad (`auth`,
+ * `invalid_key`) or the account is out of balance (`quota`) — dooms the rest
+ * of its utterance (no further request for that reply; every one would be
+ * refused the same way) and is reported once through `onRefusal`, so the
+ * Settings row can say why the replies type unvoiced. The next utterance
+ * probes once: the platform is the authority on the account, and one request
+ * per reply is the cost of noticing a top-up. The refusal is about the key it
+ * was answered for and clears when the key changes or a unit succeeds.
  */
+export type MiniMaxRefusal = "auth" | "invalid_key" | "quota";
+
+const REFUSALS: ReadonlySet<MiniMaxFailure> = new Set<MiniMaxFailure>([
+  "auth",
+  "invalid_key",
+  "quota",
+]);
+
+/** Utterance ids remembered as doomed; ids are unique per stream. */
+const MAX_DOOMED = 64;
+
 export interface MiniMaxVoiceRef {
   readonly voiceId: string;
   readonly host: string;
@@ -48,6 +68,9 @@ export interface MiniMaxSynthesizerOpts {
   readonly onVoiceMissing?: (voiceId: string) => void;
   /** A unit was billed — the service stamps `lastUsedAt`. */
   readonly onUsed?: (billedChars: number) => void;
+  /** The refusal changed: recorded (the reason) or cleared (`null`). Fires
+   *  on the change, not per unit. */
+  readonly onRefusal?: (reason: MiniMaxRefusal | null) => void;
   readonly log?: (line: string) => void;
   /** Per-unit deadline; past it the unit types unvoiced. */
   readonly requestTimeoutMs?: number;
@@ -63,6 +86,8 @@ export interface MiniMaxSynthesizer extends SpeechSynthesizer {
     readonly voiceReady: boolean;
     readonly inFlight: number;
     readonly lastFailure: MiniMaxFailure | null;
+    /** The standing refusal for the current key, if the last answer was one. */
+    readonly refusal: MiniMaxRefusal | null;
     readonly missingVoice: string | null;
   };
 }
@@ -94,6 +119,11 @@ export function createMiniMaxSynthesizer(
   let inFlight = 0;
   let lastFailure: MiniMaxFailure | null = null;
   let missingVoice: string | null = null;
+  let refusal: {
+    readonly reason: MiniMaxRefusal;
+    readonly key: string;
+  } | null = null;
+  const doomed = new Set<string>();
   const waiters: (() => void)[] = [];
   /** Controllers per utterance, so a veto/interrupt aborts its own requests. */
   const controllers = new Map<string, Set<AbortController>>();
@@ -104,6 +134,29 @@ export function createMiniMaxSynthesizer(
     if (missingVoice !== null && v.voiceId !== missingVoice)
       missingVoice = null;
     return v.voiceId === missingVoice ? null : v;
+  };
+
+  const setRefusal = (next: MiniMaxRefusal | null, key: string): void => {
+    const prev = refusal?.reason ?? null;
+    refusal = next === null ? null : { reason: next, key };
+    if (prev !== next) opts.onRefusal?.(next);
+  };
+  /** The refusal, forgotten with the key it was answered for. */
+  const currentRefusal = (): MiniMaxRefusal | null => {
+    if (refusal === null) return null;
+    if (opts.key() !== refusal.key) {
+      lastFailure = null;
+      setRefusal(null, "");
+      return null;
+    }
+    return refusal.reason;
+  };
+  const doom = (utteranceId: string): void => {
+    doomed.add(utteranceId);
+    if (doomed.size > MAX_DOOMED) {
+      const oldest = doomed.keys().next().value;
+      if (oldest !== undefined) doomed.delete(oldest);
+    }
   };
 
   const acquire = (): Promise<void> => {
@@ -149,6 +202,8 @@ export function createMiniMaxSynthesizer(
       const key = opts.key();
       const voice = currentVoice();
       if (key === null || voice === null) return null;
+      currentRefusal();
+      if (doomed.has(req.utteranceId)) return null;
       const ac = new AbortController();
       const untrack = track(req.utteranceId, ac);
       await acquire();
@@ -172,6 +227,7 @@ export function createMiniMaxSynthesizer(
             ? out.samples
             : toInt16(opts.applyEffect(toFloat(out.samples), out.sampleRate));
         lastFailure = null;
+        setRefusal(null, key);
         opts.onUsed?.(out.billedChars);
         return {
           samples: wet,
@@ -186,6 +242,10 @@ export function createMiniMaxSynthesizer(
             missingVoice = voice.voiceId;
             log(`voice ${voice.voiceId} is gone on the platform — re-clone`);
             opts.onVoiceMissing?.(voice.voiceId);
+          } else if (REFUSALS.has(err.reason)) {
+            doom(req.utteranceId);
+            log(`unit ${req.seq} refused (${err.reason}): ${err.message}`);
+            setRefusal(err.reason as MiniMaxRefusal, key);
           } else {
             log(`unit ${req.seq} failed (${err.reason}): ${err.message}`);
           }
@@ -223,6 +283,7 @@ export function createMiniMaxSynthesizer(
         keySet: opts.key() !== null,
         voiceReady: currentVoice() !== null,
         inFlight,
+        refusal: currentRefusal(),
         lastFailure,
         missingVoice,
       };

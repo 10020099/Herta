@@ -19,6 +19,7 @@ import { app, type ipcMain } from "electron";
 import { CMD } from "../preload/channels.js";
 import type {
   InteractionLanguageChoice,
+  MiniMaxRefusalState,
   RealtimeVoiceState,
 } from "../renderer/ipc/bridge-types.js";
 import { DEVICE_SCENE_DEFAULT } from "../shared/device-scene.js";
@@ -95,6 +96,9 @@ export interface VoiceSettingsState {
   readonly minimaxFetch: Parameters<typeof probeHost>[0];
   /** Either MiniMax key is enough to try for a voice (ADR 0062 §1.8). */
   readonly anyMiniMaxKey: () => boolean;
+  /** The speech synthesizer's standing refusal, blamed on the key that
+   *  spoke (ADR 0062 §5). */
+  readonly minimaxRefusal: () => MiniMaxRefusalState | null;
 }
 
 export interface SettingsIpcDeps {
@@ -314,6 +318,7 @@ export function registerSettingsHandlers(deps: SettingsIpcDeps): void {
         key: getMiniMaxKeyStatus(),
         planKey: getMiniMaxPlanKeyStatus(),
         voice: voice.minimaxVoice?.state() ?? { phase: "absent" },
+        refusal: voice.minimaxRefusal(),
       },
     };
   });

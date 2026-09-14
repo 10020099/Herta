@@ -3,6 +3,7 @@ import { useHertaBridge } from "../../context/HertaBridgeContext.js";
 import { useT } from "../../i18n/LocaleProvider.js";
 import type {
   DeepSeekKeyStatus,
+  MiniMaxRefusalState,
   MiniMaxVoiceError,
   MiniMaxVoiceState,
   RealtimeVoiceState,
@@ -39,6 +40,19 @@ function failureKey(reason: VoiceModelFailure) {
       return "voice.modelFailed.disk" as const;
     case "cancelled":
       return "voice.modelFailed.cancelled" as const;
+  }
+}
+
+/** A refusal answered mid-reply (ADR 0062 §5): what the replies' silence
+ *  means and what ends it. */
+function speechRefusalKey(reason: MiniMaxRefusalState["reason"]) {
+  switch (reason) {
+    case "quota":
+      return "voice.speechRefused.quota" as const;
+    case "auth":
+      return "voice.speechRefused.auth" as const;
+    case "invalid_key":
+      return "voice.speechRefused.invalid_key" as const;
   }
 }
 
@@ -120,6 +134,8 @@ interface KeyRowProps {
   readonly status: DeepSeekKeyStatus | null;
   /** The clone's last failure blamed this key: it reads 密钥无效. */
   readonly refused: boolean;
+  /** The account behind this key is out of balance (ADR 0062 §5). */
+  readonly outOfBalance?: boolean;
   /** Saved while the platform could not check it, and nothing has proven
    *  it since: it reads 未核对. */
   readonly unchecked: boolean;
@@ -143,6 +159,9 @@ function KeyRow(p: KeyRowProps): JSX.Element {
   const [rejected, setRejected] = useState(false);
   const busy = saving || deleting;
   const status = p.status;
+  const refusedLabel = p.outOfBalance
+    ? t("voice.minimaxKeyQuota")
+    : t("voice.minimaxKeyRejected");
 
   const onSave = (): void => {
     const key = draft.trim();
@@ -191,9 +210,9 @@ function KeyRow(p: KeyRowProps): JSX.Element {
       <span className="settings-key-state is-muted">
         {t("deepseek.checking")}
       </span>
-    ) : status.set && p.refused ? (
+    ) : status.set && (p.refused || p.outOfBalance) ? (
       <span className="settings-key-state is-rejected">
-        {t("voice.minimaxKeyRejected")} · …{status.hint}
+        {refusedLabel} · …{status.hint}
       </span>
     ) : status.set && p.unchecked ? (
       <span className="settings-key-state is-muted">
@@ -311,6 +330,7 @@ export function VoiceSettings(): JSX.Element {
   const [mmKey, setMmKey] = useState<DeepSeekKeyStatus | null>(null);
   const [mmPlanKey, setMmPlanKey] = useState<DeepSeekKeyStatus | null>(null);
   const [clone, setClone] = useState<MiniMaxVoiceState | null>(null);
+  const [refusal, setRefusal] = useState<MiniMaxRefusalState | null>(null);
   const [keyUnverified, setKeyUnverified] = useState(false);
   const [planUnverified, setPlanUnverified] = useState(false);
 
@@ -328,6 +348,7 @@ export function VoiceSettings(): JSX.Element {
           setMmKey(s.minimax.key);
           setMmPlanKey(s.minimax.planKey);
           setClone(s.minimax.voice);
+          setRefusal(s.minimax.refusal);
         },
         () => undefined,
       );
@@ -348,10 +369,17 @@ export function VoiceSettings(): JSX.Element {
       // check at the time is checked now.
       if (c.phase === "ready") setKeyUnverified(false);
     });
+    // A refusal answered mid-reply (ADR 0062 §5) — the platform rejected
+    // the key that speaks, or the account ran dry — and its clearing.
+    const unsubSpeech = bridge.onMiniMaxSpeech?.((r) => {
+      if (!alive) return;
+      setRefusal(r);
+    });
     return () => {
       alive = false;
       unsubModel?.();
       unsubClone?.();
+      unsubSpeech?.();
     };
   }, [bridge]);
 
@@ -485,11 +513,19 @@ export function VoiceSettings(): JSX.Element {
     clone !== null &&
     clone.phase === "failed" &&
     (clone.error === "invalid_key" || clone.error === "auth");
-  const blamed: "api" | "plan" | null = !keyRefused
+  const cloneBlamed: "api" | "plan" | null = !keyRefused
     ? null
     : (mmKey?.set ?? false)
       ? "api"
       : "plan";
+  // A refusal answered to a SPEECH unit names the key that spoke outright
+  // (ADR 0062 §5): a rejected key reads as such; an empty account reads as
+  // out of balance — the key is fine, the replies still type unvoiced.
+  const speechBlamed: "api" | "plan" | null =
+    refusal !== null && refusal.reason !== "quota" ? refusal.key : null;
+  const quotaBlamed: "api" | "plan" | null =
+    refusal !== null && refusal.reason === "quota" ? refusal.key : null;
+  const blamed = speechBlamed ?? cloneBlamed;
   // A key stored while the platform could not be reached is not 已连接 —
   // nobody has checked it. The clone made right after either proves it
   // (ready → connected) or says what went wrong on its own line.
@@ -597,6 +633,7 @@ export function VoiceSettings(): JSX.Element {
                 ariaLabel={t("voice.minimaxKeyAria")}
                 status={mmKey}
                 refused={blamed === "api"}
+                outOfBalance={quotaBlamed === "api"}
                 unchecked={keyUnchecked}
                 save={bridge.setMiniMaxKey}
                 clear={bridge.clearMiniMaxKey}
@@ -611,12 +648,21 @@ export function VoiceSettings(): JSX.Element {
                   ariaLabel={t("voice.minimaxPlanKeyAria")}
                   status={mmPlanKey}
                   refused={blamed === "plan"}
+                  outOfBalance={quotaBlamed === "plan"}
                   unchecked={planUnverified}
                   save={bridge.setMiniMaxPlanKey}
                   clear={bridge.clearMiniMaxPlanKey}
                   onStatus={setMmPlanKey}
                   onUnverified={setPlanUnverified}
                 />
+              )}
+              {refusal !== null && (
+                <p
+                  className="settings-note is-error"
+                  data-testid="voice-speech-note"
+                >
+                  {t(speechRefusalKey(refusal.reason))}
+                </p>
               )}
               {/* The clone is main's business; only its two visible moments
                   reach the pane — being made, and having failed. */}

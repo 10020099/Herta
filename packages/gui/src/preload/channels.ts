@@ -91,4 +91,5 @@ export const EVT = {
   update: "update:state",
   voiceModel: "voice:model",
   voiceMinimax: "voice:minimax",
+  voiceMinimaxSpeech: "voice:minimax-speech",
 } as const;

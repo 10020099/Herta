@@ -33,6 +33,7 @@ import {
 } from "electron";
 import { CMD, EVT } from "../preload/channels.js";
 import type {
+  MiniMaxRefusalState,
   SessionOpenFailure,
   SessionSnapshot,
 } from "../renderer/ipc/bridge-types.js";
@@ -505,6 +506,18 @@ export function createSessionService(
    *  one clones, the plan one can adopt (ADR 0062 §1.8). */
   const anyMiniMaxKey = (): boolean =>
     readMiniMaxKeyPlain() !== null || readMiniMaxPlanKeyPlain() !== null;
+  // The synthesizer's refusal, blamed on the key that spoke: the plan key
+  // when set (speech prefers it), else the API key. The synthesizer forgets
+  // a refusal when its key changes, so the key in use now is the one it was
+  // answered for.
+  const minimaxRefusal = (): MiniMaxRefusalState | null => {
+    const reason = minimaxSynth?.status().refusal ?? null;
+    if (reason === null) return null;
+    return {
+      reason,
+      key: readMiniMaxPlanKeyPlain() !== null ? "plan" : "api",
+    };
+  };
   const send: Send = (ch, payload) => {
     if (!wc.isDestroyed()) wc.send(ch, payload);
   };
@@ -1047,6 +1060,7 @@ export function createSessionService(
         },
         minimaxFetch,
         anyMiniMaxKey,
+        minimaxRefusal,
       },
     });
   }
@@ -1183,6 +1197,7 @@ export function createSessionService(
         applyEffect: loadCommChannelEffect(),
         onVoiceMissing: (id) => voiceService.markMissing(id),
         onUsed: () => voiceService.stampUsed(),
+        onRefusal: () => send(EVT.voiceMinimaxSpeech, minimaxRefusal()),
       });
       const speech = createSwitchingSynthesizer({
         engine: () => voiceEngine,

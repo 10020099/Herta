@@ -601,3 +601,66 @@ describe("VoiceSettings", () => {
     expect(queryByRole("button", { name: "Download" })).toBeNull();
   });
 });
+
+describe("VoiceSettings — a refusal answered mid-reply (ADR 0062 §5)", () => {
+  const READY = {
+    phase: "ready" as const,
+    voiceId: "herta_ok",
+    host: "https://api.minimaxi.com",
+    clonedAt: "2026-09-08T10:00:00.000Z",
+  };
+
+  it("out of balance: the key row says so instead of Connected, and the note says replies type unvoiced", async () => {
+    const { findByText, queryByText, getByTestId } = setup({
+      realtimeVoiceResult: {
+        enabled: true,
+        bundle: true,
+        runtime: true,
+        failed: false,
+        engine: "minimax",
+        minimax: {
+          key: { set: true, hint: "1234", encrypted: true },
+          voice: READY,
+          refusal: { reason: "quota", key: "api" },
+        },
+      },
+    });
+    expect(await findByText("Out of balance · …1234")).toBeTruthy();
+    expect(queryByText("Connected · …1234")).toBeNull();
+    expect(getByTestId("voice-speech-note").textContent).toBe(
+      "The account is out of balance; replies type unvoiced until it is topped up.",
+    );
+  });
+
+  it("a refusal arrives live and blames the key that spoke; its clearing restores Connected", async () => {
+    const { findByText, queryByText, queryByTestId, mock } = setup({
+      realtimeVoiceResult: {
+        enabled: true,
+        bundle: true,
+        runtime: true,
+        failed: false,
+        engine: "minimax",
+        minimax: {
+          key: { set: true, hint: "1234", encrypted: true },
+          planKey: { set: true, hint: "5678", encrypted: true },
+          voice: READY,
+        },
+      },
+    });
+    expect(await findByText("Connected · …5678")).toBeTruthy();
+    expect(queryByTestId("voice-speech-note")).toBeNull();
+    act(() => {
+      mock.emitMiniMaxSpeech({ reason: "auth", key: "plan" });
+    });
+    expect(await findByText("Key rejected · …5678")).toBeTruthy();
+    expect(queryByText("Connected · …1234")).toBeTruthy(); // the other key is not blamed
+    expect(queryByTestId("voice-speech-note")?.textContent).toBe(
+      "MiniMax refused the key; replies type unvoiced until it is fixed.",
+    );
+    act(() => {
+      mock.emitMiniMaxSpeech(null);
+    });
+    expect(await findByText("Connected · …5678")).toBeTruthy();
+    expect(queryByTestId("voice-speech-note")).toBeNull();
+  });
+});

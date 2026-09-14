@@ -23,6 +23,7 @@ import type {
   DreamConfig,
   HertaBridge,
   InteractionLanguageChoice,
+  MiniMaxRefusalState,
   MiniMaxVoiceState,
   ModelConfig,
   NavBlockedEvent,
@@ -133,6 +134,7 @@ export interface MockHertaBridgeOpts {
       readonly key?: DeepSeekKeyStatus;
       readonly planKey?: DeepSeekKeyStatus;
       readonly voice?: MiniMaxVoiceState;
+      readonly refusal?: MiniMaxRefusalState | null;
     };
   };
   /** When true, setMiniMaxKey rejects every key (neither platform accepts
@@ -235,6 +237,8 @@ export interface MockHertaBridge {
   emitVoiceModel(e: VoiceModelState): void;
   /** The cloud clone's stream (ADR 0062). */
   emitMiniMaxVoice(e: MiniMaxVoiceState): void;
+  /** A speech refusal recorded or cleared mid-reply (ADR 0062 §5). */
+  emitMiniMaxSpeech(e: MiniMaxRefusalState | null): void;
   emitNavBlocked(e: NavBlockedEvent): void;
   /** The repository card's stream (ADR 0058). */
   emitRepo(e: RepoEvent): void;
@@ -386,6 +390,13 @@ export function createMockHertaBridge(
     minimaxVoice = next;
     for (const cb of minimaxCbs) cb(next);
   };
+  let minimaxRefusal: MiniMaxRefusalState | null =
+    seededVoice.minimax?.refusal ?? null;
+  const minimaxSpeechCbs = new Set<(e: MiniMaxRefusalState | null) => void>();
+  const pushMiniMaxSpeech = (next: MiniMaxRefusalState | null): void => {
+    minimaxRefusal = next;
+    for (const cb of minimaxSpeechCbs) cb(next);
+  };
   /** The clone as main makes it: preparing, then ready — or failed without
    *  a key, or with only the plan key on an account that has no clone to
    *  adopt (the mock's account is empty). */
@@ -414,6 +425,7 @@ export function createMockHertaBridge(
     key: minimaxKey,
     planKey: minimaxPlanKey,
     voice: minimaxVoice,
+    refusal: minimaxRefusal,
   });
   const voiceView = (): RealtimeVoiceState => ({
     ...seededVoice,
@@ -815,6 +827,7 @@ export function createMockHertaBridge(
       return minimaxVoice;
     },
     onMiniMaxVoice: (cb) => sub(minimaxCbs, cb),
+    onMiniMaxSpeech: (cb) => sub(minimaxSpeechCbs, cb),
     onWorkspace: (cb) => sub(workspaceCbs, cb),
     onRepo: (cb) => sub(repoCbs, cb),
     refreshRepo: async () => {
@@ -873,6 +886,7 @@ export function createMockHertaBridge(
     },
     emitVoiceModel: (e) => pushVoiceModel(e),
     emitMiniMaxVoice: (e) => pushMiniMax(e),
+    emitMiniMaxSpeech: (e) => pushMiniMaxSpeech(e),
     emitNavBlocked: (e) => {
       for (const cb of navBlockedCbs) cb(e);
     },

@@ -121,7 +121,14 @@ export const en = {
   "voice.minimaxHelp":
     "Cloud voice needs an API key for two jobs: generating the voice ID and synthesizing speech. The voice ID can only be generated with the MiniMax API key (pay-as-you-go, once). Speech prefers the Token Plan key (free within the plan) and uses the API key when none is set.",
   "voice.minimaxKeyRejected": "Key rejected",
+  "voice.minimaxKeyQuota": "Out of balance",
   "voice.minimaxKeyUnchecked": "Unchecked",
+  "voice.speechRefused.quota":
+    "The account is out of balance; replies type unvoiced until it is topped up.",
+  "voice.speechRefused.auth":
+    "MiniMax refused the key; replies type unvoiced until it is fixed.",
+  "voice.speechRefused.invalid_key":
+    "MiniMax did not accept the key; replies type unvoiced until it is fixed.",
   "voice.minimaxPlanKey": "Token Plan key",
   "voice.minimaxPlanKeyDesc":
     "Optional. Synthesizes speech under a Token Plan subscription.",

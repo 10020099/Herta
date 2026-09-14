@@ -195,6 +195,15 @@ export interface MiniMaxVoiceState {
   readonly clonedAt?: string;
 }
 
+/** A refusal the platform answered a SPEECH unit with (ADR 0062 §5): the
+ *  key was rejected or the account is out of balance, so the replies type
+ *  unvoiced until the user acts. `key` is the one that spoke — the plan key
+ *  when set, else the API key (mirrors `MiniMaxRefusal` in main). */
+export interface MiniMaxRefusalState {
+  readonly reason: "auth" | "invalid_key" | "quota";
+  readonly key: "api" | "plan";
+}
+
 export interface MiniMaxState {
   /** The pay-as-you-go key: clones, and speaks when no plan key is set. */
   readonly key: DeepSeekKeyStatus;
@@ -202,6 +211,8 @@ export interface MiniMaxState {
    *  clone, but can adopt a clone the account already paid for. */
   readonly planKey: DeepSeekKeyStatus;
   readonly voice: MiniMaxVoiceState;
+  /** The standing refusal for the key that speaks, or null. */
+  readonly refusal: MiniMaxRefusalState | null;
 }
 
 /** What storing a MiniMax key answers: `rejected` when neither platform
@@ -685,6 +696,9 @@ export interface HertaBridge {
    *  ended in. Progress rides `onMiniMaxVoice`. */
   prepareMiniMaxVoice?(): Promise<MiniMaxVoiceState>;
   onMiniMaxVoice?(cb: (e: MiniMaxVoiceState) => void): () => void;
+  /** A speech refusal recorded (the reason and the key) or cleared (null)
+   *  mid-reply (ADR 0062 §5); the row re-reads the voice state on it. */
+  onMiniMaxSpeech?(cb: (e: MiniMaxRefusalState | null) => void): () => void;
   /** Read the masked DeepSeek key status (Settings → DeepSeek). */
   getDeepSeekKeyStatus(): Promise<DeepSeekKeyStatus>;
   /** Validate a DeepSeek key (a cheap token-free auth check), and on success

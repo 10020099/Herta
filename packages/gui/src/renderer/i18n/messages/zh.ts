@@ -109,7 +109,12 @@ export const zh = {
   "voice.minimaxHelp":
     "云端语音需要配置 API 密钥，分为音色 ID 生成与语音合成两部分。音色 ID 仅能由 MiniMax API 密钥生成（按量计费，只需生成一次）；语音合成优先使用 Token Plan 密钥（套餐内免费合成），未配置时使用 API 密钥。",
   "voice.minimaxKeyRejected": "密钥无效",
+  "voice.minimaxKeyQuota": "余额不足",
   "voice.minimaxKeyUnchecked": "未核对",
+  "voice.speechRefused.quota": "账户余额不足，充值前回复不发声。",
+  "voice.speechRefused.auth": "MiniMax 拒绝了这个密钥，修正前回复不发声。",
+  "voice.speechRefused.invalid_key":
+    "MiniMax 不接受这个密钥，修正前回复不发声。",
   "voice.minimaxPlanKey": "Token Plan 密钥",
   "voice.minimaxPlanKeyDesc": "可选。订阅 Token Plan 套餐后用于语音合成。",
   "voice.minimaxPlanKeyAria": "MiniMax Token Plan 密钥",
