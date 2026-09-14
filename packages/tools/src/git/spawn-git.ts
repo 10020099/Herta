@@ -78,6 +78,29 @@ export function hardenedGitArgs(args: readonly string[]): string[] {
 
 const MAX_BUF = 4 * 1024 * 1024;
 
+/**
+ * A read the clock ended (ADR 0058 §7.7): the answer is UNKNOWN, not absent.
+ * The viewer's readers return this instead of null when any of their spawns
+ * hit `git_timeout`, so a `--grep` over a huge history reads as "timed out;
+ * try again" rather than "not found". One frozen instance, compared by
+ * identity, so it crosses package boundaries without a class.
+ */
+export interface GitReadTimeout {
+  readonly timedOut: true;
+}
+export const GIT_READ_TIMEOUT: GitReadTimeout = Object.freeze({
+  timedOut: true as const,
+});
+export function isGitReadTimeout(value: unknown): value is GitReadTimeout {
+  return value === GIT_READ_TIMEOUT;
+}
+/** Whether any of a reader's spawns was ended by the clock. */
+export function anyTimedOut(
+  results: readonly (SpawnGitOk | SpawnGitErr)[],
+): boolean {
+  return results.some((r) => !r.ok && r.code === "git_timeout");
+}
+
 export async function spawnGit(
   cwd: string,
   args: readonly string[],
@@ -127,6 +150,30 @@ export async function spawnGit(
     let stderrLen = 0;
     let resolved = false;
     let truncated = false;
+    /** The cap is the answer (ADR 0058 §7.7): once stdout has filled it,
+     *  the writer is stopped and the prefix returned at once — a 250 MB
+     *  patch used to run on to the deadline and read as a timeout, and a
+     *  grandchild holding the pipe (an alias shelling out) would never let
+     *  `close` fire at all, so the streams are destroyed here too. The exit
+     *  code is unknowable for a process we ended; a prefix marked
+     *  `truncated` is what the callers read. */
+    const stopAtCap = (): void => {
+      if (resolved) return;
+      truncated = true;
+      try {
+        child.kill();
+      } catch {
+        // already gone
+      }
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      settle({
+        ok: true,
+        stdout: Buffer.concat(stdoutChunks).toString("utf8"),
+        exitCode: 0,
+        truncated: true,
+      });
+    };
 
     let timer: ReturnType<typeof setTimeout> | undefined;
     const settle = (result: SpawnGitOk | SpawnGitErr): void => {
@@ -172,12 +219,16 @@ export async function spawnGit(
     // `truncated` says it happened; the parsers read NUL-delimited records, so
     // a prefix loses whole records instead of corrupting one.
     child.stdout?.on("data", (chunk: Buffer) => {
-      if (stdoutLen >= maxBuf) return;
+      if (stdoutLen >= maxBuf) {
+        // A chunk landed exactly on the cap and more followed: over it.
+        stopAtCap();
+        return;
+      }
       const room = maxBuf - stdoutLen;
       const kept = chunk.length <= room ? chunk : chunk.subarray(0, room);
-      if (kept.length < chunk.length) truncated = true;
       stdoutChunks.push(kept);
       stdoutLen += kept.length;
+      if (kept.length < chunk.length) stopAtCap();
     });
     child.stderr?.on("data", (chunk: Buffer) => {
       if (stderrLen >= maxBuf) return;

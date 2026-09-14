@@ -17,6 +17,7 @@ import {
 import { errorMessage, SessionFileError } from "@herta/core";
 import {
   canonicalWorkspaceRoot,
+  isGitReadTimeout,
   isSafeRefName,
   MAX_LOG_LIMIT,
   MAX_LOG_QUERY_CHARS,
@@ -917,6 +918,9 @@ export function createSessionService(
           return { ok: false as const, reason: "not_found" as const };
         }
         const commit = (await s.describeCommit?.(ref)) ?? null;
+        if (isGitReadTimeout(commit)) {
+          return { ok: false as const, reason: "timeout" as const };
+        }
         return commit === null
           ? { ok: false as const, reason: "not_found" as const }
           : { ok: true as const, commit };
@@ -944,6 +948,9 @@ export function createSessionService(
           return { ok: false as const, reason: "not_found" as const };
         }
         const diff = (await s.describeWorkingDiff?.(relative)) ?? null;
+        if (isGitReadTimeout(diff)) {
+          return { ok: false as const, reason: "timeout" as const };
+        }
         return diff === null
           ? { ok: false as const, reason: "not_found" as const }
           : { ok: true as const, diff };
@@ -966,6 +973,9 @@ export function createSessionService(
           return { ok: false as const, reason: "not_found" as const };
         }
         const page = (await s.describeLog?.(opts)) ?? null;
+        if (isGitReadTimeout(page)) {
+          return { ok: false as const, reason: "timeout" as const };
+        }
         return page === null
           ? { ok: false as const, reason: "not_found" as const }
           : { ok: true as const, page };
@@ -978,6 +988,9 @@ export function createSessionService(
         return { ok: false as const, reason: "no_session" as const };
       }
       const branches = (await s.describeBranches?.()) ?? null;
+      if (isGitReadTimeout(branches)) {
+        return { ok: false as const, reason: "timeout" as const };
+      }
       return branches === null
         ? { ok: false as const, reason: "not_found" as const }
         : { ok: true as const, branches };

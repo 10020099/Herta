@@ -87,6 +87,7 @@ export type {
   CommitDescription,
   CommitFileChange,
   CommitFileStatus,
+  GitReadOptions,
 } from "./git/commit-show.js";
 export {
   describeCommit,
@@ -114,6 +115,8 @@ export type {
   RepoContextOutcome,
   RepoProbeTransientReason,
 } from "./git/repo-probe.js";
+export type { GitReadTimeout } from "./git/spawn-git.js";
+export { GIT_READ_TIMEOUT, isGitReadTimeout } from "./git/spawn-git.js";
 export {
   classifyProbeFailure,
   describeRepoContext,

@@ -115,3 +115,33 @@ describe.skipIf(!GIT_AVAILABLE)("spawnGit", { timeout: 20_000 }, () => {
     }
   });
 });
+
+describe.skipIf(!GIT_AVAILABLE)(
+  "spawnGit — the output cap ends the command (ADR 0058 §7.7)",
+  { timeout: 20_000 },
+  () => {
+    it("a writer that never stops is stopped at the cap: its prefix comes back as truncated, well inside the deadline", async () => {
+      const ws = await mkTmpWorkspace({});
+      try {
+        const t0 = Date.now();
+        // A git alias that streams forever. Without the cap ending it, the
+        // deadline would — and a 250 MB patch would read as a timeout
+        // instead of the prefix the viewer can show.
+        const r = await spawnGit(
+          ws.root,
+          ["-c", "alias.spew=!yes herta", "spew"],
+          new AbortController().signal,
+          { maxBufBytes: 4096, timeoutMs: 5_000 },
+        );
+        expect(r.ok).toBe(true);
+        if (!r.ok) return;
+        expect(r.truncated).toBe(true);
+        expect(r.stdout.length).toBeLessThanOrEqual(4096);
+        expect(r.stdout.startsWith("herta")).toBe(true);
+        expect(Date.now() - t0).toBeLessThan(4_000);
+      } finally {
+        await ws.cleanup();
+      }
+    });
+  },
+);

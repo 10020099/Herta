@@ -427,6 +427,7 @@ export const zh = {
   "viewer.nextSlide": "下一页",
   "viewer.slideAria": "第 {n} 页",
   "viewer.commit.notFound": "该提交不存在或无法读取",
+  "viewer.timeout": "读取超时：仓库太大或 git 正忙，稍后再试",
   "viewer.commit.files": "{n} 个文件",
   "viewer.commit.merge": "合并提交",
   "viewer.commit.binary": "二进制",

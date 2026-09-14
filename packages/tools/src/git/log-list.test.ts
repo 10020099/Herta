@@ -4,6 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { describeBranches, describeLog, isSafeRefName } from "./log-list.js";
+import { type GitReadTimeout, isGitReadTimeout } from "./spawn-git.js";
+
+/** The reader's answer minus the clock's: a read that timed out fails the
+ *  test outright, so every other assertion sees `T | null` as before. */
+function read<T>(value: T | null | GitReadTimeout): T | null {
+  if (isGitReadTimeout(value)) throw new Error("the read timed out");
+  return value;
+}
 
 const GIT_AVAILABLE = (() => {
   try {
@@ -76,7 +84,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
     it("pages newest first, and hasMore is a fact from the extra row", async () => {
       const dir = seeded(7);
-      const first = await describeLog(dir, { skip: 0, limit: 3 });
+      const first = read(await describeLog(dir, { skip: 0, limit: 3 }));
       expect(first?.entries.map((e) => e.subject)).toEqual([
         "step 7",
         "step 6",
@@ -89,7 +97,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       expect(first?.entries[0]?.author).toBe("Tester");
       expect(first?.entries[0]?.authoredAt).toMatch(/^\d{4}-/);
       expect(first?.entries.every((e) => !e.unpushed)).toBe(true);
-      const last = await describeLog(dir, { skip: 6, limit: 3 });
+      const last = read(await describeLog(dir, { skip: 6, limit: 3 }));
       expect(last?.entries.map((e) => e.subject)).toEqual(["step 1"]);
       expect(last?.hasMore).toBe(false);
       expect(last?.skip).toBe(6);
@@ -103,7 +111,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       git(dir, "push", "-q", "-u", "origin", "main");
       git(dir, "commit", "-q", "--allow-empty", "-m", "local only 1");
       git(dir, "commit", "-q", "--allow-empty", "-m", "local only 2");
-      const page = await describeLog(dir, { skip: 0, limit: 10 });
+      const page = read(await describeLog(dir, { skip: 0, limit: 10 }));
       expect(page?.upstream).toBe("origin/main");
       expect(page?.entries.map((e) => [e.subject, e.unpushed])).toEqual([
         ["local only 2", true],
@@ -125,14 +133,16 @@ describe.skipIf(!GIT_AVAILABLE)(
       git(dir, "commit", "-q", "--allow-empty", "-m", "feature local");
       git(dir, "checkout", "-q", "main");
       // HEAD is main: its history has no feature commits.
-      const main = await describeLog(dir, { skip: 0, limit: 10 });
+      const main = read(await describeLog(dir, { skip: 0, limit: 10 }));
       expect(main?.entries.map((e) => e.subject)).toEqual(["step 2", "step 1"]);
       // The feature branch, read without checking it out.
-      const feature = await describeLog(dir, {
-        skip: 0,
-        limit: 10,
-        ref: "feature/x",
-      });
+      const feature = read(
+        await describeLog(dir, {
+          skip: 0,
+          limit: 10,
+          ref: "feature/x",
+        }),
+      );
       expect(feature?.upstream).toBe("origin/feature/x");
       expect(feature?.entries.map((e) => [e.subject, e.unpushed])).toEqual([
         ["feature local", true],
@@ -141,11 +151,13 @@ describe.skipIf(!GIT_AVAILABLE)(
         ["step 1", false],
       ]);
       // A remote-tracking ref reads too (no upstream of its own).
-      const remote = await describeLog(dir, {
-        skip: 0,
-        limit: 10,
-        ref: "origin/feature/x",
-      });
+      const remote = read(
+        await describeLog(dir, {
+          skip: 0,
+          limit: 10,
+          ref: "origin/feature/x",
+        }),
+      );
       expect(remote?.entries[0]?.subject).toBe("feature work");
       expect(remote?.upstream).toBeNull();
       // Still on main.
@@ -153,11 +165,13 @@ describe.skipIf(!GIT_AVAILABLE)(
         "main",
       );
       // An unknown ref is an empty history; an option-shaped one is null.
-      const missing = await describeLog(dir, {
-        skip: 0,
-        limit: 10,
-        ref: "nope",
-      });
+      const missing = read(
+        await describeLog(dir, {
+          skip: 0,
+          limit: 10,
+          ref: "nope",
+        }),
+      );
       expect(missing?.entries).toEqual([]);
       await expect(
         describeLog(dir, { skip: 0, limit: 10, ref: "--output=x" }),
@@ -167,32 +181,42 @@ describe.skipIf(!GIT_AVAILABLE)(
     it("filters by commit message — case-insensitive, a fixed string — with paging over the matches", async () => {
       const dir = seeded(6);
       git(dir, "commit", "-q", "--allow-empty", "-m", "Fix: the (odd) one");
-      const hits = await describeLog(dir, { skip: 0, limit: 2, query: "STEP" });
+      const hits = read(
+        await describeLog(dir, { skip: 0, limit: 2, query: "STEP" }),
+      );
       expect(hits?.entries.map((e) => e.subject)).toEqual(["step 6", "step 5"]);
       expect(hits?.hasMore).toBe(true);
-      const rest = await describeLog(dir, {
-        skip: 4,
-        limit: 10,
-        query: "step",
-      });
+      const rest = read(
+        await describeLog(dir, {
+          skip: 4,
+          limit: 10,
+          query: "step",
+        }),
+      );
       expect(rest?.entries.map((e) => e.subject)).toEqual(["step 2", "step 1"]);
       expect(rest?.hasMore).toBe(false);
       // A fixed string: regex metacharacters and a leading dash are text.
-      const odd = await describeLog(dir, {
-        skip: 0,
-        limit: 10,
-        query: "(odd)",
-      });
+      const odd = read(
+        await describeLog(dir, {
+          skip: 0,
+          limit: 10,
+          query: "(odd)",
+        }),
+      );
       expect(odd?.entries.map((e) => e.subject)).toEqual([
         "Fix: the (odd) one",
       ]);
-      const dash = await describeLog(dir, {
-        skip: 0,
-        limit: 10,
-        query: "--no-such-option",
-      });
+      const dash = read(
+        await describeLog(dir, {
+          skip: 0,
+          limit: 10,
+          query: "--no-such-option",
+        }),
+      );
       expect(dash?.entries).toEqual([]);
-      const none = await describeLog(dir, { skip: 0, limit: 10, query: "zzz" });
+      const none = read(
+        await describeLog(dir, { skip: 0, limit: 10, query: "zzz" }),
+      );
       expect(none?.entries).toEqual([]);
       expect(none?.hasMore).toBe(false);
     });
@@ -205,7 +229,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       git(dir, "push", "-q", "-u", "origin", "main");
       git(dir, "checkout", "-qb", "feature/y");
       git(dir, "commit", "-q", "--allow-empty", "-m", "y");
-      const list = await describeBranches(dir);
+      const list = read(await describeBranches(dir));
       expect(list?.current).toBe("feature/y");
       expect(
         list?.branches.map((b) => [b.name, b.kind, b.upstream, b.current]),
@@ -215,14 +239,14 @@ describe.skipIf(!GIT_AVAILABLE)(
         ["origin/main", "remote", null, false],
       ]);
       git(dir, "checkout", "-q", "--detach");
-      expect((await describeBranches(dir))?.current).toBeNull();
+      expect(read(await describeBranches(dir))?.current).toBeNull();
       await expect(describeBranches(mkDir("log-plain-"))).resolves.toBeNull();
     });
 
     it("an unborn repository has an empty page; bad paging and no repo answer null", async () => {
       const dir = mkDir("log-unborn-");
       git(dir, "init", "-q", "-b", "main");
-      const page = await describeLog(dir, { skip: 0, limit: 10 });
+      const page = read(await describeLog(dir, { skip: 0, limit: 10 }));
       expect(page?.entries).toEqual([]);
       expect(page?.hasMore).toBe(false);
       const seededDir = seeded(1);
@@ -263,7 +287,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       git(dir, "commit", "-q", "--allow-empty", "-m", "step 2");
       git(dir, "push", "-q", "origin", "--delete", "main");
       git(dir, "fetch", "-q", "--prune");
-      const page = await describeLog(dir, { skip: 0, limit: 10 });
+      const page = read(await describeLog(dir, { skip: 0, limit: 10 }));
       expect(page?.upstream).toBe("origin/main");
       expect(page?.upstreamGone).toBe(true);
       expect(page?.entries.map((e) => [e.subject, e.unpushed])).toEqual([
@@ -279,9 +303,36 @@ describe.skipIf(!GIT_AVAILABLE)(
       git(dir, "config", "user.name", "T");
       git(dir, "config", "commit.gpgsign", "false");
       git(dir, "commit", "-q", "--allow-empty", "-m", "step 1");
-      const page = await describeLog(dir, { skip: 0, limit: 10 });
+      const page = read(await describeLog(dir, { skip: 0, limit: 10 }));
       expect(page?.upstream).toBeNull();
       expect(page?.upstreamGone).toBe(false);
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)(
+  "describeLog / describeBranches — a read the clock ends (ADR 0058 §7.7)",
+  { timeout: 20_000 },
+  () => {
+    it("reports a timeout, not an empty or absent history", async () => {
+      const dir = mkDir("log-timeout-");
+      const git = (...a: string[]) =>
+        spawnSync("git", a, { cwd: dir, encoding: "utf8" });
+      git("init", "-q", "-b", "main");
+      git("config", "user.email", "t@t");
+      git("config", "user.name", "T");
+      git("config", "commit.gpgsign", "false");
+      git("commit", "-q", "--allow-empty", "-m", "step 1");
+      const page = await describeLog(dir, { skip: 0, limit: 10 }, undefined, {
+        timeoutMs: 1,
+      });
+      expect(isGitReadTimeout(page)).toBe(true);
+      const refs = await describeBranches(dir, undefined, { timeoutMs: 1 });
+      expect(isGitReadTimeout(refs)).toBe(true);
+      const ok = read(await describeLog(dir, { skip: 0, limit: 10 }));
+      expect(
+        ok !== null && !isGitReadTimeout(ok) && ok.entries.length === 1,
+      ).toBe(true);
     });
   },
 );

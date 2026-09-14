@@ -20,7 +20,9 @@ const HEAD_VALUE = "\0HEAD";
 type Load =
   | { readonly kind: "idle" }
   | { readonly kind: "loading"; readonly skip: number }
-  | { readonly kind: "failed" };
+  /** `timedOut`: the clock ended the read (ADR 0058 §7.7) — unknown, not
+   *  absent, and worth trying again. */
+  | { readonly kind: "failed"; readonly timedOut: boolean };
 
 /**
  * The repository's history beside the record (ADR 0059 §6): newest first,
@@ -65,7 +67,7 @@ export function LogView(): JSX.Element {
     (skip: number) => {
       const read = bridge.readWorkspaceLog?.bind(bridge);
       if (read === undefined || sessionId === null) {
-        setLoad({ kind: "failed" });
+        setLoad({ kind: "failed", timedOut: false });
         return;
       }
       seq.current += 1;
@@ -80,7 +82,7 @@ export function LogView(): JSX.Element {
         (reply) => {
           if (mine !== seq.current) return;
           if (!reply.ok) {
-            setLoad({ kind: "failed" });
+            setLoad({ kind: "failed", timedOut: reply.reason === "timeout" });
             return;
           }
           setEntries((cur) =>
@@ -93,7 +95,8 @@ export function LogView(): JSX.Element {
           setLoad({ kind: "idle" });
         },
         () => {
-          if (mine === seq.current) setLoad({ kind: "failed" });
+          if (mine === seq.current)
+            setLoad({ kind: "failed", timedOut: false });
         },
       );
     },
@@ -212,7 +215,9 @@ export function LogView(): JSX.Element {
           </p>
         )}
         {load.kind === "failed" && entries.length === 0 && (
-          <p className="file-viewer__notice">{t("viewer.log.notFound")}</p>
+          <p className="file-viewer__notice">
+            {t(load.timedOut ? "viewer.timeout" : "viewer.log.notFound")}
+          </p>
         )}
         <ol className="log-view__list">
           {entries.map((e, i) => {

@@ -1,6 +1,13 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { hardenedGitArgs, spawnGit } from "./spawn-git.js";
+import type { GitReadOptions } from "./commit-show.js";
+import {
+  anyTimedOut,
+  GIT_READ_TIMEOUT,
+  type GitReadTimeout,
+  hardenedGitArgs,
+  spawnGit,
+} from "./spawn-git.js";
 
 /**
  * One path's working-tree change against HEAD, for the viewer's diff tab
@@ -33,13 +40,16 @@ export interface WorkingDiff {
 
 export const MAX_WORKING_DIFF_BYTES = 1024 * 1024;
 
+/** Null when git cannot diff the path; `GIT_READ_TIMEOUT` when the clock
+ *  ended the read (ADR 0058 §7.7) — unknown, not absent. */
 export async function describeWorkingDiff(
   workspaceRoot: string,
   path: string,
   signal?: AbortSignal,
-): Promise<WorkingDiff | null> {
+  readOpts?: GitReadOptions,
+): Promise<WorkingDiff | null | GitReadTimeout> {
   try {
-    return await describe(workspaceRoot, path, signal);
+    return await describe(workspaceRoot, path, signal, readOpts);
   } catch {
     return null;
   }
@@ -55,14 +65,15 @@ async function describe(
   workspaceRoot: string,
   path: string,
   signal?: AbortSignal,
-): Promise<WorkingDiff | null> {
+  readOpts?: GitReadOptions,
+): Promise<WorkingDiff | null | GitReadTimeout> {
   // Every spawn below places the path after `--`, so a name that begins
   // with `-` is a file, not an option (2026-09-10: the refusal here left a
   // file literally named `-c` unable to open its diff). NUL cannot be an
   // argument at all.
   if (path.length === 0 || path.includes("\0")) return null;
   const sig = signal ?? new AbortController().signal;
-  const opts = { timeoutMs: 5_000 } as const;
+  const opts = { timeoutMs: readOpts?.timeoutMs ?? 5_000 } as const;
 
   // Tracked or not, and whether HEAD exists at all — both decide which
   // diff is the honest one.
@@ -80,7 +91,9 @@ async function describe(
       { ...opts, allowExitCodes: [1] },
     ),
   ]);
-  if (!listed.ok || !head.ok) return null;
+  if (!listed.ok || !head.ok) {
+    return anyTimedOut([listed, head]) ? GIT_READ_TIMEOUT : null;
+  }
   const untracked = listed.stdout.trim().length === 0;
   const unborn = head.exitCode !== 0;
   const missing = !existsSync(resolve(workspaceRoot, path));
@@ -106,7 +119,9 @@ async function describe(
       { ...opts, ...exits },
     ),
   ]);
-  if (!patch.ok || !nums.ok) return null;
+  if (!patch.ok || !nums.ok) {
+    return anyTimedOut([patch, nums]) ? GIT_READ_TIMEOUT : null;
+  }
 
   const [a = "", d = ""] = nums.stdout.trim().split("\t");
   const num = (s: string): number | null => {

@@ -1,4 +1,10 @@
-import { hardenedGitArgs, spawnGit } from "./spawn-git.js";
+import {
+  anyTimedOut,
+  GIT_READ_TIMEOUT,
+  type GitReadTimeout,
+  hardenedGitArgs,
+  spawnGit,
+} from "./spawn-git.js";
 
 /**
  * One commit, described for the viewer's commit tab (ADR 0059): the
@@ -60,13 +66,21 @@ const COMMIT_ID = /^[0-9a-f]{4,64}$/;
 export const MAX_COMMIT_PATCH_BYTES = 1024 * 1024;
 export const MAX_COMMIT_FILES = 500;
 
+/** The reader's one knob, for tests: the per-spawn budget. */
+export interface GitReadOptions {
+  readonly timeoutMs?: number;
+}
+
+/** Null when git cannot show the commit; `GIT_READ_TIMEOUT` when the clock
+ *  ended the read (ADR 0058 §7.7) — unknown, not absent. */
 export async function describeCommit(
   workspaceRoot: string,
   ref: string,
   signal?: AbortSignal,
-): Promise<CommitDescription | null> {
+  readOpts?: GitReadOptions,
+): Promise<CommitDescription | null | GitReadTimeout> {
   try {
-    return await describe(workspaceRoot, ref, signal);
+    return await describe(workspaceRoot, ref, signal, readOpts);
   } catch {
     return null;
   }
@@ -89,10 +103,11 @@ async function describe(
   workspaceRoot: string,
   ref: string,
   signal?: AbortSignal,
-): Promise<CommitDescription | null> {
+  readOpts?: GitReadOptions,
+): Promise<CommitDescription | null | GitReadTimeout> {
   if (!COMMIT_ID.test(ref)) return null;
   const sig = signal ?? new AbortController().signal;
-  const opts = { timeoutMs: 5_000 } as const;
+  const opts = { timeoutMs: readOpts?.timeoutMs ?? 5_000 } as const;
 
   const [meta, names, nums, patch] = await Promise.all([
     spawnGit(
@@ -133,7 +148,9 @@ async function describe(
       { ...opts, maxBufBytes: MAX_COMMIT_PATCH_BYTES },
     ),
   ]);
-  if (!meta.ok || !names.ok || !nums.ok || !patch.ok) return null;
+  if (!meta.ok || !names.ok || !nums.ok || !patch.ok) {
+    return anyTimedOut([meta, names, nums, patch]) ? GIT_READ_TIMEOUT : null;
+  }
 
   const fields = meta.stdout.split("\0");
   const sha = fields[0] ?? "";

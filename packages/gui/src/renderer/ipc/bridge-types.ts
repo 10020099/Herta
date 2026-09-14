@@ -368,13 +368,16 @@ export type ReadWorkspaceBytesReply =
 
 /**
  * Reply from `readWorkspaceCommit` (ADR 0059): one commit of the session's
- * repository for the viewer's commit tab. `not_found` covers everything git
- * cannot show — an unknown or ambiguous id, no repository, a timeout — the
- * panel's one honest notice.
+ * repository for the viewer's commit tab. `not_found` covers what git
+ * cannot show — an unknown or ambiguous id, no repository; `timeout` is a
+ * read the clock ended (ADR 0058 §7.7): unknown, worth a retry.
  */
 export type ReadWorkspaceCommitReply =
   | { readonly ok: true; readonly commit: CommitDescription }
-  | { readonly ok: false; readonly reason: "not_found" | "no_session" };
+  | {
+      readonly ok: false;
+      readonly reason: "not_found" | "timeout" | "no_session";
+    };
 
 /**
  * Reply from `readWorkspaceDiff` (ADR 0059 §5): one workspace path's
@@ -385,19 +388,29 @@ export type ReadWorkspaceDiffReply =
   | { readonly ok: true; readonly diff: WorkingDiff }
   | {
       readonly ok: false;
-      readonly reason: "not_found" | "outside_workspace" | "no_session";
+      readonly reason:
+        | "not_found"
+        | "timeout"
+        | "outside_workspace"
+        | "no_session";
     };
 
 /** Reply from `readWorkspaceLog` (ADR 0059 §6): one page of history. */
 export type ReadWorkspaceLogReply =
   | { readonly ok: true; readonly page: LogPage }
-  | { readonly ok: false; readonly reason: "not_found" | "no_session" };
+  | {
+      readonly ok: false;
+      readonly reason: "not_found" | "timeout" | "no_session";
+    };
 
 /** Reply from `readWorkspaceBranches` (ADR 0059 §6): the branch list for
  *  the history tab's read-only picker. */
 export type ReadWorkspaceBranchesReply =
   | { readonly ok: true; readonly branches: BranchList }
-  | { readonly ok: false; readonly reason: "not_found" | "no_session" };
+  | {
+      readonly ok: false;
+      readonly reason: "not_found" | "timeout" | "no_session";
+    };
 
 /** Reply from `stageImages`. Per-file refusals ride `rejected` so one bad
  *  item never discards its siblings; only whole-action failures use `ok:

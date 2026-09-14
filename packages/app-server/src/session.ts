@@ -40,6 +40,7 @@ import { type ApiKey, deepseekVisionCaptioner } from "@herta/providers";
 import {
   type BranchList,
   type CommitDescription,
+  type GitReadTimeout,
   describeBranches,
   describeCommit,
   describeLog,
@@ -225,27 +226,27 @@ export interface SessionInternalDeps {
     workspace: string,
     ref: string,
     signal?: AbortSignal,
-  ) => Promise<CommitDescription | null>;
+  ) => Promise<CommitDescription | null | GitReadTimeout>;
   /** One path's working-tree diff for the viewer's diff tab (ADR 0059
    *  §5). Defaults to the git reader in `@herta/tools`; tests inject a stub. */
   readonly workingDiffDescriber?: (
     workspace: string,
     path: string,
     signal?: AbortSignal,
-  ) => Promise<WorkingDiff | null>;
+  ) => Promise<WorkingDiff | null | GitReadTimeout>;
   /** A page of history for the viewer's log tab (ADR 0059 §6). Defaults to
    *  the git reader in `@herta/tools`; tests inject a stub. */
   readonly logDescriber?: (
     workspace: string,
     opts: LogQuery,
     signal?: AbortSignal,
-  ) => Promise<LogPage | null>;
+  ) => Promise<LogPage | null | GitReadTimeout>;
   /** The branch list for the history tab's picker (ADR 0059 §6). Defaults
    *  to the git reader in `@herta/tools`; tests inject a stub. */
   readonly branchesDescriber?: (
     workspace: string,
     signal?: AbortSignal,
-  ) => Promise<BranchList | null>;
+  ) => Promise<BranchList | null | GitReadTimeout>;
   /** Clock (ms) for the easter-egg per-session hourly throttle. Defaults to
    *  `Date.now`; tests inject a controllable clock. */
   readonly easterEggNow?: () => number;
@@ -309,21 +310,21 @@ export class SessionImpl implements Session {
     workspace: string,
     ref: string,
     signal?: AbortSignal,
-  ) => Promise<CommitDescription | null>;
+  ) => Promise<CommitDescription | null | GitReadTimeout>;
   private readonly workingDiffDescriber: (
     workspace: string,
     path: string,
     signal?: AbortSignal,
-  ) => Promise<WorkingDiff | null>;
+  ) => Promise<WorkingDiff | null | GitReadTimeout>;
   private readonly logDescriber: (
     workspace: string,
     opts: LogQuery,
     signal?: AbortSignal,
-  ) => Promise<LogPage | null>;
+  ) => Promise<LogPage | null | GitReadTimeout>;
   private readonly branchesDescriber: (
     workspace: string,
     signal?: AbortSignal,
-  ) => Promise<BranchList | null>;
+  ) => Promise<BranchList | null | GitReadTimeout>;
 
   // The block persister — owned by the driver for turn blocks, but held here
   // too so setWorkspace/resetWorkspace can append a structured workspace_set
@@ -434,21 +435,21 @@ export class SessionImpl implements Session {
       workspace: string,
       ref: string,
       signal?: AbortSignal,
-    ) => Promise<CommitDescription | null>;
+    ) => Promise<CommitDescription | null | GitReadTimeout>;
     workingDiffDescriber: (
       workspace: string,
       path: string,
       signal?: AbortSignal,
-    ) => Promise<WorkingDiff | null>;
+    ) => Promise<WorkingDiff | null | GitReadTimeout>;
     logDescriber: (
       workspace: string,
       opts: LogQuery,
       signal?: AbortSignal,
-    ) => Promise<LogPage | null>;
+    ) => Promise<LogPage | null | GitReadTimeout>;
     branchesDescriber: (
       workspace: string,
       signal?: AbortSignal,
-    ) => Promise<BranchList | null>;
+    ) => Promise<BranchList | null | GitReadTimeout>;
     persister: V2RecordPersister;
     driver: V2ActorDriver;
     sink: BusActorStreamingSink;
@@ -1333,23 +1334,27 @@ export class SessionImpl implements Session {
 
   /** One commit, read from the workspace's repository for the viewer's
    *  commit tab (ADR 0059). Null for anything git cannot show. */
-  describeCommit(ref: string): Promise<CommitDescription | null> {
+  describeCommit(
+    ref: string,
+  ): Promise<CommitDescription | null | GitReadTimeout> {
     return this.commitDescriber(this.wsHolder.current, ref);
   }
 
   /** One workspace-relative path's working-tree change against HEAD, for
    *  the viewer's diff tab (ADR 0059 §5). The caller jails the path. */
-  describeWorkingDiff(path: string): Promise<WorkingDiff | null> {
+  describeWorkingDiff(
+    path: string,
+  ): Promise<WorkingDiff | null | GitReadTimeout> {
     return this.workingDiffDescriber(this.wsHolder.current, path);
   }
 
   /** A page of the workspace repository's history (ADR 0059 §6). */
-  describeLog(opts: LogQuery): Promise<LogPage | null> {
+  describeLog(opts: LogQuery): Promise<LogPage | null | GitReadTimeout> {
     return this.logDescriber(this.wsHolder.current, opts);
   }
 
   /** The workspace repository's branches (ADR 0059 §6) — read-only. */
-  describeBranches(): Promise<BranchList | null> {
+  describeBranches(): Promise<BranchList | null | GitReadTimeout> {
     return this.branchesDescriber(this.wsHolder.current);
   }
 

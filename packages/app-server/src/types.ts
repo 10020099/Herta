@@ -9,6 +9,7 @@ import type {
 import type {
   BranchList,
   CommitDescription,
+  GitReadTimeout,
   LogPage,
   LogQuery,
   WorkingDiff,
@@ -631,22 +632,26 @@ export interface Session {
    *  with their counts, the patch — for the viewer's commit tab (ADR 0059).
    *  `ref` is a hex commit id (abbreviated is fine); null when git cannot
    *  show it. Optional: the GUI SessionImpl only. */
-  describeCommit?(ref: string): Promise<CommitDescription | null>;
+  describeCommit?(
+    ref: string,
+  ): Promise<CommitDescription | null | GitReadTimeout>;
   /** One workspace-relative path's working-tree change against HEAD —
    *  staged and unstaged together, an untracked file as a whole addition —
    *  for the viewer's diff tab (ADR 0059 §5). The caller has jailed the
    *  path to the workspace. Null when git cannot answer. Optional: the GUI
    *  SessionImpl only. */
-  describeWorkingDiff?(path: string): Promise<WorkingDiff | null>;
+  describeWorkingDiff?(
+    path: string,
+  ): Promise<WorkingDiff | null | GitReadTimeout>;
   /** A page of the repository's history for the viewer's log tab (ADR
    *  0059 §6): a ref's log (HEAD by default), newest first, each commit
    *  marked when not yet on that ref's upstream, optionally filtered by
    *  message. Null when git cannot answer. Optional: the GUI SessionImpl
    *  only. */
-  describeLog?(opts: LogQuery): Promise<LogPage | null>;
+  describeLog?(opts: LogQuery): Promise<LogPage | null | GitReadTimeout>;
   /** The repository's branches for the history tab's read-only picker
    *  (ADR 0059 §6). Optional like its siblings. */
-  describeBranches?(): Promise<BranchList | null>;
+  describeBranches?(): Promise<BranchList | null | GitReadTimeout>;
 
   close(): Promise<void>;
 }

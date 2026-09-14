@@ -515,7 +515,9 @@ function FileViewerBody({
           text={t(
             load.reply.reason === "outside_workspace"
               ? "viewer.outside"
-              : "viewer.diff.notFound",
+              : load.reply.reason === "timeout"
+                ? "viewer.timeout"
+                : "viewer.diff.notFound",
           )}
         />
       );
@@ -530,7 +532,17 @@ function FileViewerBody({
     );
   }
   if (load.kind === "commit") {
-    if (!load.reply.ok) return <Notice text={t("viewer.commit.notFound")} />;
+    if (!load.reply.ok) {
+      return (
+        <Notice
+          text={t(
+            load.reply.reason === "timeout"
+              ? "viewer.timeout"
+              : "viewer.commit.notFound",
+          )}
+        />
+      );
+    }
     return (
       <ViewerErrorBoundary
         key={`commit:${path}`}

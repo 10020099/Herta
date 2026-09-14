@@ -8,6 +8,14 @@ import {
   parseNameStatusZ,
   parseNumstatZ,
 } from "./commit-show.js";
+import { type GitReadTimeout, isGitReadTimeout } from "./spawn-git.js";
+
+/** The reader's answer minus the clock's: a read that timed out fails the
+ *  test outright, so every other assertion sees `T | null` as before. */
+function read<T>(value: T | null | GitReadTimeout): T | null {
+  if (isGitReadTimeout(value)) throw new Error("the read timed out");
+  return value;
+}
 
 const GIT_AVAILABLE = (() => {
   try {
@@ -88,7 +96,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       git(dir, "commit", "-qm", "feat: the work\n\nA body line.\n");
       const sha = head(dir);
 
-      const c = await describeCommit(dir, sha.slice(0, 7));
+      const c = read(await describeCommit(dir, sha.slice(0, 7)));
       expect(c).not.toBeNull();
       expect(c?.sha).toBe(sha);
       expect(c?.shortSha).toBe(sha.slice(0, 7));
@@ -127,7 +135,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
     it("a root commit shows its whole tree; a merge shows the diff against its first parent", async () => {
       const dir = seeded();
-      const root = await describeCommit(dir, head(dir));
+      const root = read(await describeCommit(dir, head(dir)));
       expect(root?.parents).toEqual([]);
       expect(root?.files.map((f) => f.path).sort()).toEqual(["a.ts", "old.ts"]);
 
@@ -140,7 +148,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       git(dir, "add", "-A");
       git(dir, "commit", "-qm", "main work");
       git(dir, "merge", "-q", "--no-ff", "-m", "merge side", "side");
-      const merge = await describeCommit(dir, head(dir));
+      const merge = read(await describeCommit(dir, head(dir)));
       expect(merge?.parents).toHaveLength(2);
       // Against the first parent (main): only the side's file arrived.
       expect(merge?.files.map((f) => f.path)).toEqual(["side.ts"]);
@@ -159,6 +167,30 @@ describe.skipIf(!GIT_AVAILABLE)(
       await expect(
         describeCommit(dir, head(dir), ac.signal),
       ).resolves.toBeNull();
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)(
+  "describeCommit — a read the clock ends (ADR 0058 §7.7)",
+  { timeout: 20_000 },
+  () => {
+    it("reports a timeout, not an absent commit", async () => {
+      const dir = mkDir("cshow-timeout-");
+      const git = (...a: string[]) =>
+        spawnSync("git", a, { cwd: dir, encoding: "utf8" });
+      git("init", "-q", "-b", "main");
+      git("config", "user.email", "t@t");
+      git("config", "user.name", "T");
+      git("config", "commit.gpgsign", "false");
+      writeFileSync(join(dir, "a.ts"), "one\n");
+      git("add", "-A");
+      git("commit", "-qm", "init");
+      const sha = git("rev-parse", "HEAD").stdout.trim();
+      const out = await describeCommit(dir, sha, undefined, { timeoutMs: 1 });
+      expect(isGitReadTimeout(out)).toBe(true);
+      const ok = read(await describeCommit(dir, sha));
+      expect(ok !== null && !isGitReadTimeout(ok) && ok.sha === sha).toBe(true);
     });
   },
 );

@@ -9,7 +9,15 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { type GitReadTimeout, isGitReadTimeout } from "./spawn-git.js";
 import { describeWorkingDiff } from "./working-diff.js";
+
+/** The reader's answer minus the clock's: a read that timed out fails the
+ *  test outright, so every other assertion sees `T | null` as before. */
+function read<T>(value: T | null | GitReadTimeout): T | null {
+  if (isGitReadTimeout(value)) throw new Error("the read timed out");
+  return value;
+}
 
 const GIT_AVAILABLE = (() => {
   try {
@@ -55,7 +63,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       writeFileSync(join(dir, "src", "a.ts"), "one\nthree\n");
       git(dir, "add", "src/a.ts");
       writeFileSync(join(dir, "src", "a.ts"), "one\nthree\nfour\n");
-      const d = await describeWorkingDiff(dir, "src/a.ts");
+      const d = read(await describeWorkingDiff(dir, "src/a.ts"));
       expect(d).not.toBeNull();
       expect(d?.untracked).toBe(false);
       expect(d?.missing).toBe(false);
@@ -70,26 +78,26 @@ describe.skipIf(!GIT_AVAILABLE)(
     it("a file whose name begins with `-` is a file, not an option — every spawn puts the path after `--` (2026-09-10)", async () => {
       const dir = seeded();
       writeFileSync(join(dir, "-c"), "dash\n");
-      const d = await describeWorkingDiff(dir, "-c");
+      const d = read(await describeWorkingDiff(dir, "-c"));
       expect(d).not.toBeNull();
       expect(d?.untracked).toBe(true);
       expect(d?.added).toBe(1);
       expect(d?.patch).toContain("+dash");
       // NUL can never be an argument.
-      expect(await describeWorkingDiff(dir, "a\0b")).toBeNull();
+      expect(read(await describeWorkingDiff(dir, "a\0b"))).toBeNull();
     });
 
     it("an untracked file is a whole addition; a staged-new file reads against HEAD", async () => {
       const dir = seeded();
       writeFileSync(join(dir, "notes.txt"), "scratch\nmore\n");
-      const u = await describeWorkingDiff(dir, "notes.txt");
+      const u = read(await describeWorkingDiff(dir, "notes.txt"));
       expect(u?.untracked).toBe(true);
       expect(u?.added).toBe(2);
       expect(u?.deleted).toBe(0);
       expect(u?.patch).toContain("+scratch");
       writeFileSync(join(dir, "src", "new.ts"), "created\n");
       git(dir, "add", "src/new.ts");
-      const s = await describeWorkingDiff(dir, "src/new.ts");
+      const s = read(await describeWorkingDiff(dir, "src/new.ts"));
       expect(s?.untracked).toBe(false);
       expect(s?.added).toBe(1);
       expect(s?.patch).toContain("+created");
@@ -98,7 +106,7 @@ describe.skipIf(!GIT_AVAILABLE)(
     it("a deleted tracked file is missing and reads as a deletion", async () => {
       const dir = seeded();
       unlinkSync(join(dir, "gone.ts"));
-      const d = await describeWorkingDiff(dir, "gone.ts");
+      const d = read(await describeWorkingDiff(dir, "gone.ts"));
       expect(d?.missing).toBe(true);
       expect(d?.untracked).toBe(false);
       expect(d?.deleted).toBe(3);
@@ -107,7 +115,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
     it("an unchanged tracked file answers an empty patch, not null", async () => {
       const dir = seeded();
-      const d = await describeWorkingDiff(dir, "src/a.ts");
+      const d = read(await describeWorkingDiff(dir, "src/a.ts"));
       expect(d?.patch).toBe("");
       expect(d?.added).toBe(0);
       expect(d?.deleted).toBe(0);
@@ -118,7 +126,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       git(dir, "init", "-q", "-b", "main");
       writeFileSync(join(dir, "first.ts"), "a\nb\n");
       git(dir, "add", "first.ts");
-      const d = await describeWorkingDiff(dir, "first.ts");
+      const d = read(await describeWorkingDiff(dir, "first.ts"));
       expect(d?.added).toBe(2);
       expect(d?.patch).toContain("+a");
     });
@@ -131,6 +139,33 @@ describe.skipIf(!GIT_AVAILABLE)(
       const plain = mkDir("wdiff-plain-");
       writeFileSync(join(plain, "x.txt"), "x\n");
       await expect(describeWorkingDiff(plain, "x.txt")).resolves.toBeNull();
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)(
+  "describeWorkingDiff — a read the clock ends (ADR 0058 §7.7)",
+  { timeout: 20_000 },
+  () => {
+    it("reports a timeout, not an absent diff", async () => {
+      const dir = mkDir("wdiff-timeout-");
+      const git = (...a: string[]) =>
+        spawnSync("git", a, { cwd: dir, encoding: "utf8" });
+      git("init", "-q", "-b", "main");
+      git("config", "user.email", "t@t");
+      git("config", "user.name", "T");
+      git("config", "commit.gpgsign", "false");
+      mkdirSync(join(dir, "src"));
+      writeFileSync(join(dir, "src", "a.ts"), "one\n");
+      git("add", "-A");
+      git("commit", "-qm", "init");
+      writeFileSync(join(dir, "src", "a.ts"), "one\ntwo\n");
+      const out = await describeWorkingDiff(dir, "src/a.ts", undefined, {
+        timeoutMs: 1,
+      });
+      expect(isGitReadTimeout(out)).toBe(true);
+      const ok = read(await describeWorkingDiff(dir, "src/a.ts"));
+      expect(ok !== null && !isGitReadTimeout(ok) && ok.added === 1).toBe(true);
     });
   },
 );

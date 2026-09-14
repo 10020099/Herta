@@ -447,6 +447,8 @@ export const en = {
   "viewer.nextSlide": "Next slide",
   "viewer.slideAria": "Slide {n}",
   "viewer.commit.notFound": "This commit could not be read",
+  "viewer.timeout":
+    "Timed out reading — the repository is large or git is busy; try again",
   "viewer.commit.files": "{n} files",
   "viewer.commit.merge": "merge commit",
   "viewer.commit.binary": "binary",

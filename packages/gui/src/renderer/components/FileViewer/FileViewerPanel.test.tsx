@@ -920,3 +920,77 @@ describe("FileViewerPanel — the file's kind picks the read and the renderer (A
     ).toBe("const a = 1;\n");
   });
 });
+
+describe("FileViewerPanel — a read the clock ended (ADR 0058 §7.7)", () => {
+  const TIMEOUT_NOTICE =
+    "Timed out reading — the repository is large or git is busy; try again";
+
+  it("a commit tab says the read timed out, not that the commit is missing", async () => {
+    const mock = createMockHertaBridge();
+    Object.assign(mock.bridge, {
+      readWorkspaceFile: vi.fn(async () => ({
+        ok: false as const,
+        reason: "not_found" as const,
+      })),
+      readWorkspaceCommit: vi.fn(async () => ({
+        ok: false as const,
+        reason: "timeout" as const,
+      })),
+    });
+    const h = renderWithSession(ui(), { mock });
+    h.openSession("s1");
+    fireEvent.click(screen.getByTestId("probe-commit"));
+    const panel = await screen.findByTestId("file-viewer");
+    await waitFor(() =>
+      expect(panel.querySelector(".file-viewer__notice")?.textContent).toBe(
+        TIMEOUT_NOTICE,
+      ),
+    );
+  });
+
+  it("a diff tab says the same", async () => {
+    const mock = createMockHertaBridge();
+    Object.assign(mock.bridge, {
+      readWorkspaceFile: vi.fn(async () => ({
+        ok: false as const,
+        reason: "not_found" as const,
+      })),
+      readWorkspaceDiff: vi.fn(async () => ({
+        ok: false as const,
+        reason: "timeout" as const,
+      })),
+    });
+    const h = renderWithSession(ui(), { mock });
+    h.openSession("s1");
+    fireEvent.click(screen.getByTestId("probe-diff"));
+    const panel = await screen.findByTestId("file-viewer");
+    await waitFor(() =>
+      expect(panel.querySelector(".file-viewer__notice")?.textContent).toBe(
+        TIMEOUT_NOTICE,
+      ),
+    );
+  });
+
+  it("the history tab says the same", async () => {
+    const mock = createMockHertaBridge();
+    Object.assign(mock.bridge, {
+      readWorkspaceFile: vi.fn(async () => ({
+        ok: false as const,
+        reason: "not_found" as const,
+      })),
+      readWorkspaceLog: vi.fn(async () => ({
+        ok: false as const,
+        reason: "timeout" as const,
+      })),
+    });
+    const h = renderWithSession(ui(), { mock });
+    h.openSession("s1");
+    fireEvent.click(screen.getByTestId("probe-log"));
+    const panel = await screen.findByTestId("file-viewer");
+    await waitFor(() =>
+      expect(panel.querySelector(".file-viewer__notice")?.textContent).toBe(
+        TIMEOUT_NOTICE,
+      ),
+    );
+  });
+});

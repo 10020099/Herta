@@ -1,4 +1,11 @@
-import { hardenedGitArgs, spawnGit } from "./spawn-git.js";
+import type { GitReadOptions } from "./commit-show.js";
+import {
+  anyTimedOut,
+  GIT_READ_TIMEOUT,
+  type GitReadTimeout,
+  hardenedGitArgs,
+  spawnGit,
+} from "./spawn-git.js";
 
 /**
  * A page of the repository's history for the viewer's log tab (ADR 0059
@@ -91,13 +98,17 @@ export function isSafeRefName(ref: string): boolean {
   return true;
 }
 
+/** Null when git cannot read the history; `GIT_READ_TIMEOUT` when the
+ *  clock ended the read (ADR 0058 §7.7) — a `--grep` over a huge history
+ *  is "timed out; try again", not "not found". */
 export async function describeLog(
   workspaceRoot: string,
   opts: LogQuery,
   signal?: AbortSignal,
-): Promise<LogPage | null> {
+  readOpts?: GitReadOptions,
+): Promise<LogPage | null | GitReadTimeout> {
   try {
-    return await describe(workspaceRoot, opts, signal);
+    return await describe(workspaceRoot, opts, signal, readOpts);
   } catch {
     return null;
   }
@@ -185,7 +196,8 @@ async function describe(
   workspaceRoot: string,
   opts: LogQuery,
   signal?: AbortSignal,
-): Promise<LogPage | null> {
+  readOpts?: GitReadOptions,
+): Promise<LogPage | null | GitReadTimeout> {
   const skip = Number.isInteger(opts.skip) && opts.skip >= 0 ? opts.skip : -1;
   const limit =
     Number.isInteger(opts.limit) && opts.limit > 0
@@ -197,7 +209,7 @@ async function describe(
   const query = opts.query?.trim() ?? "";
   if (query.length > MAX_LOG_QUERY_CHARS) return null;
   const sig = signal ?? new AbortController().signal;
-  const timeoutMs = 5_000;
+  const timeoutMs = readOpts?.timeoutMs ?? 5_000;
 
   // `log` exits 128 both outside a repository and on an unborn HEAD; the
   // `--verify --quiet` probe tells them apart (128 = no repository, which
@@ -234,7 +246,9 @@ async function describe(
     ),
     unpushedShas(workspaceRoot, sig, timeoutMs, ref),
   ]);
-  if (!head.ok || !log.ok) return null;
+  if (!head.ok || !log.ok) {
+    return anyTimedOut([head, log]) ? GIT_READ_TIMEOUT : null;
+  }
   const records =
     head.exitCode === 0 && log.exitCode === 0
       ? log.stdout.split("\0").filter((r) => r.length > 0)
@@ -271,9 +285,10 @@ async function describe(
 export async function describeBranches(
   workspaceRoot: string,
   signal?: AbortSignal,
-): Promise<BranchList | null> {
+  readOpts?: GitReadOptions,
+): Promise<BranchList | null | GitReadTimeout> {
   try {
-    return await branches(workspaceRoot, signal);
+    return await branches(workspaceRoot, signal, readOpts);
   } catch {
     return null;
   }
@@ -282,9 +297,10 @@ export async function describeBranches(
 async function branches(
   workspaceRoot: string,
   signal?: AbortSignal,
-): Promise<BranchList | null> {
+  readOpts?: GitReadOptions,
+): Promise<BranchList | null | GitReadTimeout> {
   const sig = signal ?? new AbortController().signal;
-  const timeoutMs = 5_000;
+  const timeoutMs = readOpts?.timeoutMs ?? 5_000;
   const refs = await spawnGit(
     workspaceRoot,
     hardenedGitArgs([
@@ -299,7 +315,7 @@ async function branches(
     sig,
     { timeoutMs },
   );
-  if (!refs.ok) return null;
+  if (!refs.ok) return anyTimedOut([refs]) ? GIT_READ_TIMEOUT : null;
   const locals: BranchEntry[] = [];
   const remotes: BranchEntry[] = [];
   for (const line of refs.stdout.split("\n")) {
