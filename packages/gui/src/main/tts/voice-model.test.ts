@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -348,5 +355,30 @@ describe("createVoiceModelService", () => {
     const [a, b] = await Promise.all([svc.download(), svc.download()]);
     expect(a.phase).toBe("ready");
     expect(b.phase).toBe("ready");
+  });
+});
+
+describe("createVoiceModelService — leftovers are swept at start (ADR 0061 §4.4)", () => {
+  it("removes a crashed install's .installing and .download when the service is made, and leaves the bundle alone", async () => {
+    const root = tmp();
+    const p = voiceModelPaths(root, BUNDLE_ID);
+    mkdirSync(p.installing, { recursive: true });
+    writeFileSync(join(p.installing, "part"), "1");
+    writeFileSync(p.download, "partial");
+    mkdirSync(p.final, { recursive: true });
+    writeFileSync(join(p.final, "keep"), "k");
+    const { archive } = makeArchive();
+    const svc = createVoiceModelService({
+      root,
+      bundleId: BUNDLE_ID,
+      archive,
+      fetch: fetchOf(Buffer.alloc(0)),
+      onChange: () => undefined,
+      log: () => undefined,
+    });
+    await svc.sweep();
+    expect(existsSync(p.installing)).toBe(false);
+    expect(existsSync(p.download)).toBe(false);
+    expect(existsSync(join(p.final, "keep"))).toBe(true);
   });
 });

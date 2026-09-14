@@ -28,7 +28,7 @@ export type BundleVerifyResult =
   | { readonly ok: true; readonly files: number; readonly bytes: number }
   | { readonly ok: false; readonly reason: string };
 
-function isManifest(v: unknown): v is BundleManifest {
+export function isManifest(v: unknown): v is BundleManifest {
   if (typeof v !== "object" || v === null) return false;
   const m = v as Record<string, unknown>;
   return (

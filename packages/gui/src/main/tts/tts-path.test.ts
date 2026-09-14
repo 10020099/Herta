@@ -128,3 +128,29 @@ describe("ttsBundleComplete", () => {
     expect(ttsBundleComplete(root)).toBe(false);
   });
 });
+
+describe("ttsBundleComplete — sizes, not just presence (ADR 0061 §4.4)", () => {
+  it("false when a required file is empty — a truncated write that survived the rename", () => {
+    const root = tmp();
+    makeBundle(root);
+    writeFileSync(join(root, "voices.bin"), "");
+    expect(ttsBundleComplete(root)).toBe(false);
+  });
+
+  it("false when the bundle's own manifest disagrees with a file's size; true when it agrees", () => {
+    const root = tmp();
+    makeBundle(root);
+    const manifest = (bytes: number): string =>
+      JSON.stringify({
+        schema: 1,
+        release: "r",
+        model: "model.int8-81mb.onnx",
+        runtime_voice: "voices.bin",
+        files: [{ path: "voices.bin", bytes, sha256: "0".repeat(64) }],
+      });
+    writeFileSync(join(root, "manifest.json"), manifest(2));
+    expect(ttsBundleComplete(root)).toBe(false);
+    writeFileSync(join(root, "manifest.json"), manifest(1));
+    expect(ttsBundleComplete(root)).toBe(true);
+  });
+});

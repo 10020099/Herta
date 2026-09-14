@@ -1,5 +1,6 @@
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { isManifest } from "./bundle-verify.js";
 
 /**
  * The bundle this build speaks with: the voice repo's `models/herta-best`
@@ -96,16 +97,37 @@ const REQUIRED_FILES: readonly string[] = [
   "frontend/number-zh.fst",
 ];
 
-/** True when `modelRoot` holds a usable bundle (every required file, plus a
- *  non-empty espeak-ng-data dir). Best-effort: any fs error → false. */
+/** True when `modelRoot` holds a usable bundle: every required file present
+ *  and non-empty, the espeak-ng-data dir there, and — when the bundle
+ *  carries its own manifest, as every downloaded one does — every listed
+ *  file at its listed size (ADR 0061 §4.4: the check used to be existence
+ *  only, so a truncated file that survived the swap read as installed).
+ *  Sizes, not hashes: this runs at every launch and at every state read.
+ *  Best-effort: any fs error → false. */
 export function ttsBundleComplete(modelRoot: string): boolean {
   try {
     for (const rel of REQUIRED_FILES) {
       const p = join(modelRoot, rel);
-      if (!existsSync(p) || !statSync(p).isFile()) return false;
+      if (!existsSync(p)) return false;
+      const st = statSync(p);
+      if (!st.isFile() || st.size === 0) return false;
     }
     const espeak = join(modelRoot, "frontend", "espeak-ng-data");
-    return existsSync(espeak) && statSync(espeak).isDirectory();
+    if (!existsSync(espeak) || !statSync(espeak).isDirectory()) return false;
+    const manifestPath = join(modelRoot, "manifest.json");
+    if (existsSync(manifestPath)) {
+      const parsed: unknown = JSON.parse(readFileSync(manifestPath, "utf8"));
+      if (!isManifest(parsed)) return false;
+      for (const f of parsed.files) {
+        const parts = f.path.split("/");
+        if (parts.some((s) => s === ".." || s === "" || s === ".")) {
+          return false;
+        }
+        const p = join(modelRoot, ...parts);
+        if (!existsSync(p) || statSync(p).size !== f.bytes) return false;
+      }
+    }
+    return true;
   } catch {
     return false;
   }

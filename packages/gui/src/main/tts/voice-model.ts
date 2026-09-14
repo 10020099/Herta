@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
+import { createReadStream, existsSync } from "node:fs";
 import { mkdir, open, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { createGunzip } from "node:zlib";
@@ -281,6 +281,9 @@ export interface VoiceModelServiceOptions {
 
 export interface VoiceModelService {
   state(): VoiceModelState;
+  /** The sweep of a crashed install's leftovers, started when the service
+   *  was made (ADR 0061 §4.4); a download waits for it. */
+  sweep(): Promise<void>;
   /** Start a download unless one runs or the bundle is present; resolves
    *  with the state it ended in. Never rejects. */
   download(): Promise<VoiceModelState>;
@@ -300,6 +303,21 @@ export function createVoiceModelService(
   let inFlight: Promise<VoiceModelState> | null = null;
   let controller: AbortController | null = null;
   let lastError: VoiceModelFailure | null = null;
+
+  // A crashed install's `.installing` and `.download` — up to ~190 MB —
+  // used to wait for the next download to sweep them, which nobody may
+  // ever start (ADR 0061 §4.4). Swept when the service is made; a download
+  // waits for the sweep so the two never race for the same paths.
+  const swept: Promise<void> = (async () => {
+    try {
+      if (!existsSync(paths.installing) && !existsSync(paths.download)) return;
+      await rm(paths.download, { force: true }).catch(() => undefined);
+      await rmRetry(paths.installing).catch(() => undefined);
+      log(`voice model leftovers swept under ${opts.root}`);
+    } catch {
+      // best effort; the download's own cleanup runs again
+    }
+  })();
 
   const base = (phase: VoiceModelPhase): VoiceModelState => ({
     phase,
@@ -324,6 +342,7 @@ export function createVoiceModelService(
     opts.onChange(live);
     let lastPush = now();
     try {
+      await swept;
       await downloadVoiceModel({
         root: opts.root,
         bundleId: opts.bundleId,
@@ -364,6 +383,7 @@ export function createVoiceModelService(
 
   return {
     state,
+    sweep: () => swept,
     download(): Promise<VoiceModelState> {
       if (inFlight !== null) return inFlight;
       const s = state();

@@ -81,6 +81,19 @@ class ByteReader {
     return out;
   }
 
+  /** Let the source go (ADR 0061 §4.4): the archive ends at its zero
+   *  blocks, before the stream does, and a refusal leaves it mid-file —
+   *  either way the generator behind it stayed suspended, and with it the
+   *  gunzip and the open read handle on the `.download` file, until GC.
+   *  `return()` runs its finally now; its own failure is not the archive's. */
+  async close(): Promise<void> {
+    try {
+      await this.it.return?.();
+    } catch {
+      // the source's own teardown error; the extraction's verdict stands
+    }
+  }
+
   /** Up to `n` bytes (at least 1 unless the stream ended). */
   async takeUpTo(n: number): Promise<Buffer | null> {
     await this.fill(1);
@@ -147,6 +160,18 @@ export async function extractTar(
   opts: TarExtractOptions,
 ): Promise<TarExtractResult> {
   const reader = new ByteReader(source);
+  try {
+    return await extractAll(reader, dest, opts);
+  } finally {
+    await reader.close();
+  }
+}
+
+async function extractAll(
+  reader: ByteReader,
+  dest: string,
+  opts: TarExtractOptions,
+): Promise<TarExtractResult> {
   await mkdir(dest, { recursive: true });
   let files = 0;
   let bytes = 0;
@@ -188,6 +213,10 @@ export async function extractTar(
         await fh.write(chunk);
         remaining -= chunk.length;
       }
+      // Durable before the swap (ADR 0061 §4.4): the rename that installs
+      // the bundle must not outrun the data behind it — a power loss right
+      // after it used to leave truncated files that passed the launch check.
+      await fh.sync();
     } finally {
       await fh.close();
     }

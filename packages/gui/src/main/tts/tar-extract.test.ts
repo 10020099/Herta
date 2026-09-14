@@ -150,3 +150,31 @@ describe("safeEntryPath", () => {
     }
   });
 });
+
+describe("extractTar — the source is released (ADR 0061 §4.4)", () => {
+  /** A source that never ends on its own: only `return()` runs its finally,
+   *  so the flag proves the extractor let go rather than the stream ending. */
+  async function* endless(
+    buf: Buffer,
+    flag: { closed: boolean },
+  ): AsyncGenerator<Uint8Array> {
+    try {
+      yield* chunked(buf, 512);
+      for (;;) yield new Uint8Array(512);
+    } finally {
+      flag.closed = true;
+    }
+  }
+
+  it("closes its source iterator at the archive's end and on a refusal", async () => {
+    const tar = packTar(ENTRIES);
+    const ok = { closed: false };
+    await extractTar(endless(tar, ok), tmp(), { maxBytes: 1 << 20 });
+    expect(ok.closed).toBe(true);
+    const bad = { closed: false };
+    await expect(
+      extractTar(endless(tar, bad), tmp(), { maxBytes: 100 }),
+    ).rejects.toThrow(/larger than expected/);
+    expect(bad.closed).toBe(true);
+  });
+});
