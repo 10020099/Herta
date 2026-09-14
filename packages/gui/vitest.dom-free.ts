@@ -37,6 +37,7 @@ export const DOM_FREE_TESTS = [
   "src/main/session-service.test.ts",
   "src/main/settings-ipc.test.ts",
   "src/main/tray-menu.test.ts",
+  "src/main/tray.test.ts",
   "src/main/tts/tar-extract.sync.test.ts",
   "src/main/tts/voice-model.disk.test.ts",
   "src/main/update-service.test.ts",
