@@ -135,3 +135,20 @@ describe("parseStatusPorcelainZ — machine format (2026-08-25)", () => {
     ).toBeUndefined();
   });
 });
+
+describe("parseStatusPorcelainZ — a gone upstream (ADR 0058 §7)", () => {
+  it("names the upstream and says it is gone; the counts stay 0 because git cannot measure against it", () => {
+    const r = parseStatusPorcelainZ("## main...origin/main [gone]\0");
+    expect(r.branch).toBe("main");
+    expect(r.upstream).toBe("origin/main");
+    expect(r.upstreamGone).toBe(true);
+    expect(r.ahead).toBe(0);
+    expect(r.behind).toBe(0);
+  });
+
+  it("a live upstream is not gone", () => {
+    const r = parseStatusPorcelainZ("## main...origin/main [ahead 2]\0");
+    expect(r.upstreamGone).toBe(false);
+    expect(parseStatusPorcelainZ("## main\0").upstreamGone).toBe(false);
+  });
+});

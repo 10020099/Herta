@@ -459,6 +459,8 @@ export const zh = {
   "repo.card.detached": "游离 HEAD",
   "repo.card.unborn": "尚无提交",
   "repo.card.upstream": "上游 {name}",
+  "repo.card.upstreamGone": "上游 {name} 已不存在",
+  "repo.card.gone": "已删除",
   "repo.card.ahead": "领先 {n}",
   "repo.card.behind": "落后 {n}",
   "repo.card.conflicts": "{n} 个冲突",

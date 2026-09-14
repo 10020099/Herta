@@ -681,6 +681,7 @@ describe("repo snapshot section (ADR 0049)", () => {
     upstream: "origin/main",
     ahead: 2,
     behind: 1,
+    upstreamGone: false,
     defaultBranch: "main",
     inProgress: null,
     conflicted: [],
@@ -842,5 +843,14 @@ describe("repo snapshot section (ADR 0049)", () => {
     }).backendSystem;
     expect(sys).toContain("# Repo snapshot");
     expect(sys).toContain("branch: main → origin/main (ahead 2, behind 1)");
+  });
+  it("says the upstream is gone instead of reporting counts against it", () => {
+    const gone = { ...snapshot, ahead: 0, behind: 0, upstreamGone: true };
+    expect(renderRepoContext(gone, "zh", "standard")).toContain(
+      "分支: main → origin/main（上游已不存在，本地提交均未发布）",
+    );
+    expect(renderRepoContext(gone, "en", "standard")).toContain(
+      "branch: main → origin/main (upstream gone; nothing here is published)",
+    );
   });
 });

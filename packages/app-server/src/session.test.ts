@@ -2090,6 +2090,7 @@ describe("Session — the repository probe behind the rail's card (ADR 0058)", (
     upstream: "origin/main",
     ahead: 0,
     behind: 0,
+    upstreamGone: false,
     defaultBranch: "main",
     inProgress: null,
     conflicted: [],

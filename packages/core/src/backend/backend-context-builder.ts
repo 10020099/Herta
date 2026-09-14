@@ -487,6 +487,10 @@ export interface RepoContextSnapshot {
   readonly headShort: string | null;
   /** The tracked upstream ref (e.g. "origin/main"), or null when unset. */
   readonly upstream: string | null;
+  /** The upstream is set but its ref is gone (deleted on the remote, ADR
+   *  0058 §7): the counts read 0 only because git cannot measure against
+   *  it, and every commit here is unpublished. */
+  readonly upstreamGone: boolean;
   readonly ahead: number;
   readonly behind: number;
   /** The remote's default branch (from origin/HEAD), or null when unset. */
@@ -561,9 +565,13 @@ export function renderRepoContext(
         zh ? `分支: ${name}（尚无提交）` : `branch: ${name} (no commits yet)`,
       );
     } else if (snapshot.upstream !== null) {
-      const counts = zh
-        ? `（领先 ${snapshot.ahead}，落后 ${snapshot.behind}）`
-        : ` (ahead ${snapshot.ahead}, behind ${snapshot.behind})`;
+      const counts = snapshot.upstreamGone
+        ? zh
+          ? "（上游已不存在，本地提交均未发布）"
+          : " (upstream gone; nothing here is published)"
+        : zh
+          ? `（领先 ${snapshot.ahead}，落后 ${snapshot.behind}）`
+          : ` (ahead ${snapshot.ahead}, behind ${snapshot.behind})`;
       lines.push(
         zh
           ? `分支: ${name} → ${snapshot.upstream}${counts}`

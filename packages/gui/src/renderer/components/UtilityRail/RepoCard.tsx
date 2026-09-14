@@ -121,11 +121,21 @@ export function RepoCard(): JSX.Element | null {
         </span>
         {repo.upstream !== null && (
           <span
-            className="repo-card__upstream"
-            title={t("repo.card.upstream", { name: repo.upstream })}
+            className={`repo-card__upstream${repo.upstreamGone ? " is-gone" : ""}`}
+            title={t(
+              repo.upstreamGone
+                ? "repo.card.upstreamGone"
+                : "repo.card.upstream",
+              { name: repo.upstream },
+            )}
           >
             {repo.upstream}
           </span>
+        )}
+        {repo.upstream !== null && repo.upstreamGone && (
+          // The upstream was deleted (a merged PR's branch): nothing here
+          // is published, whatever the counts say (ADR 0058 §7).
+          <span className="repo-card__gone">{t("repo.card.gone")}</span>
         )}
         {deltaParts.length > 0 && (
           <span className="repo-card__delta" title={deltaTitle}>

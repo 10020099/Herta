@@ -48,6 +48,7 @@ export function LogView(): JSX.Element {
   const [entries, setEntries] = useState<readonly LogEntry[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [upstream, setUpstream] = useState<string | null>(null);
+  const [upstreamGone, setUpstreamGone] = useState(false);
   const [load, setLoad] = useState<Load>({ kind: "idle" });
   /** Index from which rows are "new" this render — they stagger in. */
   const [freshFrom, setFreshFrom] = useState(0);
@@ -88,6 +89,7 @@ export function LogView(): JSX.Element {
           setFreshFrom(skip);
           setHasMore(reply.page.hasMore);
           setUpstream(reply.page.upstream);
+          setUpstreamGone(reply.page.upstreamGone);
           setLoad({ kind: "idle" });
         },
         () => {
@@ -193,7 +195,14 @@ export function LogView(): JSX.Element {
           </div>
           {upstream !== null && (
             <p className="commit-view__meta">
-              <span>{t("repo.card.upstream", { name: upstream })}</span>
+              <span>
+                {t(
+                  upstreamGone
+                    ? "repo.card.upstreamGone"
+                    : "repo.card.upstream",
+                  { name: upstream },
+                )}
+              </span>
             </p>
           )}
         </header>

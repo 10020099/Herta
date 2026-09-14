@@ -1492,6 +1492,7 @@ describe("the repo snapshot header (ADR 0049 §2)", () => {
         upstream: "origin/main",
         ahead: 1,
         behind: 0,
+        upstreamGone: false,
         defaultBranch: "main",
         inProgress: null,
         conflicted: [],

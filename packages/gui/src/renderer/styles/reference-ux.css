@@ -4533,6 +4533,21 @@ button.session-item__badge--dismiss {
   font-size: 11.5px;
   color: var(--muted-4);
 }
+.repo-card__upstream.is-gone {
+  text-decoration: line-through;
+  text-decoration-color: var(--muted-faint);
+}
+/* The upstream was deleted on the remote (ADR 0058 §7): a small word in the
+   row's muted ink, beside the struck name — a fact, not an alarm. */
+.repo-card__gone {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--muted-4);
+  border: 1px solid var(--muted-faint);
+  border-radius: 3px;
+  padding: 0 4px;
+  line-height: 15px;
+}
 .repo-card__delta {
   flex: none;
   margin-left: auto;

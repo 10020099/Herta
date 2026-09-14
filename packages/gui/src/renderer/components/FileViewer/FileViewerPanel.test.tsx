@@ -389,12 +389,14 @@ describe("FileViewerPanel (ADR 0050)", () => {
                 skip: 0,
                 hasMore: true,
                 upstream: "origin/main",
+                upstreamGone: false,
               }
             : {
                 entries: [logEntry(3)],
                 skip: opts.skip,
                 hasMore: false,
                 upstream: "origin/main",
+                upstreamGone: false,
               },
       }),
     );
@@ -490,18 +492,21 @@ describe("FileViewerPanel (ADR 0050)", () => {
             name: "main",
             kind: "local" as const,
             upstream: "origin/main",
+            upstreamGone: false,
             current: true,
           },
           {
             name: "feature/x",
             kind: "local" as const,
             upstream: null,
+            upstreamGone: false,
             current: false,
           },
           {
             name: "origin/main",
             kind: "remote" as const,
             upstream: null,
+            upstreamGone: false,
             current: false,
           },
         ],

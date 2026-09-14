@@ -34,6 +34,7 @@ const REPO: RepoContextSnapshot = {
   upstream: "origin/feat/repo-card",
   ahead: 2,
   behind: 1,
+  upstreamGone: false,
   defaultBranch: "main",
   inProgress: null,
   conflicted: [],
@@ -562,5 +563,41 @@ describe("dirtyMark", () => {
     expect(dirtyMark({ x: "?", y: "?", path: "a" }).kind).toBe("untracked");
     expect(dirtyMark({ x: "U", y: "U", path: "a" }).kind).toBe("conflict");
     expect(dirtyMark({ x: "A", y: "A", path: "a" }).glyph).toBe("!");
+  });
+});
+
+describe("RepoCard — a gone upstream (ADR 0058 §7)", () => {
+  it("names the upstream as gone instead of in sync, and every recent commit carries the mark", () => {
+    const { mock, container } = mount();
+    act(() => {
+      mock.emitRepo({
+        kind: "repo",
+        workspace: "/repo",
+        repo: {
+          ...REPO,
+          ahead: 0,
+          behind: 0,
+          upstreamGone: true,
+          recentCommits: REPO.recentCommits.map((c) => ({
+            ...c,
+            unpushed: true,
+          })),
+        },
+      });
+    });
+    const card = container.querySelector(".repo-card");
+    const upstream = card?.querySelector(".repo-card__upstream");
+    expect(upstream?.classList.contains("is-gone")).toBe(true);
+    expect(upstream?.getAttribute("title")).toBe(
+      "上游 origin/feat/repo-card 已不存在",
+    );
+    expect(card?.querySelector(".repo-card__gone")?.textContent).toBe("已删除");
+    expect(card?.querySelector(".repo-card__delta")).toBeNull();
+    const log = [...(card?.querySelectorAll(".repo-card__log-row") ?? [])];
+    expect(log.map((r) => r.classList.contains("is-unpushed"))).toEqual([
+      true,
+      true,
+      true,
+    ]);
   });
 });

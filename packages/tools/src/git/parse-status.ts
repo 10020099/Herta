@@ -10,6 +10,11 @@ export interface GitStatusData {
   /** The tracked upstream ref (e.g. "origin/main"). Absent when the branch
    *  has no upstream. Only the `-z` parser fills it (ADR 0049 §1). */
   upstream?: string;
+  /** The upstream is configured but its ref no longer exists — git's
+   *  `[gone]` (a merged PR's branch deleted on the remote). The counts are
+   *  then 0 only because git cannot measure against it: every commit on
+   *  the branch is unpublished (ADR 0058 §7). */
+  upstreamGone: boolean;
   ahead: number;
   behind: number;
   files: readonly GitStatusFile[];
@@ -36,6 +41,7 @@ export interface GitStatusData {
 export function parseStatusPorcelainZ(text: string): GitStatusData {
   let branch: string | null = null;
   let upstream: string | undefined;
+  let upstreamGone = false;
   let ahead = 0;
   let behind = 0;
   const files: GitStatusFile[] = [];
@@ -74,6 +80,7 @@ export function parseStatusPorcelainZ(text: string): GitStatusData {
       }
       const trackInfo = branchPart.match(/\[([^\]]+)\]/)?.[1];
       if (trackInfo) {
+        if (trackInfo.trim() === "gone") upstreamGone = true;
         const aheadMatch = trackInfo.match(/ahead (\d+)/);
         const behindMatch = trackInfo.match(/behind (\d+)/);
         if (aheadMatch?.[1]) ahead = Number.parseInt(aheadMatch[1], 10);
@@ -110,6 +117,7 @@ export function parseStatusPorcelainZ(text: string): GitStatusData {
     ahead,
     behind,
     files,
+    upstreamGone,
     clean: files.length === 0,
   };
 }
@@ -119,6 +127,7 @@ export function parseStatusPorcelainZ(text: string): GitStatusData {
 export function parseStatusPorcelain(text: string): GitStatusData {
   const lines = text.split("\n");
   let branch: string | null = null;
+  let upstreamGone = false;
   let ahead = 0;
   let behind = 0;
   const files: GitStatusFile[] = [];
@@ -135,6 +144,7 @@ export function parseStatusPorcelain(text: string): GitStatusData {
         branch = branchPart.slice(0, nameEnd);
         const trackInfo = branchPart.match(/\[([^\]]+)\]/)?.[1];
         if (trackInfo) {
+          if (trackInfo.trim() === "gone") upstreamGone = true;
           const aheadMatch = trackInfo.match(/ahead (\d+)/);
           const behindMatch = trackInfo.match(/behind (\d+)/);
           if (aheadMatch?.[1]) ahead = Number.parseInt(aheadMatch[1], 10);
@@ -164,6 +174,7 @@ export function parseStatusPorcelain(text: string): GitStatusData {
     ahead,
     behind,
     files,
+    upstreamGone,
     clean: files.length === 0,
   };
 }

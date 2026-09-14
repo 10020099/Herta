@@ -238,3 +238,50 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
   },
 );
+
+describe.skipIf(!GIT_AVAILABLE)(
+  "describeLog — a gone upstream (ADR 0058 §7)",
+  { timeout: 20_000 },
+  () => {
+    const git = (dir: string, ...a: string[]) =>
+      spawnSync("git", a, { cwd: dir, encoding: "utf8" });
+
+    it("names the upstream, says it is gone, and marks every commit unpushed", async () => {
+      const dir = mkDir("log-gone-");
+      git(dir, "init", "-q", "-b", "main");
+      git(dir, "config", "user.email", "t@t");
+      git(dir, "config", "user.name", "T");
+      git(dir, "config", "commit.gpgsign", "false");
+      writeFileSync(join(dir, "a.ts"), "one\n");
+      git(dir, "add", "-A");
+      git(dir, "commit", "-qm", "step 1");
+      const origin = mkDir("log-gone-origin-");
+      git(origin, "init", "-q", "--bare");
+      git(origin, "config", "receive.denyDeleteCurrent", "ignore");
+      git(dir, "remote", "add", "origin", origin);
+      git(dir, "push", "-q", "-u", "origin", "main");
+      git(dir, "commit", "-q", "--allow-empty", "-m", "step 2");
+      git(dir, "push", "-q", "origin", "--delete", "main");
+      git(dir, "fetch", "-q", "--prune");
+      const page = await describeLog(dir, { skip: 0, limit: 10 });
+      expect(page?.upstream).toBe("origin/main");
+      expect(page?.upstreamGone).toBe(true);
+      expect(page?.entries.map((e) => [e.subject, e.unpushed])).toEqual([
+        ["step 2", true],
+        ["step 1", true],
+      ]);
+    });
+
+    it("a branch with no upstream is not gone", async () => {
+      const dir = mkDir("log-noup-");
+      git(dir, "init", "-q", "-b", "main");
+      git(dir, "config", "user.email", "t@t");
+      git(dir, "config", "user.name", "T");
+      git(dir, "config", "commit.gpgsign", "false");
+      git(dir, "commit", "-q", "--allow-empty", "-m", "step 1");
+      const page = await describeLog(dir, { skip: 0, limit: 10 });
+      expect(page?.upstream).toBeNull();
+      expect(page?.upstreamGone).toBe(false);
+    });
+  },
+);

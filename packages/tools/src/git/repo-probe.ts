@@ -344,7 +344,8 @@ async function describe(
           subject.length > MAX_SUBJECT_CHARS
             ? `${subject.slice(0, MAX_SUBJECT_CHARS)}…`
             : subject,
-        unpushed: marks.shas.has(sha),
+        // A gone upstream publishes nothing: every commit is unpushed.
+        unpushed: parsed.upstreamGone || marks.shas.has(sha),
       });
     }
   }
@@ -371,6 +372,7 @@ async function describe(
     detached: parsed.branch === null && headShort !== null,
     headShort,
     upstream: parsed.upstream ?? null,
+    upstreamGone: parsed.upstreamGone,
     ahead: parsed.ahead,
     behind: parsed.behind,
     defaultBranch,

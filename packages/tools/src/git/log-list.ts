@@ -31,6 +31,9 @@ export interface LogPage {
   readonly hasMore: boolean;
   /** The upstream the marks are measured against, or null when unset. */
   readonly upstream: string | null;
+  /** The upstream is set but gone (deleted on the remote): every entry is
+   *  unpushed, whatever the marks could measure (ADR 0058 §7). */
+  readonly upstreamGone: boolean;
 }
 
 export interface LogQuery {
@@ -101,7 +104,10 @@ export async function describeLog(
 }
 
 /** The set of commits not on `ref`'s upstream, or empty when there is
- *  none. Exported for the probe, which marks the card's own ten with it. */
+ *  none; the upstream's name; and whether it is GONE — configured but its
+ *  ref deleted (a merged PR's branch pruned), git's `[gone]`, in which case
+ *  nothing on the branch is published and the set cannot be measured (ADR
+ *  0058 §7). Exported for the probe, which marks the card's own ten with it. */
 export async function unpushedShas(
   workspaceRoot: string,
   signal: AbortSignal,
@@ -110,10 +116,11 @@ export async function unpushedShas(
 ): Promise<{
   readonly shas: ReadonlySet<string>;
   readonly upstream: string | null;
+  readonly gone: boolean;
 }> {
-  // `@{upstream}` on a branch without one exits 128 — an answer (nothing
-  // to measure against), not a failure.
-  const [list, name] = await Promise.all([
+  // `@{upstream}` on a branch without one — or with a gone one — exits 128:
+  // an answer (nothing to measure against), not a failure.
+  const [list, full, refs] = await Promise.all([
     spawnGit(
       workspaceRoot,
       hardenedGitArgs([
@@ -126,34 +133,52 @@ export async function unpushedShas(
       signal,
       { timeoutMs, allowExitCodes: [128] },
     ),
-    // No `--end-of-options` here: rev-parse ECHOES it as a revision instead
-    // of honouring it (git 2.51, seen in the tests). The ref's shape is the
-    // guard for this spawn — `isSafeRefName` refuses a leading `-`.
+    // The ref's full name (`refs/heads/main`; `HEAD` when detached; 128 on
+    // an unborn HEAD). No `--end-of-options` here: rev-parse ECHOES it as a
+    // revision instead of honouring it (git 2.51, seen in the tests). The
+    // ref's shape is the guard for this spawn — `isSafeRefName` refuses a
+    // leading `-`.
     spawnGit(
       workspaceRoot,
-      hardenedGitArgs([
-        "rev-parse",
-        "--abbrev-ref",
-        "--symbolic-full-name",
-        `${ref}@{upstream}`,
-      ]),
+      hardenedGitArgs(["rev-parse", "--symbolic-full-name", ref]),
       signal,
       { timeoutMs, allowExitCodes: [128] },
     ),
-  ]);
-  if (!list.ok || !name.ok || list.exitCode !== 0 || name.exitCode !== 0) {
-    return { shas: new Set(), upstream: null };
-  }
-  const upstream = name.stdout.trim();
-  return {
-    shas: new Set(
-      list.stdout
-        .split("\n")
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0),
+    // Every local branch's upstream and tracking state in one read; the
+    // tracking column is where git says `[gone]`.
+    spawnGit(
+      workspaceRoot,
+      hardenedGitArgs([
+        "for-each-ref",
+        `--format=%(refname)${FIELD}%(upstream:short)${FIELD}%(upstream:track)`,
+        "refs/heads",
+      ]),
+      signal,
+      { timeoutMs },
     ),
-    upstream: upstream.length > 0 ? upstream : null,
-  };
+  ]);
+  let upstream: string | null = null;
+  let gone = false;
+  if (full.ok && full.exitCode === 0 && refs.ok) {
+    const name = full.stdout.trim();
+    for (const line of refs.stdout.split("\n")) {
+      const [refname = "", up = "", track = ""] = line.split(FIELD);
+      if (refname !== name) continue;
+      if (up.length > 0) upstream = up;
+      gone = track.trim() === "[gone]";
+      break;
+    }
+  }
+  const shas =
+    list.ok && list.exitCode === 0
+      ? new Set(
+          list.stdout
+            .split("\n")
+            .map((l) => l.trim())
+            .filter((l) => l.length > 0),
+        )
+      : new Set<string>();
+  return { shas, upstream, gone };
 }
 
 async function describe(
@@ -225,7 +250,7 @@ async function describe(
       author,
       authoredAt,
       subject: rest.join(FIELD),
-      unpushed: marks.shas.has(sha),
+      unpushed: marks.gone || marks.shas.has(sha),
     });
   }
   return {
@@ -233,6 +258,7 @@ async function describe(
     skip,
     hasMore: records.length > limit,
     upstream: marks.upstream,
+    upstreamGone: marks.gone,
   };
 }
 

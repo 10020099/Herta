@@ -158,6 +158,7 @@ function showcaseRepo(root: string): RepoContextSnapshot {
     upstream: "origin/main",
     ahead: 1,
     behind: 0,
+    upstreamGone: false,
     defaultBranch: "origin/main",
     inProgress: null,
     conflicted: [],

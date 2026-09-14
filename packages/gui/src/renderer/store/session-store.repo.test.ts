@@ -13,6 +13,7 @@ const REPO: RepoContextSnapshot = {
   upstream: "origin/main",
   ahead: 1,
   behind: 0,
+  upstreamGone: false,
   defaultBranch: "main",
   inProgress: null,
   conflicted: [],

@@ -475,6 +475,8 @@ export const en = {
   "repo.card.detached": "Detached HEAD",
   "repo.card.unborn": "No commits yet",
   "repo.card.upstream": "Upstream {name}",
+  "repo.card.upstreamGone": "Upstream {name} is gone",
+  "repo.card.gone": "gone",
   "repo.card.ahead": "{n} ahead",
   "repo.card.behind": "{n} behind",
   "repo.card.conflicts": "{n} conflicts",

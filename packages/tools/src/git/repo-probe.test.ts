@@ -409,3 +409,36 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
   },
 );
+
+describe.skipIf(!GIT_AVAILABLE)(
+  "describeRepoContext — a gone upstream (ADR 0058 §7)",
+  { timeout: 20_000 },
+  () => {
+    const git = (dir: string, ...a: string[]) =>
+      spawnSync("git", a, { cwd: dir, encoding: "utf8" });
+
+    it("names the upstream as gone and marks every recent commit unpushed", async () => {
+      const dir = mkDir("ctx-gone-");
+      git(dir, "init", "-q", "-b", "main");
+      git(dir, "config", "user.email", "t@t");
+      git(dir, "config", "user.name", "T");
+      git(dir, "config", "commit.gpgsign", "false");
+      writeFileSync(join(dir, "a.ts"), "one\n");
+      git(dir, "add", "-A");
+      git(dir, "commit", "-qm", "init");
+      const origin = mkDir("ctx-gone-origin-");
+      git(origin, "init", "-q", "--bare");
+      git(origin, "config", "receive.denyDeleteCurrent", "ignore");
+      git(dir, "remote", "add", "origin", origin);
+      git(dir, "push", "-q", "-u", "origin", "main");
+      git(dir, "commit", "-q", "--allow-empty", "-m", "after the merge");
+      // The everyday case: the PR merged, its branch deleted on the remote.
+      git(dir, "push", "-q", "origin", "--delete", "main");
+      git(dir, "fetch", "-q", "--prune");
+      const ctx = await describeRepoContext(dir);
+      expect(ctx?.upstream).toBe("origin/main");
+      expect(ctx?.upstreamGone).toBe(true);
+      expect(ctx?.recentCommits.map((c) => c.unpushed)).toEqual([true, true]);
+    });
+  },
+);
