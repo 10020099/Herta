@@ -190,3 +190,54 @@ describe("DeviceScene (ADR 0057 §4)", () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe("DeviceScene — a build abandoned mid-flight (ADR 0057 §6.5)", () => {
+  it("unmounting mid-build aborts the build's signal, and a handle that lands after is disposed", async () => {
+    const gpu = {
+      requestAdapter: async () => ({
+        requestDevice: async () => ({ destroy: () => undefined }),
+      }),
+    };
+    vi.stubGlobal("navigator", { ...navigator, gpu });
+    let signal: AbortSignal | undefined;
+    let land: (h: unknown) => void = () => undefined;
+    const handle = {
+      stats: {
+        backend: "webgpu",
+        loadMs: 1,
+        compileMs: 1,
+        firstFrameMs: 1,
+        presentMs: 1,
+      },
+      snapshot: async () => null,
+      update: vi.fn(),
+      dispose: vi.fn(),
+    };
+    createDeviceScene.mockImplementation((o: { signal?: AbortSignal }) => {
+      signal = o.signal;
+      return new Promise((r) => {
+        land = r;
+      });
+    });
+    const { unmount } = render(
+      <DeviceScene
+        state="idle"
+        theme="light"
+        paused={false}
+        liftPx={0}
+        onLive={vi.fn()}
+      />,
+    );
+    await act(flush);
+    expect(createDeviceScene).toHaveBeenCalledTimes(1);
+    expect(signal?.aborted).toBe(false);
+    unmount();
+    expect(signal?.aborted).toBe(true);
+    await act(async () => {
+      land(handle);
+      await flush();
+    });
+    expect(handle.dispose).toHaveBeenCalledTimes(1);
+    vi.unstubAllGlobals();
+  });
+});

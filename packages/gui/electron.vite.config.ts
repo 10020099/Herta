@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "electron-vite";
 import type { Plugin } from "vite";
+import { isDeadTranscoderAsset } from "./src/shared/dead-transcoder.js";
 
 /**
  * Where the bundle manifest lands. Under out/ (gitignored, and what
@@ -53,6 +54,25 @@ function bundleManifest(section: "main" | "preload" | "renderer"): Plugin {
       manifest[section] = [...modules].sort();
       mkdirSync(dirname(BUNDLE_MANIFEST), { recursive: true });
       writeFileSync(BUNDLE_MANIFEST, `${JSON.stringify(manifest, null, 2)}\n`);
+    },
+  };
+}
+
+/**
+ * Drop three's own emitted copy of the Basis transcoder (ADR 0057 §6.5):
+ * `KTX2Loader` imports it through `new URL(…, import.meta.url)`, which Vite
+ * emits as assets unconditionally, and the scene always sets a
+ * `transcoderPath` to the scheme-served copy — so the pair under assets/
+ * is 585 KB of dead weight in the asar. The served copy is public/, not an
+ * asset, and is untouched.
+ */
+function dropDeadTranscoder(): Plugin {
+  return {
+    name: "herta-drop-dead-transcoder",
+    generateBundle(_options, bundle) {
+      for (const name of Object.keys(bundle)) {
+        if (isDeadTranscoderAsset(name)) delete bundle[name];
+      }
     },
   };
 }
@@ -126,7 +146,7 @@ export default defineConfig({
   },
   renderer: {
     root: resolve(__dirname, "src/renderer"),
-    plugins: [react(), bundleManifest("renderer")],
+    plugins: [react(), dropDeadTranscoder(), bundleManifest("renderer")],
     build: {
       outDir: "out/renderer",
       rollupOptions: {

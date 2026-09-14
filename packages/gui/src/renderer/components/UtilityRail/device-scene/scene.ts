@@ -35,6 +35,7 @@ import * as THREE from "three/webgpu";
 import type { BanzhuanDeviceState } from "../../../hooks/useDeviceState.js";
 import type { ResolvedTheme } from "../../../hooks/useResolvedTheme.js";
 import { unpadRows } from "./art-export-math.js";
+import { BuildScope } from "./build-scope.js";
 import { advanceLift, createLiftPose } from "./lift.js";
 import {
   applyCloudy,
@@ -45,6 +46,7 @@ import {
   timeWeights,
   type WeatheredLighting,
 } from "./lighting.js";
+import { watchDevicePixelRatio } from "./pixel-ratio-watch.js";
 import { pictureChanged, type ShownPicture } from "./render-gate.js";
 
 /**
@@ -146,6 +148,10 @@ export interface DeviceSceneOptions {
   /** The scene can no longer draw (device lost, context lost). The caller
    *  returns the card to its flat renders; the handle is already disposed. */
   readonly onFallback: (reason: string) => void;
+  /** The caller no longer wants the build (the card unmounted, the toggle
+   *  went off mid-build, ADR 0057 §6.5): checked after every await, the
+   *  build releases what it made so far and rejects with an AbortError. */
+  readonly signal?: AbortSignal;
   /**
    * Driven a moment at a time by the caller (a film renderer, a still):
    * no frame loop, no clock, nothing scheduled — `renderAt` draws exactly
@@ -701,6 +707,23 @@ function disposeMaterial(mat: THREE.Material): void {
 export async function createDeviceScene(
   opts: DeviceSceneOptions,
 ): Promise<DeviceSceneHandle> {
+  // Everything the build makes before its handle exists is owned by the
+  // scope (ADR 0057 §6.5): an abort at a checkpoint or a throw anywhere
+  // releases it, newest first, instead of leaking a renderer, a PMREM, a
+  // worker pool and the textures — or running on beside a second build.
+  const scope = new BuildScope(opts.signal);
+  try {
+    return await buildDeviceScene(opts, scope);
+  } catch (err) {
+    scope.release();
+    throw err;
+  }
+}
+
+async function buildDeviceScene(
+  opts: DeviceSceneOptions,
+  scope: BuildScope,
+): Promise<DeviceSceneHandle> {
   const { canvas, assetUrl } = opts;
   const t0 = performance.now();
 
@@ -720,6 +743,8 @@ export async function createDeviceScene(
     ...(driven?.context !== undefined ? { context: driven.context } : {}),
   } as ConstructorParameters<typeof THREE.WebGPURenderer>[0]);
   await renderer.init();
+  scope.own(() => renderer.dispose());
+  scope.checkpoint();
   // A device or context lost while the assets load and the pipelines
   // compile (2026-09-10): three's default handler only logs and parks the
   // renderer, so a build that went on reported live over a canvas that
@@ -807,6 +832,10 @@ export async function createDeviceScene(
     (m.material as THREE.Material | undefined)?.dispose();
   });
   scene.environment = environment.texture;
+  scope.own(() => {
+    environment.dispose();
+    pmrem.dispose();
+  });
   scene.environmentIntensity = 0.8;
 
   const key = new THREE.DirectionalLight("#ffe4bd", 2.8);
@@ -892,6 +921,13 @@ export async function createDeviceScene(
     .setTranscoderPath(assetUrl("basis/"))
     .setWorkerLimit(2)
     .detectSupport(renderer);
+  let ktxDisposed = false;
+  const disposeKtx = (): void => {
+    if (ktxDisposed) return;
+    ktxDisposed = true;
+    ktx.dispose();
+  };
+  scope.own(disposeKtx);
   const png = new THREE.TextureLoader();
   const loadKtx = async (
     file: string,
@@ -937,13 +973,29 @@ export async function createDeviceScene(
       );
     }),
   ]);
-  ktx.dispose();
+  scope.checkpoint();
+  scope.own(() => {
+    for (const t of Object.values(tex)) t.dispose();
+  });
+  disposeKtx();
   const dayNodes: Vec3Node[] = (
     ["device-morning", "device-midday", "device-evening"] as const
   ).map((name) => texture(tex[name], uv(1).flipY()).rgb as unknown as Vec3Node);
 
   const gltfLoader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
+  const disposeTree = (root: THREE.Object3D): void => {
+    root.traverse((obj) => {
+      const mesh = obj as THREE.Mesh;
+      mesh.geometry?.dispose();
+      const mats = mesh.material;
+      if (mats !== undefined) {
+        for (const m of Array.isArray(mats) ? mats : [mats]) disposeMaterial(m);
+      }
+    });
+  };
   const device = await gltfLoader.loadAsync(assetUrl("device.glb"));
+  scope.checkpoint();
+  scope.own(() => disposeTree(device.scene));
   const ringMaterials: BakedStandardMaterial[] = [];
   /** The meshes wearing the indicator (the art export measures the LED's
    *  place from them, §2.14). */
@@ -981,6 +1033,8 @@ export async function createDeviceScene(
   expose("__view", { camera, device: device.scene });
 
   const space = await gltfLoader.loadAsync(assetUrl("alcove.glb"));
+  scope.checkpoint();
+  scope.own(() => disposeTree(space.scene));
   const alcove = space.scene;
   alcove.scale.setScalar(1 / UNIT);
   alcove.traverse((obj) => {
@@ -1330,6 +1384,13 @@ export async function createDeviceScene(
   };
   const observer = new ResizeObserver(resize);
   observer.observe(canvas);
+  // A monitor with another scale factor (ADR 0057 §6.5): the CSS size does
+  // not change, so only the ratio watcher sees it. Driven mode sizes its
+  // own buffer and has no window to follow.
+  const unwatchPixelRatio =
+    driven === undefined
+      ? watchDevicePixelRatio(window, resize)
+      : (): void => undefined;
   window.addEventListener("focus", onFocus);
   window.addEventListener("blur", onBlur);
   document.addEventListener("visibilitychange", onVisibility);
@@ -1351,6 +1412,7 @@ export async function createDeviceScene(
     stopLoop();
     clearInterval(clockTimer);
     observer.disconnect();
+    unwatchPixelRatio();
     window.removeEventListener("focus", onFocus);
     window.removeEventListener("blur", onBlur);
     document.removeEventListener("visibilitychange", onVisibility);
@@ -1372,6 +1434,8 @@ export async function createDeviceScene(
     graph.dispose();
     renderer.dispose();
   };
+  // From here the scene's own dispose stands for everything made so far.
+  scope.adopt(dispose);
   const fallback = (reason: string): void => {
     if (disposed) return;
     dispose();
@@ -1408,8 +1472,10 @@ export async function createDeviceScene(
   const tCompile = performance.now();
   await scenePass.compileAsync(renderer);
   const compileMs = performance.now() - tCompile;
+  scope.checkpoint();
   if (disposed) throw new Error("disposed during compile");
   if (opts.awaitQuiet !== undefined) await opts.awaitQuiet();
+  scope.checkpoint();
   if (disposed) throw new Error("disposed while waiting");
   const t1 = performance.now();
   graph.render();
@@ -1423,6 +1489,7 @@ export async function createDeviceScene(
   const tPresent = performance.now();
   await firstFramePresented(renderer);
   const presentMs = performance.now() - tPresent;
+  scope.checkpoint();
   if (disposed) throw new Error("disposed while presenting");
   ready = true;
   wake(1400);
@@ -1542,6 +1609,7 @@ export async function createDeviceScene(
     graph.render();
   };
 
+  scope.commit();
   return {
     stats: { backend, loadMs, compileMs, firstFrameMs, presentMs },
     snapshot,

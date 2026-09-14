@@ -88,6 +88,9 @@ export function DeviceScene(props: DeviceSceneProps): JSX.Element {
     if (canvas === null) return;
     let cancelled = false;
     let built: DeviceSceneHandle | null = null;
+    // The build's own abort (ADR 0057 §6.5): before this, an unmount
+    // mid-build had nothing to dispose and the build ran to completion.
+    const abort = new AbortController();
     void (async () => {
       const backend = await detectDeviceSceneBackend();
       if (cancelled) return;
@@ -103,6 +106,7 @@ export function DeviceScene(props: DeviceSceneProps): JSX.Element {
         assetUrl: deviceSceneAssetUrl,
         initial: live.current,
         profile: profileRequested(),
+        signal: abort.signal,
         // The synchronous first frame stalls the main thread for ~0.5 s;
         // after the seconds of asynchronous compile, wait for the user to
         // be quiet again before taking it (§2.12).
@@ -140,6 +144,7 @@ export function DeviceScene(props: DeviceSceneProps): JSX.Element {
     });
     return () => {
       cancelled = true;
+      abort.abort();
       setIsLive(false);
       // One dispose: `handle.current` and `built` are the same object once
       // the build has landed; before that only `built` (or nothing) exists.
