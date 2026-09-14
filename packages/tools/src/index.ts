@@ -109,9 +109,15 @@ export {
   MAX_LOG_LIMIT,
   MAX_LOG_QUERY_CHARS,
 } from "./git/log-list.js";
-export type { RangeChangedFile } from "./git/repo-probe.js";
+export type {
+  RangeChangedFile,
+  RepoContextOutcome,
+  RepoProbeTransientReason,
+} from "./git/repo-probe.js";
 export {
+  classifyProbeFailure,
   describeRepoContext,
+  describeRepoOutcome,
   detectInProgressState,
   diffCommittedRange,
   probeRepoState,

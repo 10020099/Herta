@@ -12,6 +12,7 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RepoContextSnapshot, TerminalRecord } from "@herta/core";
+import type { RepoContextOutcome } from "@herta/tools";
 import type { OpeningChoice } from "@herta/herta";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -381,7 +382,7 @@ async function mkStubSession(
       ...(extra?.easterEggRandom !== undefined
         ? { easterEggRandom: extra.easterEggRandom }
         : {}),
-      repoDescriber: extra?.repoDescriber ?? (async () => null),
+      repoDescriber: extra?.repoDescriber ?? (async () => ({ kind: "absent" })),
       repoWatcher: extra?.repoWatcher ?? (() => () => undefined),
       ...(extra?.repoWatchDebounceMs !== undefined
         ? { repoWatchDebounceMs: extra.repoWatchDebounceMs }
@@ -2124,7 +2125,9 @@ describe("Session — the repository probe behind the rail's card (ADR 0058)", (
       {
         repoDescriber: async (workspace) => {
           probed.push(workspace);
-          return workspace === cfg.transcriptDir ? sample : null;
+          return workspace === cfg.transcriptDir
+            ? { kind: "repo", repo: sample }
+            : { kind: "absent" };
         },
       },
     );
@@ -2145,7 +2148,7 @@ describe("Session — the repository probe behind the rail's card (ADR 0058)", (
     await cleanup();
   });
 
-  it("coalesces refreshes: requests during a probe run exactly one more after it, and a throwing probe answers null", async () => {
+  it("coalesces refreshes: requests during a probe run exactly one more after it, and a throwing probe leaves the last answer standing (§7.6)", async () => {
     const cfg = mkConfig();
     let calls = 0;
     const gates: Array<() => void> = [];
@@ -2159,7 +2162,7 @@ describe("Session — the repository probe behind the rail's card (ADR 0058)", (
           calls += 1;
           await new Promise<void>((resolve) => gates.push(resolve));
           if (calls === 2) throw new Error("git exploded");
-          return sample;
+          return { kind: "repo", repo: sample };
         },
       },
     );
@@ -2175,8 +2178,10 @@ describe("Session — the repository probe behind the rail's card (ADR 0058)", (
     await until(() => calls === 2);
     expect(session.repo).toEqual(sample);
     gates.shift()?.();
-    await until(() => session.repo === null);
     await new Promise((r) => setTimeout(r, 20));
+    // A throw is a probe that could not answer, not "no repository": the
+    // card stands, and with it on screen nothing retries.
+    expect(session.repo).toEqual(sample);
     expect(calls).toBe(2);
     await cleanup();
   });
@@ -2186,7 +2191,7 @@ describe("Session — the repository probe behind the rail's card (ADR 0058)", (
     const watched: string[] = [];
     const stopped: string[] = [];
     const hook: { fire: (() => void) | null } = { fire: null };
-    let answer: RepoContextSnapshot | null = sample;
+    let answer: RepoContextOutcome = { kind: "repo", repo: sample };
     let calls = 0;
     const { session, cleanup } = await mkStubSession(
       cfg,
@@ -2222,17 +2227,17 @@ describe("Session — the repository probe behind the rail's card (ADR 0058)", (
     expect(watched).toHaveLength(1);
     expect(stopped).toHaveLength(0);
     // A different repository answers: the old watcher stops, a new one arms.
-    answer = { ...sample, gitDir: "/other/.git" };
+    answer = { kind: "repo", repo: { ...sample, gitDir: "/other/.git" } };
     await session.refreshRepo();
     expect(stopped).toEqual(["/repo/.git"]);
     expect(watched).toEqual(["/repo/.git", "/other/.git"]);
     // Not a repository any more: disarmed.
-    answer = null;
+    answer = { kind: "absent" };
     await session.refreshRepo();
     expect(stopped).toEqual(["/repo/.git", "/other/.git"]);
     expect(watched).toHaveLength(2);
     // Closing with a watcher armed stops it and ends probing.
-    answer = sample;
+    answer = { kind: "repo", repo: sample };
     await session.refreshRepo();
     expect(watched).toHaveLength(3);
     const before = calls;
@@ -2251,7 +2256,7 @@ describe("Session — the repository probe behind the rail's card (ADR 0058)", (
     const { cleanup } = await mkStubSession(cfg, undefined, 1, undefined, {
       repoDescriber: async () => {
         calls += 1;
-        return sample;
+        return { kind: "repo", repo: sample };
       },
       repoWatcher: (gitDir, onChange) => {
         watched.push(gitDir);
@@ -2379,6 +2384,121 @@ describe("Session — the repository probe behind the rail's card (ADR 0058)", (
     ]);
     await session.describeBranches();
     expect(branchAsks).toEqual([cfg.workspaceRoot]);
+    await cleanup();
+  });
+});
+
+describe("Session — a transient probe answer (ADR 0058 §7.6)", () => {
+  const sample: RepoContextSnapshot = {
+    root: "/repo",
+    prefix: "",
+    gitDir: "/repo/.git",
+    branch: "main",
+    detached: false,
+    headShort: "abc1234",
+    upstream: null,
+    upstreamGone: false,
+    ahead: 0,
+    behind: 0,
+    defaultBranch: null,
+    inProgress: null,
+    conflicted: [],
+    dirty: [],
+    dirtyTotal: 0,
+    recentSubjects: [],
+    recentCommits: [],
+  };
+  const until = async (ok: () => boolean): Promise<void> => {
+    for (let i = 0; i < 200 && !ok(); i += 1) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(ok()).toBe(true);
+  };
+
+  it("keeps the card and its watcher on a transient answer; a definite 'not a repository' retracts them", async () => {
+    const cfg = mkConfig();
+    const stopped: string[] = [];
+    const watched: string[] = [];
+    let answer: RepoContextOutcome = { kind: "repo", repo: sample };
+    const { session, cleanup } = await mkStubSession(
+      cfg,
+      undefined,
+      1,
+      undefined,
+      {
+        repoDescriber: async () => answer,
+        repoWatcher: (gitDir) => {
+          watched.push(gitDir);
+          return () => {
+            stopped.push(gitDir);
+          };
+        },
+        repoWatchDebounceMs: 20,
+      },
+    );
+    await until(() => watched.length === 1);
+    const events: Array<RepoContextSnapshot | null> = [];
+    const stopListening = (async () => {
+      for await (const ev of session.subscribeRepo()) {
+        if (ev.kind === "repo") events.push(ev.repo);
+      }
+    })();
+    // A `git status` that timed out during the rebase the user is watching
+    // says nothing about the repository: nothing retracts, nothing re-arms.
+    answer = { kind: "transient", reason: "git_timeout" };
+    await session.refreshRepo();
+    expect(session.repo).toEqual(sample);
+    expect(stopped).toEqual([]);
+    expect(watched).toHaveLength(1);
+    expect(events).toEqual([]);
+    // `rm -rf .git`: a definite answer retracts the card and the watcher.
+    answer = { kind: "absent" };
+    await session.refreshRepo();
+    expect(session.repo).toBeNull();
+    expect(stopped).toEqual(["/repo/.git"]);
+    await until(() => events.length === 1);
+    expect(events).toEqual([null]);
+    await cleanup();
+    await stopListening;
+  });
+
+  it("with no answer yet, a transient probe tries once more after the max-wait span — and not again until something definite lands", async () => {
+    const cfg = mkConfig();
+    let calls = 0;
+    let answer: RepoContextOutcome = {
+      kind: "transient",
+      reason: "git_failed",
+    };
+    const { session, cleanup } = await mkStubSession(
+      cfg,
+      undefined,
+      1,
+      undefined,
+      {
+        repoDescriber: async () => {
+          calls += 1;
+          return answer;
+        },
+        repoWatchDebounceMs: 20,
+      },
+    );
+    await until(() => calls === 1);
+    expect(session.repo).toBeNull();
+    // One retry, a max-wait span later; its own transient answer schedules nothing.
+    await until(() => calls === 2);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(calls).toBe(2);
+    // A definite answer, then a transient one WITH a card on screen: no retry
+    // either — the card stands, the watcher will re-probe on the next change.
+    answer = { kind: "repo", repo: sample };
+    await session.refreshRepo();
+    expect(session.repo).toEqual(sample);
+    answer = { kind: "transient", reason: "git_timeout" };
+    await session.refreshRepo();
+    const after = calls;
+    await new Promise((r) => setTimeout(r, 200));
+    expect(calls).toBe(after);
+    expect(session.repo).toEqual(sample);
     await cleanup();
   });
 });

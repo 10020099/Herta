@@ -43,10 +43,11 @@ import {
   describeBranches,
   describeCommit,
   describeLog,
-  describeRepoContext,
+  describeRepoOutcome,
   describeWorkingDiff,
   type LogPage,
   type LogQuery,
+  type RepoContextOutcome,
   type WorkingDiff,
 } from "@herta/tools";
 import { type ImageCaptioner, migrateAttachments } from "./attachments.js";
@@ -205,11 +206,12 @@ export interface SessionInternalDeps {
   readonly easterEggRandom?: () => number;
   /** The repository probe behind the rail's repository card (ADR 0058).
    *  Defaults to the git probe in `@herta/tools`; tests inject a stub so
-   *  no git runs under them. */
+   *  no git runs under them. A `transient` answer (§7.6) keeps the last
+   *  card and watcher; only `absent` retracts them. */
   readonly repoDescriber?: (
     workspace: string,
     signal?: AbortSignal,
-  ) => Promise<RepoContextSnapshot | null>;
+  ) => Promise<RepoContextOutcome>;
   /** The git-dir watcher behind the card's live updates (ADR 0058
    *  amendment). Defaults to `watchGitDir`; tests inject a fake that
    *  records the dir and fires changes on demand. */
@@ -286,7 +288,11 @@ export class SessionImpl implements Session {
   private readonly repoDescriber: (
     workspace: string,
     signal?: AbortSignal,
-  ) => Promise<RepoContextSnapshot | null>;
+  ) => Promise<RepoContextOutcome>;
+  // A probe that could not answer with nothing on screen tries once more,
+  // a max-wait span later (ADR 0058 §7.6); one retry per definite answer.
+  private repoRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private repoRetried = false;
   // The git-dir watcher (ADR 0058 amendment, 2026-09-07): armed on the git
   // dir each probe answer names, re-armed when it changes (a workspace
   // switch), dropped when the answer is "not a repository" or the session
@@ -421,7 +427,7 @@ export class SessionImpl implements Session {
     repoDescriber: (
       workspace: string,
       signal?: AbortSignal,
-    ) => Promise<RepoContextSnapshot | null>;
+    ) => Promise<RepoContextOutcome>;
     repoWatcher: RepoWatcher;
     repoWatchDebounceMs: number;
     commitDescriber: (
@@ -1229,13 +1235,35 @@ export class SessionImpl implements Session {
       do {
         this.repoProbeAgain = false;
         const workspace = this.wsHolder.current;
-        let repo: RepoContextSnapshot | null = null;
+        let outcome: RepoContextOutcome;
         try {
-          repo = await this.repoDescriber(workspace);
+          outcome = await this.repoDescriber(workspace);
         } catch {
-          repo = null;
+          outcome = { kind: "transient", reason: "aborted" };
         }
         if (this.repoClosed) return;
+        if (outcome.kind === "transient") {
+          // A probe that could not answer (a `git status` past its budget
+          // during the rebase the user is watching, a lock, an interrupt)
+          // says nothing about the repository: the card and the watcher
+          // stand, and the next change or focus probes again (§7.6). With
+          // nothing on screen and no watcher to re-probe, try once more.
+          if (
+            this._repo === null &&
+            this.repoWatchedDir === null &&
+            !this.repoRetried
+          ) {
+            this.repoRetried = true;
+            this.repoRetryTimer = setTimeout(() => {
+              this.repoRetryTimer = null;
+              void this.refreshRepo();
+            }, this.repoWatchDebounceMs * REPO_WATCH_MAX_WAIT_SPANS);
+            this.repoRetryTimer.unref?.();
+          }
+          continue;
+        }
+        this.repoRetried = false;
+        const repo = outcome.kind === "repo" ? outcome.repo : null;
         this._repo = repo;
         this.syncRepoWatch(repo?.gitDir ?? null);
         this.projector.emitRepo({ kind: "repo", workspace, repo });
@@ -1295,6 +1323,10 @@ export class SessionImpl implements Session {
     if (this.repoWatchTimer !== null) {
       clearTimeout(this.repoWatchTimer);
       this.repoWatchTimer = null;
+    }
+    if (this.repoRetryTimer !== null) {
+      clearTimeout(this.repoRetryTimer);
+      this.repoRetryTimer = null;
     }
     this.syncRepoWatch(null);
   }
@@ -1766,7 +1798,7 @@ export class SessionImpl implements Session {
         deps.providerOverrides === undefined
           ? deepseekVisionCaptioner({ apiKey, ...baseUrl })
           : null,
-      repoDescriber: deps.repoDescriber ?? describeRepoContext,
+      repoDescriber: deps.repoDescriber ?? describeRepoOutcome,
       repoWatcher: deps.repoWatcher ?? watchGitDir,
       repoWatchDebounceMs: deps.repoWatchDebounceMs ?? REPO_WATCH_DEBOUNCE_MS,
       commitDescriber: deps.commitDescriber ?? describeCommit,

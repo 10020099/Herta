@@ -10,7 +10,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  classifyProbeFailure,
   describeRepoContext,
+  describeRepoOutcome,
   detectInProgressState,
   diffCommittedRange,
   probeRepoState,
@@ -439,6 +441,73 @@ describe.skipIf(!GIT_AVAILABLE)(
       expect(ctx?.upstream).toBe("origin/main");
       expect(ctx?.upstreamGone).toBe(true);
       expect(ctx?.recentCommits.map((c) => c.unpushed)).toEqual([true, true]);
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)(
+  "describeRepoOutcome — absent is definite, transient is not (ADR 0058 §7.6)",
+  { timeout: 20_000 },
+  () => {
+    it("a plain directory and a missing one are absent; an abort is transient; a repository is a repo", async () => {
+      const plain = mkDir("outcome-plain-");
+      expect(await describeRepoOutcome(plain)).toEqual({ kind: "absent" });
+      expect(
+        await describeRepoOutcome(join(mkDir("outcome-gone-"), "no-such-dir")),
+      ).toEqual({ kind: "absent" });
+      const ac = new AbortController();
+      ac.abort();
+      expect(await describeRepoOutcome(plain, ac.signal)).toEqual({
+        kind: "transient",
+        reason: "aborted",
+      });
+      const repo = mkDir("outcome-repo-");
+      spawnSync("git", ["init", "-q", "-b", "main"], { cwd: repo });
+      const out = await describeRepoOutcome(repo);
+      expect(out.kind).toBe("repo");
+      if (out.kind === "repo") expect(out.repo.branch).toBe("main");
+    });
+
+    it("classifies a spawn failure: not-a-repo, no git and a vanished workspace are absent; a timeout, a failing command and anything else are transient", () => {
+      expect(
+        classifyProbeFailure({ ok: false, code: "not_a_repo", message: "" }),
+      ).toBe("absent");
+      expect(
+        classifyProbeFailure({
+          ok: false,
+          code: "spawn_failed",
+          message: "",
+          cause: "git_not_found",
+        }),
+      ).toBe("absent");
+      expect(
+        classifyProbeFailure({
+          ok: false,
+          code: "spawn_failed",
+          message: "",
+          cause: "workspace_missing",
+        }),
+      ).toBe("absent");
+      expect(
+        classifyProbeFailure({ ok: false, code: "git_timeout", message: "" }),
+      ).toBe("transient");
+      expect(
+        classifyProbeFailure({
+          ok: false,
+          code: "git_failed",
+          message: "",
+          exitCode: 128,
+          stderr: "index.lock exists",
+        }),
+      ).toBe("transient");
+      expect(
+        classifyProbeFailure({
+          ok: false,
+          code: "spawn_failed",
+          message: "",
+          cause: "other",
+        }),
+      ).toBe("transient");
     });
   },
 );

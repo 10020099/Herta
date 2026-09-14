@@ -9,7 +9,7 @@ import type {
 } from "@herta/core";
 import { unpushedShas } from "./log-list.js";
 import { parseStatusPorcelainZ } from "./parse-status.js";
-import { hardenedGitArgs, spawnGit } from "./spawn-git.js";
+import { hardenedGitArgs, type SpawnGitErr, spawnGit } from "./spawn-git.js";
 
 /**
  * The workspace's VCS state at one instant — HEAD plus every path that differs
@@ -227,17 +227,61 @@ export async function describeRepoContext(
   workspaceRoot: string,
   signal?: AbortSignal,
 ): Promise<RepoContextSnapshot | null> {
+  const out = await describeRepoOutcome(workspaceRoot, signal);
+  return out.kind === "repo" ? out.repo : null;
+}
+
+/** Why a probe could not answer, when the reason is not "no repository". */
+export type RepoProbeTransientReason =
+  | "git_timeout"
+  | "git_failed"
+  | "spawn_failed"
+  | "aborted";
+
+/**
+ * The card's probe answer (ADR 0058 §7.6). `absent` is definite — no
+ * repository here, no git, no such directory — and retracts the card;
+ * `transient` is a probe that could not answer THIS time (a `git status`
+ * past its budget during the rebase the user is watching, a command that
+ * failed on a lock, an interrupt) and says nothing about the repository,
+ * so the caller keeps what it last knew.
+ */
+export type RepoContextOutcome =
+  | { readonly kind: "repo"; readonly repo: RepoContextSnapshot }
+  | { readonly kind: "absent" }
+  | { readonly kind: "transient"; readonly reason: RepoProbeTransientReason };
+
+/** Whether a failed git spawn is a definite "not a repository" or a passing
+ *  condition. Exported for its tests. */
+export function classifyProbeFailure(err: SpawnGitErr): "absent" | "transient" {
+  if (err.code === "not_a_repo") return "absent";
+  if (err.code === "spawn_failed" && err.cause !== "other") return "absent";
+  return "transient";
+}
+
+function transientReason(err: SpawnGitErr): RepoProbeTransientReason {
+  if (err.code === "git_timeout") return "git_timeout";
+  if (err.code === "git_failed") return "git_failed";
+  return "spawn_failed";
+}
+
+/** Never throws: an abort is a transient answer, like every other reason
+ *  the probe could not finish. */
+export async function describeRepoOutcome(
+  workspaceRoot: string,
+  signal?: AbortSignal,
+): Promise<RepoContextOutcome> {
   try {
     return await describe(workspaceRoot, signal);
   } catch {
-    return null;
+    return { kind: "transient", reason: "aborted" };
   }
 }
 
 async function describe(
   workspaceRoot: string,
   signal?: AbortSignal,
-): Promise<RepoContextSnapshot | null> {
+): Promise<RepoContextOutcome> {
   const sig = signal ?? new AbortController().signal;
   const opts = { timeoutMs: 5_000 } as const;
 
@@ -306,9 +350,19 @@ async function describe(
     // §5.6) — the rev-list set, so a merge cannot mislabel the list.
     unpushedShas(workspaceRoot, sig, opts.timeoutMs),
   ]);
-  if (!head.ok || !status.ok || !layout.ok) return null;
+  // A definite "not a repository" from any of the three wins over a passing
+  // failure in another: `rm -rf .git` is an answer even while a lock stalls.
+  const failed = [head, status, layout].filter((r) => !r.ok);
+  if (failed.some((r) => !r.ok && classifyProbeFailure(r) === "absent")) {
+    return { kind: "absent" };
+  }
+  const first = failed[0];
+  if (first !== undefined && !first.ok) {
+    return { kind: "transient", reason: transientReason(first) };
+  }
+  if (!head.ok || !status.ok || !layout.ok) return { kind: "absent" };
   const [root = "", prefix = ""] = layout.stdout.split(/\r?\n/);
-  if (root.length === 0) return null;
+  if (root.length === 0) return { kind: "absent" };
 
   const parsed = parseStatusPorcelainZ(status.stdout);
   const shortSha = head.stdout.trim();
@@ -364,7 +418,7 @@ async function describe(
   const gitDir = resolveGitDir(workspaceRoot);
   const inProgress = gitDir !== null ? detectInProgressState(gitDir) : null;
 
-  return {
+  const repo: RepoContextSnapshot = {
     root,
     prefix,
     gitDir,
@@ -383,6 +437,7 @@ async function describe(
     recentSubjects,
     recentCommits,
   };
+  return { kind: "repo", repo };
 }
 
 async function probe(
