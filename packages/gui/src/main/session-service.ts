@@ -1074,6 +1074,10 @@ export function createSessionService(
         minimaxFetch,
         anyMiniMaxKey,
         minimaxRefusal,
+        stopSpeech: () => {
+          synthesizer?.stopWorker();
+          minimaxSynth?.cancelAll();
+        },
       },
     });
   }

@@ -40,12 +40,12 @@ import { type ApiKey, deepseekVisionCaptioner } from "@herta/providers";
 import {
   type BranchList,
   type CommitDescription,
-  type GitReadTimeout,
   describeBranches,
   describeCommit,
   describeLog,
   describeRepoOutcome,
   describeWorkingDiff,
+  type GitReadTimeout,
   type LogPage,
   type LogQuery,
   type RepoContextOutcome,
@@ -1713,8 +1713,7 @@ export class SessionImpl implements Session {
       // The reaction's audio holds the voice lane so the retry's first
       // sentence waits for it (ADR 0042 §7b); 0 = a clip or silence.
       onSupervisorVeto: () => {
-        const holdMs = voice.onSupervisorVeto();
-        if (holdMs > 0) sink.holdVoiceLane(holdMs);
+        sink.holdVoiceLaneUntil(voice.onSupervisorVeto());
       },
       routerProvider: actor.routerProvider,
       metaThinkCorpus: actor.metaThinkCorpus,

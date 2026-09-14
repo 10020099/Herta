@@ -99,12 +99,31 @@ async function voice(opts: {
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
+/** The hold's shape (ADR 0042 §7c): the lane reopens once the filler has
+ *  been heard — `ms` after the veto — and not before. A non-zero hold
+ *  needs fake timers. */
+async function expectHold(hold: Promise<void>, ms: number): Promise<void> {
+  let open = false;
+  void hold.then(() => {
+    open = true;
+  });
+  if (ms === 0) {
+    await hold;
+    return;
+  }
+  await vi.advanceTimersByTimeAsync(ms - 1);
+  expect(open, `open before ${ms} ms`).toBe(false);
+  await vi.advanceTimersByTimeAsync(2);
+  expect(open, `open at ${ms} ms`).toBe(true);
+}
+
 afterEach(() => {
   vi.useRealTimers();
 });
 
 describe("session voice — the veto reaction in her own voice (ADR 0042 §7b)", () => {
   it("armed when the voiced reply is in flight, spoken at the veto: everything stops, the line plays, the lane holds for its length", async () => {
+    vi.useFakeTimers();
     const synth = fakeSynth({ available: true });
     const { v, emitted } = await voice({ synth });
     v.armVetoReaction();
@@ -118,10 +137,9 @@ describe("session voice — the veto reaction in her own voice (ADR 0042 §7b)",
         priority: "low",
       },
     ]);
-    await flush();
+    await vi.advanceTimersByTimeAsync(0);
     expect(emitted).toEqual([]); // nothing until the veto
     const hold = v.onSupervisorVeto();
-    expect(hold).toBe(125 + VETO_FILLER_TAIL_MS);
     expect(emitted).toEqual([
       { kind: "ttsStop" },
       {
@@ -133,9 +151,10 @@ describe("session voice — the veto reaction in her own voice (ADR 0042 §7b)",
         durationMs: 125,
       },
     ]);
+    await expectHold(hold, 125 + VETO_FILLER_TAIL_MS);
     // Spent: a second veto in the same turn has nothing armed and falls
     // back to the recorded roll.
-    expect(v.onSupervisorVeto()).toBe(0);
+    await expectHold(v.onSupervisorVeto(), 0);
     expect(emitted.at(-1)).toMatchObject({ kind: "cue", category: "veto" });
   });
 
@@ -148,7 +167,7 @@ describe("session voice — the veto reaction in her own voice (ADR 0042 §7b)",
     v.disarmVetoReaction();
     expect(cancelled).toEqual(["veto1"]);
     // Nothing armed: the recorded roll, no hold — never a stale filler.
-    expect(v.onSupervisorVeto()).toBe(0);
+    await expectHold(v.onSupervisorVeto(), 0);
     expect(emitted).toEqual([
       { kind: "cue", category: "veto", clipId: VETO_LINE },
     ]);
@@ -161,45 +180,64 @@ describe("session voice — the veto reaction in her own voice (ADR 0042 §7b)",
     await flush();
     w.v.disarmVetoReaction();
     expect(c2).toEqual([]);
-    expect(w.v.onSupervisorVeto()).toBe(0);
+    await expectHold(w.v.onSupervisorVeto(), 0);
   });
 
   it("a sigh is the token trailing off; silence stays silent and asks for nothing", async () => {
+    vi.useFakeTimers();
     const sigh = fakeSynth({ available: true });
     const a = await voice({ synth: sigh, vetoRandom: () => 0.5 });
     a.v.armVetoReaction();
     expect(sigh.requests[0]?.text).toBe("唉……");
-    await flush();
-    expect(a.v.onSupervisorVeto()).toBe(125 + VETO_FILLER_TAIL_MS);
+    await vi.advanceTimersByTimeAsync(0);
+    const hold = a.v.onSupervisorVeto();
     expect(a.emitted[1]).toMatchObject({ kind: "tts", utteranceId: "veto1" });
+    await expectHold(hold, 125 + VETO_FILLER_TAIL_MS);
     const quiet = fakeSynth({ available: true });
     const b = await voice({ synth: quiet, vetoRandom: () => 0.9 });
     b.v.armVetoReaction();
     expect(quiet.requests).toEqual([]);
-    expect(b.v.onSupervisorVeto()).toBe(0);
+    await expectHold(b.v.onSupervisorVeto(), 0);
     expect(b.emitted).toEqual([]);
   });
 
-  it("a veto before the filler is ready plays it when it lands; past the bound, the recording", async () => {
+  it("a veto before the filler is ready plays it when it lands and holds the lane until it has been HEARD; past the bound, the recording and the bound's own breath (§7c)", async () => {
     vi.useFakeTimers();
     const late = fakeSynth({ available: true, answer: "deferred" });
     const a = await voice({ synth: late });
     a.v.armVetoReaction();
-    expect(a.v.onSupervisorVeto()).toBe(
-      VETO_FILLER_WAIT_MS + VETO_FILLER_TAIL_MS,
-    );
+    const hold = a.v.onSupervisorVeto();
+    let open = false;
+    void hold.then(() => {
+      open = true;
+    });
     expect(a.emitted).toEqual([]);
-    late.land(AUDIO);
+    // The filler lands 1 s in and is 2 s long: the retry's first sentence
+    // waits for its end plus the breath — not for a constant that ran out
+    // while the filler was still playing.
+    await vi.advanceTimersByTimeAsync(1000);
+    late.land({ ...AUDIO, durationMs: 2000 });
     await vi.advanceTimersByTimeAsync(0);
     expect(a.emitted.map((e) => e.kind)).toEqual(["ttsStop", "tts"]);
+    await vi.advanceTimersByTimeAsync(2000 + VETO_FILLER_TAIL_MS - 2);
+    expect(open).toBe(false);
+    await vi.advanceTimersByTimeAsync(3);
+    expect(open).toBe(true);
     const never = fakeSynth({ available: true, answer: "deferred" });
     const b = await voice({ synth: never });
     b.v.armVetoReaction();
-    b.v.onSupervisorVeto();
+    const hold2 = b.v.onSupervisorVeto();
+    let open2 = false;
+    void hold2.then(() => {
+      open2 = true;
+    });
     await vi.advanceTimersByTimeAsync(VETO_FILLER_WAIT_MS + 1);
     expect(b.emitted).toEqual([
       { kind: "cue", category: "veto", clipId: VETO_LINE },
     ]);
+    expect(open2).toBe(false);
+    await vi.advanceTimersByTimeAsync(VETO_FILLER_TAIL_MS);
+    expect(open2).toBe(true);
     // Landing after the bound changes nothing.
     never.land(AUDIO);
     await vi.advanceTimersByTimeAsync(0);
@@ -211,13 +249,13 @@ describe("session voice — the veto reaction in her own voice (ADR 0042 §7b)",
     const a = await voice({ synth: failing });
     a.v.armVetoReaction();
     await flush();
-    expect(a.v.onSupervisorVeto()).toBe(0);
+    await expectHold(a.v.onSupervisorVeto(), 0);
     expect(a.emitted).toEqual([
       { kind: "cue", category: "veto", clipId: VETO_LINE },
     ]);
     const off = await voice({ synth: fakeSynth({ available: false }) });
     off.v.armVetoReaction();
-    expect(off.v.onSupervisorVeto()).toBe(0);
+    await expectHold(off.v.onSupervisorVeto(), 0);
     expect(off.emitted).toEqual([
       { kind: "cue", category: "veto", clipId: VETO_LINE },
     ]);

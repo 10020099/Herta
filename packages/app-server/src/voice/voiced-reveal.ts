@@ -146,6 +146,16 @@ export const SILENT_UNIT_MS = 400;
  */
 export const PREROLL_MAX_MS = 8000;
 
+/**
+ * The same liveness cap, mid-stream (ADR 0042 §7c). The pre-roll covers the
+ * head; a unit past it whose synthesis never lands used to freeze the text
+ * until the synthesizer's own 25 s deadline — the worker is warm by then,
+ * so a unit taking longer than this is a stall, not a slow start. Past it
+ * the unit types unvoiced, the stream degrades (every later unit types
+ * unvoiced at once) and the utterance's synthesis is cancelled.
+ */
+export const UNIT_STALL_MAX_MS = PREROLL_MAX_MS;
+
 type UnitState =
   | { readonly status: "pending" }
   | { readonly status: "ready"; readonly audio: SynthesizedAudio }
@@ -197,6 +207,15 @@ export function createVoicedReveal(deps: VoicedRevealDeps): VoicedReveal {
   /** Pre-roll state (see PREROLL_MAX_MS): armed once, at the stream's head. */
   let prerollTimer: ReturnType<typeof setTimeout> | null = null;
   let prerollExpired = false;
+  /** Mid-stream stall state (see UNIT_STALL_MAX_MS). */
+  let stallTimer: ReturnType<typeof setTimeout> | null = null;
+  let degraded = false;
+  const clearStall = (): void => {
+    if (stallTimer !== null) {
+      clearTimeout(stallTimer);
+      stallTimer = null;
+    }
+  };
 
   let resolveDone!: () => void;
   let rejectDone!: (e: unknown) => void;
@@ -282,6 +301,11 @@ export function createVoicedReveal(deps: VoicedRevealDeps): VoicedReveal {
       }
       if (unit.speak.length === 0) {
         states.set(idx, { status: "silent" });
+        continue;
+      }
+      // A degraded stream asks for nothing more: it types unvoiced.
+      if (degraded) {
+        states.set(idx, { status: "failed" });
         continue;
       }
       states.set(idx, { status: "pending" });
@@ -460,7 +484,32 @@ export function createVoicedReveal(deps: VoicedRevealDeps): VoicedReveal {
       requestSynthesis();
       st = states.get(playIdx);
     }
-    if (st === undefined || st.status === "pending") return; // audio not ready
+    if (st === undefined) return;
+    if (st.status === "pending") {
+      // The head waits under the pre-roll (below) and the first request's
+      // own deadline. Mid-stream, a unit past the liveness cap is a stall
+      // (ADR 0042 §7c): it types unvoiced, the stream degrades, and the
+      // utterance's synthesis is cancelled so the worker stops spending on
+      // audio nobody will hear.
+      if (playIdx === 0) return;
+      if (!degraded) {
+        if (stallTimer === null) {
+          const stalledIdx = playIdx;
+          stallTimer = setTimeout(() => {
+            stallTimer = null;
+            if (cancelled || finished) return;
+            degraded = true;
+            states.set(stalledIdx, { status: "failed" });
+            deps.synth.cancel(deps.utteranceId);
+            tryAdvance();
+          }, UNIT_STALL_MAX_MS);
+        }
+        return;
+      }
+      st = { status: "failed" };
+      states.set(playIdx, st);
+    }
+    clearStall();
     // Pre-roll (see PREROLL_MAX_MS): before the FIRST unit starts, give the
     // head of the stream a bounded chance to be ready, so a short opener
     // does not strand the reply in silence while the next sentence
@@ -507,6 +556,7 @@ export function createVoicedReveal(deps: VoicedRevealDeps): VoicedReveal {
   const flushTail = (): void => {
     if (cancelled || finished) return;
     clearActive();
+    clearStall();
     inputFinished = true;
     if (cursor < chars.length) emit(cursor, chars.length);
     deps.emitVoice({ kind: "ttsStop", utteranceId: deps.utteranceId });
@@ -550,6 +600,7 @@ export function createVoicedReveal(deps: VoicedRevealDeps): VoicedReveal {
     cancel: (): boolean => {
       if (cancelled) return false;
       clearActive();
+      clearStall();
       cancelled = true;
       deps.emitVoice({ kind: "ttsStop", utteranceId: deps.utteranceId });
       deps.synth.cancel(deps.utteranceId);

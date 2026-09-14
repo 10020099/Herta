@@ -187,6 +187,18 @@ export class BusActorStreamingSink implements ActorStreamingSink {
     );
   }
 
+  /** Hold the voice lane until `open` settles (ADR 0042 §7c): the veto
+   *  filler's hold is the length that was heard, known only once it has
+   *  played, so the lane waits on the cue module's promise rather than on
+   *  a number guessed at the veto. */
+  holdVoiceLaneUntil(open: Promise<void>): void {
+    const settled = open.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.voiceLane = this.voiceLane.then(() => settled);
+  }
+
   /** Whether a stream opened now would be voiced — the host's synthesizer
    *  is attached and says it is available. The session asks before the
    *  opening so the recorded clip and the synthesized line never both

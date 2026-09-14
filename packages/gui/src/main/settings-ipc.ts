@@ -99,6 +99,10 @@ export interface VoiceSettingsState {
   /** The speech synthesizer's standing refusal, blamed on the key that
    *  spoke (ADR 0062 §5). */
   readonly minimaxRefusal: () => MiniMaxRefusalState | null;
+  /** End the speech in flight — the toggle turned off mid-reply (ADR 0042
+   *  §7c): the local worker stops, the cloud requests abort; each unit
+   *  answers null and types unvoiced. */
+  readonly stopSpeech: () => void;
 }
 
 export interface SettingsIpcDeps {
@@ -431,6 +435,10 @@ export function registerSettingsHandlers(deps: SettingsIpcDeps): void {
   handle(CMD.setRealtimeVoice, async (_e, enabled: boolean) => {
     const next = enabled === true;
     voice.realtimeEnabled = next;
+    // Off mid-reply: the renderer fades what is on air; this ends what is
+    // still being made, so the rest of the reply types unvoiced instead of
+    // resuming one sentence later (ADR 0042 §7c).
+    if (!next) voice.stopSpeech();
     await updateGlobalSettings(app.getPath("userData"), (s) => ({
       ...s,
       realtimeVoice: next,

@@ -187,3 +187,23 @@ describe("BusActorStreamingSink — the voice after a veto (ADR 0042 §7b)", () 
     h.sink.settleVoice();
   });
 });
+
+describe("BusActorStreamingSink — the lane waits for the filler to be heard (ADR 0042 §7c)", () => {
+  it("holdVoiceLaneUntil delays the next voiced driver's first unit until the promise settles", async () => {
+    const h = sinkWithVoice();
+    let open: () => void = () => undefined;
+    h.sink.holdVoiceLaneUntil(
+      new Promise<void>((r) => {
+        open = r;
+      }),
+    );
+    const ctrl = h.sink.slowStreamSpeech(S0);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(h.tts()).toHaveLength(0);
+    open();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(h.tts()).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1100);
+    await ctrl.done;
+  });
+});

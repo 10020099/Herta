@@ -130,7 +130,7 @@ export interface SessionVoice {
   /** The rejection moment (see pickVetoReaction). Returns how long the
    *  voice lane should hold for the reaction's audio — 0 for a recorded
    *  clip or silence, which the lane need not wait for. */
-  onSupervisorVeto(): number;
+  onSupervisorVeto(): Promise<void>;
   /** GUI easter egg (SPEC 2026-06-23): called per successful 板砖-card lift.
    *  Rolls a 50% chance, throttled to ≤1 play per session per hour. No-op
    *  without clips or within the cooldown. */
@@ -314,20 +314,25 @@ export async function loadSessionVoice(
     // short sigh from particle/唉 · particle/哎 (only when this turn's
     // speech didn't already cue a sigh-family particle), or silence (the
     // retract morph alone carries the beat). See pickVetoReaction.
-    onSupervisorVeto(): number {
-      if (!voiceCuesEnabled) return 0; // no EN voice in v1 (ADR 0013 §5)
+    onSupervisorVeto(): Promise<void> {
+      const now = (): Promise<void> => Promise.resolve();
+      const after = (ms: number): Promise<void> =>
+        ms > 0 ? new Promise((res) => setTimeout(res, ms)) : now();
+      if (!voiceCuesEnabled) return now(); // no EN voice in v1 (ADR 0013 §5)
       const a = armed;
       armed = null;
       if (a !== null && synthAvailable()) {
         const r = a.reaction;
-        if (r.kind === "silence") return 0;
+        if (r.kind === "silence") return now();
         notePlayed(r);
         const recording = (): void =>
           emit({ kind: "cue", category: r.category, clipId: r.clipId });
-        const play = (audio: SynthesizedAudio | null): number => {
+        // The hold is what was HEARD (§7c): the filler's own length plus a
+        // breath, measured from the moment it plays.
+        const play = (audio: SynthesizedAudio | null): Promise<void> => {
           if (audio === null || audio.durationMs <= 0) {
             recording();
-            return 0;
+            return now();
           }
           emit({ kind: "ttsStop" });
           emit({
@@ -338,35 +343,40 @@ export async function loadSessionVoice(
             sampleRate: audio.sampleRate,
             durationMs: audio.durationMs,
           });
-          return audio.durationMs + VETO_FILLER_TAIL_MS;
+          return after(audio.durationMs + VETO_FILLER_TAIL_MS);
         };
         if (a.ready !== undefined) return play(a.ready);
         // A veto faster than the synthesis: play the filler when it lands,
-        // within a bound; past it, the recording.
-        let settled = false;
-        const bound = setTimeout(() => {
-          if (settled) return;
-          settled = true;
-          recording();
-        }, VETO_FILLER_WAIT_MS);
-        void a.audio.then((audio) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(bound);
-          play(audio);
+        // within a bound, and hold until it has been heard — a constant
+        // hold used to run out while a long filler was still playing, and
+        // the retry's first sentence spoke over it. Past the bound, the
+        // recording and the bound's own breath.
+        return new Promise<void>((resolve) => {
+          let settled = false;
+          const bound = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            recording();
+            void after(VETO_FILLER_TAIL_MS).then(resolve);
+          }, VETO_FILLER_WAIT_MS);
+          void a.audio.then((audio) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(bound);
+            void play(audio).then(resolve);
+          });
         });
-        return VETO_FILLER_WAIT_MS + VETO_FILLER_TAIL_MS;
       }
       // No synthesizer: the recorded reaction, rolled now, as before.
       const reaction = rollVeto();
-      if (reaction.kind === "silence") return 0;
+      if (reaction.kind === "silence") return now();
       notePlayed(reaction);
       emit({
         kind: "cue",
         category: reaction.category,
         clipId: reaction.clipId,
       });
-      return 0;
+      return now();
     },
     maybePlayEasterEgg(): void {
       if (easterEggClips.length === 0) return;

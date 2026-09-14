@@ -511,3 +511,12 @@ describe("resolveSherpaEntry", () => {
     ).toBeNull();
   });
 });
+
+describe("createTtsSynthesizer — the toggle mid-reply (ADR 0042 §7c)", () => {
+  it("a request while 实时语音 is off answers null without asking the worker", async () => {
+    const flag = { on: false };
+    const { synth } = setup({ enabled: () => flag.on });
+    await expect(synth.synthesize(REQ)).resolves.toBeNull();
+    expect(children).toHaveLength(0);
+  });
+});

@@ -9,6 +9,7 @@ import {
   createVoicedReveal,
   PREROLL_MAX_MS,
   SILENT_UNIT_MS,
+  UNIT_STALL_MAX_MS,
   type VoicedRevealDeps,
 } from "./voiced-reveal.js";
 
@@ -517,6 +518,42 @@ describe("createVoicedReveal", () => {
     release();
     await vi.advanceTimersByTimeAsync(250);
     expect(h.text()).toBe("等前面说完。");
+    await h.ctl.done;
+  });
+});
+
+describe("createVoicedReveal — a unit that stalls mid-stream (ADR 0042 §7c)", () => {
+  it("past the liveness cap the stalled unit types unvoiced, the stream degrades, and the utterance's synthesis is cancelled", async () => {
+    const h = harness();
+    const s0 = "第一句话在这里说得完整一些。";
+    const s1 = "第二句话也在这里说得完整。";
+    const s2 = "第三句话的合成卡在了半路上。";
+    const s3 = "第四句话只好跟着往下打字了。";
+    const text = s0 + s1 + s2 + s3;
+    h.ctl.pushToken(text);
+    h.ctl.finishInput();
+    expect(h.synth.requests.map((r) => r.seq)).toEqual([0, 1, 2]);
+    h.synth.resolve(0, 500);
+    h.synth.resolve(1, 500);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(h.tts()).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(h.tts()).toHaveLength(2);
+    // Unit 2 never lands: the text used to freeze here until the
+    // synthesizer's own 25 s deadline.
+    await vi.advanceTimersByTimeAsync(500);
+    expect(h.text()).toBe(s0 + s1);
+    await vi.advanceTimersByTimeAsync(UNIT_STALL_MAX_MS - 10);
+    expect(h.text()).toBe(s0 + s1);
+    expect(h.synth.cancelled).toEqual([]);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(h.synth.cancelled).toEqual(["u1"]);
+    // The stalled unit now types at the read-along pace.
+    await vi.advanceTimersByTimeAsync(300);
+    expect(h.text().length).toBeGreaterThan((s0 + s1).length);
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(h.text()).toBe(text);
+    expect(h.tts()).toHaveLength(2); // nothing more is voiced
     await h.ctl.done;
   });
 });

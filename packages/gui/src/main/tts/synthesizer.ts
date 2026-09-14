@@ -355,7 +355,12 @@ export function createTtsSynthesizer(opts: TtsSynthesizerOpts): TtsSynthesizer {
     },
 
     async synthesize(req: SynthesisRequest): Promise<SynthesizedAudio | null> {
-      if (disposed || !bundleOk || !runtimeOk || failed) return null;
+      // The toggle is read per request, not only at a stream's start (ADR
+      // 0042 §7c): 实时语音 turned off mid-reply used to cut the unit on air
+      // and let every later unit synthesize and play as if nothing changed.
+      if (disposed || !bundleOk || !runtimeOk || failed || !opts.enabled()) {
+        return null;
+      }
       // The rest of an utterance that fell behind types unvoiced at once.
       if (abandoned.has(req.utteranceId)) return null;
       // A request for an utterance re-arms it (a retry / respeak reuses the

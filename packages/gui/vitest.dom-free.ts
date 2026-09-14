@@ -35,6 +35,7 @@ export const DOM_FREE_TESTS = [
   "src/main/login-path.test.ts",
   "src/main/read-workspace-file.test.ts",
   "src/main/session-service.test.ts",
+  "src/main/settings-ipc.test.ts",
   "src/main/tray-menu.test.ts",
   "src/main/tts/tar-extract.sync.test.ts",
   "src/main/tts/voice-model.disk.test.ts",

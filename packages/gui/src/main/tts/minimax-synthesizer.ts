@@ -81,6 +81,9 @@ export interface MiniMaxSynthesizerOpts {
 
 export interface MiniMaxSynthesizer extends SpeechSynthesizer {
   dispose(): void;
+  /** Abort every request in flight (the toggle turned off mid-reply, ADR
+   *  0042 §7c); each resolves null and its unit types unvoiced. */
+  cancelAll(): void;
   status(): {
     readonly keySet: boolean;
     readonly voiceReady: boolean;
@@ -198,7 +201,8 @@ export function createMiniMaxSynthesizer(
     },
 
     async synthesize(req: SynthesisRequest): Promise<SynthesizedAudio | null> {
-      if (disposed) return null;
+      // The toggle is read per request (ADR 0042 §7c), like the local engine.
+      if (disposed || !opts.enabled()) return null;
       const key = opts.key();
       const voice = currentVoice();
       if (key === null || voice === null) return null;
@@ -266,6 +270,14 @@ export function createMiniMaxSynthesizer(
       if (set === undefined) return;
       for (const ac of set)
         ac.abort(new DOMException("cancelled", "AbortError"));
+    },
+
+    cancelAll(): void {
+      for (const set of controllers.values()) {
+        for (const ac of set)
+          ac.abort(new DOMException("cancelled", "AbortError"));
+      }
+      controllers.clear();
     },
 
     dispose(): void {

@@ -290,3 +290,27 @@ describe("createMiniMaxSynthesizer — a refusal (ADR 0062 §5, the review's mid
     expect(seen).toEqual(["auth", null]);
   });
 });
+
+describe("createMiniMaxSynthesizer — the toggle mid-reply (ADR 0042 §7c)", () => {
+  it("a request while 实时语音 is off answers null without a request; cancelAll ends what is in flight", async () => {
+    const t2a = fakeT2a({ delayMs: 10_000 });
+    let on = true;
+    const synth = createMiniMaxSynthesizer({
+      fetch: t2a.fetch,
+      key: () => "k",
+      voice: () => ({ voiceId: "v", host: "https://h" }),
+      enabled: () => on,
+      log: () => undefined,
+    });
+    const p1 = synth.synthesize(REQ);
+    const p2 = synth.synthesize({ ...REQ, utteranceId: "u2" });
+    await Promise.resolve();
+    expect(t2a.calls).toBe(2);
+    on = false;
+    await expect(synth.synthesize({ ...REQ, seq: 1 })).resolves.toBeNull();
+    expect(t2a.calls).toBe(2);
+    synth.cancelAll();
+    await expect(p1).resolves.toBeNull();
+    await expect(p2).resolves.toBeNull();
+  });
+});
