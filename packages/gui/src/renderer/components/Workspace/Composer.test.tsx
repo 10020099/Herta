@@ -7,9 +7,13 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { HertaBridgeProvider } from "../../context/HertaBridgeContext.js";
+import {
+  HertaBridgeProvider,
+  useHertaBridge,
+} from "../../context/HertaBridgeContext.js";
 import { renderWithLocale } from "../../i18n/test-util.js";
 import { createMockHertaBridge } from "../../ipc/mock-bridge.js";
+import type { SessionStore } from "../../store/session-store.js";
 import { isVoicePlaying, playVoiceClip } from "../../voice/play-voice.js";
 import { Composer } from "./Composer.js";
 import { WorkspaceRefsProvider } from "./WorkspaceRefs.js";
@@ -18,16 +22,34 @@ afterEach(() => {
   cleanup();
 });
 
+/** The provider builds its own SessionStore; a probe beside the Composer
+ *  hands it out so a test can read the store's side channels. */
+function StoreProbe(props: { onStore: (s: SessionStore) => void }) {
+  props.onStore(useHertaBridge().sessionStore);
+  return null;
+}
+
 function renderComposer(mock = createMockHertaBridge()) {
+  let store: SessionStore | null = null;
+  const rendered = renderWithLocale(
+    <WorkspaceRefsProvider>
+      <HertaBridgeProvider bridge={mock.bridge}>
+        <StoreProbe
+          onStore={(s) => {
+            store = s;
+          }}
+        />
+        <Composer />
+      </HertaBridgeProvider>
+    </WorkspaceRefsProvider>,
+  );
   return {
     mock,
-    ...renderWithLocale(
-      <WorkspaceRefsProvider>
-        <HertaBridgeProvider bridge={mock.bridge}>
-          <Composer />
-        </HertaBridgeProvider>
-      </WorkspaceRefsProvider>,
-    ),
+    store: (): SessionStore => {
+      if (store === null) throw new Error("store probe never rendered");
+      return store;
+    },
+    ...rendered,
   };
 }
 
@@ -454,7 +476,6 @@ describe("Composer", () => {
 });
 
 describe("Composer — a message while 板砖 works (ADR 0063)", () => {
-  const HOLD_PLACEHOLDER = "Brick is working — type now, it sends when done";
   const backendStarted: AgentEvent = {
     type: "turn.started",
     layer: "backend",
@@ -483,8 +504,10 @@ describe("Composer — a message while 板砖 works (ADR 0063)", () => {
     });
   }
   function hold(text: string): HTMLTextAreaElement {
+    // The composer keeps its ordinary placeholder while 板砖 works (owner
+    // 2026-09-15): the held card, not the input, says what happens next.
     const input = screen.getByPlaceholderText(
-      HOLD_PLACEHOLDER,
+      "Message Herta…",
     ) as HTMLTextAreaElement;
     fireEvent.change(input, { target: { value: text } });
     fireEvent.keyDown(input, { key: "Enter" });
@@ -569,6 +592,48 @@ describe("Composer — a message while 板砖 works (ADR 0063)", () => {
     expect(screen.queryByTestId("composer-held")).toBeNull();
   });
 
+  it("the held card is a footer sibling BEFORE the composer, not inside it — it grows the footer instead of overflowing the fixed-height form", () => {
+    const { mock } = renderComposer();
+    startCommission(mock);
+    const input = hold("also rename the test file");
+    const card = screen.getByTestId("composer-held");
+    const form = input.closest("form") as HTMLFormElement;
+    expect(form.contains(card)).toBe(false);
+    expect(card.parentElement).toBe(form.parentElement);
+    expect(card.nextElementSibling).toBe(form);
+  });
+
+  it("the delivered message flies from the card, not the input: its rect is armed as the lift-off before the card unmounts", () => {
+    const { mock, store } = renderComposer();
+    startCommission(mock);
+    hold("also rename the test file");
+    const card = screen.getByTestId("composer-held");
+    card.getBoundingClientRect = () =>
+      ({ left: 200, top: 600, width: 400, height: 40 }) as DOMRect;
+    act(() => {
+      mock.emitAgent({ kind: "agent", event: backendFinished });
+      mock.emitTurn({ kind: "finished", turnId: "t1" });
+    });
+    expect(mock.calls.submitText).toEqual(["also rename the test file"]);
+    // The store's side channel carries the point for the outgoing morph.
+    expect(store().takeLaunch()).toEqual({ left: 216, top: 600 });
+    // An ordinary send from the input arms nothing.
+    act(() => {
+      mock.emitTurn({ kind: "started", turnId: "t2" });
+      mock.emitTurn({ kind: "finished", turnId: "t2" });
+    });
+    const input = screen.getByPlaceholderText(
+      "Message Herta…",
+    ) as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "plain" } });
+    fireEvent.submit(input.closest("form") as HTMLFormElement);
+    expect(mock.calls.submitText).toEqual([
+      "also rename the test file",
+      "plain",
+    ]);
+    expect(store().takeLaunch()).toBeNull();
+  });
+
   it("the EN alias applies at delivery, not at the hold: @brick is held as typed and sent as @板砖", () => {
     const { mock } = renderComposer();
     act(() => {
@@ -613,7 +678,6 @@ describe("Composer — a message while 板砖 works (ADR 0063)", () => {
       "Message Herta…",
     ) as HTMLTextAreaElement;
     expect(input.disabled).toBe(true);
-    expect(screen.queryByPlaceholderText(HOLD_PLACEHOLDER)).toBeNull();
     // 板砖 starts: the window opens; a message is held; 板砖 ends while
     // Herta still speaks: the window closes but the hold stays.
     act(() => {

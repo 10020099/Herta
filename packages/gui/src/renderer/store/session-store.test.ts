@@ -40,6 +40,19 @@ describe("SessionStore — the held message (ADR 0063)", () => {
     // A message held for one session's turn never travels to another.
     expect(store.getSnapshot().held).toBeNull();
   });
+
+  it("the lift-off point is a side channel read exactly once: armed, taken, then gone", () => {
+    const store = new SessionStore();
+    expect(store.takeLaunch()).toBeNull();
+    store.armLaunch({ left: 120, top: 640 });
+    expect(store.takeLaunch()).toEqual({ left: 120, top: 640 });
+    // Consumed: a later send never inherits a stale point.
+    expect(store.takeLaunch()).toBeNull();
+    // Arming null (an ordinary send) clears whatever was left.
+    store.armLaunch({ left: 1, top: 2 });
+    store.armLaunch(null);
+    expect(store.takeLaunch()).toBeNull();
+  });
 });
 
 describe("SessionStore", () => {

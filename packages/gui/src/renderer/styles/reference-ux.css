@@ -7620,51 +7620,81 @@ button.commit-view__path:hover {
   }
 }
 /* ── The held message (ADR 0063) ─────────────────────────────────────────
-   A message sent while 板砖 works waits here, above the input, in the same
-   slot the staged pictures use: nothing in it is in the record yet. One
-   row — the text clamps to a line — with the three answers Codex gives
-   such a message: interject it into the running work now, take it back to
-   edit, or discard it. Doing nothing sends it as the next turn. */
+   A message sent while 板砖 works waits here: a card BEHIND the composer,
+   its bottom tucked under the composer's top edge (owner 2026-09-15, after
+   Codex: "another card behind the composer card, its bottom about 20%
+   hidden by it"). It is a sibling of the composer in the footer, in flow,
+   so the footer grows by the card's visible height and the record above
+   moves up instead of being covered — the first cut lived INSIDE the
+   composer, whose height is a fixed animated value, and overflowed over
+   the coprocessor rows. Nothing in it is in the record. Icon, text, and
+   the three answers Codex gives such a message: interject it into the
+   running work now, take it back to edit, or discard it. Doing nothing
+   sends it as the next turn — flying from THIS card (the outgoing morph
+   takes the card's rect as its lift-off). The composer's translucent
+   glass lets the tucked strip show through faintly, which is the point:
+   the card reads as sitting behind. */
 .composer-held {
-  order: -1;
-  flex-basis: 100%;
+  /* Positioned so the paint order is the tree order: the composer, later
+     in the footer, paints over this card's tucked bottom. No z-index above
+     the composer — ever. */
+  position: relative;
+  z-index: 0;
   display: flex;
   align-items: center;
   gap: 10px;
   min-width: 0;
-  margin: 0 0 10px;
-  padding: 7px 10px 7px 12px;
-  border-radius: 12px;
-  border: 1px solid var(--ink-a10);
-  background: var(--ink-a05);
-  position: relative;
-  z-index: 1;
+  /* The stack's geometry: a card the composer's material and radius,
+     inset 12px a side so it reads as the next card down, its bottom 14px
+     under the composer's top edge (≈ a quarter of its 60px). */
+  margin: 0 12px -14px;
+  padding: 8px 10px 22px 16px;
+  border-radius: 18px;
+  border: 1px solid var(--hairline);
+  /* The composer's glass, dimmed a step: the card behind is the same
+     material, one layer further from the light. */
+  background:
+    linear-gradient(var(--ink-a05), var(--ink-a05)),
+    var(--composer-bg);
+  /* Less lift than the composer's own shadow, which falls onto this card
+     and does the depth. */
+  box-shadow:
+    0 1px 4px rgba(32, 45, 58, 0.06),
+    inset 0 1px 0 var(--glass-a55);
   /* Its OWN entrance: the notice pill's `notice-in` ends on a
      translate(-50%, 0) for a centered absolute pill, and borrowed here it
-     parked the strip half its width to the left (seen live 2026-09-15). */
-  animation: held-in 200ms var(--ease-pop) both;
+     parked the strip half its width to the left (seen live 2026-09-15).
+     Rises out from behind the composer. */
+  animation: held-in 260ms var(--ease-pop) both;
+}
+.composer-held__icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  color: var(--muted-3);
+}
+.composer-held__icon svg {
+  width: 14px;
+  height: 14px;
 }
 @keyframes held-in {
   from {
     opacity: 0;
-    transform: translateY(6px);
+    transform: translateY(18px);
   }
   to {
     opacity: 1;
     transform: none;
   }
 }
-.composer-held__label {
-  flex: none;
-  font-size: 12px;
-  color: var(--muted-3);
-  white-space: nowrap;
-}
 .composer-held__text {
   flex: 1;
   min-width: 0;
-  font-size: 13.5px;
-  color: var(--ink);
+  font-size: 14px;
+  line-height: 28px;
+  color: var(--ink-2);
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -7674,45 +7704,72 @@ button.commit-view__path:hover {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
 }
 .composer-held__action {
-  height: 26px;
+  height: 28px;
   padding: 0 10px;
-  border-radius: 8px;
+  border-radius: 9px;
   border: 1px solid transparent;
   background: transparent;
   font: inherit;
   font-size: 12.5px;
-  color: var(--ink-2);
+  color: var(--muted-2);
   cursor: pointer;
   transition:
     background-color 140ms ease,
-    border-color 140ms ease;
+    border-color 140ms ease,
+    color 140ms ease;
 }
 .composer-held__action:hover {
   background: var(--ink-a09);
+  color: var(--ink);
 }
 .composer-held__action:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 /* The interject is the one that changes the running work: it reads as
-   the primary of the three. */
+   the primary of the three — a quiet pill, the others plain text. */
 .composer-held__action--steer {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 4px;
+  padding: 0 11px 0 9px;
   border-color: var(--ink-a14);
+  background: var(--glass-a55);
   color: var(--ink);
 }
+.composer-held__action--steer:hover {
+  border-color: var(--ink-a22);
+}
+.composer-held__action--steer svg {
+  width: 11px;
+  height: 11px;
+}
 .composer-held__action--discard {
-  width: 26px;
+  width: 28px;
   padding: 0;
   display: grid;
   place-items: center;
-  color: var(--muted-2);
 }
 .composer-held__action--discard svg {
   width: 10px;
   height: 10px;
+}
+/* An approval gate drops the composer below the footer (see
+   .composer.is-suppressed); the card behind it goes the same way, or it
+   would sit alone above the approval panel. */
+.composer-held.is-suppressed {
+  transform: translateY(120%);
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+  transition:
+    opacity 0.18s ease,
+    transform 0.24s var(--ease-pop),
+    visibility 0s linear 0.24s;
 }
 @media (prefers-reduced-motion: reduce) {
   .composer-held {

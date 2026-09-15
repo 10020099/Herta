@@ -117,6 +117,7 @@ export const Conversation = memo(function Conversation(): JSX.Element {
     overlayRef,
     flowRef,
     isReadingHistory: () => scroll.isReadingHistory(),
+    takeLaunch: () => sessionStore.takeLaunch(),
   });
   const incoming = useIncomingMorph({
     composerRef,

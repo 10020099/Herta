@@ -23,7 +23,14 @@ export function submitMessage(
    *  and rejection paths can hand them back — their staged copies survive
    *  both (only a successful submit's `commit` consumes them). */
   staged?: readonly StagedImageInfo[],
+  /** Where the outgoing clone lifts off from, in viewport pixels, when the
+   *  message did not leave the composer's input — a held message (ADR 0063)
+   *  flies from its own card. Absent: the composer's input, as ever. */
+  launch?: { readonly left: number; readonly top: number },
 ): void {
+  // Armed BEFORE the echo lands: the conversation's outgoing morph reads it
+  // on the same edge that mounts the flying clone.
+  store.armLaunch(launch ?? null);
   store.markPendingUser(text, staged);
   const ids =
     staged !== undefined && staged.length > 0

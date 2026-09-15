@@ -320,9 +320,8 @@ export const en = {
   // not an album.
   "composer.attach.imageLimit": "Five pictures at most",
   // A message while Brick works (ADR 0063): held above the composer, sent as
-  // the next turn unless interjected or taken back.
-  "composer.hold.placeholder":
-    "Brick is working — type now, it sends when done",
+  // the next turn unless interjected or taken back. The composer keeps its
+  // ordinary placeholder meanwhile (owner 2026-09-15): the card says it.
   "composer.hold.label": "Sends when Brick is done",
   "composer.hold.aria": "Message waiting to send",
   "composer.hold.steer": "Interject now",

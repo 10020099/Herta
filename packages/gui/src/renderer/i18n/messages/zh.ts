@@ -300,7 +300,6 @@ export const zh = {
   // instead of interrupting; it goes as the next turn unless the user
   // interjects it into the running work or takes it back. Only while the
   // coprocessor runs — a conversation with Herta has no such strip.
-  "composer.hold.placeholder": "板砖正在干活——先写着，做完就发",
   "composer.hold.label": "等板砖做完再发",
   "composer.hold.aria": "待发的消息",
   "composer.hold.steer": "现在插话",

@@ -123,6 +123,8 @@ export function Composer(): JSX.Element {
   // refs: the effect is keyed on the busy edge, not on either.
   const heldRef = useRef<string | null>(null);
   heldRef.current = held;
+  /** The held card's DOM node — the flying clone lifts off from its rect. */
+  const heldCardRef = useRef<HTMLElement>(null);
   const langRef = useRef(lang);
   langRef.current = lang;
 
@@ -219,11 +221,20 @@ export function Composer(): JSX.Element {
       // all apply to it exactly as to a typed send.
       const pending = heldRef.current;
       if (pending !== null) {
+        // The clone lifts off from the card, not the input: measure it
+        // BEFORE the clear unmounts it.
+        const rect = heldCardRef.current?.getBoundingClientRect();
+        const launch =
+          rect !== undefined
+            ? { left: rect.left + 16, top: rect.top }
+            : undefined;
         sessionStore.clearHeld();
         submitMessage(
           bridge,
           sessionStore,
           aliasBrickInput(pending, langRef.current),
+          undefined,
+          launch,
         );
       }
     }
@@ -433,156 +444,40 @@ export function Composer(): JSX.Element {
   };
 
   return (
-    <form
-      ref={composerRef}
-      className={`composer${shrunk ? " is-shrunk" : ""}${hasStaged ? " has-staged" : ""}${suppressed ? " is-suppressed" : ""}${dragOver ? " is-dragover" : ""}`}
-      onSubmit={(e) => {
-        e.preventDefault();
-        doSubmit();
-      }}
-      onBlur={(e) => {
-        // Height frozen while the OS picker is up — its window-focus churn
-        // is not the user leaving the composer.
-        if (pickerOpen.current) return;
-        // Focus moving BETWEEN the form's own controls (textarea → attach,
-        // attach → send) fires blur with the new holder as relatedTarget —
-        // still inside, still expanded. Only a genuine exit (relatedTarget
-        // outside the form, or null for a click on non-focusable ground /
-        // the window deactivating) shrinks.
-        if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
-        setFocusWithin(false);
-      }}
-      onPaste={(e) => {
-        // A screenshot is Ctrl+V, not a file picker (ADR 0048 §4) — clipboard
-        // bytes with no path at all, which is why staging takes bytes as a
-        // first-class input rather than only paths.
-        const files = Array.from(e.clipboardData.files).filter((f) =>
-          f.type.startsWith("image/"),
-        );
-        if (files.length === 0) return; // ordinary text paste: leave it alone
-        e.preventDefault();
-        if (busy) {
-          sessionStore.setComposerNotice(t("composer.attach.busy"));
-          return;
-        }
-        void Promise.all(
-          files.map(async (f) => ({
-            // A pasted screenshot's File carries a generic name ("image.png")
-            // or none; the fallback keeps the record row readable.
-            name: f.name.length > 0 ? f.name : `pasted-${pasteName(f.type)}`,
-            bytes: new Uint8Array(await f.arrayBuffer()),
-          })),
-        ).then((items) => images.stageBytes(items));
-      }}
-      onDragEnter={(e) => {
-        if (!e.dataTransfer.types.includes("Files")) return;
-        dragDepth.current += 1;
-        setDragOver(true);
-      }}
-      onDragOver={(e) => {
-        // Without preventDefault the browser navigates to the dropped file and
-        // the drop handler never runs — the classic silent-nothing-happens.
-        if (e.dataTransfer.types.includes("Files")) e.preventDefault();
-      }}
-      onDragLeave={() => {
-        dragDepth.current = Math.max(0, dragDepth.current - 1);
-        if (dragDepth.current === 0) setDragOver(false);
-      }}
-      onDrop={(e) => {
-        if (!e.dataTransfer.types.includes("Files")) return;
-        e.preventDefault();
-        dragDepth.current = 0;
-        setDragOver(false);
-        // Electron 43 removed File.path; only the preload can resolve a real
-        // path (webUtils), so the File objects never leave this handler.
-        const paths = Array.from(e.dataTransfer.files)
-          .map((f) => bridge.pathForFile(f))
-          .filter((p) => p.length > 0);
-        sendAttachments(paths);
-        // Same caret handoff as the picker: after a drop you type the
-        // message that goes with the files. Busy drops surface a refusal
-        // notice instead — a disabled textarea can't take the caret.
-        if (!busy) {
-          taRef.current?.focus();
-          setFocusWithin(true);
-        }
-      }}
-    >
-      {/* Herta's tide wave living at the composer's floor (glass-wave merge,
-          2026-07-05): inside the composer it tracks the composer's width when
-          sidebars change, hides with is-suppressed during approval gates, and
-          leaves the space above free for pop-ups. Decorative, behind the
-          input/send (which are positioned), clipped by its own radius. */}
-      <div className="composer-wave" aria-hidden="true">
-        <AuraVisual />
-      </div>
-      {noticeText !== null && (
-        <div
-          className={`composer-notice${noticeExiting ? " is-exiting" : ""}`}
-          role="status"
-        >
-          {noticeText}
-        </div>
-      )}
-      {/* Staged pictures (ADR 0048 §4) — above the input, where the message
-          they belong to is being written. Nothing here is in the record yet:
-          the × removes a picture as if it had never arrived, which is the
-          whole reason staging exists on an append-only record. */}
-      {images.staged.length > 0 && (
-        <ul className="composer-staged" aria-label={t("composer.staged")}>
-          {images.staged.map((img) => (
-            <li className="composer-staged__item" key={img.id}>
-              {/* Click-to-enlarge (ADR 0048 §4a): checking WHICH screenshot
-                  this is before sending is exactly when it matters — the ×
-                  is the take-back, this is the look. */}
-              <button
-                type="button"
-                className="composer-staged__open"
-                aria-label={`${t("lightbox.open")} ${img.name}`}
-                onClick={() => openLightbox(img)}
-              >
-                <img
-                  className="composer-staged__thumb"
-                  src={attachmentImageUrl(img.path)}
-                  alt={img.name}
-                  title={img.name}
-                  draggable={false}
-                />
-              </button>
-              <button
-                type="button"
-                className="composer-staged__remove"
-                aria-label={`${t("composer.staged.remove")} ${img.name}`}
-                onClick={() => images.unstage(img.id)}
-              >
-                <svg
-                  viewBox="0 0 10 10"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.6"
-                  strokeLinecap="round"
-                  aria-hidden="true"
-                >
-                  <path d="M2.5 2.5l5 5M7.5 2.5l-5 5" />
-                </svg>
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
+    <>
       {/* The held message (ADR 0063): sent while 板砖 worked, waiting to go
           as the next turn — or to be interjected into the running work, put
-          back for editing, or discarded. Nothing here is in the record. The
-          interject offer needs both the window (板砖 still running) and a
-          bridge that can steer; the other two are always there. */}
+          back for editing, or discarded. Nothing here is in the record. A
+          SIBLING of the composer, before it in the footer: a card behind the
+          composer whose bottom edge tucks under it (Codex's shape, owner
+          2026-09-15), and — because it is in flow, not inside the fixed-
+          height composer — the footer grows by its height and the record
+          above moves up instead of being covered. The interject offer needs
+          both the window (板砖 still running) and a bridge that can steer;
+          the other two are always there. The label ("sends when 板砖 is
+          done") is the card's title, not a row of its own: the placeholder
+          already said it, and the card reads as the message itself. */}
       {held !== null && (
         <section
-          className="composer-held"
+          ref={heldCardRef}
+          className={`composer-held${suppressed ? " is-suppressed" : ""}`}
           aria-label={t("composer.hold.aria")}
+          title={t("composer.hold.label")}
           data-testid="composer-held"
         >
-          <span className="composer-held__label">
-            {t("composer.hold.label")}
+          <span className="composer-held__icon" aria-hidden="true">
+            <svg
+              viewBox="0 0 14 14"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.4"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="7" cy="7" r="5.6" />
+              <path d="M7 4.2V7l1.9 1.4" />
+            </svg>
           </span>
           <span className="composer-held__text">{held}</span>
           <span className="composer-held__actions">
@@ -592,6 +487,17 @@ export function Composer(): JSX.Element {
                 className="composer-held__action composer-held__action--steer"
                 onClick={onSteer}
               >
+                <svg
+                  viewBox="0 0 11 11"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M1.5 5.5h8M6 2l3.5 3.5L6 9" />
+                </svg>
                 {t("composer.hold.steer")}
               </button>
             )}
@@ -606,6 +512,7 @@ export function Composer(): JSX.Element {
               type="button"
               className="composer-held__action composer-held__action--discard"
               aria-label={t("composer.hold.discard")}
+              title={t("composer.hold.discard")}
               onClick={() => sessionStore.clearHeld()}
             >
               <svg
@@ -622,83 +529,218 @@ export function Composer(): JSX.Element {
           </span>
         </section>
       )}
-      <div className="composer-input-wrap">
-        <div className="composer-highlight" aria-hidden="true">
-          {renderBanzhuanText(text, "composer", lang)}
-          {hintActive && (
-            <span className="composer-ghost">
-              {lang === "en" ? "brick" : "板砖"}
-            </span>
-          )}
+      <form
+        ref={composerRef}
+        className={`composer${shrunk ? " is-shrunk" : ""}${hasStaged ? " has-staged" : ""}${suppressed ? " is-suppressed" : ""}${dragOver ? " is-dragover" : ""}`}
+        onSubmit={(e) => {
+          e.preventDefault();
+          doSubmit();
+        }}
+        onBlur={(e) => {
+          // Height frozen while the OS picker is up — its window-focus churn
+          // is not the user leaving the composer.
+          if (pickerOpen.current) return;
+          // Focus moving BETWEEN the form's own controls (textarea → attach,
+          // attach → send) fires blur with the new holder as relatedTarget —
+          // still inside, still expanded. Only a genuine exit (relatedTarget
+          // outside the form, or null for a click on non-focusable ground /
+          // the window deactivating) shrinks.
+          if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+          setFocusWithin(false);
+        }}
+        onPaste={(e) => {
+          // A screenshot is Ctrl+V, not a file picker (ADR 0048 §4) — clipboard
+          // bytes with no path at all, which is why staging takes bytes as a
+          // first-class input rather than only paths.
+          const files = Array.from(e.clipboardData.files).filter((f) =>
+            f.type.startsWith("image/"),
+          );
+          if (files.length === 0) return; // ordinary text paste: leave it alone
+          e.preventDefault();
+          if (busy) {
+            sessionStore.setComposerNotice(t("composer.attach.busy"));
+            return;
+          }
+          void Promise.all(
+            files.map(async (f) => ({
+              // A pasted screenshot's File carries a generic name ("image.png")
+              // or none; the fallback keeps the record row readable.
+              name: f.name.length > 0 ? f.name : `pasted-${pasteName(f.type)}`,
+              bytes: new Uint8Array(await f.arrayBuffer()),
+            })),
+          ).then((items) => images.stageBytes(items));
+        }}
+        onDragEnter={(e) => {
+          if (!e.dataTransfer.types.includes("Files")) return;
+          dragDepth.current += 1;
+          setDragOver(true);
+        }}
+        onDragOver={(e) => {
+          // Without preventDefault the browser navigates to the dropped file and
+          // the drop handler never runs — the classic silent-nothing-happens.
+          if (e.dataTransfer.types.includes("Files")) e.preventDefault();
+        }}
+        onDragLeave={() => {
+          dragDepth.current = Math.max(0, dragDepth.current - 1);
+          if (dragDepth.current === 0) setDragOver(false);
+        }}
+        onDrop={(e) => {
+          if (!e.dataTransfer.types.includes("Files")) return;
+          e.preventDefault();
+          dragDepth.current = 0;
+          setDragOver(false);
+          // Electron 43 removed File.path; only the preload can resolve a real
+          // path (webUtils), so the File objects never leave this handler.
+          const paths = Array.from(e.dataTransfer.files)
+            .map((f) => bridge.pathForFile(f))
+            .filter((p) => p.length > 0);
+          sendAttachments(paths);
+          // Same caret handoff as the picker: after a drop you type the
+          // message that goes with the files. Busy drops surface a refusal
+          // notice instead — a disabled textarea can't take the caret.
+          if (!busy) {
+            taRef.current?.focus();
+            setFocusWithin(true);
+          }
+        }}
+      >
+        {/* Herta's tide wave living at the composer's floor (glass-wave merge,
+          2026-07-05): inside the composer it tracks the composer's width when
+          sidebars change, hides with is-suppressed during approval gates, and
+          leaves the space above free for pop-ups. Decorative, behind the
+          input/send (which are positioned), clipped by its own radius. */}
+        <div className="composer-wave" aria-hidden="true">
+          <AuraVisual />
         </div>
-        <textarea
-          ref={taRef}
-          className="composer-input"
-          placeholder={
-            holding ? t("composer.hold.placeholder") : t("composer.placeholder")
-          }
-          onFocus={() => setFocusWithin(true)}
-          value={text}
-          onChange={(e) => {
-            escDismissed.current = -1;
-            setText(e.target.value);
-            setHintActive(
-              shouldHint(e.target.value, e.target.selectionStart, -1),
-            );
-          }}
-          onSelect={(e) =>
-            setHintActive(
-              shouldHint(
-                e.currentTarget.value,
-                e.currentTarget.selectionStart,
-                escDismissed.current,
-              ),
-            )
-          }
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              // IME safety (Chinese input): Enter during composition confirms
-              // the candidate, it does NOT send. isComposing covers the spec
-              // path; keyCode 229 covers engines that fire the keydown after
-              // compositionend with isComposing already false.
-              if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-              e.preventDefault();
-              doSubmit();
-              return;
+        {noticeText !== null && (
+          <div
+            className={`composer-notice${noticeExiting ? " is-exiting" : ""}`}
+            role="status"
+          >
+            {noticeText}
+          </div>
+        )}
+        {/* Staged pictures (ADR 0048 §4) — above the input, where the message
+          they belong to is being written. Nothing here is in the record yet:
+          the × removes a picture as if it had never arrived, which is the
+          whole reason staging exists on an append-only record. */}
+        {images.staged.length > 0 && (
+          <ul className="composer-staged" aria-label={t("composer.staged")}>
+            {images.staged.map((img) => (
+              <li className="composer-staged__item" key={img.id}>
+                {/* Click-to-enlarge (ADR 0048 §4a): checking WHICH screenshot
+                  this is before sending is exactly when it matters — the ×
+                  is the take-back, this is the look. */}
+                <button
+                  type="button"
+                  className="composer-staged__open"
+                  aria-label={`${t("lightbox.open")} ${img.name}`}
+                  onClick={() => openLightbox(img)}
+                >
+                  <img
+                    className="composer-staged__thumb"
+                    src={attachmentImageUrl(img.path)}
+                    alt={img.name}
+                    title={img.name}
+                    draggable={false}
+                  />
+                </button>
+                <button
+                  type="button"
+                  className="composer-staged__remove"
+                  aria-label={`${t("composer.staged.remove")} ${img.name}`}
+                  onClick={() => images.unstage(img.id)}
+                >
+                  <svg
+                    viewBox="0 0 10 10"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                    strokeLinecap="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M2.5 2.5l5 5M7.5 2.5l-5 5" />
+                  </svg>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <div className="composer-input-wrap">
+          <div className="composer-highlight" aria-hidden="true">
+            {renderBanzhuanText(text, "composer", lang)}
+            {hintActive && (
+              <span className="composer-ghost">
+                {lang === "en" ? "brick" : "板砖"}
+              </span>
+            )}
+          </div>
+          <textarea
+            ref={taRef}
+            className="composer-input"
+            placeholder={t("composer.placeholder")}
+            onFocus={() => setFocusWithin(true)}
+            value={text}
+            onChange={(e) => {
+              escDismissed.current = -1;
+              setText(e.target.value);
+              setHintActive(
+                shouldHint(e.target.value, e.target.selectionStart, -1),
+              );
+            }}
+            onSelect={(e) =>
+              setHintActive(
+                shouldHint(
+                  e.currentTarget.value,
+                  e.currentTarget.selectionStart,
+                  escDismissed.current,
+                ),
+              )
             }
-            if (e.key === "Tab" && hintActive) {
-              e.preventDefault();
-              const caret = e.currentTarget.selectionStart ?? text.length;
-              // EN completes to "brick" (→ "@brick", translated to the wire
-              // token on submit); zh completes to the literal "板砖".
-              const insert = lang === "en" ? "brick" : "板砖";
-              const next = `${text.slice(0, caret)}${insert}${text.slice(caret)}`;
-              pendingCaret.current = caret + insert.length;
-              setText(next);
-              setHintActive(false);
-              return;
-            }
-            if (e.key === "Escape" && hintActive) {
-              e.preventDefault();
-              const caret = e.currentTarget.selectionStart ?? text.length;
-              escDismissed.current = caret - 1; // the @ index
-              setHintActive(false);
-            }
-          }}
-          onScroll={(e) => {
-            const hl = e.currentTarget
-              .previousElementSibling as HTMLElement | null;
-            if (hl) {
-              hl.scrollTop = e.currentTarget.scrollTop;
-              hl.scrollLeft = e.currentTarget.scrollLeft;
-            }
-          }}
-          rows={2}
-          aria-label={t("composer.aria")}
-          disabled={busy && !holding}
-        />
-      </div>
-      {/* ONE persistent button that morphs between SEND (↑) and STOP (■).
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                // IME safety (Chinese input): Enter during composition confirms
+                // the candidate, it does NOT send. isComposing covers the spec
+                // path; keyCode 229 covers engines that fire the keydown after
+                // compositionend with isComposing already false.
+                if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+                e.preventDefault();
+                doSubmit();
+                return;
+              }
+              if (e.key === "Tab" && hintActive) {
+                e.preventDefault();
+                const caret = e.currentTarget.selectionStart ?? text.length;
+                // EN completes to "brick" (→ "@brick", translated to the wire
+                // token on submit); zh completes to the literal "板砖".
+                const insert = lang === "en" ? "brick" : "板砖";
+                const next = `${text.slice(0, caret)}${insert}${text.slice(caret)}`;
+                pendingCaret.current = caret + insert.length;
+                setText(next);
+                setHintActive(false);
+                return;
+              }
+              if (e.key === "Escape" && hintActive) {
+                e.preventDefault();
+                const caret = e.currentTarget.selectionStart ?? text.length;
+                escDismissed.current = caret - 1; // the @ index
+                setHintActive(false);
+              }
+            }}
+            onScroll={(e) => {
+              const hl = e.currentTarget
+                .previousElementSibling as HTMLElement | null;
+              if (hl) {
+                hl.scrollTop = e.currentTarget.scrollTop;
+                hl.scrollLeft = e.currentTarget.scrollLeft;
+              }
+            }}
+            rows={2}
+            aria-label={t("composer.aria")}
+            disabled={busy && !holding}
+          />
+        </div>
+        {/* ONE persistent button that morphs between SEND (↑) and STOP (■).
           While a turn runs it is wired to bridge.interrupt — previously a
           hung turn left the composer disabled forever with no affordance at
           all. The two glyphs are stacked in the same grid cell and
@@ -707,7 +749,7 @@ export function Composer(): JSX.Element {
           swapped (user 2026-07-04). The stop square is a sized <span>, not a
           ■ text glyph — font metrics rendered the glyph tiny and
           inconsistent across fonts. */}
-      {/* Attach. Disabled during a turn for the same reason the main-process
+        {/* Attach. Disabled during a turn for the same reason the main-process
           handler refuses then: the ingest rides an out-of-turn record append.
           Showing it disabled beats letting a click produce a refusal notice.
           The hint is the app's styled Tooltip like the topbar icons — the
@@ -715,20 +757,20 @@ export function Composer(): JSX.Element {
           beige box and matches nothing (owner 2026-08-10). placement="top"
           because the composer sits at the window's bottom edge; align="end"
           because the button sits near the right one. */}
-      <Tooltip
-        label={t("composer.attach")}
-        sub={t("composer.attach.formats")}
-        placement="top"
-        align="end"
-      >
-        <button
-          type="button"
-          className="composer-attach"
-          aria-label={t("composer.attach")}
-          disabled={busy}
-          onClick={onPickAttachments}
+        <Tooltip
+          label={t("composer.attach")}
+          sub={t("composer.attach.formats")}
+          placement="top"
+          align="end"
         >
-          {/* viewBox origin nudged by the path's own ink offset (owner asked
+          <button
+            type="button"
+            className="composer-attach"
+            aria-label={t("composer.attach")}
+            disabled={busy}
+            onClick={onPickAttachments}
+          >
+            {/* viewBox origin nudged by the path's own ink offset (owner asked
               me to check this button, 2026-08-10). Measured with getBBox: the
               paperclip's ink spans y 1.70–13.96 in a 0–14 box, so its centre
               sits 0.83 units low — ~0.95px at this size — and 0.32 right. The
@@ -736,43 +778,44 @@ export function Composer(): JSX.Element {
               inside it is not, which no layout measurement can see. Shifting
               the window by that offset lands ink centre on box centre without
               touching the scale. */}
-          <svg viewBox="0.32 0.83 14 14" aria-hidden="true" focusable="false">
-            <path d="M9.5 4.2 5.3 8.4a1.6 1.6 0 0 0 2.3 2.3l4.2-4.2a3 3 0 0 0-4.2-4.2L3.2 6.6a4.3 4.3 0 0 0 6.1 6.1l3.4-3.4" />
-          </svg>
-        </button>
-      </Tooltip>
-      <button
-        ref={sendButtonRef}
-        type={busy ? "button" : "submit"}
-        className={`composer-send${busy ? " is-stop" : ""}`}
-        aria-label={busy ? t("composer.stop") : t("composer.send")}
-        disabled={!busy && text.trim().length === 0}
-        onClick={
-          busy
-            ? () => {
-                // Cut any in-flight voice ON the click, not via the turn
-                // lifecycle: the opening's interrupt-as-SKIP finishes the
-                // turn normally (`finished`, no `failed`), so useVoiceCues'
-                // failed-cut never fires and the opening clip talked through
-                // the skip (user 2026-07-13). The stop click IS the intent —
-                // silence immediately, then abort the turn.
-                stopAllVoice();
-                void bridge.interrupt();
-              }
-            : undefined
-        }
-      >
-        <span
-          className="composer-send__glyph composer-send__glyph--send"
-          aria-hidden="true"
+            <svg viewBox="0.32 0.83 14 14" aria-hidden="true" focusable="false">
+              <path d="M9.5 4.2 5.3 8.4a1.6 1.6 0 0 0 2.3 2.3l4.2-4.2a3 3 0 0 0-4.2-4.2L3.2 6.6a4.3 4.3 0 0 0 6.1 6.1l3.4-3.4" />
+            </svg>
+          </button>
+        </Tooltip>
+        <button
+          ref={sendButtonRef}
+          type={busy ? "button" : "submit"}
+          className={`composer-send${busy ? " is-stop" : ""}`}
+          aria-label={busy ? t("composer.stop") : t("composer.send")}
+          disabled={!busy && text.trim().length === 0}
+          onClick={
+            busy
+              ? () => {
+                  // Cut any in-flight voice ON the click, not via the turn
+                  // lifecycle: the opening's interrupt-as-SKIP finishes the
+                  // turn normally (`finished`, no `failed`), so useVoiceCues'
+                  // failed-cut never fires and the opening clip talked through
+                  // the skip (user 2026-07-13). The stop click IS the intent —
+                  // silence immediately, then abort the turn.
+                  stopAllVoice();
+                  void bridge.interrupt();
+                }
+              : undefined
+          }
         >
-          <SendArrowIcon />
-        </span>
-        <span
-          className="composer-send__glyph composer-send__glyph--stop"
-          aria-hidden="true"
-        />
-      </button>
-    </form>
+          <span
+            className="composer-send__glyph composer-send__glyph--send"
+            aria-hidden="true"
+          >
+            <SendArrowIcon />
+          </span>
+          <span
+            className="composer-send__glyph composer-send__glyph--stop"
+            aria-hidden="true"
+          />
+        </button>
+      </form>
+    </>
   );
 }

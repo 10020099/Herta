@@ -53,6 +53,13 @@ export function useOutgoingMorph(opts: {
    *  the predicate is read at effect time — exactly what the inline effect
    *  did through the `scroll` const declared below it. */
   readonly isReadingHistory: () => boolean;
+  /** The store's armed lift-off point, consumed on the send edge (ADR 0063:
+   *  a held message flies from its card above the composer, not from the
+   *  input). Absent or null: the composer's input, as ever. */
+  readonly takeLaunch?: () => {
+    readonly left: number;
+    readonly top: number;
+  } | null;
 }) {
   const {
     pendingUser,
@@ -62,7 +69,10 @@ export function useOutgoingMorph(opts: {
     overlayRef,
     flowRef,
     isReadingHistory,
+    takeLaunch,
   } = opts;
+  /** The lift-off point this send armed, read by the flight effect. */
+  const launchRef = useRef<{ left: number; top: number } | null>(null);
 
   // The optimistic echo's pictures as bubble views (ADR 0048 §4). No caption
   // yet — it is being computed main-side; the record row carries it. The
@@ -124,6 +134,9 @@ export function useOutgoingMorph(opts: {
       return;
     }
     if (!appeared) return;
+    // Consumed on EVERY send edge, flight or not, so a lift-off point armed
+    // for a send that ends up not flying can never launch a later one.
+    launchRef.current = takeLaunch?.() ?? null;
     // A fresh send while a previous landing hold is still fading: the stale
     // timer must not unhide the bubble this flight is about to fly for.
     if (outgoingSettleTimer.current !== null) {
@@ -192,10 +205,15 @@ export function useOutgoingMorph(opts: {
     const ws = overlay.getBoundingClientRect();
     const comp = composer.getBoundingClientRect();
     const dest = slot.getBoundingClientRect();
-    // Diagonal lift: start at the composer's left (the input), settle at the
-    // flow bubble's actual slot (right-aligned, wherever it lands in the flow).
-    const startLeft = comp.left + 20 - ws.left;
-    const startTop = comp.top - ws.top + 6;
+    // Diagonal lift: start at the composer's left (the input) — or, for a
+    // held message (ADR 0063), at its card's own spot above the composer —
+    // and settle at the flow bubble's actual slot (right-aligned, wherever
+    // it lands in the flow).
+    const launch = launchRef.current;
+    const startLeft =
+      launch !== null ? launch.left - ws.left : comp.left + 20 - ws.left;
+    const startTop =
+      launch !== null ? launch.top - ws.top : comp.top - ws.top + 6;
     const targetLeft = dest.left - ws.left;
     // `dest` is where the slot IS, and that is where the clone lands (2026-07-30).
     // It used to subtract the scroll still owed by an in-flight send glide,

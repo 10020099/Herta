@@ -441,6 +441,23 @@ export class SessionStore {
     this.emit({ ...this.snapshot, held: null });
   }
 
+  /** Where the NEXT outgoing clone lifts off from (ADR 0063: a held message
+   *  flies from its card, not from the input). A side channel, not snapshot
+   *  state: it is read exactly once, on the edge that mounts the clone, and
+   *  a send that never takes it must not leave it for a later one. */
+  private launch: { readonly left: number; readonly top: number } | null = null;
+  armLaunch(
+    launch: { readonly left: number; readonly top: number } | null,
+  ): void {
+    this.launch = launch;
+  }
+  /** The armed lift-off point, consumed. */
+  takeLaunch(): { readonly left: number; readonly top: number } | null {
+    const l = this.launch;
+    this.launch = null;
+    return l;
+  }
+
   /** Show a transient composer notice with no draft to restore — an attach
    *  refusal (ADR 0033). Distinct from `requestComposerDraft`, whose contract
    *  is "here is text to put back AND why": passing a null draft through that
