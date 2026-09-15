@@ -15,8 +15,10 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
+  type AgentEvent,
   type ApprovalOverlayState,
   defaultWorkspaceFor,
+  type EventBus,
   isAbortError,
   type LastTurnEnd,
   type ProjectCommandRuleStore,
@@ -77,6 +79,7 @@ import {
   digestModelFrom,
 } from "./session-wiring.js";
 import type { StagedImage } from "./staged-images.js";
+import { SteerChannel } from "./steer-channel.js";
 import type {
   ApprovalResult,
   AppServerConfig,
@@ -91,6 +94,7 @@ import type {
   SessionAgentEvent,
   SpeechControlEvent,
   StageImagesResult,
+  SteerTextResult,
   TitleEvent,
   TurnLifecycleEvent,
   VoiceCueEvent,
@@ -406,6 +410,18 @@ export class SessionImpl implements Session {
     readonly settled: Promise<void>;
   } | null = null;
 
+  /** The steer channel (ADR 0063): text sent while 板砖 works, drained by
+   *  the backend loop at its next head. Created in `create` BEFORE the
+   *  backend stack, whose runtime factory closes over its `drain`. */
+  private readonly steer: SteerChannel;
+  /** The shared bus — `steerText` publishes `user.steer` on it for the
+   *  bridge's drain to project and the beat policy to stage. */
+  private readonly bus: EventBus<AgentEvent>;
+  /** True between the backend's `turn.started` and its `turn.finished` /
+   *  `turn.failed` on the bus — the window in which a steer has a sampling
+   *  boundary to reach. Tracked from the bus, cleared with the turn. */
+  private backendRunning = false;
+
   /** The session title and its topic history — generation after a user
    *  turn, the rewind fence, the sidecar (session-titler.ts). */
   private readonly titler: SessionTitler;
@@ -466,7 +482,11 @@ export class SessionImpl implements Session {
     lastTurnEnd?: LastTurnEnd;
     pendingContractNote: string | null;
     captionImage: ImageCaptioner | null;
+    steer: SteerChannel;
+    bus: EventBus<AgentEvent>;
   }) {
+    this.steer = opts.steer;
+    this.bus = opts.bus;
     this.lastTurnEnd = opts.lastTurnEnd;
     this.sessionId = opts.sessionId;
     this.workspaceRoot = opts.workspaceRoot;
@@ -611,6 +631,11 @@ export class SessionImpl implements Session {
       // A turn may have committed, pushed or dirtied the tree: the
       // repository card learns at the turn's end (ADR 0058).
       void this.refreshRepo();
+      // A steer the loop never drained again (an interrupt, a provider
+      // failure between two heads) must not leak into the next dispatch as
+      // a message from nowhere (ADR 0063).
+      this.steer.clear();
+      this.backendRunning = false;
       // Clear the per-turn state only if this turn still owns it. (A second
       // entry replacing `currentTurn` mid-turn is what the callers' gates
       // forbid; the check keeps a wrong release impossible regardless.)
@@ -906,6 +931,35 @@ export class SessionImpl implements Session {
       new DOMException("Interrupted by session.interrupt()", "AbortError"),
     );
     return { ok: true };
+  }
+
+  /**
+   * A message while 板砖 works (ADR 0063). Accepted only while the backend
+   * loop is running — the one phase with a sampling boundary to deliver
+   * to. Acceptance is two things in one order: the channel holds the text
+   * for the loop's next head, and the bus carries `user.steer`, which the
+   * bridge projects into the shared record as a user block (Herta sees it,
+   * D7) and stages as a beat. Anything else — idle, Herta's own speech,
+   * the commentary after the run — answers `queued`, records nothing, and
+   * leaves the caller holding the text for the next turn.
+   */
+  async steerText(text: string): Promise<SteerTextResult> {
+    const trimmed = text.trim();
+    if (
+      trimmed.length === 0 ||
+      this.currentTurn === null ||
+      !this.backendRunning
+    ) {
+      return { queued: true };
+    }
+    this.steer.push(trimmed);
+    this.bus.publish({
+      type: "user.steer",
+      layer: "actor",
+      id: randomUUID(),
+      text: trimmed,
+    });
+    return { accepted: this.currentTurn.turnId };
   }
 
   /**
@@ -1502,10 +1556,14 @@ export class SessionImpl implements Session {
     //    returns the SessionImpl to the caller.
     const sessionHolder: { session: SessionImpl | null } = { session: null };
     let overlayResolver: OverlayAskResolver | undefined;
+    // The steer channel (ADR 0063) exists before the stack: the runtime
+    // factory closes over its `drain`, and every dispatch reads it.
+    const steer = new SteerChannel();
     const backend = createBackendStack({
       wsHolder,
       workspaceRoot,
       lang,
+      pendingUserInput: () => steer.drain(),
       // The contract the setting asks for (ADR 0040). `minimal` needs a bash
       // on this machine; without one the session runs `standard`. The
       // Settings row shows the detection result (the GUI's getBackendContract
@@ -1574,6 +1632,16 @@ export class SessionImpl implements Session {
     //     mapped from bus turn.* events — that path would double-emit (backend
     //     loop publishes turn.* on the bus and submitText also emits lifecycle).
     const projector = new SessionEventProjector({ bus, queueCapacity: 1000 });
+    // The backend phase (ADR 0063): a steer has a boundary to reach only
+    // between the backend's turn.started and its end. Read off the bus the
+    // same way the renderer reads it; the turn's `finally` clears it too.
+    bus.onAny((ev) => {
+      const s = sessionHolder.session;
+      if (s === null || ev.layer !== "backend") return;
+      if (ev.type === "turn.started") s.backendRunning = true;
+      else if (ev.type === "turn.finished" || ev.type === "turn.failed")
+        s.backendRunning = false;
+    });
 
     // 2. Actor stack (shared wiring): providers, static prefix (+ reopen
     //    own-dream filter), opening seed, meta-think/hints/supervisor toggle,
@@ -1755,6 +1823,8 @@ export class SessionImpl implements Session {
     sink.seedEmittedCount(seedRecord.length, seedRecord);
 
     const session = new SessionImpl({
+      steer,
+      bus,
       sessionId,
       workspaceRoot,
       wsHolder,

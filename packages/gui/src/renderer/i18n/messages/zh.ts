@@ -296,6 +296,16 @@ export const zh = {
   // The per-message picture cap (owner 2026-08-27): a message is a moment,
   // not an album.
   "composer.attach.imageLimit": "最多五张图",
+  // A message while 板砖 works (ADR 0063): Enter holds it above the composer
+  // instead of interrupting; it goes as the next turn unless the user
+  // interjects it into the running work or takes it back. Only while the
+  // coprocessor runs — a conversation with Herta has no such strip.
+  "composer.hold.placeholder": "板砖正在干活——先写着，做完就发",
+  "composer.hold.label": "等板砖做完再发",
+  "composer.hold.aria": "待发的消息",
+  "composer.hold.steer": "现在插话",
+  "composer.hold.edit": "改一下",
+  "composer.hold.discard": "撤回",
   // Click-to-enlarge lightbox (ADR 0048 §4a). `lightbox.open` prefixes the
   // thumb button's aria-label, followed by the filename.
   "lightbox.open": "查看图片",

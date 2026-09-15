@@ -119,6 +119,18 @@ export interface BackendTurnHandle {
   /** The repo snapshot taken at brief start (ADR 0049 §2). Threaded into the
    *  frame's repo-snapshot section; absent → section omitted. */
   repoContext?: RepoContextSnapshot;
+  /**
+   * Messages the user sent while this brief was running (ADR 0063 — a
+   * steer). Called at the top of EVERY iteration, before the frame is
+   * built, and expected to hand back what arrived since the last call
+   * (draining it). Each text is appended to the transcript as a user
+   * message, so the model's next inference sees it as the newest user
+   * text and every later iteration keeps it. Never called mid-batch: the
+   * loop head is the one boundary where a fresh user message can enter
+   * without racing a tool result or an open permission ask. Absent (the
+   * CLI, tests): nothing is drained.
+   */
+  takePendingUserInput?: () => readonly string[];
 }
 
 /** What the permission gate answers for one call. */
@@ -307,6 +319,17 @@ export async function* runBackendTurnLoop(
         return;
       }
       iterations += 1;
+
+      // A steer (ADR 0063): user text that arrived while the previous
+      // iteration ran enters the transcript HERE — after the last tool
+      // results landed and before this iteration's frame is built — so the
+      // model reads it as the newest user message. The durable transcript
+      // keeps it; the budget fit below only ever trims tool payloads and
+      // whole old groups, never the newest user text.
+      const steered = handle.takePendingUserInput?.() ?? [];
+      for (const text of steered) {
+        deps.transcript.appendUser(text, deps.clock());
+      }
 
       // Per-iteration todo reminder (ADR 0025 §2): recomputed each call so
       // the model always sees the list it last wrote; appended by the

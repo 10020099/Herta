@@ -12,6 +12,36 @@ function backendDeltaEvent(text: string): AgentEvent {
   return { type: "assistant.delta", layer: "backend", text } as AgentEvent;
 }
 
+describe("SessionStore — the held message (ADR 0063)", () => {
+  it("holds one message; a second send joins it as a paragraph; clear and a new activation drop it", () => {
+    const mock = createMockHertaBridge();
+    const store = new SessionStore();
+    store.connect(mock.bridge);
+    expect(store.getSnapshot().held).toBeNull();
+    store.holdMessage("also rename the test file");
+    expect(store.getSnapshot().held).toBe("also rename the test file");
+    store.holdMessage("and bump the version");
+    expect(store.getSnapshot().held).toBe(
+      "also rename the test file\n\nand bump the version",
+    );
+    store.clearHeld();
+    expect(store.getSnapshot().held).toBeNull();
+    // Idempotent: clearing nothing emits nothing new.
+    store.clearHeld();
+    store.holdMessage("x");
+    mock.emitReset({
+      sessionId: "s2",
+      workspaceRoot: "/r",
+      record: [],
+      overlay: null,
+      backendWorkspace: "/r",
+      backendWorkspaceIsDefault: true,
+    });
+    // A message held for one session's turn never travels to another.
+    expect(store.getSnapshot().held).toBeNull();
+  });
+});
+
 describe("SessionStore", () => {
   it("starts idle/empty", () => {
     const mock = createMockHertaBridge();

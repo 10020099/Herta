@@ -113,4 +113,13 @@ export type AgentEvent =
   // only, never enters the durable TerminalRecord. Lets the renderer explain
   // a long reveal-hold (the paced stream parks its tail while the verdict is
   // pending) instead of showing a frozen cursor.
-  | { type: "supervisor.check"; layer: EventLayer; phase: "start" | "end" };
+  | { type: "supervisor.check"; layer: EventLayer; phase: "start" | "end" }
+  // A message the user sent WHILE the backend was working, accepted as a
+  // steer (ADR 0063): the session publishes it (layer "actor" — it is the
+  // user speaking, not backend plumbing) the moment it accepts the text.
+  // The bridge projects it into the shared record as a user block and
+  // stages a beat; the backend loop takes the text at its next sampling
+  // boundary through `BackendTurnHandle.takePendingUserInput`. `id` is the
+  // beat's dedup signature; `text` is the raw user text (escaped for the
+  // prompt by the serializer like every other user block).
+  | { type: "user.steer"; layer: EventLayer; id: string; text: string };

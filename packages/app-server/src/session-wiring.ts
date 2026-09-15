@@ -253,6 +253,9 @@ export interface BackendStackOpts {
     readonly cache: SessionApprovalCache;
     readonly rules: ProjectCommandRuleStore;
   }) => AskResolver;
+  /** The steer source (ADR 0063) every dispatch's runtime drains at its
+   *  loop head — the session's `SteerChannel`. Absent (the CLI): no steer. */
+  readonly pendingUserInput?: () => readonly string[];
 }
 
 export interface BackendStack {
@@ -383,6 +386,11 @@ export function createBackendStack(opts: BackendStackOpts): BackendStack {
       // brief start beside the baseline, so the backend stops spending tool
       // calls rediscovering branch/state the harness already held.
       repoContext: (signal) => describeRepoContext(wsHolder.current, signal),
+      // The steer source (ADR 0063): one channel per session, read by every
+      // dispatch's loop at the top of each iteration.
+      ...(opts.pendingUserInput !== undefined
+        ? { pendingUserInput: opts.pendingUserInput }
+        : {}),
     });
 
   return {

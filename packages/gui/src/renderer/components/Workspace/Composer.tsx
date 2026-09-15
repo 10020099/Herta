@@ -58,6 +58,8 @@ export function Composer(): JSX.Element {
     composerDraft,
     composerDraftImages,
     composerNotice,
+    backendActive,
+    held,
   } = useSessionSelector(
     (s) => ({
       status: s.status,
@@ -66,6 +68,8 @@ export function Composer(): JSX.Element {
       composerDraft: s.composerDraft,
       composerDraftImages: s.composerDraftImages,
       composerNotice: s.composerNotice,
+      backendActive: s.backendActive,
+      held: s.held,
     }),
     shallowEqualObjects,
   );
@@ -105,6 +109,22 @@ export function Composer(): JSX.Element {
   const pendingCaret = useRef<number | null>(null);
   const busy = status !== "idle";
   const suppressed = overlay?.kind === "pending-permission";
+  // A message while 板砖 works (ADR 0063). The hold exists ONLY while the
+  // coprocessor runs — the one phase with a sampling boundary a steer can
+  // reach (owner 2026-09-14: a conversation with Herta has no such
+  // mechanism). Then the textarea stays enabled, Enter holds the text above
+  // the composer instead of interrupting, and the button stays Stop. The
+  // held text goes as the next turn when this one ends, unless the user
+  // interjects it (`steerText`) or takes it back. Herta's own speech keeps
+  // the composer as it was: disabled, with Stop.
+  const holding = busy && backendActive && !suppressed;
+  const canSteer = holding && bridge.steerText !== undefined;
+  // The turn-end delivery reads the latest held text and language from
+  // refs: the effect is keyed on the busy edge, not on either.
+  const heldRef = useRef<string | null>(null);
+  heldRef.current = held;
+  const langRef = useRef(lang);
+  langRef.current = lang;
 
   // Staged pictures (ADR 0048 §4). Refusals go through the same notice lane
   // every other composer refusal uses.
@@ -129,7 +149,18 @@ export function Composer(): JSX.Element {
 
   // Shared submit path for the ↑ button (form submit) and Enter-to-send.
   const doSubmit = (): void => {
-    if (busy) return;
+    if (busy) {
+      // While 板砖 works the words are HELD, not sent (ADR 0063). Raw text:
+      // the @brick alias is applied when the hold is delivered or steered,
+      // so an edit puts back exactly what was typed.
+      if (!holding) return;
+      const pending = text.trim();
+      if (pending.length === 0) return;
+      sessionStore.holdMessage(pending);
+      setText("");
+      setHintActive(false);
+      return;
+    }
     const trimmed = text.trim();
     if (trimmed.length === 0) {
       // Pictures need words (owner 2026-08-27, reversing the first cut): an
@@ -181,6 +212,21 @@ export function Composer(): JSX.Element {
       // the whole reply, which is the reading-room the shrink exists for.
       setFocusWithin(false);
     }
+    if (was && !busy) {
+      // The held message goes as the next turn the moment this one ends
+      // (ADR 0063 — Codex's "do nothing"): through the ordinary submit path,
+      // so the optimistic echo, the no-key card and the withdraw-on-refusal
+      // all apply to it exactly as to a typed send.
+      const pending = heldRef.current;
+      if (pending !== null) {
+        sessionStore.clearHeld();
+        submitMessage(
+          bridge,
+          sessionStore,
+          aliasBrickInput(pending, langRef.current),
+        );
+      }
+    }
     if (was && !busy && !suppressed) {
       taRef.current?.focus();
       // "Caret back, ready to type" includes the height: expand directly
@@ -189,7 +235,41 @@ export function Composer(): JSX.Element {
       // fails to take should still leave the composer ready).
       setFocusWithin(true);
     }
-  }, [busy, suppressed]);
+  }, [busy, suppressed, bridge, sessionStore]);
+
+  // The hold window closing while the turn goes on (板砖 done, Herta
+  // speaking) disables the textarea again — silently, like the turn start
+  // above — so the engaged height must let go here too.
+  const prevHolding = useRef(false);
+  useEffect(() => {
+    const was = prevHolding.current;
+    prevHolding.current = holding;
+    if (was && !holding && busy) setFocusWithin(false);
+  }, [holding, busy]);
+
+  // The held strip's three answers (ADR 0063).
+  const onSteer = (): void => {
+    const pending = held;
+    const steer = bridge.steerText;
+    if (pending === null || steer === undefined) return;
+    steer(aliasBrickInput(pending, lang)).then(
+      (r) => {
+        // Accepted: it is in the record now, on its way to 板砖. Queued (the
+        // run ended between the click and the call): it stays held and goes
+        // as the next turn.
+        if ("accepted" in r) sessionStore.clearHeld();
+      },
+      () => undefined,
+    );
+  };
+  const onEditHeld = (): void => {
+    const pending = held;
+    if (pending === null) return;
+    sessionStore.clearHeld();
+    setText((prev) => (prev.length > 0 ? `${pending}\n\n${prev}` : pending));
+    taRef.current?.focus();
+    setFocusWithin(true);
+  };
 
   // The rewind file-edit notice is animated in AND out. composerNotice (store) is
   // the source; `noticeText` is the locally-held copy that stays mounted through
@@ -490,6 +570,58 @@ export function Composer(): JSX.Element {
           ))}
         </ul>
       )}
+      {/* The held message (ADR 0063): sent while 板砖 worked, waiting to go
+          as the next turn — or to be interjected into the running work, put
+          back for editing, or discarded. Nothing here is in the record. The
+          interject offer needs both the window (板砖 still running) and a
+          bridge that can steer; the other two are always there. */}
+      {held !== null && (
+        <section
+          className="composer-held"
+          aria-label={t("composer.hold.aria")}
+          data-testid="composer-held"
+        >
+          <span className="composer-held__label">
+            {t("composer.hold.label")}
+          </span>
+          <span className="composer-held__text">{held}</span>
+          <span className="composer-held__actions">
+            {canSteer && (
+              <button
+                type="button"
+                className="composer-held__action composer-held__action--steer"
+                onClick={onSteer}
+              >
+                {t("composer.hold.steer")}
+              </button>
+            )}
+            <button
+              type="button"
+              className="composer-held__action"
+              onClick={onEditHeld}
+            >
+              {t("composer.hold.edit")}
+            </button>
+            <button
+              type="button"
+              className="composer-held__action composer-held__action--discard"
+              aria-label={t("composer.hold.discard")}
+              onClick={() => sessionStore.clearHeld()}
+            >
+              <svg
+                viewBox="0 0 10 10"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+                aria-hidden="true"
+              >
+                <path d="M2.5 2.5l5 5M7.5 2.5l-5 5" />
+              </svg>
+            </button>
+          </span>
+        </section>
+      )}
       <div className="composer-input-wrap">
         <div className="composer-highlight" aria-hidden="true">
           {renderBanzhuanText(text, "composer", lang)}
@@ -502,7 +634,9 @@ export function Composer(): JSX.Element {
         <textarea
           ref={taRef}
           className="composer-input"
-          placeholder={t("composer.placeholder")}
+          placeholder={
+            holding ? t("composer.hold.placeholder") : t("composer.placeholder")
+          }
           onFocus={() => setFocusWithin(true)}
           value={text}
           onChange={(e) => {
@@ -561,7 +695,7 @@ export function Composer(): JSX.Element {
           }}
           rows={2}
           aria-label={t("composer.aria")}
-          disabled={busy}
+          disabled={busy && !holding}
         />
       </div>
       {/* ONE persistent button that morphs between SEND (↑) and STOP (■).

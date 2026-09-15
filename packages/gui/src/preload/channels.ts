@@ -1,6 +1,7 @@
 export const CMD = {
   submitText: "session:submitText",
   interrupt: "session:interrupt",
+  steerText: "session:steerText",
   rewindLastTurn: "session:rewindLastTurn",
   maybePlayEasterEgg: "session:maybePlayEasterEgg",
   list: "session:list",

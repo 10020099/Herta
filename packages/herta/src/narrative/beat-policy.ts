@@ -92,6 +92,11 @@ export function workflowKindForBeat(tool: string): string | null {
  * just doesn't narrate them individually.
  */
 export function classifyBeatTrigger(event: AgentEvent): TriggerSpec | null {
+  // A steer (ADR 0063) is the user speaking to Herta mid-commission — the
+  // one actor-layer event that earns a beat: one short acknowledgment in
+  // her voice (owner 2026-09-14: silence until her next commentary reads as
+  // being ignored). The id is the signature, so one steer fires once.
+  if (event.type === "user.steer") return { signature: `steer:${event.id}` };
   if (event.layer !== "backend") return null;
 
   switch (event.type) {

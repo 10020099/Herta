@@ -82,6 +82,74 @@ describe("runBackendTurnLoop", () => {
     expect(types).not.toContain("turn.failed");
   });
 
+  it("a steer taken at the loop head lands in the NEXT iteration's frame as the newest user message, never in the one already running (ADR 0063)", async () => {
+    const tools = new InMemoryToolRegistry();
+    tools.register({
+      name: "read_file",
+      schema: () => ({
+        name: "read_file",
+        description: "read",
+        inputSchema: { type: "object", properties: {} },
+      }),
+      run: async () => ({ ok: true, data: { content: "x" }, summary: "read" }),
+    });
+    const frames: ProviderPromptFrame[] = [];
+    // Two iterations: the first asks for a tool, the second stops. The
+    // steer arrives WHILE the first inference is being answered — after the
+    // loop head drained nothing — so it must be absent from frame 1 and
+    // present in frame 2, after the tool result.
+    const pending: string[] = [];
+    const provider = new FakeProvider({
+      turns: [
+        (frame) => {
+          frames.push(frame);
+          pending.push("also rename the test file");
+          return [
+            {
+              type: "tool-call-request",
+              call: { id: "c1", tool: "read_file", input: { path: "a.ts" } },
+            },
+            { type: "finish", reason: "tool_calls" },
+          ];
+        },
+        (frame) => {
+          frames.push(frame);
+          return [{ type: "finish", reason: "stop" }];
+        },
+      ],
+    });
+    const deps = {
+      ...buildDeps(provider),
+      tools,
+      backendBuilder: new BackendContextBuilder({ tools }),
+    };
+    let drains = 0;
+    for await (const _ of runBackendTurnLoop(deps, sampleBrief, {
+      signal: new AbortController().signal,
+      userMessages: sampleUserMessages,
+      takePendingUserInput: () => {
+        drains += 1;
+        return pending.splice(0);
+      },
+    })) {
+      // drain
+    }
+    // Drained at the head of BOTH iterations, and only there.
+    expect(drains).toBe(2);
+    expect(JSON.stringify(frames[0])).not.toContain(
+      "also rename the test file",
+    );
+    expect(JSON.stringify(frames[1])).toContain("also rename the test file");
+    // The transcript keeps it as a user message AFTER the tool result, so
+    // every later iteration sees it in place.
+    const roles = deps.transcript.all().map((m) => m.role);
+    expect(roles.indexOf("user")).toBeGreaterThan(roles.indexOf("tool"));
+    const user = deps.transcript.all().find((m) => m.role === "user");
+    expect(user?.role === "user" ? user.text : "").toBe(
+      "also rename the test file",
+    );
+  });
+
   it("does NOT append the brief's userRequestQuoted to the transcript", async () => {
     const provider = new FakeProvider({
       turns: [[{ type: "finish", reason: "stop" }]],

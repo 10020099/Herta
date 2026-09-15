@@ -17,6 +17,7 @@ import type {
   SessionMetadata,
   SessionSearchHit,
   SessionTopic,
+  SteerTextResult,
   SubmitTextResult,
   TerminalRecord,
   TitleEvent,
@@ -444,6 +445,12 @@ export interface HertaBridge {
     stagedImageIds?: readonly string[],
   ): Promise<SubmitTextResult>;
   interrupt(turnId?: string): Promise<{ readonly ok: boolean }>;
+  /** A message while 板砖 works (ADR 0063): `accepted` means the text is in
+   *  the record and reaches the coprocessor at its next step; `queued` means
+   *  there was no step to reach and the composer keeps holding the text for
+   *  the next turn. OPTIONAL — fakes and the website demo omit it, and the
+   *  held strip then offers no steer. */
+  steerText?(text: string): Promise<SteerTextResult>;
   /** Withdraw the latest 开拓者 turn (record-only, idle-only). Resolves with the
    *  withdrawn user text to restore into the composer, or a failure reason.
    *  `sessionId` binds the destructive call to the session the user clicked in:

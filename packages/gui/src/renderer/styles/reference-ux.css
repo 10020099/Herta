@@ -7619,6 +7619,107 @@ button.commit-view__path:hover {
     height: 170px;
   }
 }
+/* ── The held message (ADR 0063) ─────────────────────────────────────────
+   A message sent while 板砖 works waits here, above the input, in the same
+   slot the staged pictures use: nothing in it is in the record yet. One
+   row — the text clamps to a line — with the three answers Codex gives
+   such a message: interject it into the running work now, take it back to
+   edit, or discard it. Doing nothing sends it as the next turn. */
+.composer-held {
+  order: -1;
+  flex-basis: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  margin: 0 0 10px;
+  padding: 7px 10px 7px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--ink-a10);
+  background: var(--ink-a05);
+  position: relative;
+  z-index: 1;
+  /* Its OWN entrance: the notice pill's `notice-in` ends on a
+     translate(-50%, 0) for a centered absolute pill, and borrowed here it
+     parked the strip half its width to the left (seen live 2026-09-15). */
+  animation: held-in 200ms var(--ease-pop) both;
+}
+@keyframes held-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.composer-held__label {
+  flex: none;
+  font-size: 12px;
+  color: var(--muted-3);
+  white-space: nowrap;
+}
+.composer-held__text {
+  flex: 1;
+  min-width: 0;
+  font-size: 13.5px;
+  color: var(--ink);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  user-select: text;
+}
+.composer-held__actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.composer-held__action {
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--ink-2);
+  cursor: pointer;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease;
+}
+.composer-held__action:hover {
+  background: var(--ink-a09);
+}
+.composer-held__action:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+/* The interject is the one that changes the running work: it reads as
+   the primary of the three. */
+.composer-held__action--steer {
+  border-color: var(--ink-a14);
+  color: var(--ink);
+}
+.composer-held__action--discard {
+  width: 26px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  color: var(--muted-2);
+}
+.composer-held__action--discard svg {
+  width: 10px;
+  height: 10px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .composer-held {
+    animation: none;
+  }
+}
+
 .composer-staged {
   order: -1; /* before the attach button, whatever the DOM order */
   flex-basis: 100%;

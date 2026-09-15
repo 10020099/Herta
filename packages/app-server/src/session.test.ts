@@ -2080,6 +2080,161 @@ describe("contract-fallback record note (ADR 0044)", () => {
 
 // ── The repository card's stream (ADR 0058) ──────────────────────────────────
 
+describe("Session — steerText, a message while 板砖 works (ADR 0063)", () => {
+  it("answers `queued` when idle and during Herta's own turn, recording nothing", async () => {
+    const cfg = mkConfig();
+    const { session, cleanup } = await mkStubSession(cfg);
+    expect(await session.steerText("later")).toEqual({ queued: true });
+    const turn = session.submitText("hi");
+    // A turn with no backend has no boundary to reach: queued, nothing
+    // enters the record.
+    expect(await session.steerText("also")).toEqual({ queued: true });
+    await turn;
+    expect(
+      session.record.some((b) => b.kind === "user" && b.text === "also"),
+    ).toBe(false);
+    expect(await session.steerText("   ")).toEqual({ queued: true });
+    await cleanup();
+  }, 15_000);
+
+  it("while 板砖 runs: accepted, the user block enters the shared record between the dispatch and the done-marker, Herta answers it with a beat, and 板砖's next inference frame carries it", async () => {
+    const cfg = mkConfig();
+    const { V2RecordPersister } = await import("@herta/core");
+    const { randomUUID } = await import("node:crypto");
+    const sessionId = randomUUID();
+    const persister = V2RecordPersister.forNewSession({
+      sessionId,
+      workspaceRoot: cfg.workspaceRoot,
+      startedAt: new Date(),
+      transcriptDir: cfg.transcriptDir,
+    });
+    // Actor: the dispatch, the beat the steer earns, the closing speech.
+    const actorStub = stubCompletionProvider([
+      { deltas: ["@板砖 看看 nope.txt。（/我 说）"], stopReason: "stop" },
+      { deltas: ["收到，改名一起做。（/我 说）"], stopReason: "stop" },
+      { deltas: ["行，都弄完了。（/我 说）"], stopReason: "stop" },
+    ]);
+    // Backend: the FIRST inference waits on a gate (the steer lands while it
+    // runs), then asks for a tool so the loop comes round to a second head;
+    // the second inference stops. Every frame is kept for inspection.
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    // Resolves once the FIRST inference is in flight — the steer must land
+    // while it runs, not before (a steer that arrives between the backend's
+    // turn.started and its first loop head is rightly read by that head).
+    let firstCallStarted: () => void = () => {};
+    const firstCall = new Promise<void>((r) => {
+      firstCallStarted = r;
+    });
+    const frames: unknown[] = [];
+    type Adapter = import("@herta/core").ProviderAdapter;
+    type Ev = import("@herta/core").ProviderEvent;
+    const backendStub: Adapter = {
+      streamChat(frame) {
+        // A snapshot, not the reference: the frame's message list is the
+        // transcript's live array, which the steer appends to later.
+        frames.push(JSON.parse(JSON.stringify(frame)));
+        const n = frames.length;
+        return (async function* () {
+          if (n === 1) {
+            firstCallStarted();
+            await gate;
+            yield {
+              type: "tool-call-request",
+              call: {
+                id: "c1",
+                tool: "read_file",
+                input: { path: "nope.txt" },
+              },
+            } as Ev;
+            yield { type: "finish", reason: "tool_calls" } as Ev;
+          } else {
+            yield { type: "finish", reason: "stop" } as Ev;
+          }
+        })();
+      },
+    };
+    const stubRouter = stubChatProvider([
+      {
+        events: [
+          { type: "text-delta", text: "默认" },
+          { type: "finish", reason: "stop" },
+        ],
+      },
+    ]);
+    const session = await SessionImpl.create({
+      sessionId,
+      workspaceRoot: cfg.workspaceRoot,
+      effectiveWorkspace: cfg.workspaceRoot,
+      isDefaultWorkspace: false,
+      config: cfg,
+      persister,
+      deps: {
+        providerOverrides: {
+          actor: actorStub,
+          backend: backendStub,
+          router: stubRouter,
+          title: stubChatProvider([]),
+        },
+        staticPrefixOverride: { bio: "[test-bio]", env: "", fewShots: [] },
+        metaThinkOverride: emptyMetaThinkCorpus(),
+        supervisorReferenceOverride: "",
+        openingOverride: null,
+      },
+    });
+
+    const turn = session.submitText("看看 nope.txt");
+    await firstCall;
+    const answer = await session.steerText("也把测试文件改名");
+    expect("accepted" in answer).toBe(true);
+    release();
+    await turn;
+
+    // 板砖: absent from the inference that was running, present in the next.
+    expect(frames).toHaveLength(2);
+    expect(JSON.stringify(frames[0])).not.toContain("也把测试文件改名");
+    expect(JSON.stringify(frames[1])).toContain("也把测试文件改名");
+
+    // The record: the steer is a user block after Herta's dispatch and
+    // before the done-marker; Herta's beat answers it in between.
+    const record = session.record;
+    const idx = (pred: (b: (typeof record)[number]) => boolean): number =>
+      record.findIndex(pred);
+    const dispatchIdx = idx(
+      (b) => b.kind === "herta" && b.text.includes("@板砖"),
+    );
+    const steerIdx = idx(
+      (b) => b.kind === "user" && b.text === "也把测试文件改名",
+    );
+    const beatIdx = idx((b) => b.kind === "herta" && b.text.includes("收到"));
+    let markerIdx = -1;
+    for (let i = record.length - 1; i >= 0; i -= 1) {
+      const b = record[i];
+      if (
+        b !== undefined &&
+        b.kind === "system" &&
+        b.label === "差分协处理器" &&
+        (b as { role?: string }).role === "done-marker"
+      ) {
+        markerIdx = i;
+        break;
+      }
+    }
+    expect(dispatchIdx).toBeGreaterThan(0);
+    expect(steerIdx).toBeGreaterThan(dispatchIdx);
+    expect(markerIdx).toBeGreaterThan(steerIdx);
+    expect(beatIdx).toBeGreaterThan(steerIdx);
+    expect(beatIdx).toBeLessThan(markerIdx);
+    // The steer never doubles as a new turn: one user block for it.
+    expect(
+      record.filter((b) => b.kind === "user" && b.text === "也把测试文件改名"),
+    ).toHaveLength(1);
+    await session.close();
+  }, 20_000);
+});
+
 describe("Session — the repository probe behind the rail's card (ADR 0058)", () => {
   const sample: RepoContextSnapshot = {
     root: "/repo",

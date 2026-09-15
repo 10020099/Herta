@@ -152,6 +152,12 @@ export interface SessionSnapshotView {
    *  GC'd, so there is nothing left to restage. Rides `composerDraft`'s
    *  lifecycle via the emit guard. */
   readonly composerDraftImages: readonly StagedImageInfo[] | null;
+  /** A message sent while 板砖 works (ADR 0063), waiting above the composer:
+   *  sent as the next turn the moment this one ends, unless the user
+   *  interjects it into the running work (`steerText`) or takes it back.
+   *  A composer-side draft with a delivery trigger — never in the record,
+   *  and gone with the activation like any other draft. */
+  readonly held: string | null;
   /** One-shot transient notice shown by the composer — e.g. the rewind warning
    *  that 板砖's file edits were NOT reverted. Cleared on the next keystroke. */
   readonly composerNotice: string | null;
@@ -226,6 +232,7 @@ const INITIAL: SessionSnapshotView = {
   repo: null,
   composerDraft: null,
   composerDraftImages: null,
+  held: null,
   composerNotice: null,
   needsKeyText: null,
   needsKeyImages: null,
@@ -414,6 +421,24 @@ export class SessionStore {
   clearComposerDraft(): void {
     if (this.snapshot.composerDraft === null) return;
     this.emit({ ...this.snapshot, composerDraft: null });
+  }
+
+  /** Hold a message sent while 板砖 works (ADR 0063). ONE held message at a
+   *  time (owner 2026-09-14): a second send while one waits joins it as a
+   *  new paragraph rather than replacing it — nothing typed is lost, and
+   *  the strip's edit takes the whole back into the composer. */
+  holdMessage(text: string): void {
+    const prev = this.snapshot.held;
+    this.emit({
+      ...this.snapshot,
+      held: prev === null ? text : `${prev}\n\n${text}`,
+    });
+  }
+
+  /** Drop the held message (discarded, edited back, steered, or sent). */
+  clearHeld(): void {
+    if (this.snapshot.held === null) return;
+    this.emit({ ...this.snapshot, held: null });
   }
 
   /** Show a transient composer notice with no draft to restore — an attach
@@ -621,9 +646,11 @@ export class SessionStore {
       backendWorkspace: e.backendWorkspace ?? null,
       backendWorkspaceIsDefault: e.backendWorkspaceIsDefault ?? false,
       repo: e.repo ?? null,
-      // A fresh activation starts the composer empty (no stale rewind draft).
+      // A fresh activation starts the composer empty (no stale rewind draft,
+      // no message held for a turn that belonged to another session).
       composerDraft: null,
       composerDraftImages: null,
+      held: null,
       composerNotice: null,
       needsKeyText: null,
       needsKeyImages: null,

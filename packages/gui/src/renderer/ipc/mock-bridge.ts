@@ -10,6 +10,7 @@ import type {
   SessionDeletedEvent,
   SessionMetadata,
   SessionSearchHit,
+  SteerTextResult,
   SubmitTextResult,
   TerminalRecord,
   TitleEvent,
@@ -44,6 +45,8 @@ import type {
 export interface MockHertaBridgeOpts {
   readonly submitTextResult?: SubmitTextResult;
   readonly interruptResult?: { readonly ok: boolean };
+  /** What `steerText` answers (ADR 0063); default accepted on "mock-turn". */
+  readonly steerTextResult?: SteerTextResult;
   readonly rewindLastTurnResult?: RewindResult;
   readonly listSessionsResult?: readonly SessionMetadata[];
   /** Seed for searchSessions (transcript content search). Default []. */
@@ -157,6 +160,8 @@ export interface MockHertaBridge {
      *  with `submitText` (ADR 0048 §4). */
     submitTextStaged: Array<readonly string[] | undefined>;
     interrupt: Array<string | undefined>;
+    /** The texts steered while 板砖 ran (ADR 0063). */
+    steerText: string[];
     rewindLastTurn: number;
     maybePlayEasterEgg: number;
     openSession: string[];
@@ -277,6 +282,7 @@ export function createMockHertaBridge(
     submitText: [],
     submitTextStaged: [],
     interrupt: [],
+    steerText: [],
     rewindLastTurn: 0,
     maybePlayEasterEgg: 0,
     openSession: [],
@@ -483,6 +489,10 @@ export function createMockHertaBridge(
     interrupt: async (turnId) => {
       calls.interrupt.push(turnId);
       return opts.interruptResult ?? { ok: true };
+    },
+    steerText: async (text) => {
+      calls.steerText.push(text);
+      return opts.steerTextResult ?? { accepted: "mock-turn" };
     },
     rewindLastTurn: async (_sessionId) => {
       calls.rewindLastTurn += 1;

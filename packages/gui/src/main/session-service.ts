@@ -13,6 +13,7 @@ import {
   type SessionHost,
   type SessionMetadata,
   type SpeechSynthesizer,
+  type SteerTextResult,
 } from "@herta/app-server";
 import { errorMessage, SessionFileError } from "@herta/core";
 import {
@@ -672,6 +673,14 @@ export function createSessionService(
     );
     handle(CMD.interrupt, (_e, turnId?: string) =>
       host?.activeSession?.interrupt({ turnId }),
+    );
+    // A message while 板砖 works (ADR 0063). Without a session, or on a
+    // session that cannot steer, the honest answer is `queued`: the renderer
+    // keeps the text and sends it as the next turn.
+    handle(
+      CMD.steerText,
+      async (_e, text: string): Promise<SteerTextResult> =>
+        (await host?.activeSession?.steerText?.(text)) ?? { queued: true },
     );
     handle(CMD.rewindLastTurn, async (_e, sessionId?: string) => {
       const active = host?.activeSession ?? null;

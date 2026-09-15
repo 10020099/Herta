@@ -18,6 +18,7 @@ const bridge: HertaBridge = {
   submitText: (text, stagedImageIds) =>
     ipcRenderer.invoke(CMD.submitText, text, stagedImageIds),
   interrupt: (turnId) => ipcRenderer.invoke(CMD.interrupt, turnId),
+  steerText: (text) => ipcRenderer.invoke(CMD.steerText, text),
   rewindLastTurn: (sessionId) =>
     ipcRenderer.invoke(CMD.rewindLastTurn, sessionId),
   maybePlayEasterEgg: () => ipcRenderer.invoke(CMD.maybePlayEasterEgg),

@@ -1121,6 +1121,57 @@ describe("bridge drain — todo layout + background dedup (2026-07-23)", () => {
     } as unknown as CodingAgentRuntime;
   }
 
+  it("a steer (ADR 0063) enters the record as a USER block in event order between the backend rows, and does not count as backend work", async () => {
+    const bus = new InMemoryEventBus<AgentEvent>();
+    const runtime = {
+      runBrief: async (brief: HertaToAgentBrief) => {
+        publishWithLayer(bus, "backend", {
+          type: "turn.started",
+          userText: "task",
+        } as never);
+        publishWithLayer(bus, "backend", {
+          type: "tool.call.started",
+          id: "c1",
+          tool: "read_file",
+          inputSummary: "a.ts",
+        } as never);
+        // The session publishes the steer on the ACTOR layer: it is the
+        // user speaking, not backend plumbing.
+        bus.publish({
+          type: "user.steer",
+          layer: "actor",
+          id: "s-1",
+          text: "also rename the test file",
+        });
+        publishWithLayer(bus, "backend", {
+          type: "tool.call.started",
+          id: "c2",
+          tool: "read_file",
+          inputSummary: "b.ts",
+        } as never);
+        return emptyReport(brief.taskId);
+      },
+    } as unknown as CodingAgentRuntime;
+    const out = await invokeBanzhuanBridge([], [], {
+      bus,
+      runtimeFactory: () => runtime,
+      signal: new AbortController().signal,
+    });
+    const kinds = out.map((b) =>
+      b.kind === "user" ? `user:${b.text}` : b.kind,
+    );
+    const userAt = kinds.indexOf("user:also rename the test file");
+    expect(userAt).toBeGreaterThan(0);
+    // Between the two read rows: after the first projected system block,
+    // before the second.
+    expect(kinds[userAt - 1]).toBe("system");
+    expect(kinds[userAt + 1]).toBe("system");
+    // Real work was done (two read rows), so the terminal block is the
+    // done-marker, unchanged by the steer.
+    const last = out[out.length - 1];
+    expect(last?.kind).toBe("system");
+  });
+
   it("projects the FIRST todo layout as one block; later updates become compact progress rows", async () => {
     const bus = new InMemoryEventBus<AgentEvent>();
     const runtime = runtimePublishing(bus, [

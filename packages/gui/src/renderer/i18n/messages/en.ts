@@ -319,6 +319,15 @@ export const en = {
   // The per-message picture cap (owner 2026-08-27): a message is a moment,
   // not an album.
   "composer.attach.imageLimit": "Five pictures at most",
+  // A message while Brick works (ADR 0063): held above the composer, sent as
+  // the next turn unless interjected or taken back.
+  "composer.hold.placeholder":
+    "Brick is working — type now, it sends when done",
+  "composer.hold.label": "Sends when Brick is done",
+  "composer.hold.aria": "Message waiting to send",
+  "composer.hold.steer": "Interject now",
+  "composer.hold.edit": "Edit",
+  "composer.hold.discard": "Discard",
   // Click-to-enlarge lightbox (ADR 0048 §4a). `lightbox.open` prefixes the
   // thumb button's aria-label, followed by the filename.
   "lightbox.open": "View picture",

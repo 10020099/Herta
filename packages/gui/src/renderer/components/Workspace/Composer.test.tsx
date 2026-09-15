@@ -1,4 +1,11 @@
-import { act, cleanup, fireEvent, screen } from "@testing-library/react";
+import type { AgentEvent } from "@herta/app-server";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HertaBridgeProvider } from "../../context/HertaBridgeContext.js";
 import { renderWithLocale } from "../../i18n/test-util.js";
@@ -443,6 +450,194 @@ describe("Composer", () => {
     // The refocus effect put the caret back → focus-within expands again.
     expect(document.activeElement).toBe(input);
     expect(form.classList.contains("is-shrunk")).toBe(false);
+  });
+});
+
+describe("Composer — a message while 板砖 works (ADR 0063)", () => {
+  const HOLD_PLACEHOLDER = "Brick is working — type now, it sends when done";
+  const backendStarted: AgentEvent = {
+    type: "turn.started",
+    layer: "backend",
+    userText: "task",
+  };
+  const backendFinished: AgentEvent = {
+    type: "turn.finished",
+    layer: "backend",
+    summary: { durationMs: 1, toolCallCount: 0, messageCount: 0, endedAt: "" },
+  };
+  /** A commission in flight: the turn started and 板砖 is running. */
+  function startCommission(
+    mock: ReturnType<typeof createMockHertaBridge>,
+  ): void {
+    act(() => {
+      mock.emitReset({
+        sessionId: "s",
+        workspaceRoot: "/r",
+        record: [],
+        overlay: null,
+        backendWorkspace: "/r",
+        backendWorkspaceIsDefault: true,
+      });
+      mock.emitTurn({ kind: "started", turnId: "t1" });
+      mock.emitAgent({ kind: "agent", event: backendStarted });
+    });
+  }
+  function hold(text: string): HTMLTextAreaElement {
+    const input = screen.getByPlaceholderText(
+      HOLD_PLACEHOLDER,
+    ) as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: text } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    return input;
+  }
+
+  it("while 板砖 runs the textarea stays enabled, Enter HOLDS the text above the composer, nothing is sent, and the button stays Stop", () => {
+    const { mock } = renderComposer();
+    startCommission(mock);
+    const input = hold("also rename the test file");
+    expect(input.disabled).toBe(false);
+    expect(input.value).toBe("");
+    expect(screen.getByTestId("composer-held").textContent).toContain(
+      "also rename the test file",
+    );
+    expect(mock.calls.submitText).toHaveLength(0);
+    expect(mock.calls.interrupt).toHaveLength(0);
+    expect(
+      screen.getByLabelText("Interrupt the current turn"),
+    ).toBeInTheDocument();
+  });
+
+  it("a second Enter joins the held message as a new paragraph — one held message, nothing lost", () => {
+    const { mock } = renderComposer();
+    startCommission(mock);
+    hold("first thought");
+    hold("second thought");
+    expect(screen.getAllByTestId("composer-held")).toHaveLength(1);
+    expect(
+      screen.getByTestId("composer-held").querySelector(".composer-held__text")
+        ?.textContent,
+    ).toBe("first thought\n\nsecond thought");
+  });
+
+  it("Interject now hands the held text to bridge.steerText and clears the strip once accepted", async () => {
+    const { mock } = renderComposer();
+    startCommission(mock);
+    hold("also rename the test file");
+    fireEvent.click(screen.getByText("Interject now"));
+    await waitFor(() =>
+      expect(mock.calls.steerText).toEqual(["also rename the test file"]),
+    );
+    await waitFor(() =>
+      expect(screen.queryByTestId("composer-held")).toBeNull(),
+    );
+    expect(mock.calls.submitText).toHaveLength(0);
+  });
+
+  it("a steer the session answers `queued` (the run ended first) stays held for the next turn", async () => {
+    const { mock } = renderComposer(
+      createMockHertaBridge({ steerTextResult: { queued: true } }),
+    );
+    startCommission(mock);
+    hold("also rename the test file");
+    fireEvent.click(screen.getByText("Interject now"));
+    await waitFor(() => expect(mock.calls.steerText).toHaveLength(1));
+    expect(screen.getByTestId("composer-held")).toBeInTheDocument();
+  });
+
+  it("Edit puts the held text back into the composer; Discard drops it", () => {
+    const { mock } = renderComposer();
+    startCommission(mock);
+    const input = hold("also rename the test file");
+    fireEvent.click(screen.getByText("Edit"));
+    expect(screen.queryByTestId("composer-held")).toBeNull();
+    expect(input.value).toBe("also rename the test file");
+    hold("drop me");
+    fireEvent.click(screen.getByLabelText("Discard"));
+    expect(screen.queryByTestId("composer-held")).toBeNull();
+    expect(mock.calls.submitText).toHaveLength(0);
+  });
+
+  it("doing nothing sends the held message as the next turn the moment this one ends", () => {
+    const { mock } = renderComposer();
+    startCommission(mock);
+    hold("also rename the test file");
+    act(() => {
+      mock.emitAgent({ kind: "agent", event: backendFinished });
+      mock.emitTurn({ kind: "finished", turnId: "t1" });
+    });
+    expect(mock.calls.submitText).toEqual(["also rename the test file"]);
+    expect(screen.queryByTestId("composer-held")).toBeNull();
+  });
+
+  it("the EN alias applies at delivery, not at the hold: @brick is held as typed and sent as @板砖", () => {
+    const { mock } = renderComposer();
+    act(() => {
+      mock.emitReset({
+        sessionId: "s-en",
+        workspaceRoot: "/r",
+        record: [],
+        overlay: null,
+        backendWorkspace: "/r",
+        backendWorkspaceIsDefault: true,
+        lang: "en",
+      });
+      mock.emitTurn({ kind: "started", turnId: "t1" });
+      mock.emitAgent({ kind: "agent", event: backendStarted });
+    });
+    hold("@brick also rename it");
+    expect(
+      screen.getByTestId("composer-held").querySelector(".composer-held__text")
+        ?.textContent,
+    ).toBe("@brick also rename it");
+    act(() => {
+      mock.emitAgent({ kind: "agent", event: backendFinished });
+      mock.emitTurn({ kind: "finished", turnId: "t1" });
+    });
+    expect(mock.calls.submitText).toEqual(["@板砖 also rename it"]);
+  });
+
+  it("no hold outside 板砖's window: Herta's own turn keeps the textarea disabled, and once 板砖 finishes mid-turn the interject goes while the held text stays", () => {
+    const { mock } = renderComposer();
+    act(() => {
+      mock.emitReset({
+        sessionId: "s",
+        workspaceRoot: "/r",
+        record: [],
+        overlay: null,
+        backendWorkspace: "/r",
+        backendWorkspaceIsDefault: true,
+      });
+      mock.emitTurn({ kind: "started", turnId: "t1" });
+    });
+    const input = screen.getByPlaceholderText(
+      "Message Herta…",
+    ) as HTMLTextAreaElement;
+    expect(input.disabled).toBe(true);
+    expect(screen.queryByPlaceholderText(HOLD_PLACEHOLDER)).toBeNull();
+    // 板砖 starts: the window opens; a message is held; 板砖 ends while
+    // Herta still speaks: the window closes but the hold stays.
+    act(() => {
+      mock.emitAgent({ kind: "agent", event: backendStarted });
+    });
+    hold("also rename the test file");
+    expect(screen.getByText("Interject now")).toBeInTheDocument();
+    act(() => {
+      mock.emitAgent({ kind: "agent", event: backendFinished });
+    });
+    expect(input.disabled).toBe(true);
+    expect(screen.queryByText("Interject now")).toBeNull();
+    expect(screen.getByTestId("composer-held")).toBeInTheDocument();
+    expect(screen.getByText("Edit")).toBeInTheDocument();
+  });
+
+  it("a bridge without steerText (the demo) holds and delivers but never offers the interject", () => {
+    const mock = createMockHertaBridge();
+    Object.assign(mock.bridge, { steerText: undefined });
+    renderComposer(mock);
+    startCommission(mock);
+    hold("also rename the test file");
+    expect(screen.getByTestId("composer-held")).toBeInTheDocument();
+    expect(screen.queryByText("Interject now")).toBeNull();
   });
 });
 

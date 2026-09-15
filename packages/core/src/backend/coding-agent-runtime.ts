@@ -104,6 +104,14 @@ export interface CodingAgentRuntimeDeps {
    * section — byte-identical to before.
    */
   repoContext?: (signal?: AbortSignal) => Promise<RepoContextSnapshot | null>;
+  /**
+   * The steer source (ADR 0063): user messages sent while a brief runs,
+   * drained by the turn loop at the top of each iteration. Owned by the
+   * session (it accepts the text and projects it into the record); the
+   * runtime only threads it into the loop's handle. Absent: no steer ever
+   * reaches the loop — the CLI and tests.
+   */
+  pendingUserInput?: () => readonly string[];
 }
 
 /** What the workspace's VCS looked like at one instant. */
@@ -497,6 +505,9 @@ export class CodingAgentRuntime {
         workingHistory: opts.workingHistory ?? "",
         lang,
         ...(repoContext !== null ? { repoContext } : {}),
+        ...(this.deps.pendingUserInput !== undefined
+          ? { takePendingUserInput: this.deps.pendingUserInput }
+          : {}),
       };
 
       let stoppedBackground = 0;

@@ -14,6 +14,28 @@ describe("classifyBeatTrigger — event → trigger", () => {
     expect(classifyBeatTrigger(ev)).toBeNull();
   });
 
+  it("a steer (actor-layer user.steer) earns one beat, keyed by its id (ADR 0063)", () => {
+    const steer: AgentEvent = {
+      type: "user.steer",
+      layer: "actor",
+      id: "s-1",
+      text: "also rename the test file",
+    };
+    expect(classifyBeatTrigger(steer)).toEqual({ signature: "steer:s-1" });
+    // Any other actor-layer event stays silent.
+    const delta: AgentEvent = {
+      type: "assistant.delta",
+      layer: "actor",
+      text: "…",
+    };
+    expect(classifyBeatTrigger(delta)).toBeNull();
+    // The policy dedups by signature: the same steer staged twice fires once.
+    const policy = new BeatPolicy({ clock: () => 0 });
+    expect(policy.shouldStage(steer)).toEqual({ signature: "steer:s-1" });
+    policy.markFired("steer:s-1", 0);
+    expect(policy.shouldStage(steer)).toBeNull();
+  });
+
   it("returns null on backend tool.call.started for any workflow kind (N2, 2026-05-23)", () => {
     // 2026-05-23 N2 tightening: beats no longer fire on workflow
     // start events. The model has no useful content to comment on

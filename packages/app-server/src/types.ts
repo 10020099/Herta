@@ -489,6 +489,15 @@ export type SubmitTextResult =
   | { readonly turnId: string }
   | { readonly needsKey: true };
 
+/** What `steerText` answers (ADR 0063). `accepted`: the backend is running,
+ *  the text is in the record and 板砖 reads it at its next step. `queued`:
+ *  there is no backend step to reach — the turn is Herta's own speech, or
+ *  none is running — so the caller keeps the text for the next turn. Never
+ *  an error: a steer that missed its window is a queued message. */
+export type SteerTextResult =
+  | { readonly accepted: string }
+  | { readonly queued: true };
+
 export interface Session {
   readonly sessionId: string;
   readonly workspaceRoot: string;
@@ -546,6 +555,16 @@ export interface Session {
   interrupt(opts?: {
     readonly turnId?: string;
   }): Promise<{ readonly ok: boolean }>;
+  /**
+   * A message while 板砖 works (ADR 0063). While the backend loop runs, the
+   * text enters the shared record at once as a user block (Herta sees it,
+   * D7) and reaches 板砖 at its next sampling boundary as the newest user
+   * message; the turn continues. Outside a backend run the answer is
+   * `queued` and nothing is recorded — the caller holds the text and
+   * submits it as the next turn. OPTIONAL: fakes and the website demo omit
+   * it; the composer then offers no steer.
+   */
+  steerText?(text: string): Promise<SteerTextResult>;
   /**
    * Rewind the latest 开拓者 (user) turn: withdraw it and everything below it
    * (Herta reply, 板砖 system blocks, beats, markers) from every record store,

@@ -404,6 +404,20 @@ async function invokeBanzhuanBridgeInner(
           }
         }
 
+        // A steer (ADR 0063): the user's own words, accepted while 板砖 runs.
+        // They enter the shared record HERE, in event order between the
+        // backend rows they interrupted — a user block, not a system one
+        // (the serializer renders it （开拓者 说） like any user text, escaped
+        // at prompt time), so Herta reads it in place and 板砖, which drains
+        // the same text at its next loop head, is answering something she
+        // can see. Flushed like every projected block: the sink streams it
+        // to the renderer and persists it. It does not count as backend
+        // work for the terminal-marker choice (`projectedAny`).
+        if (event.type === "user.steer") {
+          current = [...current, { kind: "user", text: event.text }];
+          deps.sink?.flushBlocks(current);
+        }
+
         let projected = projectBackendEvent(event);
         // Consecutive-state suppression for background rows: command_output
         // polls with no new output would otherwise stack identical
