@@ -172,11 +172,40 @@ jobs:
           echo "CSC_NAME=$CSC_NAME_VALUE" >> "$GITHUB_ENV"
           echo "identity ready: $IDENTITY"
 
+      # The voice clips are HoYoverse audio: outside the MIT grant and kept
+      # out of BOTH git trees (LICENSE's scope note), copied into the app by
+      # extraResources at package time. Until 2026-09-15 that made the
+      # private repo the only place a release could be built, at the
+      # private price for macOS minutes. The payload now travels as a
+      # hash-pinned prerelease asset on the public repo — the shape the
+      # voice model already uses (ADR 0061), and no more distribution than
+      # the installers themselves — so this workflow builds the same app
+      # from either checkout. A tree that has the clips (the private one)
+      # skips the fetch; a pin that does not verify fails the build, never
+      # a silent voiceless app. Re-pin with `scripts/pack-voice-payload.mjs`
+      # (private) when the clips change.
+      - name: fetch the voice payload (a checkout without the clips)
+        env:
+          VOICE_PAYLOAD_URL: https://github.com/PersonaCLI/Herta/releases/download/voice-clips-2026-09-15/voice-payload.tar.gz
+          VOICE_PAYLOAD_SHA256: 370d1ec45c08f7add6a3195335ebaf124a1e233f7ff40b3dd6dc09f2de015714
+          VOICE_PAYLOAD_BYTES: "8727921"
+        run: |
+          if [ -n "$(find data/voice -name '*.opus' -print -quit 2>/dev/null)" ]; then
+            echo "voice tree present in the checkout — nothing to fetch"
+            exit 0
+          fi
+          curl -fsSL --retry 3 -o /tmp/voice-payload.tar.gz "$VOICE_PAYLOAD_URL"
+          GOT=$(stat -f %z /tmp/voice-payload.tar.gz)
+          [ "$GOT" = "$VOICE_PAYLOAD_BYTES" ] || { echo "::error::voice payload is $GOT bytes, pinned $VOICE_PAYLOAD_BYTES"; exit 1; }
+          echo "$VOICE_PAYLOAD_SHA256  /tmp/voice-payload.tar.gz" | shasum -a 256 -c -
+          tar -xzf /tmp/voice-payload.tar.gz -C .
+          echo "voice clips fetched: $(find data/voice -name '*.opus' | wc -l | tr -d ' ')"
+          ls -l data/voice-clone/herta-reference.wav
+
       # A signed run is a RELEASE run, and a release that ships silent is
       # audit B3 happening again. The `dist` scripts gate on this; this
-      # workflow calls electron-builder directly, so it did not. data/voice is
-      # tracked in the private repo and absent from the public one, which means
-      # a signed build produced in the wrong repo is silent and looks fine.
+      # workflow calls electron-builder directly, so it did not. The fetch
+      # above is what makes the public checkout pass it.
       - name: assert the voice payload is present
         if: ${{ inputs.signed }}
         working-directory: packages/gui
