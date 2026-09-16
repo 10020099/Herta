@@ -164,8 +164,10 @@ d("bash tool (real bash)", () => {
     }
     // A chained line carries every ask class it triggered, top first
     // (2026-08-17): the card labels by the first and names the rest.
+    // (A loopback curl is a local smoke test and allows since ADR 0064 L1,
+    // so the network half of this line has to reach a real host.)
     const chained = await engine.check(
-      call("kill 574; sleep 0.5; curl -s http://127.0.0.1:4643/"),
+      call("kill 574; sleep 0.5; curl -s https://example.com/health"),
       ctx,
     );
     expect(chained.kind).toBe("ask");

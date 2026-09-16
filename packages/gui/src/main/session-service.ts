@@ -14,6 +14,7 @@ import {
   type SessionMetadata,
   type SpeechSynthesizer,
   type SteerTextResult,
+  type WorkspaceTrustState,
 } from "@herta/app-server";
 import { errorMessage, SessionFileError } from "@herta/core";
 import {
@@ -793,6 +794,21 @@ export function createSessionService(
     handle(CMD.removeCommandRule, async (_e, display: string) => {
       if (typeof display !== "string" || display.length === 0) return false;
       return (await host?.activeSession?.removeCommandRule?.(display)) ?? false;
+    });
+    // Workspace trust (ADR 0064) — the ACTIVE session's effective workspace.
+    // No session → a real project that asks (the honest default).
+    const noTrust: WorkspaceTrustState = {
+      effective: "ask",
+      explicit: null,
+      isDefaultWorkspace: false,
+    };
+    handle(
+      CMD.getWorkspaceTrust,
+      async () => (await host?.activeSession?.getWorkspaceTrust?.()) ?? noTrust,
+    );
+    handle(CMD.setWorkspaceTrust, async (_e, value: unknown) => {
+      const v = value === "workspace" || value === "ask" ? value : null;
+      return (await host?.activeSession?.setWorkspaceTrust?.(v)) ?? noTrust;
     });
     // Record heal after a record-channel overflow drop: the session re-emits
     // its live record as a `reset` through the record stream (FIFO with block

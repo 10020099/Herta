@@ -337,17 +337,43 @@ export function classifyShellCommandDetailed(
   // this line (`cd src/lib; cd ../../test` is fine; `cd src && cd ../..` is
   // not) — the classifier follows the shell as far as it can see.
   let cwd = opts.cwd ?? opts.workspaceRoot;
+  // Loop variables bound to a STATIC, in-workspace list by a `for` header
+  // earlier on this line (ADR 0064 L1). A body segment that references one
+  // is classified once per value — the loop unrolled — instead of asking
+  // `command_ask_unresolved` for a `$f` the harness could, in fact, read.
+  const bindings = new Map<string, readonly string[]>();
   for (const segment of segments) {
     const seg = segment.trim();
     if (seg.length === 0) continue;
     classified.push(seg);
-    const r = classifySegment(seg, { ...opts, cwd });
-    if (r.verdict.kind === "block")
-      return { verdict: r.verdict, segments: classified };
-    if (r.verdict.kind === "ask") asks.push(r.verdict);
-    // Intra-segment classes too, not just the one `combine` promoted.
-    for (const c of r.codes ?? []) segmentCodes.add(c);
-    if (r.cwd !== undefined) cwd = r.cwd;
+    const unrolled = unrollBound(seg, bindings);
+    const variants =
+      unrolled !== null && unrolled.length > 0 ? unrolled : [seg];
+    let nextCwd: string | undefined;
+    let cwdConflict = false;
+    for (const variant of variants) {
+      const r = classifySegment(variant, { ...opts, cwd });
+      if (r.verdict.kind === "block")
+        return { verdict: r.verdict, segments: classified };
+      if (r.verdict.kind === "ask") asks.push(r.verdict);
+      // Intra-segment classes too, not just the one `combine` promoted.
+      for (const c of r.codes ?? []) segmentCodes.add(c);
+      if (r.cwd !== undefined) {
+        if (nextCwd !== undefined && nextCwd !== r.cwd) cwdConflict = true;
+        nextCwd = r.cwd;
+      }
+      if (r.bindings !== undefined) {
+        for (const [name, values] of Object.entries(r.bindings))
+          bindings.set(name, values);
+      }
+    }
+    // A `cd` whose destination differs per loop item: the classifier cannot
+    // follow one cwd for the rest of the line — fail closed, as an escape.
+    if (cwdConflict) {
+      asks.push(cdAsk("a loop-bound path — the directory differs per item"));
+    } else if (nextCwd !== undefined) {
+      cwd = nextCwd;
+    }
   }
   if (asks.length === 0)
     return { verdict: { kind: "allow" }, segments: classified };
@@ -660,10 +686,48 @@ const SCOPE_OPAQUE_HEADS = new Set([
   "rg",
 ]);
 
+/** A `for` list longer than this is not unrolled — the body keeps asking. */
+const MAX_LOOP_ITEMS = 12;
+/** Cap on unrolled variants of one segment (two bound variables at most). */
+const MAX_UNROLL = 24;
+
+/**
+ * Every reference to a bound loop variable in a raw segment, replaced by
+ * each of the variable's values — the segment as the shell would run it for
+ * that item (ADR 0064 L1). Works on the RAW text so quoting survives:
+ * `cat -n "$f"` becomes `cat -n "src/a.mjs"`. Plain `$f` / `${f}` only; a
+ * modifier form (`${f%.js}`) is left alone and asks as it did. Null when
+ * the segment references no bound variable; empty when unrolling would
+ * exceed the cap (the caller then classifies the raw segment).
+ */
+function unrollBound(
+  seg: string,
+  bindings: ReadonlyMap<string, readonly string[]>,
+): string[] | null {
+  let variants = [seg];
+  let touched = false;
+  for (const [name, values] of bindings) {
+    const probe = new RegExp(`\\$(?:\\{${name}\\}|${name}(?![A-Za-z0-9_]))`);
+    if (!probe.test(seg)) continue;
+    touched = true;
+    const ref = new RegExp(probe.source, "g");
+    const next: string[] = [];
+    for (const v of variants) {
+      for (const value of values) next.push(v.replace(ref, () => value));
+    }
+    if (next.length > MAX_UNROLL) return [];
+    variants = next;
+  }
+  return touched ? variants : null;
+}
+
 interface SegmentVerdict {
   verdict: Verdict;
   /** New cwd for later segments when this one was an in-workspace `cd`. */
   cwd?: string;
+  /** Loop variables this `for` header bound to a static in-workspace list
+   *  (ADR 0064 L1) — later segments on the line unroll against them. */
+  bindings?: Record<string, readonly string[]>;
   /**
    * Every DISTINCT ask class this segment raised — the verdict's own `code` is
    * only the highest-risk one.
@@ -774,15 +838,25 @@ function classifySegment(
           },
         };
       }
+      // Its own class when the target leaves the workspace (ADR 0064 L1):
+      // the trust tier covers writes INSIDE, and `> $HOME/.bashrc` must
+      // not ride `>` being "a write".
       const outside = leavesWorkspace(r.target, opts);
-      asks.push({
-        kind: "ask",
-        risk: "workspace_write",
-        code: "command_ask_write",
-        reason: outside
-          ? `redirects output outside the workspace: ${r.target}`
-          : `redirects output to ${r.target}`,
-      });
+      asks.push(
+        outside
+          ? {
+              kind: "ask",
+              risk: "workspace_write",
+              code: "command_ask_outside",
+              reason: `redirects output outside the workspace: ${r.target}`,
+            }
+          : {
+              kind: "ask",
+              risk: "workspace_write",
+              code: "command_ask_write",
+              reason: `redirects output to ${r.target}`,
+            },
+      );
     } else if (r.kind === "in") {
       if (leavesWorkspace(r.target, opts) || isCredentialPath(r.target)) {
         asks.push({
@@ -863,20 +937,43 @@ function classifySegment(
     // $f; done` therefore allowed (red team 2026-08-24).
     if (kw === "for" || kw === "select") {
       const inIdx = words.indexOf("in");
+      const items: string[] = [];
+      // The list is STATIC when every item is a literal the harness read —
+      // no expansion, no substitution, nothing that leaves the workspace.
+      // Then the loop variable can only ever hold one of these, and the
+      // body may be classified per item (see `unrollBound`).
+      let staticList = inIdx >= 0;
       if (inIdx >= 0) {
         for (const t of words.slice(inIdx + 1)) {
           if (t === "do" || t === ";") break;
+          items.push(t);
           if (leavesWorkspace(t, opts) || isCredentialPath(t)) {
+            staticList = false;
             asks.push({
               kind: "ask",
               risk: "workspace_read",
               code: "command_ask_reader_path",
               reason: `iterates over a sensitive or out-of-workspace path: ${t}`,
             });
+          } else if (/[$`]/.test(t) || t.includes("__SUBST__")) {
+            staticList = false;
           }
         }
       }
-      return segmentVerdict(asks);
+      const out = segmentVerdict(asks);
+      const variable = words[1];
+      if (
+        kw === "for" &&
+        staticList &&
+        items.length > 0 &&
+        items.length <= MAX_LOOP_ITEMS &&
+        variable !== undefined &&
+        variable !== "in" &&
+        /^[A-Za-z_][A-Za-z0-9_]*$/.test(variable)
+      ) {
+        return { ...out, bindings: { [variable]: items } };
+      }
+      return out;
     }
     // `case X in PATTERN) CMD ;;` — later branches split off on `;;`, but the
     // FIRST one rides the same segment as the keyword, so it was never

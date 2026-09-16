@@ -312,6 +312,20 @@ const PATH_READER_CMDS = new Set([
   "head",
   "tail",
   "wc",
+  "diff",
+  "od",
+  "hexdump",
+  "xxd",
+  "file",
+  "stat",
+  "du",
+  "md5sum",
+  "sha1sum",
+  "sha256sum",
+  "tac",
+  "rev",
+  "paste",
+  "comm",
   "grep",
   "rg",
   "ripgrep",
@@ -1086,6 +1100,15 @@ const ESCAPE_HATCH_FLAGS: ReadonlyMap<string, ReadonlySet<string>> = new Map<
   string,
   ReadonlySet<string>
 >([
+  // ADR 0064 L1 readers with a writing or list-reading knob.
+  [
+    "file",
+    new Set(["-C", "--compile", "-m", "--magic-file", "-f", "--files-from"]),
+  ],
+  ["xxd", new Set(["-r", "-revert"])],
+  ["md5sum", new Set(["-c", "--check"])],
+  ["sha1sum", new Set(["-c", "--check"])],
+  ["sha256sum", new Set(["-c", "--check"])],
   [
     "git",
     new Set([
@@ -1451,6 +1474,12 @@ export function classifyCommand(
 
   // PHASE 3 — ASK network
   if (a0 === "curl" || a0 === "wget") {
+    // A fetch of the LOOPBACK address is the model poking the server it just
+    // started, not the network (ADR 0064 L1; permission lab 2026-09-16: every
+    // `curl` in the server briefs was `localhost:4642`). Allowed only when
+    // every URL is loopback and every flag is one that neither reads nor
+    // writes a file — anything else is the network ask it always was.
+    if (loopbackFetchOnly(a0, argv, live)) return { kind: "allow" };
     return {
       kind: "ask",
       risk: "network",
@@ -1675,6 +1704,12 @@ export function classifyCommand(
   if (a0 === "go" && argv[1] === "test") {
     return readerArgvGuard(argv, live) ?? { kind: "allow" };
   }
+  // `git config` that only READS (ADR 0064 L1): `--get`/`--list` forms, or a
+  // bare key. A value operand, an unset/add/edit flag, or a `--file`/`--blob`
+  // source is a write or a read of somewhere else and stays vcs below.
+  if (a0 === "git" && gitSubName === "config" && gitConfigReads(gitSubArgs)) {
+    return { kind: "allow" };
+  }
   if (
     a0 === "git" &&
     typeof argv[1] === "string" &&
@@ -1771,6 +1806,22 @@ export function classifyCommand(
   // rule-eligibility as unknown (`git commit:*` project rules still derive),
   // an honest class. Network-touching subcommands are still git (the remote
   // is the repo's own); the destructive shapes were classified above.
+  // The subcommands that reach the REMOTE are the network, not the working
+  // tree (ADR 0064 L1): a trusted workspace auto-allows `command_ask_vcs`,
+  // and a push that leaves the machine must not ride that. The destructive
+  // shapes (`push --force`, history rewrites) were classified above.
+  if (
+    a0 === "git" &&
+    gitSubName !== null &&
+    reachesRemote(gitSubName, gitSubArgs)
+  ) {
+    return {
+      kind: "ask",
+      risk: "network",
+      code: "command_ask_network",
+      reason: `git ${gitSubName} reaches the remote`,
+    };
+  }
   if (a0 === "git" && typeof argv[1] === "string") {
     return {
       kind: "ask",
@@ -1824,12 +1875,39 @@ export function classifyCommand(
       "pwd",
       "date",
       "whoami",
+      // Plain readers the lab kept filing as unknown (ADR 0064 L1): dumps,
+      // checksums, metadata, and string filters. `file` and `xxd` carry
+      // escape hatches (`file -C` compiles a magic file, `xxd -r` writes)
+      // that ESCAPE_HATCH_FLAGS turns into asks ahead of this branch.
+      "od",
+      "hexdump",
+      "xxd",
+      "file",
+      "stat",
+      "du",
+      "md5sum",
+      "sha1sum",
+      "sha256sum",
+      "tac",
+      "rev",
+      "paste",
+      "comm",
+      "basename",
+      "dirname",
     ].includes(a0)
   ) {
     return readerArgvGuard(argv, live) ?? { kind: "allow" };
   }
 
   // PHASE 6 — DEFAULT
+  // The shapes the lab kept filing under 「未识别的命令」 that the harness can
+  // name (ADR 0064 L1): `diff` and `npm ls` are reads; `tee` and `sed -i`
+  // are writes to the files they name; `npm run <script>` is a project
+  // script; a `./bin/x` is a workspace program. A named class is an honest
+  // card today and the unit the trust tier can cover tomorrow.
+  const named = namedProgramVerdict(id, argv, live);
+  if (named !== null) return named;
+
   // Known script interpreters get an HONEST ask class before the generic
   // fallback (owner 2026-08-04): `node src/index.mjs` is not "unrecognized" —
   // the harness knows exactly what it is, and asks because an interpreter
@@ -1837,7 +1915,24 @@ export function classifyCommand(
   // approval surface say so (and gates project-rule derivation, ADR 0030)
   // instead of the prompt reading as ignorance. Same ask tier, same risk —
   // only the classification is more truthful.
+  //
+  // Three shapes since ADR 0064, because the trust tier covers only the
+  // first: a WORKSPACE script (`node src/cli.mjs`), whose code the record's
+  // diffs track; INLINE code (`node -e …`, `python -`, `python -m x`), which
+  // no diff ever showed; and a script OUTSIDE the workspace.
   if (SCRIPT_INTERPRETERS.has(interpreterName(a0))) {
+    const shape = interpreterShape(argv, live);
+    if (shape.kind === "inline") {
+      return {
+        kind: "ask",
+        risk: "workspace_write",
+        code: "command_ask_interpreter_inline",
+        reason: `${a0} runs inline code the record never showed — review it`,
+      };
+    }
+    if (shape.kind === "outside") {
+      return outsideAsk(a0, shape.script);
+    }
     return {
       kind: "ask",
       risk: "workspace_write",
@@ -1855,7 +1950,13 @@ export function classifyCommand(
   //   - process (kill / pkill / killall / taskkill): NOT rule-eligible.
   //   - fs (mkdir / touch / cp / mv / ln / rename): rule-eligible exactly as
   //     unknown was, so nothing that could be persisted before cannot now.
+  // The filesystem verbs split on WHERE they act (ADR 0064 L1): an operand
+  // outside the workspace — absolute, `..`, `~`, or unknowable under a live
+  // shell — is its own class, so a trusted workspace never auto-allows
+  // `cp secrets /tmp/x` on the strength of `cp` being "fs".
   if (id === "rm" || id === "rmdir" || id === "unlink") {
+    const out = outsideOperand(argv, live);
+    if (out !== null) return outsideAsk(id, out);
     return {
       kind: "ask",
       risk: "workspace_write",
@@ -1872,11 +1973,25 @@ export function classifyCommand(
     };
   }
   if (["mkdir", "touch", "cp", "mv", "ln", "rename"].includes(id)) {
+    const out = outsideOperand(argv, live);
+    if (out !== null) return outsideAsk(id, out);
     return {
       kind: "ask",
       risk: "workspace_write",
       code: "command_ask_fs",
       reason: `${id}: ${argv.slice(1).join(" ")}`,
+    };
+  }
+  // A program that lives IN the workspace — `./bin/x`, `scripts/run.sh` —
+  // named by a relative path with a separator and no escape. The harness
+  // knows what it is (a file the record's diffs track) even if not what it
+  // does; rule-eligible like an interpreter script (ADR 0064 L1).
+  if (isWorkspaceLocalProgram(a0, live)) {
+    return {
+      kind: "ask",
+      risk: "workspace_write",
+      code: "command_ask_local_exec",
+      reason: `runs a workspace program: ${a0}`,
     };
   }
   return {
@@ -1885,4 +2000,410 @@ export function classifyCommand(
     code: "command_ask_unknown",
     reason: "unrecognized command — review carefully",
   };
+}
+
+// ───────────────────────── ADR 0064 L1 helpers ─────────────────────────
+
+/** A path operand that leaves the workspace: absolute, home, drive, a `..`
+ *  escape, or — under a live shell — one the harness cannot read. In the
+ *  bash lane in-workspace absolute paths were relativized before this, so
+ *  an absolute here IS outside; run_command's argv is not relativized, so
+ *  there an in-workspace absolute path asks under this class too (an
+ *  honest ask, a less precise label). */
+function escapesWorkspaceOperand(a: string, live: boolean): boolean {
+  if (a.includes("__SUBST__")) return true;
+  if (live && /[$`]/.test(a)) return true;
+  if (/^([A-Za-z]:|[\\/]|~)/.test(a)) return true;
+  return a === ".." || a.includes("../") || a.includes("..\\") || a === "...";
+}
+
+/** The first non-flag operand that escapes the workspace, or null. */
+function outsideOperand(argv: readonly string[], live: boolean): string | null {
+  for (const a of argv.slice(1)) {
+    if (a === "--") continue;
+    if (a.startsWith("-") && a.length > 1) continue;
+    if (escapesWorkspaceOperand(a, live)) return a;
+  }
+  return null;
+}
+
+function outsideAsk(program: string, operand: string): Verdict {
+  return {
+    kind: "ask",
+    risk: "workspace_write",
+    code: "command_ask_outside",
+    reason: `${program} touches a path outside the workspace: ${operand}`,
+  };
+}
+
+/** `./x`, `bin/x`, `scripts/run.sh`: a relative path WITH a separator that
+ *  stays inside the workspace. A bare word is a PATH lookup (unknown); an
+ *  absolute path or a `..` is outside; an expansion is unresolvable. */
+function isWorkspaceLocalProgram(a0: string, live: boolean): boolean {
+  if (!/[\\/]/.test(a0)) return false;
+  if (escapesWorkspaceOperand(a0, live)) return false;
+  return !/[*?[\]{}$`]/.test(a0);
+}
+
+/** Flags of curl that neither read nor write a file. Fail closed: a flag not
+ *  here (or one that takes a file) keeps the network ask. */
+const CURL_INERT_FLAGS: ReadonlySet<string> = new Set([
+  "-s",
+  "--silent",
+  "-S",
+  "--show-error",
+  "-i",
+  "--include",
+  "-I",
+  "--head",
+  "-L",
+  "--location",
+  "-f",
+  "--fail",
+  "--fail-with-body",
+  "-v",
+  "--verbose",
+  "-N",
+  "--no-buffer",
+  "-k",
+  "--insecure",
+  "--compressed",
+  "-4",
+  "-6",
+  "-g",
+  "--globoff",
+  "--http1.1",
+  "--http2",
+  "--no-progress-meter",
+]);
+/** curl flags whose VALUE is inline text (never a file). `-d @file`,
+ *  `--cookie file`, `-F name=@file` and every output/upload/config flag are
+ *  deliberately absent — the value must not name a file. */
+const CURL_INERT_VALUE_FLAGS: ReadonlySet<string> = new Set([
+  "-X",
+  "--request",
+  "-H",
+  "--header",
+  "-d",
+  "--data",
+  "--data-raw",
+  "--data-binary",
+  "--data-urlencode",
+  "--json",
+  "-w",
+  "--write-out",
+  "-m",
+  "--max-time",
+  "--connect-timeout",
+  "--retry",
+  "--retry-delay",
+  "--retry-all-errors",
+  "-A",
+  "--user-agent",
+  "-e",
+  "--referer",
+  "-u",
+  "--user",
+]);
+const WGET_INERT_FLAGS: ReadonlySet<string> = new Set([
+  "-q",
+  "--quiet",
+  "-nv",
+  "--no-verbose",
+  "-S",
+  "--server-response",
+  "--spider",
+  "-4",
+  "-6",
+  "--no-check-certificate",
+]);
+const WGET_INERT_VALUE_FLAGS: ReadonlySet<string> = new Set([
+  "-t",
+  "--tries",
+  "-T",
+  "--timeout",
+  "--method",
+  "--header",
+  "--post-data",
+  "--body-data",
+  "--user-agent",
+  "-U",
+]);
+const LOOPBACK_URL =
+  /^(?:https?:\/\/)?(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d{1,5})?(?:[/?#]|$)/i;
+
+/**
+ * Every URL the command names is loopback and every flag is one of the
+ * inert ones: a local smoke test. A value that could be a FILE (`@…`, a
+ * cookie file, `-o`), a URL the harness cannot read (an expansion), or a
+ * flag it does not know all fall through to the network ask.
+ */
+function loopbackFetchOnly(
+  a0: string,
+  argv: readonly string[],
+  live: boolean,
+): boolean {
+  const inert = a0 === "curl" ? CURL_INERT_FLAGS : WGET_INERT_FLAGS;
+  const inertValue =
+    a0 === "curl" ? CURL_INERT_VALUE_FLAGS : WGET_INERT_VALUE_FLAGS;
+  let urls = 0;
+  for (let i = 1; i < argv.length; i += 1) {
+    const a = argv[i] as string;
+    if (live && /[$`]/.test(a)) return false;
+    if (a.includes("__SUBST__")) return false;
+    if (a === "--") continue;
+    if (a.startsWith("-") && a.length > 1) {
+      // `--flag=value` and `-Xvalue` spellings.
+      const eq = a.indexOf("=");
+      const name = eq > 0 && a.startsWith("--") ? a.slice(0, eq) : a;
+      if (inert.has(name)) continue;
+      // A bundle of short flags (`-sS`, `-sSL`, `-si`): every letter must be
+      // an inert flag of its own; a value-taking letter in a bundle is not
+      // modelled and fails closed.
+      if (/^-[a-zA-Z]{2,}$/.test(a)) {
+        if ([...a.slice(1)].every((ch) => inert.has(`-${ch}`))) continue;
+        return false;
+      }
+      if (inertValue.has(name)) {
+        const value =
+          eq > 0 && a.startsWith("--") ? a.slice(eq + 1) : argv[++i];
+        if (value === undefined || value.startsWith("@")) return false;
+        continue;
+      }
+      // wget's `-O -` (stdout) is inert; `-O file` is a write.
+      if (a0 === "wget" && (a === "-O" || a === "--output-document")) {
+        if (argv[i + 1] === "-") {
+          i += 1;
+          continue;
+        }
+        return false;
+      }
+      if (a0 === "wget" && a === "-O-") continue;
+      // curl's `-o /dev/null` (the status-code idiom, with `-w`) discards the
+      // body; any other output target is a file write.
+      if (a0 === "curl" && (a === "-o" || a === "--output")) {
+        if (/^(\/dev\/null|NUL|nul)$/.test(argv[i + 1] ?? "")) {
+          i += 1;
+          continue;
+        }
+        return false;
+      }
+      return false;
+    }
+    if (!LOOPBACK_URL.test(a)) return false;
+    urls += 1;
+  }
+  return urls > 0;
+}
+
+const GIT_CONFIG_READ_FLAGS: ReadonlySet<string> = new Set([
+  "--get",
+  "--get-all",
+  "--get-regexp",
+  "--list",
+  "-l",
+  "--global",
+  "--local",
+  "--system",
+  "--worktree",
+  "--show-origin",
+  "--show-scope",
+  "--name-only",
+  "--type",
+  "--bool",
+  "--int",
+  "--null",
+  "-z",
+]);
+
+/** `git config` arguments that only read: read flags plus at most one bare
+ *  operand (the key). Anything else — a second operand (a value), an
+ *  editing flag, another file — is not a read. */
+function gitConfigReads(subArgs: readonly string[]): boolean {
+  let operands = 0;
+  let listing = false;
+  for (const a of subArgs) {
+    if (a.startsWith("-")) {
+      const name = a.includes("=") ? a.slice(0, a.indexOf("=")) : a;
+      if (!GIT_CONFIG_READ_FLAGS.has(name)) return false;
+      if (name === "--list" || name === "-l") listing = true;
+      continue;
+    }
+    operands += 1;
+  }
+  return listing ? operands === 0 : operands === 1;
+}
+
+/** git subcommands that reach the remote (ADR 0064 L1) — the network tier. */
+function reachesRemote(sub: string, subArgs: readonly string[]): boolean {
+  if (["push", "fetch", "pull", "clone", "ls-remote"].includes(sub))
+    return true;
+  if (sub === "remote") {
+    return subArgs.some((a) => a === "update" || a === "prune");
+  }
+  if (sub === "submodule") {
+    return subArgs.some((a) => a === "update" || a === "add" || a === "sync");
+  }
+  return false;
+}
+
+/** Interpreter flags that carry CODE (or select a module) rather than name
+ *  a workspace script. */
+const INLINE_CODE_FLAGS: ReadonlySet<string> = new Set([
+  "-e",
+  "--eval",
+  "-p",
+  "--print",
+  "-c",
+  "--command",
+  "-m",
+  "-i",
+  "--interactive",
+  "--input-type",
+  "-",
+]);
+
+/** How an interpreter invocation names what it runs (ADR 0064 L1). */
+function interpreterShape(
+  argv: readonly string[],
+  live: boolean,
+):
+  | { kind: "script"; script: string }
+  | { kind: "outside"; script: string }
+  | { kind: "inline" } {
+  const name = interpreterName(argv[0] as string);
+  let i = 1;
+  // deno / bun take a SUBCOMMAND first: `deno run x.ts`, `bun test`.
+  if ((name === "deno" || name === "bun") && argv.length > 1) {
+    const sub = argv[1] as string;
+    if (["eval", "repl", "x", "exec"].includes(sub)) return { kind: "inline" };
+    if (["run", "test"].includes(sub)) i = 2;
+  }
+  for (; i < argv.length; i += 1) {
+    const a = argv[i] as string;
+    if (a === "--") {
+      i += 1;
+      break;
+    }
+    const flag =
+      a.startsWith("--") && a.includes("=") ? a.slice(0, a.indexOf("=")) : a;
+    if (INLINE_CODE_FLAGS.has(flag)) return { kind: "inline" };
+    if (a.startsWith("-") && a.length > 1) continue;
+    break;
+  }
+  const script = argv[i];
+  if (script === undefined) return { kind: "inline" }; // a REPL
+  if (escapesWorkspaceOperand(script, live)) {
+    return { kind: "outside", script };
+  }
+  return { kind: "script", script };
+}
+
+/** A sed script made only of line-address substitutions, deletes and prints
+ *  — the shapes that touch nothing but the addressed file. The `e` flag or
+ *  command (runs the pattern space!), `w`/`W`/`r`/`R` file commands, `-f`
+ *  script files and any spelling this cannot parse stay unknown. */
+const SED_ADDR = "(?:\\d+|\\$|/(?:\\\\.|[^/])*/)";
+const SED_SAFE_COMMAND = new RegExp(
+  `^\\s*(?:${SED_ADDR}(?:,${SED_ADDR})?\\s*)?(?:s/(?:\\\\.|[^/])*/(?:\\\\.|[^/])*/[gipI0-9]*|y/(?:\\\\.|[^/])*/(?:\\\\.|[^/])*/|d|p)\\s*$`,
+);
+function isSafeSedScript(script: string): boolean {
+  // Split on `;` only where it is not inside an s/// body: a body may hold a
+  // `;`, and then the split produces a piece the regex refuses — which is
+  // the safe direction (the command stays unknown).
+  return script.split(";").every((piece) => SED_SAFE_COMMAND.test(piece));
+}
+
+/** The lab's recurring 「未识别的命令」 shapes, named (ADR 0064 L1). Null
+ *  when `argv` is none of them. */
+function namedProgramVerdict(
+  id: string,
+  argv: readonly string[],
+  live: boolean,
+): Verdict | null {
+  const writeAsk = (files: readonly string[], what: string): Verdict => {
+    for (const f of files) {
+      if (escapesWorkspaceOperand(f, live)) return outsideAsk(id, f);
+    }
+    return {
+      kind: "ask",
+      risk: "workspace_write",
+      code: "command_ask_write",
+      reason: `${what} ${files.join(", ")}`,
+    };
+  };
+  if (id === "diff") {
+    return readerArgvGuard(argv, live) ?? { kind: "allow" };
+  }
+  if (id === "tee") {
+    const files = argv
+      .slice(1)
+      .filter((a) => !(a.startsWith("-") && a.length > 1));
+    if (files.length === 0) return { kind: "allow" }; // stdout only
+    return writeAsk(files, "tee writes");
+  }
+  if (id === "sed") {
+    const inPlace = argv
+      .slice(1)
+      .some(
+        (a) =>
+          a === "--in-place" ||
+          a.startsWith("--in-place=") ||
+          /^-[a-zA-Z]*i/.test(a),
+      );
+    if (!inPlace) return null;
+    const scripts: string[] = [];
+    const files: string[] = [];
+    for (let i = 1; i < argv.length; i += 1) {
+      const a = argv[i] as string;
+      if (a === "-e" || a === "--expression") {
+        const s = argv[++i];
+        if (s === undefined) return null;
+        scripts.push(s);
+        continue;
+      }
+      if (a.startsWith("--expression=")) {
+        scripts.push(a.slice("--expression=".length));
+        continue;
+      }
+      if (a === "-f" || a === "--file" || a.startsWith("--file=")) return null;
+      if (a === "--") {
+        files.push(...argv.slice(i + 1));
+        break;
+      }
+      if (a.startsWith("-") && a.length > 1) continue;
+      if (scripts.length === 0) scripts.push(a);
+      else files.push(a);
+    }
+    // An empty operand is not a file the harness can name — stay unknown.
+    if (scripts.length === 0 || files.length === 0) return null;
+    if (files.some((f) => f.trim().length === 0)) return null;
+    if (!scripts.every(isSafeSedScript)) return null;
+    return writeAsk(files, "sed -i edits");
+  }
+  if (id === "npm" || id === "pnpm" || id === "yarn") {
+    const sub = argv[1];
+    if (sub === "ls" || sub === "list" || sub === "ll") {
+      return readerArgvGuard(argv, live) ?? { kind: "allow" };
+    }
+    if (sub === "run" || sub === "run-script") {
+      const script = argv.slice(2).find((a) => !a.startsWith("-"));
+      if (script === undefined) return { kind: "allow" }; // lists the scripts
+      return {
+        kind: "ask",
+        risk: "workspace_write",
+        code: "command_ask_script",
+        reason: `${id} run ${script} runs a project script`,
+      };
+    }
+    if (sub === "start" || sub === "stop" || sub === "restart") {
+      return {
+        kind: "ask",
+        risk: "workspace_write",
+        code: "command_ask_script",
+        reason: `${id} ${sub} runs a project script`,
+      };
+    }
+  }
+  return null;
 }

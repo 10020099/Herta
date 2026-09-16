@@ -296,6 +296,9 @@ export const en = {
   "approval.reason.editFile": "Edits an existing file",
   "approval.reason.strReplaceEditor": "Writes a file",
   "approval.heredocFolded": "    ⋯ {n} lines folded — see the diff below ⋯",
+  "approval.trustWorkspace": "Trust this workspace",
+  "approval.trustNote":
+    "After “Trust this workspace”, file edits, new directories, non-destructive git and workspace scripts inside it stop asking; network, destructive and out-of-workspace operations still do. Revoke it from the device card's menu.",
   "composer.placeholder": "Message Herta…",
   "composer.aria": "Message composer",
   "composer.send": "Send message",
@@ -561,6 +564,12 @@ export const en = {
   "card.rules": "Remembered commands",
   "card.rulesEmpty": "No commands remembered",
   "card.rulesRemove": "Remove rule {rule}",
+  "card.trust": "Workspace trust",
+  "card.trustOn": "Trusted: writes, git and scripts inside it don't ask",
+  "card.trustOnDefault": "Sandbox workspace, trusted by default",
+  "card.trustOff": "Asks each time",
+  "card.trustEnable": "Trust this workspace",
+  "card.trustDisable": "Ask each time instead",
   "card.deviceInfoAria": "device card info",
   "card.deviceInfo":
     "The device card represents Brick (the differential coprocessor) — " +

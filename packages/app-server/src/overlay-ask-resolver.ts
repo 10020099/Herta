@@ -56,6 +56,12 @@ export interface OverlayAskResolverDeps {
    * their pre-0030 behavior.
    */
   readonly rules?: ProjectCommandRuleStore;
+  /**
+   * Whether the CURRENT workspace trusts by default (ADR 0064): the
+   * session's managed sandbox does, a real project does not. A provider —
+   * the workspace can move mid-session. Absent → never by default.
+   */
+  readonly defaultTrust?: () => boolean;
 }
 
 export type ResolveExternalResult =
@@ -81,7 +87,17 @@ export class OverlayAskResolver implements AskResolver {
   private readonly policy: ApprovalPolicy;
 
   constructor(private readonly deps: OverlayAskResolverDeps) {
-    this.policy = new ApprovalPolicy(deps.cache, deps.rules);
+    this.policy = new ApprovalPolicy(deps.cache, deps.rules, {
+      ...(deps.defaultTrust !== undefined
+        ? { defaultTrust: deps.defaultTrust }
+        : {}),
+    });
+  }
+
+  /** The policy's view of workspace trust (ADR 0064) — the session's
+   *  trust surface reads it here so the two never disagree. */
+  get workspaceTrusted(): boolean {
+    return this.policy.workspaceTrusted();
   }
 
   present(
@@ -157,6 +173,9 @@ export class OverlayAskResolver implements AskResolver {
         // Same contract for the 「本项目允许」 button (ADR 0030): present only
         // when persistence:"always" would actually save this exact rule.
         projectRule: pre.projectRule,
+        // And for 「信任这个工作区」 (ADR 0064): only when the tier would
+        // cover this class and the workspace does not trust yet.
+        ...(pre.showTrust ? { trustable: true } : {}),
       };
       this.deps.setPendingOverlay(overlay);
     });
@@ -181,7 +200,7 @@ export class OverlayAskResolver implements AskResolver {
   resolveExternal(opts: {
     readonly requestId: string;
     readonly decision: "allow" | "deny";
-    readonly persistence?: "once" | "session" | "always";
+    readonly persistence?: "once" | "session" | "always" | "trust";
   }): ResolveExternalResult {
     if (this.pending === null) {
       return { ok: false, reason: "no_pending_overlay" };

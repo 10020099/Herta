@@ -408,3 +408,84 @@ describe("OverlayAskResolver.present — interrupt during a pending gate (audit 
     await expect(promise).resolves.toBe("allow");
   });
 });
+
+describe("OverlayAskResolver — workspace trust (ADR 0064)", () => {
+  const vcsRequest = (): PermissionRequest =>
+    makeRequest({
+      call: { id: "c", tool: "bash", input: { command: "git commit -m x" } },
+      code: "command_ask_vcs",
+      argv: ["git", "commit", "-m", "x"],
+      programs: ["git"],
+    });
+
+  it("offers 「信任这个工作区」 on a covered class, and a 'trust' resolution turns trust on for the workspace", async () => {
+    const root = mkdtempSync(join(tmpdir(), "herta-overlay-trust-"));
+    try {
+      const rules = new ProjectCommandRuleStore(() => root);
+      const { resolver, pending } = makeResolver({ rules });
+      expect(resolver.workspaceTrusted).toBe(false);
+      const p1 = resolver.present(vcsRequest(), new AbortController().signal);
+      expect(pending[0]?.trustable).toBe(true);
+      const r = resolver.resolveExternal({
+        requestId: "req-1",
+        decision: "allow",
+        persistence: "trust",
+      });
+      expect(r).toEqual({ ok: true });
+      await expect(p1).resolves.toBe("allow");
+      expect(rules.trust()).toBe("workspace");
+      expect(resolver.workspaceTrusted).toBe(true);
+      // The next covered ask is auto-allowed — no card.
+      await expect(
+        resolver.present(vcsRequest(), new AbortController().signal),
+      ).resolves.toBe("allow");
+      expect(pending).toHaveLength(1);
+      // An uncovered one still surfaces, without the trust button.
+      void resolver.present(
+        makeRequest({
+          call: { id: "c2", tool: "bash", input: { command: "npm install x" } },
+          risk: "network",
+          code: "command_ask_network",
+        }),
+        new AbortController().signal,
+      );
+      expect(pending).toHaveLength(2);
+      expect(pending[1]?.trustable).toBeUndefined();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("the host's default trusts the managed sandbox until the owner chooses", async () => {
+    const root = mkdtempSync(join(tmpdir(), "herta-overlay-trust-"));
+    try {
+      const rules = new ProjectCommandRuleStore(() => root);
+      let sandbox = true;
+      const pending: PendingPermissionApproval[] = [];
+      const resolver = new OverlayAskResolver({
+        setPendingOverlay: (o) => pending.push(o),
+        clearOverlay: () => {},
+        cache: {
+          has: () => false,
+          add: () => {},
+          isCacheable: () => false,
+          clear: () => {},
+          size: () => 0,
+          list: () => [],
+        } as unknown as import("@herta/core").SessionApprovalCache,
+        rules,
+        defaultTrust: () => sandbox,
+      });
+      await expect(
+        resolver.present(vcsRequest(), new AbortController().signal),
+      ).resolves.toBe("allow");
+      expect(pending).toHaveLength(0);
+      sandbox = false;
+      void resolver.present(vcsRequest(), new AbortController().signal);
+      expect(pending).toHaveLength(1);
+      expect(pending[0]?.trustable).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

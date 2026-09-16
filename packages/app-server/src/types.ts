@@ -5,6 +5,7 @@ import type {
   SessionTopic,
   TerminalRecord,
   TerminalRecordBlock,
+  WorkspaceTrust,
 } from "@herta/core";
 import type {
   BranchList,
@@ -214,8 +215,24 @@ export interface ResolveApprovalOpts {
   /** "session" → task-scoped remember (ADR 0026, cleared when the brief
    *  ends). "always" → persist the derived PROJECT command rule (ADR 0030,
    *  `.herta/permissions.json`); no-ops when the pending request derives no
-   *  rule — the GUI only offers it when `projectRule` is present. */
-  readonly persistence?: "once" | "session" | "always";
+   *  rule — the GUI only offers it when `projectRule` is present. "trust"
+   *  → turn workspace trust on for this workspace (ADR 0064); no-ops unless
+   *  the pending request's class is one the tier covers — the GUI only
+   *  offers it when `trustable` is present. */
+  readonly persistence?: "once" | "session" | "always" | "trust";
+}
+
+/** Workspace trust as the session sees it (ADR 0064): the owner's explicit
+ *  choice, the default for this workspace kind, and what applies now. */
+export interface WorkspaceTrustState {
+  /** What applies: "workspace" auto-allows the covered classes. */
+  readonly effective: WorkspaceTrust;
+  /** The owner's recorded choice for this workspace, or null when the
+   *  default applies. */
+  readonly explicit: WorkspaceTrust | null;
+  /** The backend workspace is the session's managed sandbox — trusted by
+   *  default; nothing of the user's lives there. */
+  readonly isDefaultWorkspace: boolean;
 }
 
 export type ApprovalResult =
@@ -594,6 +611,14 @@ export interface Session {
   listCommandRules?(): Promise<readonly string[]>;
   /** Removes one rule by its display form. False when nothing matched. */
   removeCommandRule?(display: string): Promise<boolean>;
+  /** Workspace trust (ADR 0064) for the CURRENT effective workspace.
+   *  Optional: only the GUI SessionImpl implements the pair. */
+  getWorkspaceTrust?(): Promise<WorkspaceTrustState>;
+  /** Record the owner's choice for this workspace; null clears it back to
+   *  the default. Resolves with the state after the change. */
+  setWorkspaceTrust?(
+    value: WorkspaceTrust | null,
+  ): Promise<WorkspaceTrustState>;
   /** Set the effective backend (板砖) workspace. Trusts its caller —
    *  validation happens at the GUI/CLI boundary. Persisted + broadcast.
    *  Idle-only (audit 2026-07-10, finding 13): refused with

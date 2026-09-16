@@ -175,7 +175,7 @@ export function ApprovalPanel(): JSX.Element | null {
 
   const resolve = (
     decision: "allow" | "deny",
-    persistence?: "once" | "session" | "always",
+    persistence?: "once" | "session" | "always" | "trust",
   ): void => {
     if (shown === null || resolving) return;
     setResolving(true);
@@ -329,6 +329,12 @@ export function ApprovalPanel(): JSX.Element | null {
             {t("approval.projectRuleNote", { rule: shown.projectRule })}
           </p>
         )}
+        {shown.trustable === true && (
+          // ADR 0064: the exact scope of the trust grant, spelled out
+          // before the button — same inspect-before-commit contract as the
+          // project-rule caption above.
+          <p className="approval-panel__rule">{t("approval.trustNote")}</p>
+        )}
         {shown.files !== undefined && shown.files.length > 0 && (
           <ul className="approval-panel__files">
             {shown.files.map((f) => (
@@ -423,6 +429,19 @@ export function ApprovalPanel(): JSX.Element | null {
             onClick={() => resolve("allow", "always")}
           >
             {t("approval.allowProject")}
+          </button>
+        )}
+        {shown.trustable === true && (
+          <button
+            type="button"
+            className="approval-btn approval-btn--always"
+            disabled={resolving}
+            // Workspace trust (ADR 0064): allows this one AND turns the tier
+            // on for this workspace; offered only when the tier covers this
+            // class (the `trustable` gate, same contract as `cacheable`).
+            onClick={() => resolve("allow", "trust")}
+          >
+            {t("approval.trustWorkspace")}
           </button>
         )}
         <button

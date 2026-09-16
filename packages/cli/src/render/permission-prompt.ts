@@ -29,6 +29,7 @@ export type CliPromptOutcome =
   | "allow"
   | "allow_remember"
   | "allow_project"
+  | "allow_trust"
   | "deny";
 
 export interface PresentDetailedOptions {
@@ -37,6 +38,9 @@ export interface PresentDetailedOptions {
    *  Absent → the [p] option is neither shown nor accepted — never offer a
    *  choice that would silently no-op (the showRemember contract). */
   projectRule?: string;
+  /** Offer [t] — trust this workspace (ADR 0064): the ask class is one the
+   *  tier covers and the workspace does not trust yet. Same contract. */
+  showTrust?: boolean;
 }
 
 export class CliAskResolver implements AskResolver {
@@ -143,9 +147,16 @@ export class CliAskResolver implements AskResolver {
         ),
       );
     }
+    if (opts.showTrust === true) {
+      this.stdout.write(
+        this.style.dim(
+          "  [t] trusts this workspace: writes, fs ops, non-destructive git and workspace scripts stop asking; network, destructive and out-of-workspace still do\n",
+        ),
+      );
+    }
     const keys = `y${opts.showRemember ? "/a" : ""}${
       opts.projectRule !== undefined ? "/p" : ""
-    }/N`;
+    }${opts.showTrust === true ? "/t" : ""}/N`;
     this.stdout.write(`  ${this.style.bold(`[${keys}]`)} `);
   }
 
@@ -177,6 +188,8 @@ export class CliAskResolver implements AskResolver {
           (ch === "p" || ch === "P")
         ) {
           settle("allow_project", "p");
+        } else if (opts.showTrust === true && (ch === "t" || ch === "T")) {
+          settle("allow_trust", "t");
         } else {
           settle("deny", "n");
         }

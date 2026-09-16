@@ -44,7 +44,9 @@ export class CachingAskResolver implements AskResolver {
       const note =
         pre.via === "cache"
           ? `${pre.scope === undefined ? `${tool} ${risk}` : `${tool} ${pre.scope} ${risk}`} (cached for this task)`
-          : `project rule covers ${(pre.argv ?? []).join(" ")}`;
+          : pre.via === "project_rule"
+            ? `project rule covers ${(pre.argv ?? []).join(" ")}`
+            : `${tool} ${risk} (workspace trust)`;
       this.stdout.write(this.style.dim(`  auto-allow: ${note}\n`));
       return "allow";
     }
@@ -54,6 +56,7 @@ export class CachingAskResolver implements AskResolver {
       ...(pre.projectRule !== undefined
         ? { projectRule: pre.projectRule }
         : {}),
+      ...(pre.showTrust ? { showTrust: true } : {}),
     });
     if (outcome === "allow_remember") {
       this.policy.commit(request, "session");
@@ -61,6 +64,10 @@ export class CachingAskResolver implements AskResolver {
     }
     if (outcome === "allow_project") {
       this.policy.commit(request, "always");
+      return "allow";
+    }
+    if (outcome === "allow_trust") {
+      this.policy.commit(request, "trust");
       return "allow";
     }
     return outcome === "allow" ? "allow" : "deny";

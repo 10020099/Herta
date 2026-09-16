@@ -13,6 +13,8 @@ export const CMD = {
   resolveApproval: "session:resolveApproval",
   listCommandRules: "session:listCommandRules",
   removeCommandRule: "session:removeCommandRule",
+  getWorkspaceTrust: "session:getWorkspaceTrust",
+  setWorkspaceTrust: "session:setWorkspaceTrust",
   resyncRecord: "session:resyncRecord",
   updateCheck: "update:check",
   updateRestart: "update:restartAndInstall",

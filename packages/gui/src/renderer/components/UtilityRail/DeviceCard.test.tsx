@@ -421,4 +421,63 @@ describe("DeviceCard", () => {
     fireEvent.click(screen.getByRole("button", { name: /Reset to default/ }));
     expect(mock.calls.resetWorkspace).toEqual(["s-1"]);
   });
+
+  it("⋯ menu shows workspace trust and toggles it through the bridge (ADR 0064)", async () => {
+    const mock = createMockHertaBridge({
+      workspaceTrust: {
+        effective: "workspace",
+        explicit: null,
+        isDefaultWorkspace: true,
+      },
+    });
+    renderWithLocale(
+      <HertaBridgeProvider bridge={mock.bridge}>
+        <DeviceCard />
+      </HertaBridgeProvider>,
+    );
+    fireEvent.click(screen.getByLabelText("device card info"));
+    await waitFor(() =>
+      expect(
+        screen.queryByText("Sandbox workspace, trusted by default"),
+      ).toBeTruthy(),
+    );
+    expect(mock.calls.getWorkspaceTrust).toBe(1);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Ask each time instead" }),
+    );
+    await waitFor(() =>
+      expect(screen.queryByText("Asks each time")).toBeTruthy(),
+    );
+    expect(mock.calls.setWorkspaceTrust).toEqual(["ask"]);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Trust this workspace" }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByText(
+          "Trusted: writes, git and scripts inside it don't ask",
+        ),
+      ).toBeTruthy(),
+    );
+    expect(mock.calls.setWorkspaceTrust).toEqual(["ask", "workspace"]);
+  });
+
+  it("⋯ menu hides the trust row when the bridge lacks the surface", async () => {
+    const mock = createMockHertaBridge();
+    const {
+      getWorkspaceTrust: _a,
+      setWorkspaceTrust: _b,
+      ...rest
+    } = mock.bridge;
+    const { container } = renderWithLocale(
+      <HertaBridgeProvider bridge={rest as typeof mock.bridge}>
+        <DeviceCard />
+      </HertaBridgeProvider>,
+    );
+    fireEvent.click(screen.getByLabelText("device card info"));
+    await waitFor(() =>
+      expect(screen.queryByText("No commands remembered")).toBeTruthy(),
+    );
+    expect(container.querySelector(".card-menu-trust")).toBeNull();
+  });
 });

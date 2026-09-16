@@ -676,3 +676,45 @@ describe("ApprovalPanel — conversation reserve (2026-07-27)", () => {
     });
   });
 });
+
+describe("ApprovalPanel — workspace trust (ADR 0064)", () => {
+  it("offers 「Trust this workspace」 with its scope note only when the request is trustable, and resolves allow/trust", async () => {
+    const mock = setup();
+    await settle();
+    act(() => {
+      mock.emitOverlay({
+        kind: "pending",
+        overlay: {
+          kind: "pending-permission",
+          requestId: "req-t",
+          risk: "workspace_write",
+          tool: "bash",
+          summary: "git commit changes the repository",
+          command: "git add -A && git commit -m x",
+          cacheable: true,
+          trustable: true,
+        },
+      });
+    });
+    expect(
+      screen.getByText(/After “Trust this workspace”/),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Trust this workspace" }),
+    );
+    expect(mock.calls.resolveApproval).toEqual([
+      { requestId: "req-t", decision: "allow", persistence: "trust" },
+    ]);
+  });
+
+  it("hides the trust choice when the request is not trustable (network, destructive, or already trusted)", async () => {
+    const mock = setup();
+    await settle();
+    emitPending(mock); // the network fixture carries no `trustable`
+    expect(screen.getByTestId("approval-panel")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Trust this workspace" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/After “Trust this workspace”/)).toBeNull();
+  });
+});

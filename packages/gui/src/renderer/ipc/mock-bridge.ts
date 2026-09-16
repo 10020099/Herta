@@ -17,7 +17,9 @@ import type {
   TurnLifecycleEvent,
   VoiceCueEvent,
   WorkspaceEvent,
+  WorkspaceTrustState,
 } from "@herta/app-server";
+import type { WorkspaceTrust } from "@herta/core";
 import type {
   BackendConfig,
   DeepSeekKeyStatus,
@@ -63,6 +65,9 @@ export interface MockHertaBridgeOpts {
    *  is mutated by removeCommandRule so tests observe the round-trip.
    *  Default []. */
   readonly commandRules?: readonly string[];
+  /** Seed for getWorkspaceTrust (ADR 0064); setWorkspaceTrust mutates it so
+   *  tests observe the round-trip. Default: a real project, asking. */
+  readonly workspaceTrust?: WorkspaceTrustState;
   readonly pickWorkspaceResult?: string | null;
   readonly setWorkspaceResult?: { ok: boolean; message?: string };
   /** Seed for the attachment picker (ADR 0033). Null = cancelled. */
@@ -170,6 +175,8 @@ export interface MockHertaBridge {
     resolveApproval: ResolveApprovalOpts[];
     listCommandRules: number;
     removeCommandRule: string[];
+    getWorkspaceTrust: number;
+    setWorkspaceTrust: Array<WorkspaceTrust | null>;
     resyncRecord: number;
     checkForUpdate: number;
     restartAndInstall: number;
@@ -291,6 +298,8 @@ export function createMockHertaBridge(
     resolveApproval: [],
     listCommandRules: 0,
     removeCommandRule: [],
+    getWorkspaceTrust: 0,
+    setWorkspaceTrust: [],
     resyncRecord: 0,
     checkForUpdate: 0,
     restartAndInstall: 0,
@@ -356,6 +365,12 @@ export function createMockHertaBridge(
   // Live project command rules (ADR 0030), seeded then mutated by
   // removeCommandRule so tests observe the round-trip.
   const commandRules: string[] = [...(opts.commandRules ?? [])];
+  // Live workspace trust (ADR 0064), seeded then mutated by setWorkspaceTrust.
+  let workspaceTrust: WorkspaceTrustState = opts.workspaceTrust ?? {
+    effective: "ask",
+    explicit: null,
+    isDefaultWorkspace: false,
+  };
 
   // Live real-time-voice state (ADR 0042), seeded then mutated by
   // setRealtimeVoice. The default is the healthy install: on, assets present.
@@ -539,6 +554,17 @@ export function createMockHertaBridge(
       if (i === -1) return false;
       commandRules.splice(i, 1);
       return true;
+    },
+    getWorkspaceTrust: async () => {
+      calls.getWorkspaceTrust += 1;
+      return workspaceTrust;
+    },
+    setWorkspaceTrust: async (value) => {
+      calls.setWorkspaceTrust.push(value);
+      const effective =
+        value ?? (workspaceTrust.isDefaultWorkspace ? "workspace" : "ask");
+      workspaceTrust = { ...workspaceTrust, explicit: value, effective };
+      return workspaceTrust;
     },
     resyncRecord: async () => {
       calls.resyncRecord += 1;

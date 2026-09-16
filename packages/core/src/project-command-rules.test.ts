@@ -1,4 +1,10 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -293,5 +299,50 @@ describe("ProjectCommandRuleStore", () => {
     } finally {
       rmSync(rootB, { recursive: true, force: true });
     }
+  });
+
+  describe("workspace trust (ADR 0064) rides the same file", () => {
+    it("starts unset, persists a choice, clears back to null, and survives rule edits", () => {
+      const root = mkdtempSync(join(tmpdir(), "herta-rules-trust-"));
+      try {
+        const store = new ProjectCommandRuleStore(() => root);
+        expect(store.trust()).toBeNull();
+        store.setTrust("workspace");
+        expect(store.trust()).toBe("workspace");
+        expect(new ProjectCommandRuleStore(() => root).trust()).toBe(
+          "workspace",
+        );
+        // Adding and removing a rule keeps the trust choice.
+        store.add({ argvPrefix: ["git", "commit"], anyArgs: true });
+        expect(store.trust()).toBe("workspace");
+        expect(store.list()).toHaveLength(1);
+        store.remove("git commit:*");
+        expect(store.trust()).toBe("workspace");
+        store.setTrust("ask");
+        expect(store.trust()).toBe("ask");
+        store.setTrust(null);
+        expect(store.trust()).toBeNull();
+        // And setting trust keeps the rules.
+        store.add({ argvPrefix: ["npm", "run"], anyArgs: true });
+        store.setTrust("workspace");
+        expect(store.list().map(ruleDisplay)).toEqual(["npm run:*"]);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("a hand-written value that is not a trust level loads as unset", () => {
+      const root = mkdtempSync(join(tmpdir(), "herta-rules-trust-"));
+      try {
+        mkdirSync(join(root, ".herta"), { recursive: true });
+        writeFileSync(
+          join(root, ".herta", "permissions.json"),
+          JSON.stringify({ version: 1, commandAllow: [], trust: "always" }),
+        );
+        expect(new ProjectCommandRuleStore(() => root).trust()).toBeNull();
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
   });
 });

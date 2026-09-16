@@ -1,6 +1,7 @@
 export {
   type ApprovalPersistence,
   ApprovalPolicy,
+  type ApprovalPolicyOpts,
   type ApprovalPreflight,
   commandArgv,
   commandCwd,
@@ -116,6 +117,7 @@ export {
   ProjectCommandRuleStore,
   ruleDisplay,
   SCRIPT_INTERPRETERS,
+  type WorkspaceTrust,
 } from "./project-command-rules.js";
 export { ReadLedger, type ReadLedgerEntry } from "./read-ledger.js";
 export {
@@ -213,3 +215,4 @@ export {
 export type * from "./types/todo.js";
 export type * from "./types/tool.js";
 export type * from "./types/transcript.js";
+export { trustCovers, WORKSPACE_TRUST_CODES } from "./workspace-trust.js";

@@ -158,8 +158,10 @@ describe("classifyShellCommand — allow tier", () => {
     expect(ask("bash <<'EOF'\ncurl https://x\nEOF").code).toBe(
       "command_ask_unknown",
     );
+    // An interpreter fed on stdin runs INLINE code (ADR 0064 L1): its own
+    // class, outside the trust tier, since no diff ever showed the code.
     expect(ask("python3 <<'EOF'\nprint(1)\nEOF").code).toBe(
-      "command_ask_interpreter",
+      "command_ask_interpreter_inline",
     );
     // Catastrophic text inside a heredoc stays blocked — the block tier has
     // no override, and a false positive there is the safe direction.
@@ -202,13 +204,17 @@ describe("classifyShellCommand — ask tier", () => {
     expect(ask("source ./env.sh").code).toBe("command_ask_interpreter");
     expect(ask('eval "$cmd"').code).toBe("command_ask_interpreter");
     expect(ask("node scripts/check.mjs").code).toBe("command_ask_interpreter");
-    expect(ask("python -c 'print(1)'").code).toBe("command_ask_interpreter");
+    // Inline code is its own class since ADR 0064 L1 (see the L1 tests).
+    expect(ask("python -c 'print(1)'").code).toBe(
+      "command_ask_interpreter_inline",
+    );
   });
 
   it("asks for git writes (the honest vcs class, 2026-08-17) and unknown commands (parity with run_command)", () => {
     expect(ask("git commit -m 'fix: x'").code).toBe("command_ask_vcs");
     expect(ask("git checkout -b fix/x").code).toBe("command_ask_vcs");
-    expect(ask("git push origin main").code).toBe("command_ask_vcs");
+    // A push reaches the remote: the network class since ADR 0064 L1.
+    expect(ask("git push origin main").code).toBe("command_ask_network");
     expect(ask("git status && git commit -am x").code).toBe("command_ask_vcs");
     expect(ask("frobnicate --now").code).toBe("command_ask_unknown");
     // and the other named verbs (permission lab 2026-08-17)
@@ -277,8 +283,10 @@ describe("classifyShellCommand — ask tier", () => {
     expect(v.reason).toContain("git commit");
     // …and every distinct class rides along, top first (2026-08-17), so the
     // card can name what the line does beyond its highest-risk label.
+    // (A loopback curl allows since ADR 0064 L1 — the network half of this
+    // line has to reach a real host to keep testing the aggregation.)
     const d = classifyShellCommandDetailed(
-      "kill 574; pkill -f status.mjs; sleep 0.5; curl -s http://127.0.0.1:4643/",
+      "kill 574; pkill -f status.mjs; sleep 0.5; curl -s https://example.com/",
       opts,
     );
     expect(d.verdict.kind).toBe("ask");
@@ -797,9 +805,12 @@ describe("no ALLOW without accounting for the whole segment — round 2", () => 
    */
   describe("an allow must be earned (the inversion)", () => {
     it("asks when a token cannot be read, rather than allowing on faith", () => {
-      // The measured cost: a loop body reading a variable path.
+      // The measured cost was a loop body reading a variable path. Since
+      // ADR 0064 L1 a loop over a STATIC in-workspace list is unrolled (the
+      // harness can read every value `$f` will take) — so the row that
+      // still asks is the one whose list it cannot read.
       expect(
-        kind(`ls test && for f in test/*; do sed -n '1,200p' "$f"; done`),
+        kind(`ls test && for f in $(ls test); do sed -n '1,200p' "$f"; done`),
       ).toBe("ask");
       // An unknowable PROGRAM is the strongest form — it cannot even be named.
       for (const body of [
@@ -966,5 +977,93 @@ describe("no ALLOW without accounting for the whole segment — round 2", () => 
     ]) {
       expect(kind(body), body).toBe("allow");
     }
+  });
+});
+
+describe("classifyShellCommand — the named shapes (ADR 0064 L1)", () => {
+  it("a for loop over a static in-workspace list is unrolled: the body classifies once per value", () => {
+    // The row ADR 0045 measured as the inversion's one new card.
+    for (const body of [
+      `ls test && for f in test/*; do sed -n '1,200p' "$f"; done`,
+      `for f in src/*.mjs test/*.mjs; do echo "===== $f ====="; cat -n "$f"; done`,
+      `for f in package.json README.md; do echo "=== $f ==="; cat "$f"; done && find src -type f`,
+      `for f in src/*.mjs; do wc -l "$f"; head -3 "\${f}"; done`,
+    ]) {
+      expect(kind(body), body).toBe("allow");
+    }
+    // The body is judged on the VALUES: a value the reader guard refuses
+    // asks exactly as the literal would.
+    const v = ask(`for f in .env README.md; do cat "$f"; done`);
+    expect(v.code).toBe("command_ask_reader_path");
+    // A body that writes asks as a write, per value.
+    expect(ask(`for f in a.txt b.txt; do echo x > "$f"; done`).code).toBe(
+      "command_ask_write",
+    );
+    // A list the harness cannot read binds nothing: the body still asks.
+    for (const body of [
+      `for f in $(ls test); do cat "$f"; done`,
+      `for f in $FILES; do cat "$f"; done`,
+      `for f in ../secrets/*; do cat "$f"; done`,
+    ]) {
+      expect(kind(body), body).toBe("ask");
+    }
+    // A modifier form is not a plain reference — it stays unresolved.
+    expect(kind(`for f in a.js b.js; do cat "\${f%.js}.ts"; done`)).toBe("ask");
+    // Sixteen-item lists still unroll; a longer one does not.
+    const many = Array.from({ length: 13 }, (_, i) => `f${i}.txt`).join(" ");
+    expect(kind(`for f in ${many}; do cat "$f"; done`)).toBe("ask");
+    // A per-item `cd` cannot be followed as one cwd — fail closed.
+    expect(ask(`for d in src test; do cd "$d" && ls; done`).code).toBe(
+      "command_ask_cwd_escape",
+    );
+  });
+
+  it("a redirect outside the workspace is its own class; inside stays a write", () => {
+    expect(ask("echo hi > out.txt").code).toBe("command_ask_write");
+    expect(
+      classifyShellCommandDetailed(
+        "node src/server.mjs > /tmp/server.log 2>&1",
+        opts,
+      ).codes,
+    ).toEqual(expect.arrayContaining(["command_ask_outside"]));
+    expect(ask("npm test > ~/.bashrc").code).toBe("command_ask_outside");
+    expect(ask("echo x > $LOG").code).toBe("command_ask_outside");
+  });
+
+  it("a loopback curl allows on its own and adds nothing to a chained line", () => {
+    expect(kind("curl -s http://localhost:4642/notes")).toBe("allow");
+    expect(kind("curl -sf http://127.0.0.1:4642/ | head -5")).toBe("allow");
+    const d = classifyShellCommandDetailed(
+      "kill 574; sleep 0.5; curl -s http://127.0.0.1:4643/",
+      opts,
+    );
+    expect(d.verdict.kind).toBe("ask");
+    expect(d.codes).toEqual(["command_ask_process"]);
+    expect(kind("curl https://example.com/")).toBe("ask");
+  });
+
+  it("the other named shapes carry through the shell lane", () => {
+    expect(ask("git push origin main").code).toBe("command_ask_network");
+    expect(ask("git add -A && git commit -m x").code).toBe("command_ask_vcs");
+    expect(
+      classifyShellCommandDetailed(
+        "node scripts/stats.mjs | tee .stats-out.tmp",
+        opts,
+      ).codes,
+    ).toEqual(["command_ask_interpreter", "command_ask_write"]);
+    expect(ask("sed -i 's/a/b/g' src/*.mjs && git diff --stat").code).toBe(
+      "command_ask_write",
+    );
+    expect(kind("diff -r /tmp/src_before src")).toBe("ask");
+    expect(kind("diff -r before src")).toBe("allow");
+    expect(ask("./bin/notesd.sh list; echo done").code).toBe(
+      "command_ask_local_exec",
+    );
+    expect(ask("npm run format 2>&1 | tail -20").code).toBe(
+      "command_ask_script",
+    );
+    expect(ask("python - <<'PY'\nprint(1)\nPY").code).toBe(
+      "command_ask_interpreter_inline",
+    );
   });
 });

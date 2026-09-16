@@ -194,4 +194,30 @@ describe("CliAskResolver.presentDetailed", () => {
     // The legacy path uses showRemember: false, so 'a' falls through to deny.
     await expect(promise).resolves.toBe("deny");
   });
+
+  it("[t] trusts the workspace when offered (ADR 0064), and falls through to deny when not", async () => {
+    const stdin = new MockReadable();
+    const stdout = new MockWritable();
+    const resolver = new CliAskResolver(stdin, stdout, style);
+    const promise = resolver.presentDetailed(
+      mkReq({ code: "command_ask_vcs" }),
+      new AbortController().signal,
+      { showRemember: false, showTrust: true },
+    );
+    stdin.feed("t");
+    await expect(promise).resolves.toBe("allow_trust");
+    const text = stdout.full();
+    expect(text).toContain("[y/t/N]");
+    expect(text).toContain("[t] trusts this workspace");
+
+    const stdin2 = new MockReadable();
+    const stdout2 = new MockWritable();
+    const r2 = new CliAskResolver(stdin2, stdout2, style);
+    const p2 = r2.presentDetailed(mkReq(), new AbortController().signal, {
+      showRemember: false,
+    });
+    stdin2.feed("t");
+    await expect(p2).resolves.toBe("deny");
+    expect(stdout2.full()).not.toContain("[t]");
+  });
 });

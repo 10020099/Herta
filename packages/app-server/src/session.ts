@@ -30,6 +30,7 @@ import {
   type TerminalRecord,
   type TerminalRecordBlock,
   type V2RecordPersister,
+  type WorkspaceTrust,
 } from "@herta/core";
 import {
   type MetaThinkCorpus,
@@ -100,6 +101,7 @@ import type {
   VoiceCueEvent,
   WorkspaceEvent,
   WorkspaceSetResult,
+  WorkspaceTrustState,
 } from "./types.js";
 
 /**
@@ -1118,6 +1120,23 @@ export class SessionImpl implements Session {
     return this.commandRules.remove(display);
   }
 
+  /** Workspace trust (ADR 0064) for the CURRENT effective workspace — read
+   *  through the resolver's policy so the card and the menu agree. */
+  async getWorkspaceTrust(): Promise<WorkspaceTrustState> {
+    return {
+      effective: this.overlayResolver.workspaceTrusted ? "workspace" : "ask",
+      explicit: this.commandRules.trust(),
+      isDefaultWorkspace: this.backendWorkspaceIsDefault,
+    };
+  }
+
+  async setWorkspaceTrust(
+    value: WorkspaceTrust | null,
+  ): Promise<WorkspaceTrustState> {
+    this.commandRules.setTrust(value);
+    return this.getWorkspaceTrust();
+  }
+
   async resolveApproval(opts: ResolveApprovalOpts): Promise<ApprovalResult> {
     return this.overlayResolver.resolveExternal({
       requestId: opts.requestId,
@@ -1587,6 +1606,11 @@ export class SessionImpl implements Session {
         overlayResolver = new OverlayAskResolver({
           cache,
           rules,
+          // The managed sandbox trusts by default (ADR 0064): a new session's
+          // workspace under ~/.herta/workspaces holds nothing of the user's.
+          // A provider — setWorkspace moves the workspace mid-session.
+          defaultTrust: () =>
+            sessionHolder.session?.backendWorkspaceIsDefault === true,
           setPendingOverlay(overlay) {
             // biome-ignore lint/style/noNonNullAssertion: set before any turn runs
             sessionHolder.session!._overlay = overlay;

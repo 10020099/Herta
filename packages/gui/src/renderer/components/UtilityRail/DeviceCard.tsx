@@ -1,3 +1,5 @@
+import type { WorkspaceTrustState } from "@herta/app-server";
+import type { WorkspaceTrust } from "@herta/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import agentDevice from "../../assets/agent_device.png";
 import agentDeviceNight from "../../assets/agent_device_night.png";
@@ -240,6 +242,32 @@ export function DeviceCard(): JSX.Element {
       },
     );
   };
+  // Workspace trust (ADR 0064): same ownership as the rules — the data lives
+  // here, refreshed on every menu open, and the row is omitted when the
+  // bridge has no surface for it.
+  const trustSupported = bridge.getWorkspaceTrust !== undefined;
+  const [trust, setTrust] = useSessionScoped<WorkspaceTrustState | null>(null);
+  const refreshTrust = (): void => {
+    if (!trustSupported) return;
+    void bridge.getWorkspaceTrust?.().then(
+      (s) => setTrust(s),
+      () => {
+        /* keep the last state — best-effort chrome */
+      },
+    );
+  };
+  const handleSetTrust = (value: WorkspaceTrust | null): void => {
+    void bridge.setWorkspaceTrust?.(value).then(
+      (s) => setTrust(s),
+      () => {
+        /* unchanged — nothing was written */
+      },
+    );
+  };
+  const refreshMenu = (): void => {
+    refreshRules();
+    refreshTrust();
+  };
   const handleReset = async () => {
     if (snap.sessionId === null) return;
     // Surface the refusal like its sibling above (audit 2026-07-24, M6):
@@ -289,7 +317,9 @@ export function DeviceCard(): JSX.Element {
         errorText={wsError ?? undefined}
         rules={rulesSupported ? rules : undefined}
         onRemoveRule={handleRemoveRule}
-        onOpen={refreshRules}
+        trust={trustSupported && trust !== null ? trust : undefined}
+        onSetTrust={handleSetTrust}
+        onOpen={refreshMenu}
       />
       <button
         type="button"

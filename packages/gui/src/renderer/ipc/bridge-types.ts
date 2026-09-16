@@ -25,7 +25,9 @@ import type {
   VoiceCueEvent,
   WorkingDiff,
   WorkspaceEvent,
+  WorkspaceTrustState,
 } from "@herta/app-server";
+import type { WorkspaceTrust } from "@herta/core";
 
 /** A point-in-time snapshot of a session, returned by open/create and
  *  carried by the reset event. Mirrors the app-server Session's
@@ -498,6 +500,14 @@ export interface HertaBridge {
   listCommandRules?(): Promise<readonly string[]>;
   /** Remove one rule by its display form; false when nothing matched. */
   removeCommandRule?(display: string): Promise<boolean>;
+  /** Workspace trust (ADR 0064) for the ACTIVE session's workspace. OPTIONAL
+   *  like the rule pair; the device card's menu hides the row without it. */
+  getWorkspaceTrust?(): Promise<WorkspaceTrustState>;
+  /** Record the owner's choice for this workspace (null → back to the
+   *  default); resolves with the state after the change. */
+  setWorkspaceTrust?(
+    value: WorkspaceTrust | null,
+  ): Promise<WorkspaceTrustState>;
   /** Fire-and-forget record heal: ask main to re-emit the active session's
    *  full record as a `reset` through the record stream. Called by the store
    *  when a record-channel `dropped` overflow sentinel arrives (a block was

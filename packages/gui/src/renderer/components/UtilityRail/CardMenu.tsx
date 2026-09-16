@@ -1,3 +1,5 @@
+import type { WorkspaceTrustState } from "@herta/app-server";
+import type { WorkspaceTrust } from "@herta/core";
 import { Fragment, useEffect, useRef, useState } from "react";
 import { useT } from "../../i18n/LocaleProvider.js";
 import { OVERLAY_Z, useModalOverlay } from "../../lib/overlay-stack.js";
@@ -40,6 +42,10 @@ export interface CardMenuProps {
    *  relies on and which a first cut broke (CI 2026-08-04). */
   readonly rules?: readonly string[];
   readonly onRemoveRule?: (display: string) => void;
+  /** Workspace trust (ADR 0064) — presentational like `rules`: `undefined`
+   *  hides the row (the bridge lacks the surface). */
+  readonly trust?: WorkspaceTrustState;
+  readonly onSetTrust?: (value: WorkspaceTrust | null) => void;
   /** Fired when the menu OPENS — DeviceCard re-fetches rules on it, so a rule
    *  granted mid-commission shows up without a remount. */
   readonly onOpen?: () => void;
@@ -166,6 +172,37 @@ export function CardMenu(props: CardMenuProps): JSX.Element {
             >
               {t("card.resetDefault")}
             </button>
+            {props.trust !== undefined && (
+              <>
+                <div className="card-menu-divider" />
+                <div className="card-menu-trust">
+                  <span className="card-menu-label">{t("card.trust")}</span>
+                  <span className="card-menu-trust-state">
+                    {props.trust.effective === "workspace"
+                      ? props.trust.explicit === null &&
+                        props.trust.isDefaultWorkspace
+                        ? t("card.trustOnDefault")
+                        : t("card.trustOn")
+                      : t("card.trustOff")}
+                  </span>
+                  <button
+                    type="button"
+                    className="card-menu-item card-menu-trust-toggle"
+                    onClick={() =>
+                      props.onSetTrust?.(
+                        props.trust?.effective === "workspace"
+                          ? "ask"
+                          : "workspace",
+                      )
+                    }
+                  >
+                    {props.trust.effective === "workspace"
+                      ? t("card.trustDisable")
+                      : t("card.trustEnable")}
+                  </button>
+                </div>
+              </>
+            )}
             {rules !== undefined && (
               <>
                 <div className="card-menu-divider" />

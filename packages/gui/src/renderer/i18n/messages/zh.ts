@@ -268,6 +268,10 @@ export const zh = {
   // A heredoc body folded out of the command well (the content is in the
   // diff below) — 2026-08-17.
   "approval.heredocFolded": "    ⋯ 已折叠 {n} 行，内容见下方差异 ⋯",
+  // Workspace trust (ADR 0064): the button, and the one-line scope above it.
+  "approval.trustWorkspace": "信任这个工作区",
+  "approval.trustNote":
+    "「信任这个工作区」后，工作区内的改文件、建目录、非破坏性 git、运行工作区脚本不再询问；联网、删库、越出工作区仍会问。可在设备卡菜单取消。",
   "composer.placeholder": "给黑塔发消息…",
   "composer.aria": "消息输入框",
   "composer.send": "发送消息",
@@ -553,6 +557,13 @@ export const zh = {
   "card.rules": "已记住的命令",
   "card.rulesEmpty": "暂无已记住的命令",
   "card.rulesRemove": "删除规则 {rule}",
+  // Workspace trust (ADR 0064) — the row in the device card's menu.
+  "card.trust": "工作区信任",
+  "card.trustOn": "已信任：工作区内的写入、git、脚本不再询问",
+  "card.trustOnDefault": "沙盒工作区，默认信任",
+  "card.trustOff": "逐项询问",
+  "card.trustEnable": "信任这个工作区",
+  "card.trustDisable": "改为逐项询问",
   "card.deviceInfoAria": "设备卡片信息",
   "card.deviceInfo":
     "设备卡片代表板砖（差分协处理器）——黑塔的编码执行后端。光环颜色与呼吸节奏反映后端当前状态（空闲、读取、写入、运行、等待批准等）。",

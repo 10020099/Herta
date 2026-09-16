@@ -306,8 +306,15 @@ describe("CachingAskResolver", () => {
         expect(d1).toBe("allow");
         // The pinned script also makes the task-remember available (the
         // cache scopes by `node src/index.mjs`, 2026-08-17).
+        // …and the workspace-trust grant is offered too (ADR 0064): a
+        // workspace script is a class the tier covers, and this workspace
+        // has not chosen yet.
         expect(first.inner.optionsLog).toEqual([
-          { showRemember: true, projectRule: "node src/index.mjs:*" },
+          {
+            showRemember: true,
+            projectRule: "node src/index.mjs:*",
+            showTrust: true,
+          },
         ]);
         expect(rules.list().map(ruleDisplay)).toEqual(["node src/index.mjs:*"]);
 
@@ -364,7 +371,12 @@ describe("CachingAskResolver", () => {
           nodeReq(["node", "-e", "x"]),
           new AbortController().signal,
         );
-        expect(fourth.inner.optionsLog).toEqual([{ showRemember: false }]);
+        // (The fixture hand-sets the interpreter class, which the trust tier
+        // covers, so [t] is offered here — the real classifier would file
+        // `node -e` under the inline class and offer nothing.)
+        expect(fourth.inner.optionsLog).toEqual([
+          { showRemember: false, showTrust: true },
+        ]);
       } finally {
         rmSync(root, { recursive: true, force: true });
       }
@@ -385,6 +397,78 @@ describe("CachingAskResolver", () => {
       );
       // showRemember was false because we couldn't extract a binary.
       expect(inner.optionsLog).toEqual([{ showRemember: false }]);
+    });
+  });
+
+  describe("workspace trust (ADR 0064)", () => {
+    it("[t] turns trust on for the workspace; covered asks then auto-allow with a marker", async () => {
+      const root = mkdtempSync(join(tmpdir(), "herta-cli-trust-"));
+      try {
+        const rules = new ProjectCommandRuleStore(() => root);
+        const vcs = (): PermissionRequest =>
+          mkReq({
+            call: {
+              id: "c1",
+              tool: "run_command",
+              input: { argv: ["git", "commit", "-m", "x"] },
+            },
+            code: "command_ask_vcs",
+          });
+        const first = mkInner();
+        first.inner.outcomes = ["allow_trust"];
+        const w1 = new CachingAskResolver(
+          first.inner,
+          new SessionApprovalCache(),
+          first.stdout,
+          style,
+          rules,
+        );
+        await expect(
+          w1.present(vcs(), new AbortController().signal),
+        ).resolves.toBe("allow");
+        expect(first.inner.optionsLog[0]).toMatchObject({ showTrust: true });
+        expect(rules.trust()).toBe("workspace");
+
+        const second = mkInner();
+        const w2 = new CachingAskResolver(
+          second.inner,
+          new SessionApprovalCache(),
+          second.stdout,
+          style,
+          rules,
+        );
+        await expect(
+          w2.present(vcs(), new AbortController().signal),
+        ).resolves.toBe("allow");
+        expect(second.inner.optionsLog).toEqual([]);
+        expect(second.stdout.full()).toContain("auto-allow:");
+        expect(second.stdout.full()).toContain("workspace trust");
+        // A network ask still prompts, and offers no [t] (already trusted).
+        const third = mkInner();
+        third.inner.outcomes = ["allow"];
+        const w3 = new CachingAskResolver(
+          third.inner,
+          new SessionApprovalCache(),
+          third.stdout,
+          style,
+          rules,
+        );
+        await w3.present(
+          mkReq({
+            call: {
+              id: "c2",
+              tool: "run_command",
+              input: { argv: ["npm", "install", "x"] },
+            },
+            risk: "network",
+            code: "command_ask_network",
+          }),
+          new AbortController().signal,
+        );
+        expect(third.inner.optionsLog).toEqual([{ showRemember: false }]);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
     });
   });
 });

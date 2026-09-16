@@ -265,7 +265,6 @@ describe("classifyCommand — allow", () => {
       ["git", "stash"],
       ["git", "stash", "pop"],
       ["git", "mv", "a", "b"],
-      ["git", "push"],
       ["git", "branch", "feat/x"],
       ["git", "branch", "-d", "feat/x"],
     ]) {
@@ -273,6 +272,8 @@ describe("classifyCommand — allow", () => {
         "command_ask_vcs/workspace_write",
       );
     }
+    // A push reaches the remote — the network tier since ADR 0064 L1.
+    expect(code(["git", "push"])).toBe("command_ask_network/network");
     // listing forms of branch stay allowed
     expect(classifyCommand(["git", "branch"]).kind).toBe("allow");
     expect(classifyCommand(["git", "branch", "-a"]).kind).toBe("allow");
@@ -318,8 +319,9 @@ describe("classifyCommand — allow", () => {
     expect(code(["frobnicate", "--now"])).toBe(
       "command_ask_unknown/workspace_write",
     );
+    // …but a program that lives IN the workspace is named (ADR 0064 L1).
     expect(code(["./bin/notesd.sh", "list"])).toBe(
-      "command_ask_unknown/workspace_write",
+      "command_ask_local_exec/workspace_write",
     );
   });
 
@@ -821,9 +823,6 @@ describe("git shapes that discard work or rewrite history (2026-08-25)", () => {
       ["git", "checkout", "main"],
       ["git", "merge", "main"],
       ["git", "cherry-pick", "abc123"],
-      ["git", "fetch", "origin"],
-      ["git", "pull"],
-      ["git", "push", "origin", "main"],
       ["git", "mv", "a", "b"],
       ["git", "tag", "-a", "v1", "-m", "one"],
       ["git", "rebase", "--abort"],
@@ -831,6 +830,21 @@ describe("git shapes that discard work or rewrite history (2026-08-25)", () => {
     ]) {
       expect(code(argv), argv.join(" ")).toBe("command_ask_vcs");
     }
+    // The remote-touching shapes are the network tier (ADR 0064 L1): a
+    // trusted workspace auto-allows vcs, and a push must not ride that.
+    for (const argv of [
+      ["git", "fetch", "origin"],
+      ["git", "pull"],
+      ["git", "push", "origin", "main"],
+      ["git", "clone", "https://x/y.git"],
+      ["git", "remote", "update"],
+    ]) {
+      expect(code(argv), argv.join(" ")).toBe("command_ask_network");
+    }
+    // `git remote add` is local config — still vcs.
+    expect(code(["git", "remote", "add", "origin", "https://x/y.git"])).toBe(
+      "command_ask_vcs",
+    );
   });
 
   it("a tree-ish plus a path is path mode, without needing `--`", () => {
@@ -1110,7 +1124,6 @@ describe("classifyCommand — default", () => {
     for (const argv of [
       ["node", "src/index.mjs", "sample.txt"],
       ["python", "build.py"],
-      ["python3", "-m", "pytest"],
       ["deno", "run", "main.ts"],
       ["bun", "test.ts"],
     ]) {
@@ -1120,6 +1133,10 @@ describe("classifyCommand — default", () => {
       expect(r.risk).toBe("workspace_write");
       expect(r.code).toBe("command_ask_interpreter");
     }
+    // A module (`-m`) is not a workspace script: inline class (ADR 0064 L1).
+    const mod = classifyCommand(["python3", "-m", "pytest"]);
+    if (mod.kind !== "ask") throw new Error();
+    expect(mod.code).toBe("command_ask_interpreter_inline");
   });
 
   it("interpreter detection is basename/.exe-normalized", () => {
@@ -1133,5 +1150,224 @@ describe("classifyCommand — default", () => {
     const sh = classifyCommand(["bash", "-c", "echo hi"]);
     if (sh.kind !== "ask") throw new Error();
     expect(sh.code).not.toBe("command_ask_interpreter");
+  });
+});
+
+describe("classifyCommand — the named shapes (ADR 0064 L1)", () => {
+  const code = (
+    argv: string[],
+    opts?: { shell: boolean; unresolved: boolean },
+  ) => {
+    const r = classifyCommand(argv, opts);
+    return r.kind === "ask" ? r.code : r.kind;
+  };
+  const live = { shell: true, unresolved: true };
+
+  it("a loopback curl/wget is a local smoke test and allows; a real host, a file flag or an unreadable URL is the network", () => {
+    for (const argv of [
+      ["curl", "-s", "http://localhost:4642/notes"],
+      [
+        "curl",
+        "-sS",
+        "-X",
+        "POST",
+        "-H",
+        "content-type: application/json",
+        "-d",
+        '{"text":"x"}',
+        "127.0.0.1:4642/notes",
+      ],
+      ["curl", "-i", "http://[::1]:3000/"],
+      ["curl", "--max-time", "2", "http://0.0.0.0:8080/health"],
+      ["wget", "-q", "-O", "-", "http://localhost:4642/"],
+      ["wget", "--spider", "localhost:8080"],
+    ]) {
+      expect(code(argv), argv.join(" ")).toBe("allow");
+    }
+    for (const argv of [
+      ["curl", "https://example.com/"],
+      ["curl", "-s", "http://localhost:4642/", "https://example.com/"],
+      ["curl", "-o", "out.json", "http://localhost:4642/"],
+      ["curl", "-d", "@secrets.json", "http://localhost:4642/"],
+      ["curl", "-T", "a.txt", "http://localhost:4642/"],
+      ["curl", "-K", "curlrc", "http://localhost:4642/"],
+      ["curl", "--unknown-flag", "http://localhost:4642/"],
+      ["curl", "http://localhost.evil.com/"],
+      ["wget", "-O", "x.html", "http://localhost/"],
+      ["curl"],
+    ]) {
+      expect(code(argv), argv.join(" ")).toBe("command_ask_network");
+    }
+    // Under a live shell an expansion in any token cannot be read.
+    expect(code(["curl", "http://localhost:$PORT/"], live)).not.toBe("allow");
+  });
+
+  it("an interpreter names what it runs: a workspace script, inline code, or a script outside", () => {
+    expect(code(["node", "src/cli.mjs", "list"])).toBe(
+      "command_ask_interpreter",
+    );
+    expect(code(["python3", "scripts/stats.py", "--json"])).toBe(
+      "command_ask_interpreter",
+    );
+    expect(code(["node", "--experimental-vm-modules", "test/run.mjs"])).toBe(
+      "command_ask_interpreter",
+    );
+    for (const argv of [
+      ["node", "-e", "console.log(1)"],
+      ["node", "--eval", "1"],
+      ["node", "-p", "1+1"],
+      ["python", "-c", "print(1)"],
+      ["python3", "-"],
+      ["python3", "-m", "http.server"],
+      ["node", "--input-type=module", "-e", "1"],
+      ["node"],
+      ["deno", "eval", "1"],
+      ["bun", "x", "cowsay"],
+    ]) {
+      expect(code(argv), argv.join(" ")).toBe("command_ask_interpreter_inline");
+    }
+    for (const argv of [
+      ["node", "/tmp/x.mjs"],
+      ["node", "../other/x.mjs"],
+      ["python", "~/tools/t.py"],
+      ["node", "C:\\tools\\x.js"],
+    ]) {
+      expect(code(argv), argv.join(" ")).toBe("command_ask_outside");
+    }
+    // deno/bun: the subcommand is skipped, the script is judged.
+    expect(code(["deno", "run", "main.ts"])).toBe("command_ask_interpreter");
+    expect(code(["bun", "run", "../x.ts"])).toBe("command_ask_outside");
+  });
+
+  it("fs and delete verbs split on WHERE they act — an operand outside the workspace is its own class", () => {
+    expect(code(["cp", "src/a.mjs", "src/b.mjs"])).toBe("command_ask_fs");
+    expect(code(["mkdir", "-p", "out/reports"])).toBe("command_ask_fs");
+    expect(code(["rm", "-f", "notes.json"])).toBe("command_ask_delete");
+    for (const argv of [
+      ["cp", "-r", "src", "/tmp/src_before"],
+      ["mv", "a.txt", "../a.txt"],
+      ["ln", "-s", "/usr/bin/node", "node"],
+      ["touch", "~/.hushlogin"],
+      ["rm", "-f", "/tmp/x.log"],
+      ["mkdir", "C:\\Temp\\x"],
+    ]) {
+      expect(code(argv), argv.join(" ")).toBe("command_ask_outside");
+    }
+    // Live shell: an operand the harness cannot read counts as outside.
+    expect(code(["cp", "a", "$TMPD/"], live)).not.toBe("command_ask_fs");
+  });
+
+  it("tee and sed -i are writes to the files they name; sed scripts that could execute or write elsewhere stay unknown", () => {
+    expect(code(["tee", "out.txt"])).toBe("command_ask_write");
+    expect(code(["tee", "-a", "logs/a.log", "logs/b.log"])).toBe(
+      "command_ask_write",
+    );
+    expect(code(["tee"])).toBe("allow");
+    expect(code(["tee", "/tmp/x"])).toBe("command_ask_outside");
+    expect(
+      code(["sed", "-i", "s/console\\.log/console.info/g", "src/a.mjs"]),
+    ).toBe("command_ask_write");
+    expect(code(["sed", "-i.bak", "-e", "1,3d", "-e", "s/a/b/", "x.txt"])).toBe(
+      "command_ask_write",
+    );
+    expect(code(["sed", "-i", "s/a/b/", "/etc/hosts"])).toBe(
+      "command_ask_outside",
+    );
+    // `e` runs the pattern space, `w` writes another file, `-f` loads a script.
+    for (const argv of [
+      ["sed", "-i", "s/a/b/e", "x.txt"],
+      ["sed", "-i", "s/a/b/w out", "x.txt"],
+      ["sed", "-i", "1e echo hi", "x.txt"],
+      ["sed", "-i", "-f", "script.sed", "x.txt"],
+      ["sed", "-i", "s/a/b/", ""],
+    ]) {
+      expect(code(argv), argv.join(" ")).toBe("command_ask_unknown");
+    }
+    // The read-only sed idiom is untouched.
+    expect(code(["sed", "-n", "1,20p", "x.txt"])).toBe("allow");
+  });
+
+  it("diff and npm ls are reads; npm run is a project script; a workspace-local program is named", () => {
+    expect(code(["diff", "-r", "before", "after"])).toBe("allow");
+    expect(code(["diff", "-u", "a.txt", "b.txt"])).toBe("allow");
+    expect(code(["diff", "a.txt", "/etc/passwd"])).toBe(
+      "command_ask_reader_path",
+    );
+    expect(code(["npm", "ls", "prettier", "--depth=0"])).toBe("allow");
+    expect(code(["pnpm", "list"])).toBe("allow");
+    expect(code(["npm", "run", "format"])).toBe("command_ask_script");
+    expect(code(["npm", "run", "build", "--", "--watch"])).toBe(
+      "command_ask_script",
+    );
+    expect(code(["pnpm", "start"])).toBe("command_ask_script");
+    expect(code(["npm", "run"])).toBe("allow");
+    // …while the allowed test/lint scripts and the network installs are as before.
+    expect(code(["npm", "run", "test"])).toBe("allow");
+    expect(code(["npm", "install", "left-pad"])).toBe("command_ask_network");
+    expect(code(["./bin/notesd.sh", "add", "x"])).toBe(
+      "command_ask_local_exec",
+    );
+    expect(code(["scripts/run.sh"])).toBe("command_ask_local_exec");
+    expect(code(["bin/x", "--flag"])).toBe("command_ask_local_exec");
+    // Not local: absolute, escaping, a bare word, or an expansion.
+    expect(code(["/usr/local/bin/x"])).toBe("command_ask_unknown");
+    expect(code(["../x/run.sh"])).toBe("command_ask_unknown");
+    expect(code(["frobnicate"])).toBe("command_ask_unknown");
+    expect(code(["./bin/$X"], live)).toBe("command_ask_unresolved");
+    // A path-qualified known verb keeps its own class.
+    expect(code(["./bin/rm", "-rf", "build"])).toBe("command_ask_destructive");
+  });
+
+  it("the second lab run's leftovers: git config reads, plain readers, curl -o /dev/null", () => {
+    expect(code(["git", "config", "core.autocrlf"])).toBe("allow");
+    expect(code(["git", "config", "--get", "user.name"])).toBe("allow");
+    expect(code(["git", "config", "--list"])).toBe("allow");
+    expect(code(["git", "config", "-l", "--show-origin"])).toBe("allow");
+    for (const argv of [
+      ["git", "config", "core.autocrlf", "false"],
+      ["git", "config", "--unset", "core.autocrlf"],
+      ["git", "config", "--add", "a.b", "c"],
+      ["git", "config", "-e"],
+      ["git", "config", "--file", "../x", "a.b"],
+      ["git", "config", "--list", "a.b"],
+    ]) {
+      expect(code(argv), argv.join(" ")).toBe("command_ask_vcs");
+    }
+    for (const argv of [
+      ["od", "-c", "README.md"],
+      ["hexdump", "-C", "a.bin"],
+      ["file", "src/a.mjs", "scripts/x.mjs"],
+      ["stat", "package.json"],
+      ["du", "-sh", "node_modules"],
+      ["sha256sum", "dist/app.js"],
+      ["tac", "CHANGELOG.md"],
+      ["paste", "-d,", "a.txt", "b.txt"],
+      ["basename", "src/a.mjs"],
+    ]) {
+      expect(code(argv), argv.join(" ")).toBe("allow");
+    }
+    expect(code(["od", "-c", "/etc/passwd"])).toBe("command_ask_reader_path");
+    expect(code(["stat", "~/.ssh/id_rsa"])).toBe("command_ask_reader_path");
+    // The readers' own knobs stay asks.
+    expect(code(["file", "-C", "-m", "magic"])).toBe("command_ask_unknown");
+    expect(code(["xxd", "-r", "in.hex", "out.bin"])).toBe(
+      "command_ask_unknown",
+    );
+    expect(code(["sha256sum", "-c", "sums.txt"])).toBe("command_ask_unknown");
+    // The status-code idiom discards the body; a real output file is a write.
+    expect(
+      code([
+        "curl",
+        "-sS",
+        "-o",
+        "/dev/null",
+        "-w",
+        "%{http_code}\n",
+        "http://localhost:4642/x",
+      ]),
+    ).toBe("allow");
+    expect(code(["curl", "-o", "out.html", "http://localhost:4642/x"])).toBe(
+      "command_ask_network",
+    );
   });
 });
