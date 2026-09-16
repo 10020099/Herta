@@ -3,6 +3,7 @@ import type { PromptLang } from "./prompt-lang.js";
 import {
   actorHintTexts,
   BEAT_HINT_PATCH_PREVIEW,
+  BEAT_HINT_STEER,
   BEAT_HINT_TOOL_FAIL,
   BEAT_HINT_VERIFICATION_FINISHED,
   PHASE_TWO_SPEECH_HINT,
@@ -40,6 +41,8 @@ export interface ActorHints {
   readonly beatPatchPreview: string;
   readonly beatVerification: string;
   readonly beatToolFail: string;
+  /** The steer beat (ADR 0063 §1.4): the user cut in while 板砖 works. */
+  readonly beatSteer: string;
   readonly supervisorVetoTemplate: string;
   /** Rethink-respeak stage 1 (2026-07-18): the fresh （我 想） that digests
    *  a supervisor veto before the respeak. Carries `{{reason}}`. */
@@ -89,6 +92,7 @@ export const DEFAULT_ACTOR_HINTS: ActorHints = {
   beatPatchPreview: BEAT_HINT_PATCH_PREVIEW,
   beatVerification: BEAT_HINT_VERIFICATION_FINISHED,
   beatToolFail: BEAT_HINT_TOOL_FAIL,
+  beatSteer: BEAT_HINT_STEER,
   supervisorVetoTemplate: SUPERVISOR_VETO_TEMPLATE,
   supervisorRethinkTemplate: SUPERVISOR_RETHINK_TEMPLATE_TEXT.zh,
   supervisorRespeak: SUPERVISOR_RESPEAK_TEXT.zh,
@@ -114,6 +118,7 @@ export function defaultActorHintsFor(lang: PromptLang = "zh"): ActorHints {
     beatPatchPreview: t.beatPatchPreview,
     beatVerification: t.beatVerification,
     beatToolFail: t.beatToolFail,
+    beatSteer: t.beatSteer,
     supervisorVetoTemplate: SUPERVISOR_VETO_TEMPLATE_TEXT[lang],
     supervisorRethinkTemplate: SUPERVISOR_RETHINK_TEMPLATE_TEXT[lang],
     supervisorRespeak: SUPERVISOR_RESPEAK_TEXT[lang],
@@ -146,6 +151,8 @@ export function selectBeatHint(
     return hints.beatVerification;
   }
   if (triggerSignature.startsWith("tool.fail:")) return hints.beatToolFail;
+  // The user cut in (ADR 0063): `steer:<id>`, one per interjection.
+  if (triggerSignature.startsWith("steer:")) return hints.beatSteer;
   return hints.phase2Speech;
 }
 
@@ -199,6 +206,7 @@ export function loadActorHints(lang: PromptLang = "zh"): ActorHints {
       defaults.beatVerification,
     ),
     beatToolFail: splice(asset(hints, "beat_tool_fail"), defaults.beatToolFail),
+    beatSteer: splice(asset(hints, "beat_steer"), defaults.beatSteer),
     supervisorVetoTemplate:
       asset(hints, "supervisor_veto") ?? defaults.supervisorVetoTemplate,
     supervisorRethinkTemplate:

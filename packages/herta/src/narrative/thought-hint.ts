@@ -398,6 +398,22 @@ const BEAT_HINT_TOOL_FAIL_TEXT: Record<PromptLang, string> = {
 export const BEAT_HINT_TOOL_FAIL = BEAT_HINT_TOOL_FAIL_TEXT.zh;
 
 /**
+ * The steer beat (ADR 0063 §1.4, hint 2026-09-16): the user cut in while
+ * 板砖 works. Without its own hint the beat fell through to the generic
+ * speech hint, and Herta could promise on 板砖's behalf or narrate as if
+ * she had relayed the message herself. This one keeps her to what is
+ * true: 板砖 reads the line at its next step; she heard it, and may have a
+ * take on it. Written in her own voice like every hint — how she carries
+ * herself, not an order handed to her (owner 2026-09-16).
+ */
+const BEAT_HINT_STEER_TEXT: Record<PromptLang, string> = {
+  zh: `〔开拓者刚插了一句进来，就在上面。板砖手里的活没停，这句它下一步抬头就看见——不用我转达，也轮不到我替它应下。我接一句：听见了，板砖会看；这句本身有值得说的，就说我的看法。一句。不复述原话，不装作已经做完。${BEAT_NO_BANZHUAN_CLAUSE_TEXT.zh}必须以（我 说）开始，以（/我 说）结束。〕`,
+  en: `〔The Trailblazer just cut in — the line is right above. 板砖 hasn't stopped; it sees that line the next time it looks up, so I don't relay it, and I don't promise anything on its behalf. One line from me: heard, 板砖 will see it; if the line itself deserves a take, my take. One line. Don't repeat their words back, don't pretend it's already done. ${BEAT_NO_BANZHUAN_CLAUSE_TEXT.en} Must start with （我 说） and end with （/我 说）.〕`,
+};
+
+export const BEAT_HINT_STEER = BEAT_HINT_STEER_TEXT.zh;
+
+/**
  * The full set of language-selectable actor hint texts (EN interaction
  * slice 3b). Shape mirrors `ActorHints` in `actor-hints.ts` minus
  * `supervisorVetoTemplate` (that default lives there), plus the shared
@@ -419,6 +435,7 @@ export interface ActorHintTexts {
   readonly beatPatchPreview: string;
   readonly beatVerification: string;
   readonly beatToolFail: string;
+  readonly beatSteer: string;
 }
 
 export function actorHintTexts(lang: PromptLang = "zh"): ActorHintTexts {
@@ -449,5 +466,6 @@ export function actorHintTexts(lang: PromptLang = "zh"): ActorHintTexts {
     beatPatchPreview: BEAT_HINT_PATCH_PREVIEW_TEXT[lang],
     beatVerification: BEAT_HINT_VERIFICATION_FINISHED_TEXT[lang],
     beatToolFail: BEAT_HINT_TOOL_FAIL_TEXT[lang],
+    beatSteer: BEAT_HINT_STEER_TEXT[lang],
   };
 }

@@ -134,8 +134,10 @@ describe("runBackendTurnLoop", () => {
     })) {
       // drain
     }
-    // Drained at the head of BOTH iterations, and only there.
-    expect(drains).toBe(2);
+    // Drained at the head of BOTH iterations, plus once at the exit after
+    // the second (no-tool-call) answer — the late-steer check of §1.8 —
+    // and nowhere else (never mid-batch).
+    expect(drains).toBe(3);
     expect(JSON.stringify(frames[0])).not.toContain(
       "also rename the test file",
     );
@@ -148,6 +150,55 @@ describe("runBackendTurnLoop", () => {
     expect(user?.role === "user" ? user.text : "").toBe(
       "also rename the test file",
     );
+  });
+
+  it("a steer that lands during the FINAL inference is not lost: the loop drains once more and runs another iteration with it (ADR 0063 §1.8)", async () => {
+    const frames: ProviderPromptFrame[] = [];
+    const pending: string[] = [];
+    // Two inferences: the first declares itself done (no tool calls) while
+    // the steer arrives mid-answer; the second is the extra round the steer
+    // earns, and it stops.
+    const provider = new FakeProvider({
+      turns: [
+        (frame) => {
+          frames.push(frame);
+          pending.push("顺便再建一个 d.txt");
+          return [
+            { type: "text-delta", text: "done" },
+            { type: "finish", reason: "stop" },
+          ];
+        },
+        (frame) => {
+          frames.push(frame);
+          return [{ type: "finish", reason: "stop" }];
+        },
+      ],
+    });
+    const deps = buildDeps(provider);
+    let drains = 0;
+    const types: string[] = [];
+    for await (const ev of runBackendTurnLoop(deps, sampleBrief, {
+      signal: new AbortController().signal,
+      userMessages: sampleUserMessages,
+      takePendingUserInput: () => {
+        drains += 1;
+        return pending.splice(0);
+      },
+    })) {
+      types.push(ev.type);
+    }
+    // Head 1 (empty), the late drain after "done" (the steer), head 2
+    // (empty), the late drain after the second stop (empty).
+    expect(drains).toBe(4);
+    expect(frames).toHaveLength(2);
+    expect(JSON.stringify(frames[0])).not.toContain("顺便再建一个 d.txt");
+    expect(JSON.stringify(frames[1])).toContain("顺便再建一个 d.txt");
+    // The transcript keeps it as a user message AFTER the assistant's
+    // "done", and the turn still ends cleanly.
+    const roles = deps.transcript.all().map((m) => m.role);
+    expect(roles.indexOf("user")).toBeGreaterThan(roles.indexOf("assistant"));
+    expect(types).toContain("turn.finished");
+    expect(types).not.toContain("turn.failed");
   });
 
   it("does NOT append the brief's userRequestQuoted to the transcript", async () => {

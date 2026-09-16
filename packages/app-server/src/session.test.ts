@@ -2233,6 +2233,99 @@ describe("Session — steerText, a message while 板砖 works (ADR 0063)", () =>
     ).toHaveLength(1);
     await session.close();
   }, 20_000);
+
+  it("a steer that lands during 板砖's FINAL inference still reaches it: the loop runs one more round with it instead of dropping it at turn end (ADR 0063 §1.8)", async () => {
+    const cfg = mkConfig();
+    const { V2RecordPersister } = await import("@herta/core");
+    const { randomUUID } = await import("node:crypto");
+    const sessionId = randomUUID();
+    const persister = V2RecordPersister.forNewSession({
+      sessionId,
+      workspaceRoot: cfg.workspaceRoot,
+      startedAt: new Date(),
+      transcriptDir: cfg.transcriptDir,
+    });
+    const actorStub = stubCompletionProvider([
+      { deltas: ["@板砖 看看 nope.txt。（/我 说）"], stopReason: "stop" },
+      { deltas: ["听见了，板砖会看。（/我 说）"], stopReason: "stop" },
+      { deltas: ["行，都弄完了。（/我 说）"], stopReason: "stop" },
+    ]);
+    // Backend: the FIRST inference is the LAST one 板砖 intended — no tool
+    // call, a plain stop — and the steer lands while it runs. Before §1.8
+    // the loop broke right there and the turn's cleanup discarded the text;
+    // now the loop drains it and runs a second inference that carries it.
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let firstCallStarted: () => void = () => {};
+    const firstCall = new Promise<void>((r) => {
+      firstCallStarted = r;
+    });
+    const frames: unknown[] = [];
+    type Adapter = import("@herta/core").ProviderAdapter;
+    type Ev = import("@herta/core").ProviderEvent;
+    const backendStub: Adapter = {
+      streamChat(frame) {
+        frames.push(JSON.parse(JSON.stringify(frame)));
+        const n = frames.length;
+        return (async function* () {
+          if (n === 1) {
+            firstCallStarted();
+            await gate;
+            yield { type: "text-delta", text: "看完了。" } as Ev;
+          }
+          yield { type: "finish", reason: "stop" } as Ev;
+        })();
+      },
+    };
+    const stubRouter = stubChatProvider([
+      {
+        events: [
+          { type: "text-delta", text: "默认" },
+          { type: "finish", reason: "stop" },
+        ],
+      },
+    ]);
+    const session = await SessionImpl.create({
+      sessionId,
+      workspaceRoot: cfg.workspaceRoot,
+      effectiveWorkspace: cfg.workspaceRoot,
+      isDefaultWorkspace: false,
+      config: cfg,
+      persister,
+      deps: {
+        providerOverrides: {
+          actor: actorStub,
+          backend: backendStub,
+          router: stubRouter,
+          title: stubChatProvider([]),
+        },
+        staticPrefixOverride: { bio: "[test-bio]", env: "", fewShots: [] },
+        metaThinkOverride: emptyMetaThinkCorpus(),
+        supervisorReferenceOverride: "",
+        openingOverride: null,
+      },
+    });
+
+    const turn = session.submitText("看看 nope.txt");
+    await firstCall;
+    const answer = await session.steerText("也把测试文件改名");
+    expect("accepted" in answer).toBe(true);
+    release();
+    await turn;
+
+    // 板砖 ran a second inference, and that one carries the steer.
+    expect(frames).toHaveLength(2);
+    expect(JSON.stringify(frames[0])).not.toContain("也把测试文件改名");
+    expect(JSON.stringify(frames[1])).toContain("也把测试文件改名");
+    // The record shows it once, as a user block, with the beat after it.
+    const record = session.record;
+    expect(
+      record.filter((b) => b.kind === "user" && b.text === "也把测试文件改名"),
+    ).toHaveLength(1);
+    await session.close();
+  }, 20_000);
 });
 
 describe("Session — the repository probe behind the rail's card (ADR 0058)", () => {

@@ -436,7 +436,22 @@ export async function* runBackendTurnLoop(
       );
       yield* emit({ type: "assistant.final", message: finalMsg });
 
-      if (accToolCalls.length === 0) break;
+      if (accToolCalls.length === 0) {
+        // A steer that landed during THIS inference (ADR 0063 §1.8): the
+        // model just declared itself done without having read it, and the
+        // head only drains before an inference — there would be none. So
+        // drain once more here, and if anything arrived, go round again:
+        // 板砖 decides with the words in front of it whether more work is
+        // needed. Otherwise the text was cleared at turn end while the
+        // record already showed it delivered (the user block, Herta's
+        // beat) — a message everyone but 板砖 had seen.
+        const late = handle.takePendingUserInput?.() ?? [];
+        if (late.length === 0) break;
+        for (const text of late) {
+          deps.transcript.appendUser(text, deps.clock());
+        }
+        continue;
+      }
 
       // Tool branch. Consecutive READ-ONLY calls execute as one concurrent
       // batch (ADR 0025 slice 5 — HertaTool.readOnly is the safety marker);
