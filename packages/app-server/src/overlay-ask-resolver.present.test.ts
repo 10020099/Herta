@@ -418,7 +418,7 @@ describe("OverlayAskResolver — workspace trust (ADR 0064)", () => {
       programs: ["git"],
     });
 
-  it("offers 「信任这个工作区」 on a covered class, and a 'trust' resolution turns trust on for the workspace", async () => {
+  it("offers 「信任此工作区」 on a covered class, and a 'trust' resolution turns trust on for the workspace", async () => {
     const root = mkdtempSync(join(tmpdir(), "herta-overlay-trust-"));
     try {
       const rules = new ProjectCommandRuleStore(() => root);

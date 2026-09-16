@@ -443,10 +443,10 @@ describe("DeviceCard", () => {
     );
     expect(mock.calls.getWorkspaceTrust).toBe(1);
     fireEvent.click(
-      screen.getByRole("button", { name: "Ask each time instead" }),
+      screen.getByRole("button", { name: "Confirm each operation instead" }),
     );
     await waitFor(() =>
-      expect(screen.queryByText("Asks each time")).toBeTruthy(),
+      expect(screen.queryByText("Confirms each operation")).toBeTruthy(),
     );
     expect(mock.calls.setWorkspaceTrust).toEqual(["ask"]);
     fireEvent.click(
@@ -455,7 +455,7 @@ describe("DeviceCard", () => {
     await waitFor(() =>
       expect(
         screen.queryByText(
-          "Trusted: writes, git and scripts inside it don't ask",
+          "Trusted: writes, git operations and scripts within it no longer request confirmation",
         ),
       ).toBeTruthy(),
     );

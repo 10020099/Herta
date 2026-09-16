@@ -150,7 +150,7 @@ export class CliAskResolver implements AskResolver {
     if (opts.showTrust === true) {
       this.stdout.write(
         this.style.dim(
-          "  [t] trusts this workspace: writes, fs ops, non-destructive git and workspace scripts stop asking; network, destructive and out-of-workspace still do\n",
+          "  [t] trusts this workspace: file writes, filesystem operations, non-destructive git and workspace scripts no longer ask; network, destructive and out-of-workspace operations still do\n",
         ),
       );
     }

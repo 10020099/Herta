@@ -697,7 +697,7 @@ describe("ApprovalPanel — workspace trust (ADR 0064)", () => {
       });
     });
     expect(
-      screen.getByText(/After “Trust this workspace”/),
+      screen.getByText(/Once this workspace is trusted/),
     ).toBeInTheDocument();
     fireEvent.click(
       screen.getByRole("button", { name: "Trust this workspace" }),
@@ -715,6 +715,6 @@ describe("ApprovalPanel — workspace trust (ADR 0064)", () => {
     expect(
       screen.queryByRole("button", { name: "Trust this workspace" }),
     ).not.toBeInTheDocument();
-    expect(screen.queryByText(/After “Trust this workspace”/)).toBeNull();
+    expect(screen.queryByText(/Once this workspace is trusted/)).toBeNull();
   });
 });

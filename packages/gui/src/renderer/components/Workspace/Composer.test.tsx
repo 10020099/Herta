@@ -575,7 +575,7 @@ describe("Composer — a message while 板砖 works (ADR 0063)", () => {
     expect(screen.queryByTestId("composer-held")).toBeNull();
     expect(input.value).toBe("also rename the test file");
     hold("drop me");
-    fireEvent.click(screen.getByLabelText("Discard"));
+    fireEvent.click(screen.getByLabelText("Withdraw"));
     expect(screen.queryByTestId("composer-held")).toBeNull();
     expect(mock.calls.submitText).toHaveLength(0);
   });
@@ -652,7 +652,9 @@ describe("Composer — a message while 板砖 works (ADR 0063)", () => {
     });
     expect(mock.calls.stageImages).toHaveLength(0);
     const notice = screen.getByRole("status");
-    expect(notice.textContent).toBe("Turn not finished — cannot add files");
+    expect(notice.textContent).toBe(
+      "The current turn is still in progress — files cannot be added",
+    );
     // The pill is a footer child beside the card, not the form's: anchored
     // to the form's top edge it sat exactly on the card (owner 2026-09-16).
     expect(form.contains(notice)).toBe(false);
@@ -1117,9 +1119,7 @@ describe("Composer — attachments (ADR 0033)", () => {
     await act(async () => {
       fireEvent.drop(form, fileDrop([{ name: "a.md" }]));
     });
-    expect(
-      screen.getByText(/Turn not finished — cannot add files/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/files cannot be added/i)).toBeInTheDocument();
   });
 
   it("names the too-many refusal specifically", async () => {
@@ -1339,9 +1339,7 @@ describe("Composer — attachments (ADR 0033)", () => {
     await act(async () => {
       fireEvent.drop(form, fileDrop([{ name: "shot.png" }]));
     });
-    expect(
-      screen.getByText(/Turn not finished — cannot add files/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/files cannot be added/i)).toBeInTheDocument();
     expect(container.querySelectorAll(".composer-staged__item")).toHaveLength(
       0,
     );

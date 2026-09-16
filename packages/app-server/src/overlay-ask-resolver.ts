@@ -173,7 +173,7 @@ export class OverlayAskResolver implements AskResolver {
         // Same contract for the 「本项目允许」 button (ADR 0030): present only
         // when persistence:"always" would actually save this exact rule.
         projectRule: pre.projectRule,
-        // And for 「信任这个工作区」 (ADR 0064): only when the tier would
+        // And for 「信任此工作区」 (ADR 0064): only when the tier would
         // cover this class and the workspace does not trust yet.
         ...(pre.showTrust ? { trustable: true } : {}),
       };

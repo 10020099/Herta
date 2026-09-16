@@ -269,9 +269,9 @@ export const zh = {
   // diff below) — 2026-08-17.
   "approval.heredocFolded": "    ⋯ 已折叠 {n} 行，内容见下方差异 ⋯",
   // Workspace trust (ADR 0064): the button, and the one-line scope above it.
-  "approval.trustWorkspace": "信任这个工作区",
+  "approval.trustWorkspace": "信任此工作区",
   "approval.trustNote":
-    "「信任这个工作区」后，工作区内的改文件、建目录、非破坏性 git、运行工作区脚本不再询问；联网、删库、越出工作区仍会问。可在设备卡菜单取消。",
+    "选择「信任此工作区」后，工作区内的文件修改、目录创建、非破坏性 git 操作与工作区脚本的执行将不再请求确认；网络访问、破坏性操作及工作区之外的操作仍会请求确认。可在设备卡片菜单中撤销。",
   "composer.placeholder": "给黑塔发消息…",
   "composer.aria": "消息输入框",
   "composer.send": "发送消息",
@@ -287,7 +287,7 @@ export const zh = {
   // The composer-notice pill (owner 2026-08-27): terse, formal, and NO
   // trailing 。 — a pill is a label, not a sentence. Settings-row prose keeps
   // its periods; these do not.
-  "composer.attach.busy": "回合还未结束，无法添加文件",
+  "composer.attach.busy": "当前回合尚未结束，无法添加文件",
   "composer.attach.tooMany": "最多十个文件",
   "composer.attach.failed": "文件加载失败",
   "composer.attach.denied": "涉及密钥或凭据，上传失败",
@@ -304,10 +304,10 @@ export const zh = {
   // instead of interrupting; it goes as the next turn unless the user
   // interjects it into the running work or takes it back. Only while the
   // coprocessor runs — a conversation with Herta has no such strip.
-  "composer.hold.label": "等板砖做完再发",
-  "composer.hold.aria": "待发的消息",
-  "composer.hold.steer": "现在插话",
-  "composer.hold.edit": "改一下",
+  "composer.hold.label": "待板砖完成后发送",
+  "composer.hold.aria": "待发送的消息",
+  "composer.hold.steer": "立即插入",
+  "composer.hold.edit": "修改",
   "composer.hold.discard": "撤回",
   // Click-to-enlarge lightbox (ADR 0048 §4a). `lightbox.open` prefixes the
   // thumb button's aria-label, followed by the filename.
@@ -559,11 +559,11 @@ export const zh = {
   "card.rulesRemove": "删除规则 {rule}",
   // Workspace trust (ADR 0064) — the row in the device card's menu.
   "card.trust": "工作区信任",
-  "card.trustOn": "已信任：工作区内的写入、git、脚本不再询问",
+  "card.trustOn": "已信任：工作区内的写入、git 操作与脚本执行不再请求确认",
   "card.trustOnDefault": "沙盒工作区，默认信任",
-  "card.trustOff": "逐项询问",
-  "card.trustEnable": "信任这个工作区",
-  "card.trustDisable": "改为逐项询问",
+  "card.trustOff": "逐项确认",
+  "card.trustEnable": "信任此工作区",
+  "card.trustDisable": "改为逐项确认",
   "card.deviceInfoAria": "设备卡片信息",
   "card.deviceInfo":
     "设备卡片代表板砖（差分协处理器）——黑塔的编码执行后端。光环颜色与呼吸节奏反映后端当前状态（空闲、读取、写入、运行、等待批准等）。",

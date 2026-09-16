@@ -298,7 +298,7 @@ export const en = {
   "approval.heredocFolded": "    ⋯ {n} lines folded — see the diff below ⋯",
   "approval.trustWorkspace": "Trust this workspace",
   "approval.trustNote":
-    "After “Trust this workspace”, file edits, new directories, non-destructive git and workspace scripts inside it stop asking; network, destructive and out-of-workspace operations still do. Revoke it from the device card's menu.",
+    "Once this workspace is trusted, file edits, directory creation, non-destructive git operations and workspace scripts within it no longer request confirmation; network access, destructive operations and anything outside the workspace still do. This can be revoked from the device card's menu.",
   "composer.placeholder": "Message Herta…",
   "composer.aria": "Message composer",
   "composer.send": "Send message",
@@ -309,7 +309,8 @@ export const en = {
   // The composer-notice pill (owner 2026-08-27): terse, formal, and NO
   // trailing period — a pill is a label, not a sentence. Settings-row prose
   // keeps its periods; these do not.
-  "composer.attach.busy": "Turn not finished — cannot add files",
+  "composer.attach.busy":
+    "The current turn is still in progress — files cannot be added",
   "composer.attach.tooMany": "Ten files at most",
   "composer.attach.failed": "Adding files failed",
   "composer.attach.denied": "Credential-shaped — refused",
@@ -325,11 +326,11 @@ export const en = {
   // A message while Brick works (ADR 0063): held above the composer, sent as
   // the next turn unless interjected or taken back. The composer keeps its
   // ordinary placeholder meanwhile (owner 2026-09-15): the card says it.
-  "composer.hold.label": "Sends when Brick is done",
-  "composer.hold.aria": "Message waiting to send",
+  "composer.hold.label": "Sent after Brick finishes",
+  "composer.hold.aria": "Message queued to send",
   "composer.hold.steer": "Interject now",
   "composer.hold.edit": "Edit",
-  "composer.hold.discard": "Discard",
+  "composer.hold.discard": "Withdraw",
   // Click-to-enlarge lightbox (ADR 0048 §4a). `lightbox.open` prefixes the
   // thumb button's aria-label, followed by the filename.
   "lightbox.open": "View picture",
@@ -565,11 +566,12 @@ export const en = {
   "card.rulesEmpty": "No commands remembered",
   "card.rulesRemove": "Remove rule {rule}",
   "card.trust": "Workspace trust",
-  "card.trustOn": "Trusted: writes, git and scripts inside it don't ask",
+  "card.trustOn":
+    "Trusted: writes, git operations and scripts within it no longer request confirmation",
   "card.trustOnDefault": "Sandbox workspace, trusted by default",
-  "card.trustOff": "Asks each time",
+  "card.trustOff": "Confirms each operation",
   "card.trustEnable": "Trust this workspace",
-  "card.trustDisable": "Ask each time instead",
+  "card.trustDisable": "Confirm each operation instead",
   "card.deviceInfoAria": "device card info",
   "card.deviceInfo":
     "The device card represents Brick (the differential coprocessor) — " +
