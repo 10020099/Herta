@@ -13,16 +13,31 @@ import {
   V2RecordPersister,
   writeSessionTitle,
 } from "@herta/core";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   createSessionHost,
   makeLifecycleSerializer,
   wrapSessionForDreamActivity,
 } from "./session-host.js";
+import { removeTmpDir } from "./testing/tmp-workspace.js";
 import type { AppServerConfig, Session } from "./types.js";
+
+/** Every workspace mkConfig() makes, removed after the test that made it —
+ *  a suite run used to leave one `herta-app-server-test-*` per call under
+ *  %TEMP% (tens of thousands by 2026-09-16). Same pattern as
+ *  session-wiring.test.ts. Each test here closes its own session before it
+ *  ends, so nothing still writes into the tree being removed — but a
+ *  reopened session's repository probe runs `git` with THIS workspace as
+ *  its cwd (the legacy fallback), and close() does not wait for that child;
+ *  removeTmpDir waits it out. */
+const tmpDirs: string[] = [];
+afterEach(async () => {
+  for (const d of tmpDirs.splice(0)) await removeTmpDir(d);
+});
 
 function mkConfig(): AppServerConfig {
   const root = mkdtempSync(join(tmpdir(), "herta-app-server-test-"));
+  tmpDirs.push(root);
   return {
     workspaceRoot: root,
     transcriptDir: join(root, ".herta", "transcript", "v2"),

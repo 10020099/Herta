@@ -27,6 +27,7 @@ import {
   stubChatProvider,
   stubCompletionProvider,
 } from "./testing/stub-providers.js";
+import { removeTmpDir } from "./testing/tmp-workspace.js";
 import type {
   AppServerConfig,
   RecordEvent,
@@ -57,8 +58,32 @@ function emptyMetaThinkCorpus(): import("@herta/herta").MetaThinkCorpus {
   return { preThink: { ...blank }, preSpeak: { ...blank } };
 }
 
+/** Every workspace mkConfig() makes, removed after the test that made it —
+ *  a suite run used to leave one `herta-app-server-session-test-*` per call
+ *  under %TEMP% (tens of thousands by 2026-09-16). Same pattern as
+ *  session-wiring.test.ts.
+ *
+ *  A stub session still open at that point (a test that failed before its
+ *  cleanup, or never called it) is closed FIRST: close() awaits the in-flight
+ *  turn's settlement, so no late append or `mkdirSync` can land in — or
+ *  recreate — the tree being removed, and on Windows an open handle would
+ *  make the remove itself fail. What close() does NOT wait for is a child
+ *  whose cwd is the workspace (the repository probe's `git`, the backend's
+ *  shell); removeTmpDir waits those out. */
+const tmpDirs: string[] = [];
+const openSessions = new Set<SessionImpl>();
+afterEach(async () => {
+  // A test that installed fake timers and failed before restoring them would
+  // otherwise hang close()'s setImmediate hop until the hook timeout.
+  vi.useRealTimers();
+  for (const s of openSessions) await s.close();
+  openSessions.clear();
+  for (const d of tmpDirs.splice(0)) await removeTmpDir(d);
+});
+
 function mkConfig(): AppServerConfig {
   const root = mkdtempSync(join(tmpdir(), "herta-app-server-session-test-"));
+  tmpDirs.push(root);
   return {
     workspaceRoot: root,
     transcriptDir: join(root, ".herta", "transcript", "v2"),
@@ -397,9 +422,13 @@ async function mkStubSession(
     },
   });
 
+  openSessions.add(session);
   return {
     session,
-    cleanup: () => session.close(),
+    cleanup: async () => {
+      openSessions.delete(session);
+      await session.close();
+    },
   };
 }
 
