@@ -445,6 +445,20 @@ export function Composer(): JSX.Element {
 
   return (
     <>
+      {/* The notice pill (rewind spill, attach refusals) floats above the
+          FOOTER, not the form: anchored to the form's top edge it landed
+          exactly on the held card (owner 2026-09-16 — a picture pasted
+          while a message waits is refused, and the refusal must not cover
+          the message). `bottom: 100%` of the footer is the composer's top
+          edge when nothing is held and the card's top edge when it is. */}
+      {noticeText !== null && (
+        <div
+          className={`composer-notice${noticeExiting ? " is-exiting" : ""}`}
+          role="status"
+        >
+          {noticeText}
+        </div>
+      )}
       {/* The held message (ADR 0063): sent while 板砖 worked, waiting to go
           as the next turn — or to be interjected into the running work, put
           back for editing, or discarded. Nothing here is in the record. A
@@ -612,14 +626,6 @@ export function Composer(): JSX.Element {
         <div className="composer-wave" aria-hidden="true">
           <AuraVisual />
         </div>
-        {noticeText !== null && (
-          <div
-            className={`composer-notice${noticeExiting ? " is-exiting" : ""}`}
-            role="status"
-          >
-            {noticeText}
-          </div>
-        )}
         {/* Staged pictures (ADR 0048 §4) — above the input, where the message
           they belong to is being written. Nothing here is in the record yet:
           the × removes a picture as if it had never arrived, which is the

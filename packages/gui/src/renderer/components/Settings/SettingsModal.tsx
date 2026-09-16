@@ -82,7 +82,10 @@ const DeepSeekIcon = (): JSX.Element => (
   </svg>
 );
 
-const GlobeIcon = (): JSX.Element => (
+// 语言: a 文 over an A — the translate mark (owner 2026-09-16: the globe
+// read as a browser icon). The 文 is its tick, bar and the two crossing
+// falling strokes; the A carries its crossbar; the two sit on a diagonal.
+const LanguageIcon = (): JSX.Element => (
   <svg
     width="17"
     height="17"
@@ -94,8 +97,8 @@ const GlobeIcon = (): JSX.Element => (
     strokeLinejoin="round"
     aria-hidden="true"
   >
-    <circle cx="12" cy="12" r="9" />
-    <path d="M3 12h18M12 3c2.5 2.5 2.5 15 0 18M12 3c-2.5 2.5-2.5 15 0 18" />
+    <path d="M8 2.5V5M3 5h10M11 8.5 4 15M5 8.5c1 2.6 3 4.9 6 6.4" />
+    <path d="m13.5 21 4.25-9.5L22 21M15.1 17.4h5.3" />
   </svg>
 );
 
@@ -167,7 +170,7 @@ const GROUPS = [
       {
         key: "language",
         labelKey: "nav.language" satisfies MessageKey,
-        Icon: GlobeIcon,
+        Icon: LanguageIcon,
         Pane: LanguageSettings,
       },
       {

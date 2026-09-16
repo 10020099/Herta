@@ -634,6 +634,38 @@ describe("Composer — a message while 板砖 works (ADR 0063)", () => {
     expect(store().takeLaunch()).toBeNull();
   });
 
+  it("nothing rides a held message: a picture pasted while one waits is refused, the refusal floats above the footer (never over the card), the card keeps its text, and the attach button is disabled", async () => {
+    const { mock, container } = renderComposer();
+    startCommission(mock);
+    const input = hold("also rename the test file");
+    const form = input.closest("form") as HTMLFormElement;
+    expect(
+      (screen.getByLabelText("Add documents") as HTMLButtonElement).disabled,
+    ).toBe(true);
+    const file = {
+      name: "shot.png",
+      type: "image/png",
+      arrayBuffer: async () => new Uint8Array([0x89]).buffer,
+    };
+    await act(async () => {
+      fireEvent.paste(form, { clipboardData: { files: [file] } });
+    });
+    expect(mock.calls.stageImages).toHaveLength(0);
+    const notice = screen.getByRole("status");
+    expect(notice.textContent).toBe("Turn not finished — cannot add files");
+    // The pill is a footer child beside the card, not the form's: anchored
+    // to the form's top edge it sat exactly on the card (owner 2026-09-16).
+    expect(form.contains(notice)).toBe(false);
+    expect(notice.parentElement).toBe(form.parentElement);
+    const card = screen.getByTestId("composer-held");
+    expect(card.querySelector(".composer-held__text")?.textContent).toBe(
+      "also rename the test file",
+    );
+    expect(container.querySelectorAll(".composer-staged__item")).toHaveLength(
+      0,
+    );
+  });
+
   it("the EN alias applies at delivery, not at the hold: @brick is held as typed and sent as @板砖", () => {
     const { mock } = renderComposer();
     act(() => {
