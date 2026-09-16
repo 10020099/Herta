@@ -407,8 +407,8 @@ export const BEAT_HINT_TOOL_FAIL = BEAT_HINT_TOOL_FAIL_TEXT.zh;
  * herself, not an order handed to her (owner 2026-09-16).
  */
 const BEAT_HINT_STEER_TEXT: Record<PromptLang, string> = {
-  zh: `〔开拓者刚插了一句进来，就在上面。板砖手里的活没停，这句它下一步抬头就看见——不用我转达，也轮不到我替它应下。我接一句：听见了，板砖会看；这句本身有值得说的，就说我的看法。一句。不复述原话，不装作已经做完。${BEAT_NO_BANZHUAN_CLAUSE_TEXT.zh}必须以（我 说）开始，以（/我 说）结束。〕`,
-  en: `〔The Trailblazer just cut in — the line is right above. 板砖 hasn't stopped; it sees that line the next time it looks up, so I don't relay it, and I don't promise anything on its behalf. One line from me: heard, 板砖 will see it; if the line itself deserves a take, my take. One line. Don't repeat their words back, don't pretend it's already done. ${BEAT_NO_BANZHUAN_CLAUSE_TEXT.en} Must start with （我 说） and end with （/我 说）.〕`,
+  zh: `〔开拓者刚插了一句进来，就在上面。板砖手里的活没停，这条插入的消息它下一步就能收到——不用我转达，也不需要我替它处理。我也简单附和一下他，如果他插的这句话有值得说的，就说我的看法。一句。不复述原话，不装作已经做完。${BEAT_NO_BANZHUAN_CLAUSE_TEXT.zh}必须以（我 说）开始，以（/我 说）结束。〕`,
+  en: `〔The Trailblazer just cut in — the line is right above. 板砖 hasn't stopped; it receives that inserted message at its next step — I don't relay it, and I don't need to handle it for it. I give them a brief word back too; if what they cut in with deserves a take, my take. One line. Don't repeat their words back, don't pretend it's already done. ${BEAT_NO_BANZHUAN_CLAUSE_TEXT.en} Must start with （我 说） and end with （/我 说）.〕`,
 };
 
 export const BEAT_HINT_STEER = BEAT_HINT_STEER_TEXT.zh;

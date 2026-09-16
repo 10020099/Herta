@@ -141,7 +141,8 @@ describe("selectBeatHint", () => {
     expect(hint).not.toBe(h.phase2Speech);
     // Her own account of the moment, not an order: 板砖 reads the line at
     // its next step, she does not relay it or answer for it.
-    expect(hint).toContain("不用我转达");
+    expect(hint).toContain("不用我转达，也不需要我替它处理");
+    expect(hint).toContain("我也简单附和一下他");
     expect(hint).toContain("不装作已经做完");
     expect(hint).toContain("必须以（我 说）开始，以（/我 说）结束");
     // The compiled asset carries the same, with the shared clause spliced.
