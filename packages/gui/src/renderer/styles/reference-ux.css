@@ -2007,6 +2007,16 @@ button.agent-preview {
   animation: cardMenuOut 120ms ease both;
   pointer-events: none;
 }
+/* The menu escapes the card (2026-09-17): `.device-card` clips its overflow
+   for the frost and the scene, and once the trust row joined the rules the
+   menu ran past the card's bottom edge and was cut off. CardMenu renders it
+   through a portal at the body, fixed at the ⋯ button's corner (inline
+   top/right), so the card's clip never reaches it. z = OVERLAY_Z.cardMenu. */
+.card-menu-tooltip--floating {
+  position: fixed;
+  margin-top: 0;
+  z-index: 70;
+}
 @keyframes cardMenuIn {
   from {
     opacity: 0;

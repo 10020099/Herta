@@ -1,6 +1,14 @@
 import type { WorkspaceTrustState } from "@herta/app-server";
 import type { WorkspaceTrust } from "@herta/core";
-import { Fragment, useEffect, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  Fragment,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
+import { createPortal } from "react-dom";
 import { useT } from "../../i18n/LocaleProvider.js";
 import { OVERLAY_Z, useModalOverlay } from "../../lib/overlay-stack.js";
 
@@ -56,6 +64,29 @@ export function CardMenu(props: CardMenuProps): JSX.Element {
   const [open, setOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  // The menu itself lives OUTSIDE the card (2026-09-17): `.device-card`
+  // clips its overflow for the frost and the scene, and once the trust row
+  // joined the rules the menu ran past the card's bottom edge and was cut
+  // off. It is rendered through a portal at the body, fixed at the ⋯
+  // button's bottom-right corner, so the card's clip never reaches it.
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [floatStyle, setFloatStyle] = useState<CSSProperties>({});
+  useLayoutEffect(() => {
+    if (!mounted) return undefined;
+    const place = (): void => {
+      const button =
+        rootRef.current?.querySelector<HTMLElement>(".card-menu-button");
+      if (button === null || button === undefined) return;
+      const r = button.getBoundingClientRect();
+      setFloatStyle({
+        top: r.bottom + 4,
+        right: Math.max(8, window.innerWidth - r.right),
+      });
+    };
+    place();
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
+  }, [mounted]);
 
   // Project command allow rules (ADR 0030) live in THIS menu rather than
   // Settings (owner 2026-08-04): they're session-workspace-scoped, and the
@@ -79,9 +110,13 @@ export function CardMenu(props: CardMenuProps): JSX.Element {
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent): void => {
+      const target = e.target as Node;
+      // The floating menu is not a DOM descendant of the button's root —
+      // a click inside it must not count as outside.
       if (
         rootRef.current !== null &&
-        !rootRef.current.contains(e.target as Node)
+        !rootRef.current.contains(target) &&
+        !(menuRef.current?.contains(target) ?? false)
       ) {
         setOpen(false);
       }
@@ -127,127 +162,134 @@ export function CardMenu(props: CardMenuProps): JSX.Element {
         <span aria-hidden="true">⋯</span>
       </button>
       {mounted &&
-        (isWorkspaceMenu ? (
-          <div
-            className={`card-menu-tooltip${open ? "" : " is-leaving"}`}
-            role="menu"
-          >
-            <div className="card-menu-current">
-              <span className="card-menu-label">
-                {props.isDefault
-                  ? t("card.workspaceDefault")
-                  : t("card.workspace")}
-              </span>
-              <span
-                className="card-menu-path"
-                title={props.activeWorkspace ?? undefined}
-              >
-                {props.activeWorkspace !== undefined
-                  ? breakablePath(props.activeWorkspace)
-                  : "—"}
-              </span>
-            </div>
-            <div className="card-menu-divider" />
-            <button
-              type="button"
-              className="card-menu-item"
-              onClick={() => {
-                // Close first: "Set workspace…" opens the OS folder dialog,
-                // and a menu left hanging under it read as stuck (and invited
-                // a second click queueing a second dialog).
-                setOpen(false);
-                props.onSetWorkspace?.();
-              }}
+        createPortal(
+          isWorkspaceMenu ? (
+            <div
+              ref={menuRef}
+              className={`card-menu-tooltip card-menu-tooltip--floating${open ? "" : " is-leaving"}`}
+              style={floatStyle}
+              role="menu"
             >
-              {t("card.setWorkspace")}
-            </button>
-            <button
-              type="button"
-              className="card-menu-item"
-              disabled={props.isDefault === true}
-              onClick={() => {
-                setOpen(false);
-                props.onResetWorkspace?.();
-              }}
-            >
-              {t("card.resetDefault")}
-            </button>
-            {props.trust !== undefined && (
-              <>
-                <div className="card-menu-divider" />
-                <div className="card-menu-trust">
-                  <span className="card-menu-label">{t("card.trust")}</span>
-                  <span className="card-menu-trust-state">
-                    {props.trust.effective === "workspace"
-                      ? props.trust.explicit === null &&
-                        props.trust.isDefaultWorkspace
-                        ? t("card.trustOnDefault")
-                        : t("card.trustOn")
-                      : t("card.trustOff")}
-                  </span>
-                  <button
-                    type="button"
-                    className="card-menu-item card-menu-trust-toggle"
-                    onClick={() =>
-                      props.onSetTrust?.(
-                        props.trust?.effective === "workspace"
-                          ? "ask"
-                          : "workspace",
-                      )
-                    }
-                  >
-                    {props.trust.effective === "workspace"
-                      ? t("card.trustDisable")
-                      : t("card.trustEnable")}
-                  </button>
-                </div>
-              </>
-            )}
-            {rules !== undefined && (
-              <>
-                <div className="card-menu-divider" />
-                <div className="card-menu-rules">
-                  <span className="card-menu-label">{t("card.rules")}</span>
-                  {rules.length === 0 ? (
-                    <span className="card-menu-rules-empty">
-                      {t("card.rulesEmpty")}
-                    </span>
-                  ) : (
-                    <ul className="card-menu-rules-list">
-                      {rules.map((r) => (
-                        <li className="card-menu-rule" key={r}>
-                          <code className="card-menu-rule-text" title={r}>
-                            {r}
-                          </code>
-                          <button
-                            type="button"
-                            className="card-menu-rule-remove"
-                            aria-label={t("card.rulesRemove", { rule: r })}
-                            onClick={() => props.onRemoveRule?.(r)}
-                          >
-                            ✕
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              </>
-            )}
-            {props.errorText !== undefined && (
-              <div className="card-menu-error" role="alert">
-                {props.errorText}
+              <div className="card-menu-current">
+                <span className="card-menu-label">
+                  {props.isDefault
+                    ? t("card.workspaceDefault")
+                    : t("card.workspace")}
+                </span>
+                <span
+                  className="card-menu-path"
+                  title={props.activeWorkspace ?? undefined}
+                >
+                  {props.activeWorkspace !== undefined
+                    ? breakablePath(props.activeWorkspace)
+                    : "—"}
+                </span>
               </div>
-            )}
-          </div>
-        ) : (
-          <div
-            className={`card-menu-tooltip${open ? "" : " is-leaving"}`}
-            role="tooltip"
-          >
-            {t("card.deviceInfo")}
-          </div>
-        ))}
+              <div className="card-menu-divider" />
+              <button
+                type="button"
+                className="card-menu-item"
+                onClick={() => {
+                  // Close first: "Set workspace…" opens the OS folder dialog,
+                  // and a menu left hanging under it read as stuck (and invited
+                  // a second click queueing a second dialog).
+                  setOpen(false);
+                  props.onSetWorkspace?.();
+                }}
+              >
+                {t("card.setWorkspace")}
+              </button>
+              <button
+                type="button"
+                className="card-menu-item"
+                disabled={props.isDefault === true}
+                onClick={() => {
+                  setOpen(false);
+                  props.onResetWorkspace?.();
+                }}
+              >
+                {t("card.resetDefault")}
+              </button>
+              {props.trust !== undefined && (
+                <>
+                  <div className="card-menu-divider" />
+                  <div className="card-menu-trust">
+                    <span className="card-menu-label">{t("card.trust")}</span>
+                    <span className="card-menu-trust-state">
+                      {props.trust.effective === "workspace"
+                        ? props.trust.explicit === null &&
+                          props.trust.isDefaultWorkspace
+                          ? t("card.trustOnDefault")
+                          : t("card.trustOn")
+                        : t("card.trustOff")}
+                    </span>
+                    <button
+                      type="button"
+                      className="card-menu-item card-menu-trust-toggle"
+                      onClick={() =>
+                        props.onSetTrust?.(
+                          props.trust?.effective === "workspace"
+                            ? "ask"
+                            : "workspace",
+                        )
+                      }
+                    >
+                      {props.trust.effective === "workspace"
+                        ? t("card.trustDisable")
+                        : t("card.trustEnable")}
+                    </button>
+                  </div>
+                </>
+              )}
+              {rules !== undefined && (
+                <>
+                  <div className="card-menu-divider" />
+                  <div className="card-menu-rules">
+                    <span className="card-menu-label">{t("card.rules")}</span>
+                    {rules.length === 0 ? (
+                      <span className="card-menu-rules-empty">
+                        {t("card.rulesEmpty")}
+                      </span>
+                    ) : (
+                      <ul className="card-menu-rules-list">
+                        {rules.map((r) => (
+                          <li className="card-menu-rule" key={r}>
+                            <code className="card-menu-rule-text" title={r}>
+                              {r}
+                            </code>
+                            <button
+                              type="button"
+                              className="card-menu-rule-remove"
+                              aria-label={t("card.rulesRemove", { rule: r })}
+                              onClick={() => props.onRemoveRule?.(r)}
+                            >
+                              ✕
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                </>
+              )}
+              {props.errorText !== undefined && (
+                <div className="card-menu-error" role="alert">
+                  {props.errorText}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div
+              ref={menuRef}
+              className={`card-menu-tooltip card-menu-tooltip--floating${open ? "" : " is-leaving"}`}
+              style={floatStyle}
+              role="tooltip"
+            >
+              {t("card.deviceInfo")}
+            </div>
+          ),
+          document.body,
+        )}
     </div>
   );
 }

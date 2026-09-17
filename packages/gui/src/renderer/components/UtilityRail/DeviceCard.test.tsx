@@ -212,7 +212,9 @@ describe("DeviceCard", () => {
       </HertaBridgeProvider>,
     );
     fireEvent.click(screen.getByLabelText("device card info"));
-    expect(container.querySelector(".card-menu-rules")).toBeNull();
+    // The menu renders through a portal at the body (2026-09-17), so the
+    // absence is asserted document-wide, not inside the render container.
+    expect(document.querySelector(".card-menu-rules")).toBeNull();
     // The workspace half of the menu is untouched by the gate.
     expect(screen.getByRole("button", { name: /Set workspace/ })).toBeTruthy();
   });
@@ -478,6 +480,6 @@ describe("DeviceCard", () => {
     await waitFor(() =>
       expect(screen.queryByText("No commands remembered")).toBeTruthy(),
     );
-    expect(container.querySelector(".card-menu-trust")).toBeNull();
+    expect(document.querySelector(".card-menu-trust")).toBeNull();
   });
 });

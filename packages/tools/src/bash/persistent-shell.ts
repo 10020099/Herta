@@ -57,6 +57,8 @@ export const SHELL_BG_ID = "shell";
 
 const DEFAULT_MAX_OUTPUT = 1_048_576;
 const KILL_GRACE_MS = 3_000;
+/** How long `taskkill /T` may take to fell the shell's process tree. */
+const TASKKILL_TIMEOUT_MS = 15_000;
 
 interface Waiter {
   marker: string;
@@ -411,9 +413,15 @@ async function killTree(child: ChildProcess): Promise<void> {
   });
   try {
     if (process.platform === "win32") {
+      // `taskkill /T` walks the tree — on this machine a scoop shim → git
+      // launcher → usr/bin/bash chain, three processes deep — and on a
+      // loaded machine took longer than the close grace (the permission
+      // lab hung on 2026-09-16 with the whole chain alive after `done.`).
+      // Its own timeout is generous; the grace below only bounds the wait
+      // for the exit event.
       spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
         windowsHide: true,
-        timeout: KILL_GRACE_MS,
+        timeout: TASKKILL_TIMEOUT_MS,
       });
     } else {
       try {
@@ -428,6 +436,16 @@ async function killTree(child: ChildProcess): Promise<void> {
     } catch {
       // already gone
     }
+  } finally {
+    // Whatever survived the kill must not keep US alive: an orphaned
+    // grandchild holding the inherited pipes leaves the child's stdio
+    // streams open, and an open stdio stream keeps the event loop running
+    // (the lab's process never exited). Drop our ends and unreference the
+    // handle; the streams are ours, nobody reads them after a kill.
+    child.stdin?.destroy();
+    child.stdout?.destroy();
+    child.stderr?.destroy();
+    child.unref();
   }
   await Promise.race([
     closed,
