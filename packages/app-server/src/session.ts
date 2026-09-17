@@ -1812,6 +1812,7 @@ export class SessionImpl implements Session {
       hints: actor.actorHints,
       supervisorProvider: actor.supervisorProvider,
       supervisorReference: actor.supervisorReference,
+      supervisorRevision: actor.supervisorRevision,
       recap: actor.recap,
       lang,
     });

@@ -1124,6 +1124,109 @@ describe("parseSupervisorVerdict — binary", () => {
   });
 });
 
+describe("parseSupervisorVerdict — the 改说 line (ADR 0065)", () => {
+  const FOUR =
+    "接话检查：过\n声音检查：不过——句尾撒娇\n设定检查：过\n意图检查：过\n";
+
+  it("captures a one-line 改说 after the BLOCK line", () => {
+    const r = parseSupervisorVerdict(
+      `${FOUR}BLOCK：声音：我刚才撒娇了\n改说：好，明白了。`,
+    );
+    expect(r.verdict).toBe("block");
+    expect(r.reason).toBe("我刚才撒娇了");
+    expect(r.revision).toBe("好，明白了。");
+  });
+
+  it("runs to the end of the output — a multi-line 改说 keeps its lines", () => {
+    const r = parseSupervisorVerdict(
+      "BLOCK：声音：x\n改说：第一句。\n第二句。\n\n第三句。",
+    );
+    expect(r.revision).toBe("第一句。\n第二句。\n\n第三句。");
+  });
+
+  it("accepts the keyword alone on its line with the text below it", () => {
+    const r = parseSupervisorVerdict("BLOCK：声音：x\n改说：\n好，明白了。");
+    expect(r.revision).toBe("好，明白了。");
+  });
+
+  it("tidies the quotes and the speech envelope the prompt forbade anyway", () => {
+    expect(
+      parseSupervisorVerdict("BLOCK：声音：x\n改说：「好，明白了。」").revision,
+    ).toBe("好，明白了。");
+    expect(
+      parseSupervisorVerdict(
+        "BLOCK：声音：x\n改说：（我 说）好，明白了。（/我 说）",
+      ).revision,
+    ).toBe("好，明白了。");
+  });
+
+  it("a BLOCK line after 改说 (the wrong order) still counts and ends the capture", () => {
+    const r = parseSupervisorVerdict(
+      "改说：好，明白了。\nBLOCK：声音：我刚才撒娇了",
+    );
+    expect(r.verdict).toBe("block");
+    expect(r.reason).toBe("我刚才撒娇了");
+    expect(r.revision).toBe("好，明白了。");
+  });
+
+  it("never carries a revision on an OK verdict", () => {
+    const r = parseSupervisorVerdict(
+      "接话检查：过\n声音检查：过\n设定检查：过\n意图检查：过\nOK\n改说：多余的话",
+    );
+    expect(r.verdict).toBe("ok");
+    expect(r.revision).toBeUndefined();
+  });
+
+  it("prose that merely begins with 改说 is not the keyword", () => {
+    const r = parseSupervisorVerdict("BLOCK：声音：x\n改说得更短一点就好");
+    expect(r.verdict).toBe("block");
+    expect(r.revision).toBeUndefined();
+  });
+
+  it("an empty 改说 yields no revision", () => {
+    expect(
+      parseSupervisorVerdict("BLOCK：声音：x\n改说：").revision,
+    ).toBeUndefined();
+  });
+});
+
+describe("buildSupervisorPrompt — the 改说 request (ADR 0065)", () => {
+  const base = {
+    recentRecord: [],
+    currentState: "默认" as const,
+    candidateSpeech: "x",
+  };
+  /** The review (user) message of a built prompt. */
+  function userTextOf(built: ReturnType<typeof buildSupervisorPrompt>): string {
+    const m = built.frame.messages[0];
+    return m !== undefined && m.role === "user" ? m.text : "";
+  }
+
+  it("asks for the corrected line only when askRevision is set", () => {
+    const plain = buildSupervisorPrompt(base);
+    expect(userTextOf(plain)).not.toContain("改说");
+    const asked = buildSupervisorPrompt({ ...base, askRevision: true });
+    expect(userTextOf(asked)).toContain('以"改说："开头');
+    expect(userTextOf(asked)).toContain("判定为 OK 时不要输出改说");
+  });
+
+  it("keeps the cached system message byte-identical either way", () => {
+    const plain = buildSupervisorPrompt(base);
+    const asked = buildSupervisorPrompt({ ...base, askRevision: true });
+    expect(asked.frame.stableSystem).toBe(plain.frame.stableSystem);
+  });
+
+  it("the EN variant carries the same request in English with the CN keyword", () => {
+    const asked = buildSupervisorPrompt({
+      ...base,
+      askRevision: true,
+      lang: "en",
+    });
+    expect(userTextOf(asked)).toContain('beginning with "改说："');
+    expect(userTextOf(asked)).toContain("Never output 改说 on an OK verdict");
+  });
+});
+
 describe("parseSupervisorVerdict — structured step-conclusion lines (2026-07-13)", () => {
   it("full-pass structured output → ok, no findings", () => {
     const r = parseSupervisorVerdict(

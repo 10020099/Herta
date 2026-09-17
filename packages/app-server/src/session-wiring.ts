@@ -409,6 +409,23 @@ export function createBackendStack(opts: BackendStackOpts): BackendStack {
 
 // ── Actor stack ─────────────────────────────────────────────────────────────
 
+/** The shipped default of ADR 0065's fast veto path: ON. Set by the lab
+ *  (`scripts/respeak-lab.mjs` config `sup-revise` + `respeak-judge.mjs`,
+ *  2026-09-17): the supervisor's corrected line won 10 of 12 blind pairs
+ *  against the actor's rethink + respeak and tied the other 2, every line
+ *  usable, ~5 s less on the veto path's mean. The ADR keeps the numbers;
+ *  `HERTA_SUPERVISOR_REVISION=0` restores the two-stage path. */
+const SUPERVISOR_REVISION_DEFAULT = true;
+
+/** `HERTA_SUPERVISOR_REVISION=1|0` overrides the shipped default in both
+ *  front-ends — the lab's A/B lever and the operator's escape hatch. */
+function supervisorRevisionDefault(): boolean {
+  const raw = process.env.HERTA_SUPERVISOR_REVISION;
+  if (raw === "1") return true;
+  if (raw === "0") return false;
+  return SUPERVISOR_REVISION_DEFAULT;
+}
+
 /** Test-only seams (the app-server's `SessionInternalDeps` thread these
  *  through); production callers omit them. */
 export interface ActorStackOverrides {
@@ -435,6 +452,11 @@ export interface ActorStackOpts {
   readonly baseUrl?: string;
   /** Supervisor toggle (default ON in both front-ends). */
   readonly supervisorEnabled: boolean;
+  /** ADR 0065: the supervisor's corrected line stands in for the actor's
+   *  rethink + respeak on a veto. Undefined → the shipped default, unless
+   *  `HERTA_SUPERVISOR_REVISION` overrides it (`1` on, `0` off — the lab's
+   *  A/B lever and the operator's escape hatch). */
+  readonly supervisorRevision?: boolean;
   /** Dream config for the reopen own-dream filter (app-server settings;
    *  the CLI passes nothing → defaults). */
   readonly dream?: AppServerConfig["dream"];
@@ -464,6 +486,8 @@ export interface ActorStack {
    *  the driver immediately (CLI) or stream it in (host). */
   readonly seedBlock: TerminalRecordBlock | null;
   readonly metaThinkCorpus: MetaThinkCorpus;
+  /** Resolved `supervisorRevision` (ADR 0065) for `V2ActorDriverDeps`. */
+  readonly supervisorRevision: boolean;
   readonly actorHints: ActorHints;
   readonly supervisorReference: string;
   readonly recap: RecapRuntime;
@@ -593,6 +617,8 @@ export async function createActorStack(
   const supervisorReference =
     overrides.supervisorReference ??
     supervisorReferenceFor(opts.supervisorEnabled);
+  const supervisorRevision =
+    opts.supervisorRevision ?? supervisorRevisionDefault();
 
   // Recap runtime — automatic long-session compaction (ADR 0009). The
   // manual /compact path (CLI) bypasses `enabled`.
@@ -612,6 +638,7 @@ export async function createActorStack(
     opening,
     seedBlock,
     metaThinkCorpus,
+    supervisorRevision,
     actorHints,
     supervisorReference,
     recap,

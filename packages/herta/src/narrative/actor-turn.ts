@@ -72,8 +72,47 @@ export interface ActorTurnState {
 const PARTICLE_LEAD_LOOKAHEAD = 3;
 
 /**
+ * ADR 0065: can the supervisor's 改说 line stand as the re-speak? The
+ * supervisor writes from a narrower view than the actor's (eight blocks,
+ * the receipts, the reference), so the line is adopted only when it is
+ * plainly a speech: non-empty, not the vetoed text again, no narrative
+ * tags or fences, no verdict grammar bleeding in, and not out of all
+ * proportion to what it replaces. Everything else falls back to the
+ * actor's own rethink + respeak — the path that ran alone before the ADR.
+ * The reject cause goes to the prompt dump so a lab can count the shapes.
+ * Exported for the lab (`scripts/respeak-lab.mjs`), which must apply the
+ * production check to what the supervisor writes.
+ */
+export function usableRevision(
+  vetoedShown: string,
+  revision: string | undefined,
+):
+  | { readonly ok: true; readonly text: string }
+  | { readonly ok: false; readonly reject: string } {
+  if (revision === undefined) return { ok: false, reject: "absent" };
+  const text = stripStrayOpenTags(revision, "speech");
+  if (isUnusableBlock(text)) return { ok: false, reject: "empty" };
+  if (/（\/我 [想说]）|（\/?开拓者 说）|｜>|```/u.test(text)) {
+    return { ok: false, reject: "tag" };
+  }
+  const grammar = /^(BLOCK|OK$|改说|(接话|声音|设定|意图)检查)/u;
+  if (text.split(/\r?\n/).some((l) => grammar.test(l.trim()))) {
+    return { ok: false, reject: "grammar" };
+  }
+  const squeeze = (s: string): string => s.replace(/\s+/gu, "");
+  if (squeeze(text) === squeeze(vetoedShown)) {
+    return { ok: false, reject: "unchanged" };
+  }
+  if ([...text].length > Math.max(3 * [...vetoedShown].length, 120)) {
+    return { ok: false, reject: "overlong" };
+  }
+  return { ok: true, text };
+}
+
+/**
  * Supervisor VETO recovery: the veto voice latch, the retract of the visibly
- * streamed candidate, the two-stage rethink → respeak (2026-07-18), the
+ * streamed candidate, the supervisor's own corrected line when it is usable
+ * (ADR 0065) or else the two-stage rethink → respeak (2026-07-18), the
  * live-feed re-speak with its retract floor, the empty-respeak ladder, the
  * bounded trigger re-pass, and the re-speak's render finalize. Lifted out of
  * the main loop verbatim on 2026-08-19 (ADR 0041): it is one self-contained
@@ -144,211 +183,239 @@ async function recoverFromVeto(ctx: {
   if (slowStreamController !== undefined) {
     await slowStreamController.cancelAndBackspace();
   }
-  // Two-stage veto recovery, stage 1 (rethink-respeak, 2026-07-18):
-  // before re-speaking, generate a FRESH （我 想） that digests the
-  // veto reason and commit it to the record like any thought — the
-  // respeak then sees it. Lab-measured (scripts/respeak-lab.mjs):
-  // the single-stage reason-bearing respeak collapses on non-coding
-  // vetoes (record vocabulary bleeding into e.g. a grief reply)
-  // while the rethink flow lands ~6/9 good vs ~2.5/9. The thought
-  // streams through the sink normally (visible re-think — the
-  // thought indicator is the UX for the pause). Fail-soft: an
-  // empty or failed rethink falls back to the single-stage
-  // reason-bearing respeak below, so the veto path never gets
-  // WORSE than the pre-rethink behavior.
-  let rethinkCommitted = false;
-  if (supervisorVerdict.reason !== undefined) {
-    try {
-      const rethinkResult = await runPhaseTwo({
-        deps,
-        record,
-        priorTurnLength,
-        surface: "thought",
-        signal,
-        supervisorRethinkReason: supervisorVerdict.reason,
-        vetoedSpeech: streamResult.text,
-        recap,
-        recapBoundaryIndex,
-      });
-      const rethinkText = stripStrayOpenTags(
-        rethinkResult.text,
-        "thought",
-      ).trim();
-      if (rethinkText.length > 0) {
-        // Same commit discipline as the main-loop thought commit:
-        // sanitize at construction so disk, prompts, and every
-        // projection inherit the safe text.
-        record = [
-          ...record,
-          {
-            kind: "herta",
-            surface: "thought",
-            text: sanitizeActorText(rethinkText, { role: "thought" }),
-          },
-        ];
-        rethinkCommitted = true;
-      }
-    } catch (err) {
-      if (signal.aborted) throw new ActorTurnAbortedError(record);
-      // Fail-soft: the rethink is an enhancement, not a gate. Log
-      // via the prompt-dump channel and take the single-stage path.
-      deps.onPrompt?.(
-        "phase2-out",
-        `[rethink stage failed: ${errorMessage(err)}]`,
-      );
-    }
-  }
-  // Retry phase-2 speech — after a committed rethink, with the slim
-  // post-rethink hint (the reason lives in the fresh thought);
-  // otherwise with the veto reason interpolated into the format
-  // hint. Either way the rejected speech is replayed in the prompt
-  // so the model can see what it's revising. Retry result commits
-  // unconditionally — no second supervisor pass, no infinite loop.
-  //
-  // Live-feed the re-speak when the sink supports it: stream it to the
-  // morph as it generates (first char at TTFT) instead of generating
-  // silently and replaying afterward. Emit the retract floor the moment
-  // the streamed re-speak diverges from the vetoed text. Sinks without
-  // slowStreamSpeechLive keep the silent depsWithoutSink + replay path.
-  // The raw re-speak streams as-is; a @板砖 the trigger re-pass later
-  // neutralizes is corrected at commit (SPEC live-feed-veto-respeak §3/§5).
-  const baseRetryOpts: Parameters<typeof runPhaseTwo>[0] = {
-    deps,
-    record,
-    priorTurnLength,
-    surface: "speech",
-    signal,
-    vetoedSpeech: streamResult.text,
-    recap,
-    recapBoundaryIndex,
-  };
-  if (rethinkCommitted) {
-    // Stage 2 of the rethink flow: the reason already lives in the
-    // committed fresh thought — the slim static respeak hint applies.
-    baseRetryOpts.isPostRethinkRespeak = true;
-  } else if (supervisorVerdict.reason !== undefined) {
-    baseRetryOpts.supervisorVetoReason = supervisorVerdict.reason;
-  }
-  if (supervisorVerdict.reason !== undefined) {
-    // Capture for the self-correction block (N8) in BOTH paths. Set
-    // even if the retry later turns out empty — the commit-section
-    // guard skips emitting the block when there's no speech
-    // to anchor it to.
-    supervisorVetoReasonForRecord = supervisorVerdict.reason;
-  }
-
+  // ADR 0065: when the supervisor wrote the corrected line itself and the
+  // line can stand as a speech, it IS the re-speak — no rethink thought, no
+  // respeak call. The finalize step below computes the retract floor from
+  // it at once (the non-live replay path), so the GUI's erase runs to the
+  // divergence instead of decelerating against an unknown floor. Anything
+  // unusable takes the two-stage path below, unchanged.
+  const adopted =
+    deps.supervisorRevision === true
+      ? usableRevision(vetoedShown, supervisorVerdict.revision)
+      : undefined;
   let retryLive: LiveSlowStreamController | undefined;
   let retryFloorEmitted = false;
-  if (deps.sink?.slowStreamSpeechLive !== undefined) {
-    // Call ATTACHED — the live controller's internals use `this`
-    // (this.beginHertaStream, this.bus, this.emitSpeech), so a detached
-    // `const f = deps.sink.slowStreamSpeechLive; f()` loses the binding and
-    // crashes in the tick. Matches the first-pass call site above.
-    const live = deps.sink.slowStreamSpeechLive({});
-    retryLive = live;
-    let retryAccum = "";
-    const onLiveToken = (chunk: string): void => {
-      live.pushToken(chunk);
-      retryAccum += chunk;
-      if (!retryFloorEmitted) {
-        // Skip the divergence check while the accumulation ends in an
-        // unpaired high surrogate (a provider chunk can split a non-BMP
-        // char): the half char would read as a false divergence and
-        // latch a one-short floor. The next chunk completes the pair.
-        const lastCode = retryAccum.charCodeAt(retryAccum.length - 1);
-        if (lastCode >= 0xd800 && lastCode <= 0xdbff) return;
-        const cp = commonPrefixLen(vetoedShown, retryAccum);
-        // O(n²) over the stream but capped: stops at the first divergence,
-        // and speech is short — negligible.
-        if (cp < [...retryAccum].length) {
-          // A chunk reaching here is past safeEmitBoundary (committed text),
-          // so a fired floor implies a non-empty retry — this and the
-          // empty-recovery replay floor are mutually exclusive: the floor is
-          // emitted exactly once.
-          deps.sink?.emitRetractFloor?.(cp);
-          retryFloorEmitted = true;
-        }
-      }
-    };
-    try {
-      streamResult = await runPhaseTwo({ ...baseRetryOpts, onLiveToken });
-    } catch (err) {
-      // Retry generation threw with the live re-speak controller
-      // possibly holding pushed tokens: terminal-call it, then abort
-      // record-carrying on interrupt (audit 2026-07-13 T2.5, same
-      // D7 reasoning as the first-pass catch above).
-      await abandonController(live);
-      if (signal.aborted) throw new ActorTurnAbortedError(record);
-      throw err;
+  if (adopted?.ok === true) {
+    deps.onPrompt?.(
+      "phase2-out",
+      "[supervisor revision adopted — no rethink, no respeak]",
+    );
+    streamResult = { surface: "speech", text: adopted.text };
+    if (supervisorVerdict.reason !== undefined) {
+      supervisorVetoReasonForRecord = supervisorVerdict.reason;
     }
-    if (streamResult.text.trim().length > 0) live.finishInput();
+    speechSinkPending = true;
   } else {
-    // No live primitive: the raw LLM stream must not hit the sink live.
-    // Generate sink-less at full model speed; the FINAL retry text (post
-    // recovery ladder, post trigger re-pass — so a neutralized token
-    // streams exactly the way it commits) is replayed paced through
-    // slowStreamSpeech below.
-    const { sink: _retrySink, ...depsWithoutSink } = deps;
-    streamResult = await runPhaseTwo({
-      ...baseRetryOpts,
-      deps: depsWithoutSink,
-    });
-  }
-  // Strip stray open tags from the retry — the first pass is stripped
-  // above, but the retry reassigned streamResult past that point, so a
-  // retry re-emitting `（我 说）` streamed the literal tag to the user
-  // and committed it into every future prompt. The live path settles
-  // the corrected text at commit (same accepted-flicker mechanism as
-  // the @板砖 neutralization, SPEC live-feed-veto-respeak §5).
-  streamResult = {
-    surface: streamResult.surface,
-    text: stripStrayOpenTags(streamResult.text, streamResult.surface),
-  };
-  // Nothing has reached the sink yet (non-live), or the live controller
-  // holds the stream — the finalize step below (or the one-shot unified
-  // replay for sinks without slowStreamSpeech) renders the retry.
-  speechSinkPending = true;
-
-  // Empty-veto-retry recovery. The supervisor-veto retry uses
-  // `buildSupervisorVetoHint(reason)` which is voice/intent-
-  // correction focused; it doesn't address the empty-output
-  // failure mode. If the model's veto-retry comes back empty
-  // (e.g., it tried to "fix" the rejected speech by closing
-  // immediately), fall through to the empty-speech retry
-  // ladder — same recovery, rising temperature. Commits the
-  // ladder's result unconditionally without a second supervisor
-  // pass (per spec §2 "single retry per failure mode" — we've
-  // already spent the veto retry; the ladder is the recovery
-  // for the NEW failure mode introduced by an empty veto-retry).
-  //
-  // Defer streaming + render via the unified-replay step below
-  // — the live-stream sink path already missed its chance
-  // (streamResult was reassigned twice, the cursor isn't sync'd).
-  // Slot-only counts as empty here too, and this site is the one that
-  // matters most: the veto respeak commits WITHOUT a second supervisor
-  // pass, so a degenerate `{需要说的话}` has no other guard. The
-  // corrective veto hint is itself instruction-dense — exactly the
-  // input that pushes a model toward emitting the slot.
-  if (isUnusableBlock(streamResult.text)) {
-    // The live re-speak was empty; abandon its controller (it pushed
-    // nothing) and render the recovered text via the old replay path.
-    retryLive = undefined;
-    const vetoRetryCause = retryCause(streamResult.text);
-    streamResult = await recoverEmptySpeech({
-      ...(vetoRetryCause !== undefined ? { cause: vetoRetryCause } : {}),
+    if (adopted !== undefined) {
+      deps.onPrompt?.(
+        "phase2-out",
+        `[supervisor revision not adopted (${adopted.reject}) — rethink + respeak]`,
+      );
+    }
+    // Two-stage veto recovery, stage 1 (rethink-respeak, 2026-07-18):
+    // before re-speaking, generate a FRESH （我 想） that digests the
+    // veto reason and commit it to the record like any thought — the
+    // respeak then sees it. Lab-measured (scripts/respeak-lab.mjs):
+    // the single-stage reason-bearing respeak collapses on non-coding
+    // vetoes (record vocabulary bleeding into e.g. a grief reply)
+    // while the rethink flow lands ~6/9 good vs ~2.5/9. The thought
+    // streams through the sink normally (visible re-think — the
+    // thought indicator is the UX for the pause). Fail-soft: an
+    // empty or failed rethink falls back to the single-stage
+    // reason-bearing respeak below, so the veto path never gets
+    // WORSE than the pre-rethink behavior.
+    let rethinkCommitted = false;
+    if (supervisorVerdict.reason !== undefined) {
+      try {
+        const rethinkResult = await runPhaseTwo({
+          deps,
+          record,
+          priorTurnLength,
+          surface: "thought",
+          signal,
+          supervisorRethinkReason: supervisorVerdict.reason,
+          vetoedSpeech: streamResult.text,
+          recap,
+          recapBoundaryIndex,
+        });
+        const rethinkText = stripStrayOpenTags(
+          rethinkResult.text,
+          "thought",
+        ).trim();
+        if (rethinkText.length > 0) {
+          // Same commit discipline as the main-loop thought commit:
+          // sanitize at construction so disk, prompts, and every
+          // projection inherit the safe text.
+          record = [
+            ...record,
+            {
+              kind: "herta",
+              surface: "thought",
+              text: sanitizeActorText(rethinkText, { role: "thought" }),
+            },
+          ];
+          rethinkCommitted = true;
+        }
+      } catch (err) {
+        if (signal.aborted) throw new ActorTurnAbortedError(record);
+        // Fail-soft: the rethink is an enhancement, not a gate. Log
+        // via the prompt-dump channel and take the single-stage path.
+        deps.onPrompt?.(
+          "phase2-out",
+          `[rethink stage failed: ${errorMessage(err)}]`,
+        );
+      }
+    }
+    // Retry phase-2 speech — after a committed rethink, with the slim
+    // post-rethink hint (the reason lives in the fresh thought);
+    // otherwise with the veto reason interpolated into the format
+    // hint. Either way the rejected speech is replayed in the prompt
+    // so the model can see what it's revising. Retry result commits
+    // unconditionally — no second supervisor pass, no infinite loop.
+    //
+    // Live-feed the re-speak when the sink supports it: stream it to the
+    // morph as it generates (first char at TTFT) instead of generating
+    // silently and replaying afterward. Emit the retract floor the moment
+    // the streamed re-speak diverges from the vetoed text. Sinks without
+    // slowStreamSpeechLive keep the silent depsWithoutSink + replay path.
+    // The raw re-speak streams as-is; a @板砖 the trigger re-pass later
+    // neutralizes is corrected at commit (SPEC live-feed-veto-respeak §3/§5).
+    const baseRetryOpts: Parameters<typeof runPhaseTwo>[0] = {
       deps,
       record,
       priorTurnLength,
+      surface: "speech",
       signal,
+      vetoedSpeech: streamResult.text,
       recap,
       recapBoundaryIndex,
-    });
-    // Same strip discipline as every other reassignment point.
+    };
+    if (rethinkCommitted) {
+      // Stage 2 of the rethink flow: the reason already lives in the
+      // committed fresh thought — the slim static respeak hint applies.
+      baseRetryOpts.isPostRethinkRespeak = true;
+    } else if (supervisorVerdict.reason !== undefined) {
+      baseRetryOpts.supervisorVetoReason = supervisorVerdict.reason;
+    }
+    if (supervisorVerdict.reason !== undefined) {
+      // Capture for the self-correction block (N8) in BOTH paths. Set
+      // even if the retry later turns out empty — the commit-section
+      // guard skips emitting the block when there's no speech
+      // to anchor it to.
+      supervisorVetoReasonForRecord = supervisorVerdict.reason;
+    }
+
+    if (deps.sink?.slowStreamSpeechLive !== undefined) {
+      // Call ATTACHED — the live controller's internals use `this`
+      // (this.beginHertaStream, this.bus, this.emitSpeech), so a detached
+      // `const f = deps.sink.slowStreamSpeechLive; f()` loses the binding and
+      // crashes in the tick. Matches the first-pass call site above.
+      const live = deps.sink.slowStreamSpeechLive({});
+      retryLive = live;
+      let retryAccum = "";
+      const onLiveToken = (chunk: string): void => {
+        live.pushToken(chunk);
+        retryAccum += chunk;
+        if (!retryFloorEmitted) {
+          // Skip the divergence check while the accumulation ends in an
+          // unpaired high surrogate (a provider chunk can split a non-BMP
+          // char): the half char would read as a false divergence and
+          // latch a one-short floor. The next chunk completes the pair.
+          const lastCode = retryAccum.charCodeAt(retryAccum.length - 1);
+          if (lastCode >= 0xd800 && lastCode <= 0xdbff) return;
+          const cp = commonPrefixLen(vetoedShown, retryAccum);
+          // O(n²) over the stream but capped: stops at the first divergence,
+          // and speech is short — negligible.
+          if (cp < [...retryAccum].length) {
+            // A chunk reaching here is past safeEmitBoundary (committed text),
+            // so a fired floor implies a non-empty retry — this and the
+            // empty-recovery replay floor are mutually exclusive: the floor is
+            // emitted exactly once.
+            deps.sink?.emitRetractFloor?.(cp);
+            retryFloorEmitted = true;
+          }
+        }
+      };
+      try {
+        streamResult = await runPhaseTwo({ ...baseRetryOpts, onLiveToken });
+      } catch (err) {
+        // Retry generation threw with the live re-speak controller
+        // possibly holding pushed tokens: terminal-call it, then abort
+        // record-carrying on interrupt (audit 2026-07-13 T2.5, same
+        // D7 reasoning as the first-pass catch above).
+        await abandonController(live);
+        if (signal.aborted) throw new ActorTurnAbortedError(record);
+        throw err;
+      }
+      if (streamResult.text.trim().length > 0) live.finishInput();
+    } else {
+      // No live primitive: the raw LLM stream must not hit the sink live.
+      // Generate sink-less at full model speed; the FINAL retry text (post
+      // recovery ladder, post trigger re-pass — so a neutralized token
+      // streams exactly the way it commits) is replayed paced through
+      // slowStreamSpeech below.
+      const { sink: _retrySink, ...depsWithoutSink } = deps;
+      streamResult = await runPhaseTwo({
+        ...baseRetryOpts,
+        deps: depsWithoutSink,
+      });
+    }
+    // Strip stray open tags from the retry — the first pass is stripped
+    // above, but the retry reassigned streamResult past that point, so a
+    // retry re-emitting `（我 说）` streamed the literal tag to the user
+    // and committed it into every future prompt. The live path settles
+    // the corrected text at commit (same accepted-flicker mechanism as
+    // the @板砖 neutralization, SPEC live-feed-veto-respeak §5).
     streamResult = {
       surface: streamResult.surface,
       text: stripStrayOpenTags(streamResult.text, streamResult.surface),
     };
+    // Nothing has reached the sink yet (non-live), or the live controller
+    // holds the stream — the finalize step below (or the one-shot unified
+    // replay for sinks without slowStreamSpeech) renders the retry.
     speechSinkPending = true;
+
+    // Empty-veto-retry recovery. The supervisor-veto retry uses
+    // `buildSupervisorVetoHint(reason)` which is voice/intent-
+    // correction focused; it doesn't address the empty-output
+    // failure mode. If the model's veto-retry comes back empty
+    // (e.g., it tried to "fix" the rejected speech by closing
+    // immediately), fall through to the empty-speech retry
+    // ladder — same recovery, rising temperature. Commits the
+    // ladder's result unconditionally without a second supervisor
+    // pass (per spec §2 "single retry per failure mode" — we've
+    // already spent the veto retry; the ladder is the recovery
+    // for the NEW failure mode introduced by an empty veto-retry).
+    //
+    // Defer streaming + render via the unified-replay step below
+    // — the live-stream sink path already missed its chance
+    // (streamResult was reassigned twice, the cursor isn't sync'd).
+    // Slot-only counts as empty here too, and this site is the one that
+    // matters most: the veto respeak commits WITHOUT a second supervisor
+    // pass, so a degenerate `{需要说的话}` has no other guard. The
+    // corrective veto hint is itself instruction-dense — exactly the
+    // input that pushes a model toward emitting the slot.
+    if (isUnusableBlock(streamResult.text)) {
+      // The live re-speak was empty; abandon its controller (it pushed
+      // nothing) and render the recovered text via the old replay path.
+      retryLive = undefined;
+      const vetoRetryCause = retryCause(streamResult.text);
+      streamResult = await recoverEmptySpeech({
+        ...(vetoRetryCause !== undefined ? { cause: vetoRetryCause } : {}),
+        deps,
+        record,
+        priorTurnLength,
+        signal,
+        recap,
+        recapBoundaryIndex,
+      });
+      // Same strip discipline as every other reassignment point.
+      streamResult = {
+        surface: streamResult.surface,
+        text: stripStrayOpenTags(streamResult.text, streamResult.surface),
+      };
+      speechSinkPending = true;
+    }
   }
 
   // Bounded trigger re-pass (2026-06-11 trigger-discipline §3.2).
@@ -941,6 +1008,9 @@ export async function runActorCompletionTurn(
           // fabrication and gets falsely vetoed.
           sessionReceipts: sessionMarkerReceipts(record),
           lang: deps.lang ?? "zh",
+          // ADR 0065: ask for the corrected line on a veto; the actor
+          // adopts it in recoverFromVeto when it can stand as a speech.
+          askRevision: deps.supervisorRevision === true,
         });
       deps.onPrompt?.("supervisor", supervisorPrompt);
 

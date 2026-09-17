@@ -172,6 +172,9 @@ export interface V2ActorDriverDeps {
    * `loadSupervisorReference`. Empty string disables the supervisor.
    */
   readonly supervisorReference?: string;
+  /** ADR 0065: adopt the supervisor's corrected line as the re-speak when
+   *  it is usable (see `ActorTurnDeps.supervisorRevision`). */
+  readonly supervisorRevision?: boolean;
   /**
    * Interaction language of the session (slice 4). Per-session — the
    * driver lives for one session and threads this into EVERY
@@ -523,6 +526,9 @@ export class V2ActorDriver {
           : {}),
         ...(this.deps.supervisorReference !== undefined
           ? { supervisorReference: this.deps.supervisorReference }
+          : {}),
+        ...(this.deps.supervisorRevision !== undefined
+          ? { supervisorRevision: this.deps.supervisorRevision }
           : {}),
         ...(this.deps.hints !== undefined ? { hints: this.deps.hints } : {}),
       });

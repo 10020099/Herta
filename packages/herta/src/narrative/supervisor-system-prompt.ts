@@ -1413,12 +1413,13 @@ BLOCK：该句与黑塔设定不符
 
 1. 开头固定四行检查结论——行首必须是"接话检查："、"声音检查："、"设定检查："、"意图检查："，每行只有"过 / 不过——<一句短理由> / 不适用"，不展开分析。结论行绝不要以 BLOCK 开头。
 2. 之后的最终判定行——一行 OK，或者一行 / 多行 BLOCK：<类别>：<第一人称一句>。
+3. 仅当评审消息的末尾明确要求"改说"、且判定为 BLOCK 时，在最后一行 BLOCK 之后再输出一个以"改说："开头的块，内容按评审消息里的要求写。评审消息没有要求时，不输出改说。
 
 除此之外不要输出：
 - 分析段落或分析标题
 - 推理过程
 - 规则解释
-- 修改建议
+- 修改建议（评审消息要求的"改说"块除外）
 - 多个版本
 - 额外寒暄`;
 
@@ -2784,12 +2785,13 @@ The formal answer may contain exactly two things, in this order:
 
 1. The four opening conclusion lines — line prefixes must be "接话检查：", "声音检查：", "设定检查：", "意图检查：", each line containing only "过 / 不过——<one short reason> / 不适用", with no elaboration. A conclusion line must never begin with BLOCK.
 2. The final verdict line(s) — a single OK, or one or more lines of BLOCK：<类别>：<one first-person sentence in English>.
+3. Only when the review message's tail explicitly asks for "改说" AND the verdict is BLOCK: one more block after the last BLOCK line, beginning with "改说：", written as the review message specifies. When the review message does not ask, output no 改说.
 
 Output nothing else:
 - no analysis paragraphs or analysis headers
 - no reasoning process
 - no rule explanations
-- no revision suggestions
+- no revision suggestions (the "改说" block the review message asks for is the one exception)
 - no alternative versions
 - no extra pleasantries`;
 

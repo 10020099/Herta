@@ -96,6 +96,8 @@ function mkDeps(opts: {
   onSupervisorVeto?: () => void;
   supervisorProvider?: ProviderAdapter;
   supervisorReference?: string;
+  /** ADR 0065: adopt the supervisor's 改说 line as the re-speak. */
+  supervisorRevision?: boolean;
   /** The router's mood state (required on the deps since 2026-09-03). The
    *  neutral `默认` unless a test routes elsewhere. */
   intentState?: MoodState;
@@ -140,6 +142,9 @@ function mkDeps(opts: {
       : {}),
     ...(opts.supervisorReference !== undefined
       ? { supervisorReference: opts.supervisorReference }
+      : {}),
+    ...(opts.supervisorRevision !== undefined
+      ? { supervisorRevision: opts.supervisorRevision }
       : {}),
   };
 }
@@ -3684,6 +3689,186 @@ describe("runActorCompletionTurn — supervisor (Slice: supervisor)", () => {
     // supervisor labels fired exactly once each.
     expect(dumps.filter((d) => d.label === "supervisor")).toHaveLength(1);
     expect(dumps.filter((d) => d.label === "supervisor-out")).toHaveLength(1);
+  });
+
+  // ── ADR 0065: the supervisor's own corrected line (改说) ──────────────────
+  // A veto whose verdict carries a usable 改说 line commits that line as the
+  // re-speak: no rethink thought, no respeak call, the retract floor emitted
+  // from it at once. Anything unusable — or the flag off — takes the
+  // two-stage path exactly as the tests above pin it.
+  const VETO_WITH_REVISION =
+    "接话检查：过\n声音检查：不过——句尾撒娇\n设定检查：过\n意图检查：过\nBLOCK：声音：我刚才那句尾巴带了撒娇\n改说：好，明白了。";
+
+  /** A sink with the non-live paced replay + the retract floor, recording
+   *  the wall order of the veto's cancel, the floor and the replay. */
+  function mkFloorSink(): {
+    sink: ActorStreamingSink;
+    order: string[];
+  } {
+    const order: string[] = [];
+    const sink: ActorStreamingSink = {
+      beginHertaStream: () => {},
+      streamHertaToken: () => {},
+      endHertaStream: () => {},
+      flushBlocks: () => {},
+      emitRetractFloor: (keepLen: number) => {
+        order.push(`floor:${keepLen}`);
+      },
+      slowStreamSpeech(text: string) {
+        this.beginHertaStream("speech");
+        let resolveDone!: () => void;
+        const done = new Promise<void>((r) => {
+          resolveDone = r;
+        });
+        done.catch(() => undefined);
+        return {
+          done,
+          fastForward: async () => {
+            order.push(`replay:fastForward:${text}`);
+            resolveDone();
+          },
+          cancelAndBackspace: async () => {
+            order.push(`replay:cancel:${text}`);
+          },
+        };
+      },
+    };
+    return { sink, order };
+  }
+
+  it("ADR 0065: a usable 改说 line IS the re-speak — no rethink, no respeak, the floor from it at once", async () => {
+    const { provider: actorProvider, prompts: actorPrompts } =
+      mkTwoPhaseTurnProvider();
+    const dumps: Array<{ label: string; body: string }> = [];
+    const vetoes: number[] = [];
+    const { sink, order } = mkFloorSink();
+    const deps = mkDeps({
+      provider: actorProvider,
+      onPrompt: (label, body) => dumps.push({ label, body }),
+      onSupervisorVeto: () => vetoes.push(1),
+      supervisorProvider: mkSupervisorProvider(VETO_WITH_REVISION),
+      supervisorReference: "REF",
+      supervisorRevision: true,
+    });
+    const { record } = await runActorCompletionTurn(
+      { record: [] as TerminalRecord },
+      "hi",
+      {
+        ...deps,
+        sink,
+        intentState: "默认",
+        attachedMetaThink: mkAttachment({
+          preThinkText: "T",
+          preSpeakText: "S",
+        }),
+      },
+    );
+    // Two actor calls only: the thought and the vetoed first pass. The
+    // scripted rethink and respeak were never consumed.
+    expect(actorPrompts).toHaveLength(2);
+    // user, thought, the supervisor's line as the speech — with the veto
+    // reason as its self-correction, like any veto respeak.
+    expect(record).toHaveLength(3);
+    expect(record[2]).toEqual({
+      kind: "herta",
+      surface: "speech",
+      text: "好，明白了。",
+      selfCorrection: "我刚才那句尾巴带了撒娇",
+    });
+    // The review message asked for the line (the phrase lives only in the
+    // per-call request, never in the cached system message); the dump names
+    // the adoption.
+    expect(dumps.find((d) => d.label === "supervisor")?.body).toContain(
+      "判定为 OK 时不要输出改说",
+    );
+    expect(
+      dumps.some(
+        (d) =>
+          d.label === "phase2-out" &&
+          d.body.startsWith("[supervisor revision adopted"),
+      ),
+    ).toBe(true);
+    // The veto cue fired once; the vetoed candidate was cancelled, the floor
+    // is the shared prefix of 好。 and 好，明白了。 (one code point), and the
+    // paced replay carried the supervisor's line.
+    expect(vetoes).toHaveLength(1);
+    const cancel = order.indexOf("replay:cancel:好。");
+    const floor = order.indexOf("floor:1");
+    const replay = order.indexOf("replay:fastForward:好，明白了。");
+    expect(cancel).toBeGreaterThanOrEqual(0);
+    expect(floor).toBeGreaterThan(cancel);
+    expect(replay).toBeGreaterThan(floor);
+  });
+
+  it("ADR 0065: an unusable 改说 line (the vetoed text again) takes the rethink + respeak path", async () => {
+    const { provider: actorProvider, prompts: actorPrompts } =
+      mkTwoPhaseTurnProvider();
+    const dumps: Array<{ label: string; body: string }> = [];
+    const deps = mkDeps({
+      provider: actorProvider,
+      onPrompt: (label, body) => dumps.push({ label, body }),
+      supervisorProvider: mkSupervisorProvider(
+        "BLOCK：声音：我刚才那句尾巴带了撒娇\n改说：好。",
+      ),
+      supervisorReference: "REF",
+      supervisorRevision: true,
+    });
+    const { record } = await runActorCompletionTurn(
+      { record: [] as TerminalRecord },
+      "hi",
+      {
+        ...deps,
+        intentState: "默认",
+        attachedMetaThink: mkAttachment({
+          preThinkText: "T",
+          preSpeakText: "S",
+        }),
+      },
+    );
+    // Four actor calls: thought, first pass, rethink, respeak.
+    expect(actorPrompts).toHaveLength(4);
+    expect(record.map((b) => b.kind === "herta" && b.text)).toEqual([
+      false,
+      "想想看。",
+      "回头想想，那句确实不行。",
+      "嗯，重写过的。",
+    ]);
+    expect(
+      dumps.some(
+        (d) =>
+          d.label === "phase2-out" &&
+          d.body.startsWith("[supervisor revision not adopted (unchanged)"),
+      ),
+    ).toBe(true);
+  });
+
+  it("ADR 0065: with the flag off the prompt never asks and a 改说 line is ignored", async () => {
+    const { provider: actorProvider, prompts: actorPrompts } =
+      mkTwoPhaseTurnProvider();
+    const dumps: Array<{ label: string; body: string }> = [];
+    const deps = mkDeps({
+      provider: actorProvider,
+      onPrompt: (label, body) => dumps.push({ label, body }),
+      supervisorProvider: mkSupervisorProvider(VETO_WITH_REVISION),
+      supervisorReference: "REF",
+    });
+    const { record } = await runActorCompletionTurn(
+      { record: [] as TerminalRecord },
+      "hi",
+      {
+        ...deps,
+        intentState: "默认",
+        attachedMetaThink: mkAttachment({
+          preThinkText: "T",
+          preSpeakText: "S",
+        }),
+      },
+    );
+    expect(actorPrompts).toHaveLength(4);
+    expect(record.at(-1)).toMatchObject({ text: "嗯，重写过的。" });
+    expect(dumps.find((d) => d.label === "supervisor")?.body).not.toContain(
+      "判定为 OK 时不要输出改说",
+    );
   });
 
   it("particle: onPrimarySpeechStart fires once with the first speech text (not the thought)", async () => {

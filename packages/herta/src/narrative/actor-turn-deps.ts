@@ -177,6 +177,15 @@ export interface ActorTurnDeps {
    * (graceful "no reference authored" path).
    */
   readonly supervisorReference?: string;
+  /**
+   * ADR 0065: on a veto, ask the supervisor for the corrected line (改说)
+   * and adopt it as the re-speak when it is usable — no rethink thought,
+   * no respeak call, the retract floor known the moment the verdict lands.
+   * An unusable or missing line takes the rethink + respeak path exactly
+   * as before. Default false; `createActorStack` resolves the shipped
+   * default and the `HERTA_SUPERVISOR_REVISION` override.
+   */
+  readonly supervisorRevision?: boolean;
   /** Editable actor hints, loaded from `.herta/narrative/hints/*.txt` at
    *  startup. Optional: when absent, resolves to `DEFAULT_ACTOR_HINTS`. */
   readonly hints?: ActorHints;

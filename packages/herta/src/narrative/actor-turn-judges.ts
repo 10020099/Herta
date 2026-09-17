@@ -129,6 +129,10 @@ export interface SupervisorVerdict {
   verdict: "ok" | "block";
   reason?: string;
   blockFindings: ReadonlyArray<{ category: string; detail: string }>;
+  /** The supervisor's own corrected line (ADR 0065) — present only on a
+   *  block, and only when the prompt asked for it and the model wrote one.
+   *  Adopted as the re-speak when usable; see `usableRevision`. */
+  revision?: string;
 }
 
 /**
