@@ -44,6 +44,11 @@ import type { ActorStreamingSink } from "./streaming-sink.js";
  * Tuning: 5 is a starting value. Larger keeps the anchor stable at
  * a small voice-drift cost; smaller re-emits the preamble more often
  * at a larger token cost. Change here if a regression suggests it.
+ *
+ * Since ADR 0066 (2026-09-17) the default policy at this point is to
+ * EXPIRE the preamble rather than jump it — see
+ * `V2ActorDriverDeps.speakAnchorPolicy`. The interval keeps its meaning
+ * as the turn count after which the preamble stops being re-sent.
  */
 const SPEAK_ANCHOR_REFRESH_INTERVAL = 5;
 
@@ -175,6 +180,22 @@ export interface V2ActorDriverDeps {
   /** ADR 0065: adopt the supervisor's corrected line as the re-speak when
    *  it is usable (see `ActorTurnDeps.supervisorRevision`). */
   readonly supervisorRevision?: boolean;
+  /**
+   * What happens to the speak anchor after `SPEAK_ANCHOR_REFRESH_INTERVAL`
+   * same-state turns. "refresh" (the behavior to date): the pre_speak
+   * preamble jumps forward to the current speech position, which changes
+   * the serialized record behind the old anchor — a prompt-cache miss over
+   * that stretch every five turns, and again at the next state change.
+   * "expire": the preamble is dropped where it stands, once; nothing moves
+   * again until the state changes, and the next state's anchor lands at
+   * the tail, after everything the cache holds. The in-mood speeches
+   * already in the record and the per-turn pre_think carry the register.
+   * Default "expire" (ADR 0066, `scripts/anchor-lab.mjs` 2026-09-17: no
+   * register loss over turns 6–10 without the preamble, one bounded
+   * cache miss per mood run instead of one per five turns); "refresh"
+   * stays available for a lab.
+   */
+  readonly speakAnchorPolicy?: "refresh" | "expire";
   /**
    * Interaction language of the session (slice 4). Per-session — the
    * driver lives for one session and threads this into EVERY
@@ -444,7 +465,20 @@ export class V2ActorDriver {
         this.turnsSinceSpeakAnchor += 1;
         const speakStale =
           this.turnsSinceSpeakAnchor >= SPEAK_ANCHOR_REFRESH_INTERVAL;
-        if (speakStale) {
+        if (
+          speakStale &&
+          (this.deps.speakAnchorPolicy ?? "expire") === "expire"
+        ) {
+          // Expire: the speak preamble is dropped in place. The record
+          // behind the old anchor changes once (as a jump would) and never
+          // again until the state changes; the think anchor keeps moving.
+          // Idempotent on the following turns — the text is already empty.
+          this.attachedMetaThink = {
+            ...this.attachedMetaThink,
+            beforeThinkIndex: this.record.length,
+            preSpeakText: "",
+          };
+        } else if (speakStale) {
           // Speak anchor drifted too far back across same-state turns.
           // Re-anchor at this turn's speech position so the preamble
           // re-enters the model's effective attention window. Texts

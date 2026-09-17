@@ -581,11 +581,16 @@ export async function createActorStack(
         }
       : null;
 
-  // Providers. Router: flash at thinking "low" (owner decision 2026-08-03; a
-  // 7-way mood pick needs thinking MODE, not depth). Supervisor: its own
-  // flash adapter at "high" — a precision gate (misses buried-rule shapes
-  // ~1/3 even at high, trigger-gate 2026-07-29); the recap summarizer rides
-  // this adapter for the same reason.
+  // Providers. Router: flash with thinking OFF (router lab 2026-09-17,
+  // `scripts/router-lab.mjs`: flash 4.1 routed 33/33 graded samples both
+  // with and without thinking; off ran 670 ms mean / 1.3 s max against
+  // 915 ms / 2.8 s at "low"). "low" had been the floor since 2026-08-03
+  // because flash 4.0 could not classify without thinking — that failure
+  // shape (empty output, schema metalanguage) did not recur in 39 calls.
+  // The router sits on every turn's critical path, so the tail matters.
+  // Supervisor: its own flash adapter at "high" — a precision gate (misses
+  // buried-rule shapes ~1/3 even at high, trigger-gate 2026-07-29); the
+  // recap summarizer rides this adapter for the same reason.
   const actorProvider =
     overrides.actorProvider ??
     deepseekCompletionProvider({ apiKey: opts.apiKey, ...baseUrl });
@@ -594,7 +599,7 @@ export async function createActorStack(
     deepseekProvider({
       apiKey: opts.apiKey,
       model: "deepseek-flash",
-      thinking: "low",
+      thinking: false,
       ...baseUrl,
     });
   // Test seam preserved: with only a router override present, the

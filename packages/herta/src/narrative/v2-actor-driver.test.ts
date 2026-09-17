@@ -1313,6 +1313,8 @@ describe("V2ActorDriver — mood routing (Slice 13)", () => {
     actorProvider: CompletionProviderAdapter;
     routerProvider: ProviderAdapter;
     corpus: MetaThinkCorpus;
+    /** The speak-anchor policy under test (default: the driver's). */
+    speakAnchorPolicy?: "refresh" | "expire";
   }): V2ActorDriver {
     const noopRuntime: CodingAgentRuntime = {
       runBrief: async (brief: HertaToAgentBrief) => ({
@@ -1334,6 +1336,9 @@ describe("V2ActorDriver — mood routing (Slice 13)", () => {
       runtimeFactory: () => noopRuntime,
       routerProvider: opts.routerProvider,
       metaThinkCorpus: opts.corpus,
+      ...(opts.speakAnchorPolicy !== undefined
+        ? { speakAnchorPolicy: opts.speakAnchorPolicy }
+        : {}),
     });
   }
 
@@ -1569,8 +1574,9 @@ describe("V2ActorDriver — mood routing (Slice 13)", () => {
     expect(secondAttachment.preThinkText).toBe("ANNOYED_BLOB");
   });
 
-  it("same-state run: think anchor advances every turn; speak anchor sticks for SPEAK_ANCHOR_REFRESH_INTERVAL turns then jumps forward", async () => {
-    // 6 turns, all 默认. With SPEAK_ANCHOR_REFRESH_INTERVAL = 5:
+  it("speakAnchorPolicy 'refresh': think anchor advances every turn; speak anchor sticks for SPEAK_ANCHOR_REFRESH_INTERVAL turns then jumps forward", async () => {
+    // 6 turns, all 默认, under the pre-ADR-0066 policy. With
+    // SPEAK_ANCHOR_REFRESH_INTERVAL = 5:
     //   turn 1 → fresh attachment, counter=0, speak anchor=2
     //   turns 2-5 → counter increments to 4, anchor stays at 2
     //   turn 6 → counter reaches 5, speak anchor REFRESHES to turn 6's
@@ -1587,6 +1593,7 @@ describe("V2ActorDriver — mood routing (Slice 13)", () => {
       actorProvider: actor,
       routerProvider: router,
       corpus: mkPartialCorpus(),
+      speakAnchorPolicy: "refresh",
     });
 
     for (let n = 1; n <= 6; n++) {
@@ -1607,6 +1614,51 @@ describe("V2ActorDriver — mood routing (Slice 13)", () => {
       // Texts stay the same across same-state turns (corpus lookup).
       expect(attached!.preThinkText).toBe("DEFAULT_BLOB");
       expect(attached!.preSpeakText).toBe("DEFAULT_BLOB");
+    }
+  });
+
+  it("speakAnchorPolicy 'expire' (the default): after SPEAK_ANCHOR_REFRESH_INTERVAL same-state turns the speak preamble is dropped in place and nothing moves until the state changes", async () => {
+    // 8 turns: 默认 ×7, then 被烦版. Under "expire" (passed explicitly,
+    // and also what an omitted policy resolves to — ADR 0066):
+    //   turns 1-5 → speak anchor at 2 with the text (as "refresh")
+    //   turns 6-7 → anchor index UNCHANGED (2), text EMPTY — no jump
+    //   turn 8    → state change: fresh anchor at the tail, text back
+    // The think anchor advances every turn regardless.
+    const scripts = [];
+    for (let i = 0; i < 8; i++) {
+      scripts.push(...twoPhaseTurnScript(`想${i}。`, `说${i}。`));
+    }
+    const actor = mkProvider(scripts, { scriptThoughts: true });
+    const router = mkRouterProvider([...Array(7).fill("默认"), "被烦版"]);
+    const driver = mkMoodDriver({
+      actorProvider: actor,
+      routerProvider: router,
+      corpus: mkPartialCorpus(),
+      speakAnchorPolicy: "expire",
+    });
+
+    for (let n = 1; n <= 8; n++) {
+      await driver.runTurn(`turn ${n}`, new AbortController().signal);
+      const attached = driver.getAttachedMetaThink();
+      expect(attached).not.toBeNull();
+      expect(attached!.beforeThinkIndex).toBe((n - 1) * 3);
+      if (n <= 5) {
+        expect(attached!.state).toBe("默认");
+        expect(attached!.beforeSpeakIndex).toBe(2);
+        expect(attached!.preSpeakText).toBe("DEFAULT_BLOB");
+      } else if (n <= 7) {
+        // Expired: the index stays where the run started, the text is gone.
+        expect(attached!.state).toBe("默认");
+        expect(attached!.beforeSpeakIndex).toBe(2);
+        expect(attached!.preSpeakText).toBe("");
+        expect(attached!.preThinkText).toBe("DEFAULT_BLOB");
+      } else {
+        // State change: a fresh anchor at this turn's speech position
+        // (7 turns × 3 blocks + user + thought = 21 + 2 = 23).
+        expect(attached!.state).toBe("被烦版");
+        expect(attached!.beforeSpeakIndex).toBe(23);
+        expect(attached!.preSpeakText).toBe("ANNOYED_BLOB");
+      }
     }
   });
 
