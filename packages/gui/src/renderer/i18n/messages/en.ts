@@ -303,9 +303,9 @@ export const en = {
   "composer.aria": "Message composer",
   "composer.send": "Send message",
   "composer.stop": "Interrupt the current turn",
-  "composer.attach": "Add documents",
+  "composer.attach": "Add files",
   "composer.attach.formats":
-    ".pdf .docx .md .txt .csv .json .log .py .ts and other text",
+    "Images .png .jpg, documents .pdf .docx, plus .md .txt .csv .json .py .ts and other text",
   // The composer-notice pill (owner 2026-08-27): terse, formal, and NO
   // trailing period — a pill is a label, not a sentence. Settings-row prose
   // keeps its periods; these do not.

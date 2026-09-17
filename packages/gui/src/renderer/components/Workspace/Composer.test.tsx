@@ -640,7 +640,7 @@ describe("Composer — a message while 板砖 works (ADR 0063)", () => {
     const input = hold("also rename the test file");
     const form = input.closest("form") as HTMLFormElement;
     expect(
-      (screen.getByLabelText("Add documents") as HTMLButtonElement).disabled,
+      (screen.getByLabelText("Add files") as HTMLButtonElement).disabled,
     ).toBe(true);
     const file = {
       name: "shot.png",
@@ -1036,7 +1036,7 @@ describe("Composer — attachments (ADR 0033)", () => {
     });
     renderAttached(mock);
     await act(async () => {
-      fireEvent.click(screen.getByLabelText("Add documents"));
+      fireEvent.click(screen.getByLabelText("Add files"));
     });
     expect(mock.calls.pickAttachments).toBe(1);
     expect(mock.calls.attachFiles).toHaveLength(1);
@@ -1055,9 +1055,7 @@ describe("Composer — attachments (ADR 0033)", () => {
     );
     expect(wrap).toBeTruthy();
     expect(wrap?.classList.contains("tooltip-top")).toBe(true);
-    expect(wrap?.querySelector(".tooltip")?.textContent).toContain(
-      "Add documents",
-    );
+    expect(wrap?.querySelector(".tooltip")?.textContent).toContain("Add files");
     // Extensions, not category prose (owner 2026-08-10) — with a trailing
     // "and other text" so the list reads as representative, not exhaustive.
     const sub = wrap?.querySelector(".tooltip-sub")?.textContent ?? "";
@@ -1073,7 +1071,7 @@ describe("Composer — attachments (ADR 0033)", () => {
     const mock = createMockHertaBridge({ pickAttachmentsResult: null });
     renderAttached(mock);
     await act(async () => {
-      fireEvent.click(screen.getByLabelText("Add documents"));
+      fireEvent.click(screen.getByLabelText("Add files"));
     });
     expect(mock.calls.attachFiles).toHaveLength(0);
   });

@@ -276,14 +276,19 @@ export const zh = {
   "composer.aria": "消息输入框",
   "composer.send": "发送消息",
   "composer.stop": "打断当前回合",
-  "composer.attach": "添加文档",
+  // 文件, not 文档 (owner 2026-09-17): the same button stages images (ADR
+  // 0048) and ingests PDF, Word and text files (ADR 0038) — "documents"
+  // undersold it.
+  "composer.attach": "添加文件",
   /** The tooltip's muted second line. Extensions, not kinds (owner
    *  2026-08-10): a reader scans `.md .txt .csv` faster than a sentence about
-   *  categories. The trailing 等 keeps it honest — the sniff accepts any text
-   *  file, so the list is representative, not exhaustive. `.pdf .docx` lead
-   *  since ADR 0038: they are the two formats people actually hand over. */
+   *  categories. Images lead since they are the newest capability and the
+   *  one the old line never mentioned; `.pdf .docx` next (ADR 0038); the
+   *  trailing 等 keeps it honest — the sniff accepts any text file, so the
+   *  list is representative, not exhaustive. Not listed on purpose:
+   *  `.ppt .pptx .xls .xlsx .doc` are refused as 暂不支持 (document-text.ts). */
   "composer.attach.formats":
-    ".pdf .docx .md .txt .csv .json .log .py .ts 等文本文件",
+    "图片 .png .jpg、文档 .pdf .docx，以及 .md .txt .csv .json .py .ts 等文本文件",
   // The composer-notice pill (owner 2026-08-27): terse, formal, and NO
   // trailing 。 — a pill is a label, not a sentence. Settings-row prose keeps
   // its periods; these do not.
