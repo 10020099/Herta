@@ -7,11 +7,35 @@ import { zodToJsonSchema } from "zod-to-json-schema";
 // telling the model which key it misspelled.
 export const searchTextInputSchema = z
   .object({
-    pattern: z.string().min(1, "pattern must be non-empty"),
-    path: z.string().min(1).optional(),
-    caseSensitive: z.boolean().optional(),
-    contextLines: z.number().int().min(0).max(5).optional(),
-    maxMatches: z.number().int().min(1).max(500).optional(),
+    pattern: z
+      .string()
+      .min(1, "pattern must be non-empty")
+      .describe("Regular expression to search for (ripgrep syntax)."),
+    path: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        "Workspace-relative file or directory to search. Default: the workspace root.",
+      ),
+    caseSensitive: z
+      .boolean()
+      .optional()
+      .describe("Match case exactly. Default false."),
+    contextLines: z
+      .number()
+      .int()
+      .min(0)
+      .max(5)
+      .optional()
+      .describe("Lines of context each side of a match, 0–5. Default 0."),
+    maxMatches: z
+      .number()
+      .int()
+      .min(1)
+      .max(500)
+      .optional()
+      .describe("Cap on matches returned."),
   })
   .strict();
 

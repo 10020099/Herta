@@ -211,7 +211,10 @@ export async function* runBackendTurnLoop(
         code,
         ...(decision.risk !== undefined ? { risk: decision.risk } : {}),
       });
-      const suggestion = denySuggestion(code);
+      // The rule's own hint wins (2026-09-18: an editor's `edit_not_found`
+      // names the move that fixes it); the loop's table covers the codes
+      // every rule shares.
+      const suggestion = decision.suggestion ?? denySuggestion(code);
       return {
         kind: "result",
         result: {

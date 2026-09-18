@@ -64,6 +64,28 @@ describe("show_excerpt", () => {
     expect(r.summary).toBe("a.txt:2-4");
   });
 
+  it("a bare path shows the head of the file, up to the excerpt bound (2026-09-18)", async () => {
+    // The permission lab's most frequent tool failure: 9 of 37 show_excerpt
+    // calls were a first call with only the path, rejected with "give either
+    // `match` or `fromLine`" and corrected on the second call. The natural
+    // first ask is "show me this file"; it now gets the head of the file.
+    seed("a.txt", ["one", "two", "three", "four", "five"]);
+    const r = await run({ path: "a.txt" });
+    expect(r.ok).toBe(true);
+    if (!r.ok || r.data === undefined) throw new Error("expected ok + data");
+    expect(r.data.range).toEqual([1, 5]);
+    expect(r.data.excerpt).toBe("1\tone\n2\ttwo\n3\tthree\n4\tfour\n5\tfive");
+    // A long file: the head is the whole excerpt bound, flagged truncated.
+    seed(
+      "long.txt",
+      Array.from({ length: 200 }, (_, i) => `L${i + 1}`),
+    );
+    const long = await run({ path: "long.txt" });
+    if (!long.ok || long.data === undefined) throw new Error("expected ok");
+    expect(long.data.range).toEqual([1, MAX_EXCERPT_LINES]);
+    expect(long.data.truncated).toBe(true);
+  });
+
   it("centres on a `match` with context lines each side", async () => {
     seed("log.txt", [
       "l1",
@@ -332,11 +354,15 @@ describe("show_excerpt", () => {
     expect(r.error?.code).toBe("binary_file");
   });
 
-  it("requires either a range or a match", async () => {
+  it("a wrong range key is still named, not silently stripped (strict schema)", async () => {
+    // A bare path is valid since 2026-09-18 (the head of the file), but a
+    // misspelled range key must still fail loudly — the 2026-07-31 lesson.
     seed("a.txt", ["x"]);
-    const r = await run({ path: "a.txt" });
+    const r = await run({ path: "a.txt", from: 1 });
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.error?.code).toBe("invalid_input");
+    expect(r.error?.message).toContain("from");
+    expect(r.suggestion).toContain("usage:");
   });
 });

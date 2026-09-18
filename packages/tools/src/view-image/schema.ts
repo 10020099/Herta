@@ -14,7 +14,10 @@ export const viewImageInputSchema = z
   .object({
     paths: z
       .array(z.string().min(1, "path must be non-empty"))
-      .min(1, "give at least one path"),
+      .min(1, "give at least one path")
+      .describe(
+        "Image files to look at (PNG, JPEG, GIF, WebP, BMP), workspace-relative or an attachment's stored path. Several paths are shown together.",
+      ),
   })
   .strict();
 

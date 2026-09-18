@@ -69,6 +69,11 @@ export type RuleVerdict =
        *  the loop sends verbatim instead of `failed: <code>` + JSON. Absent
        *  → the loop's default rendering (unchanged for every other rule). */
       modelText?: string;
+      /** The move that fixes the refusal (2026-09-18) — the corrective half
+       *  every tool failure carries, for a rule-deny whose code the loop's
+       *  own table does not know (an editor's `edit_not_found`, say). Wins
+       *  over the loop's default suggestion when present. */
+      suggestion?: string;
       /** The tier of what was REFUSED, when the rule can say (2026-08-26).
        *  A `workspace_read` refusal is a withheld read, not a refused
        *  mutation, and must not cap the brief's status — the git-dev lab
@@ -102,6 +107,8 @@ export type PermissionDecision =
       reason: string;
       code?: string;
       modelText?: string;
+      /** See RuleVerdict deny — the rule's own corrective hint. */
+      suggestion?: string;
       /** See RuleVerdict deny — threaded so the status gate can tell a
        *  withheld read from a refused mutation. */
       risk?: RiskLevel;
@@ -156,6 +163,9 @@ export class RulePermissionEngine implements PermissionEngine {
         code: verdict.code,
         ...(verdict.modelText !== undefined
           ? { modelText: verdict.modelText }
+          : {}),
+        ...(verdict.suggestion !== undefined
+          ? { suggestion: verdict.suggestion }
           : {}),
         ...(verdict.risk !== undefined ? { risk: verdict.risk } : {}),
       };

@@ -2042,6 +2042,35 @@ describe("one permission gate for the serial and the parallel path (2026-09-03)"
     expect(parallel.resolved).toHaveLength(2);
   });
 
+  it("a rule-deny's own suggestion reaches the model, and wins over the loop's table (2026-09-18)", async () => {
+    // An editor's `edit_not_found` is a rule-deny (the edit is planned at
+    // rule time) whose code the loop's table does not know; the rule names
+    // the fixing move itself and the gate forwards it.
+    const engine: PermissionEngine = {
+      check: async () => ({
+        kind: "deny",
+        reason: "old_str did not appear verbatim",
+        code: "edit_not_found",
+        suggestion: "view the file and copy old_str verbatim",
+      }),
+      resolve: () => {},
+    };
+    const own = await finishedResults(registry(["write_file"], false), engine, [
+      "write_file",
+    ]);
+    expect(own.results[0]?.error?.code).toBe("edit_not_found");
+    expect(own.results[0]?.suggestion).toBe(
+      "view the file and copy old_str verbatim",
+    );
+    // A rule that says nothing extra on a shared code keeps the table's hint.
+    const table = await finishedResults(
+      registry(["write_file"], false),
+      denyEngine("invalid_input"),
+      ["write_file"],
+    );
+    expect(table.results[0]?.suggestion).toContain("not a permission denial");
+  });
+
   it("the parallel path renders an unknown deny code exactly like the serial path", async () => {
     const serial = await finishedResults(
       registry(["write_file"], false),

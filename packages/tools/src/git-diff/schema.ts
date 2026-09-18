@@ -17,20 +17,34 @@ const REF_PATTERN = /^[A-Za-z0-9_.^~@][A-Za-z0-9_./^~@-]*$/;
 
 export const gitDiffInputSchema = z
   .object({
-    staged: z.boolean().optional(),
+    staged: z
+      .boolean()
+      .optional()
+      .describe(
+        "Diff the index against HEAD (staged changes) instead of the working tree.",
+      ),
     ref: z
       .string()
       .min(1)
       .max(200)
       .regex(REF_PATTERN, "ref contains disallowed characters")
-      .optional(),
+      .optional()
+      .describe("Diff the working tree against this commit or branch."),
     base: z
       .string()
       .min(1)
       .max(200)
       .regex(REF_PATTERN, "base contains disallowed characters")
-      .optional(),
-    patch: z.boolean().optional(),
+      .optional()
+      .describe(
+        "Diff HEAD against this commit or branch (what changed since `base`).",
+      ),
+    patch: z
+      .boolean()
+      .optional()
+      .describe(
+        "Include the unified patch text, not only the per-file stat. Default false.",
+      ),
   })
   .strict()
   .refine(

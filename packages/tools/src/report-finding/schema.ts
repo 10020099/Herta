@@ -19,6 +19,9 @@ export const reportFindingInputSchema = z
       .max(
         MAX_FINDING_CLAIM_CHARS,
         `claim must be at most ${MAX_FINDING_CLAIM_CHARS} chars`,
+      )
+      .describe(
+        `One conclusion as one sentence, at most ${MAX_FINDING_CLAIM_CHARS} characters, in the conversation's language.`,
       ),
     cites: z
       .array(z.string().min(1))
@@ -26,7 +29,10 @@ export const reportFindingInputSchema = z
         1,
         "cite at least one path:line — an uncited conclusion is not a finding",
       )
-      .max(MAX_FINDING_CITES),
+      .max(MAX_FINDING_CITES)
+      .describe(
+        `Where the claim rests: \`path\`, \`path:line\` or \`path:from-to\` (workspace-relative, lines you actually read). At most ${MAX_FINDING_CITES}.`,
+      ),
   })
   .strict();
 

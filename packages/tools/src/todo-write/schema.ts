@@ -7,8 +7,16 @@ export const MAX_TODO_ITEMS = 32;
 // Strict (2026-07-31): unknown keys are named instead of silently stripped.
 const TodoItemSchema = z
   .object({
-    content: z.string().min(1).max(200),
-    status: z.enum(["pending", "in_progress", "completed"]),
+    content: z
+      .string()
+      .min(1)
+      .max(200)
+      .describe(
+        "The step, in the conversation's language, at most 200 characters.",
+      ),
+    status: z
+      .enum(["pending", "in_progress", "completed"])
+      .describe("The step's current state."),
   })
   .strict();
 
@@ -20,7 +28,12 @@ const TodoItemSchema = z
  */
 export const todoWriteInputSchema = z
   .object({
-    todos: z.array(TodoItemSchema).max(MAX_TODO_ITEMS),
+    todos: z
+      .array(TodoItemSchema)
+      .max(MAX_TODO_ITEMS)
+      .describe(
+        `The ENTIRE list, replacing the previous one — resend every item with its current status. Empty clears the list. At most ${MAX_TODO_ITEMS}.`,
+      ),
   })
   .strict();
 

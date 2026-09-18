@@ -95,11 +95,11 @@ export function showExcerptTool(opts: ShowExcerptToolOpts = {}): HertaTool {
         description:
           "Show a verbatim slice of a workspace text file to the user and to Herta. " +
           "Use this when the task asks to SEE, quote, or read out file content — " +
-          "read_file alone is silent to both of them. Give either an explicit " +
-          "fromLine/toLine range, or `match` (a literal substring) with optional " +
-          "`context` lines each side. The excerpt is taken from disk, so it is " +
-          "exact; do not retype content yourself. Bounded to " +
-          `${MAX_EXCERPT_LINES} lines / ${MAX_EXCERPT_CHARS} chars.`,
+          "read_file alone is silent to both of them. `{path}` alone shows the " +
+          "head of the file; give `fromLine`/`toLine` for a range, or `match` " +
+          "(a literal substring) with optional `context` lines each side. The " +
+          "excerpt is taken from disk, so it is exact; do not retype content " +
+          `yourself. Bounded to ${MAX_EXCERPT_LINES} lines / ${MAX_EXCERPT_CHARS} chars.`,
         inputSchema: showExcerptJsonSchema,
       };
     },
@@ -117,7 +117,7 @@ export function showExcerptTool(opts: ShowExcerptToolOpts = {}): HertaTool {
             retryable: false,
           },
           suggestion:
-            "usage: {path, match, context?} or {path, fromLine, toLine?}",
+            "usage: {path} (the head of the file), {path, fromLine, toLine?} or {path, match, context?}",
           summary: "invalid input",
         };
       }
@@ -256,6 +256,12 @@ export function showExcerptTool(opts: ShowExcerptToolOpts = {}): HertaTool {
         const pad = context ?? DEFAULT_CONTEXT;
         start = Math.max(1, hit + 1 - pad);
         end = Math.min(totalLines, hit + 1 + pad);
+      } else if (fromLine === undefined && toLine === undefined) {
+        // A bare path (2026-09-18): the head of the file, up to the excerpt
+        // bound — "show me this file" answered with as much as one excerpt
+        // holds, not with a rebuke for the missing range.
+        start = 1;
+        end = Math.min(MAX_EXCERPT_LINES, totalLines);
       } else {
         start = Math.min(fromLine ?? 1, totalLines);
         end = Math.min(toLine ?? start + DEFAULT_CONTEXT * 2, totalLines);
@@ -264,6 +270,16 @@ export function showExcerptTool(opts: ShowExcerptToolOpts = {}): HertaTool {
       let truncated = false;
       if (end - start + 1 > MAX_EXCERPT_LINES) {
         end = start + MAX_EXCERPT_LINES - 1;
+        truncated = true;
+      }
+      // The bare-path head of a file longer than the bound is a cut too: the
+      // reader must know the file goes on, even though no range was asked.
+      if (
+        match === undefined &&
+        fromLine === undefined &&
+        toLine === undefined &&
+        end < totalLines
+      ) {
         truncated = true;
       }
 

@@ -28,6 +28,7 @@ import {
   strReplaceEditorInputSchema,
   strReplaceEditorJsonSchema,
 } from "./schema.js";
+import { STR_REPLACE_EDITOR_SUGGESTIONS } from "./suggestions.js";
 
 export {
   makeStrReplaceEditorRule,
@@ -82,9 +83,11 @@ function fail(
   message: string,
   summary?: string,
 ): ToolResult<StrReplaceEditorData> {
+  const suggestion = STR_REPLACE_EDITOR_SUGGESTIONS[code];
   return {
     ok: false,
     error: { code, message, retryable: false },
+    ...(suggestion !== undefined ? { suggestion } : {}),
     summary: summary ?? `failed: ${code}`,
     modelText: message,
   };
