@@ -47,6 +47,7 @@ export const DOM_FREE_TESTS = [
   "src/shared/dead-transcoder.test.ts",
   "src/shared/links.test.ts",
   // The 3D device card's build-time helpers — pure, no DOM (ADR 0057 §6.5).
+  "src/renderer/components/UtilityRail/device-scene/buffer-ratio.test.ts",
   "src/renderer/components/UtilityRail/device-scene/build-scope.test.ts",
   "src/renderer/components/UtilityRail/device-scene/pixel-ratio-watch.test.ts",
   // Renderer — pure logic behind the components: parsers, projections,

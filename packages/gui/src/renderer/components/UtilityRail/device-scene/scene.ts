@@ -36,6 +36,7 @@ import type { BanzhuanDeviceState } from "../../../hooks/useDeviceState.js";
 import type { ResolvedTheme } from "../../../hooks/useResolvedTheme.js";
 import { unpadRows } from "./art-export-math.js";
 import { withDeadline } from "./asset-deadline.js";
+import { bufferPixelRatio } from "./buffer-ratio.js";
 import { BuildScope } from "./build-scope.js";
 import { advanceLift, createLiftPose } from "./lift.js";
 import {
@@ -91,9 +92,6 @@ const DEVICE_HEIGHT_PX = (FLAT_BOX_CSS.height * 934) / 1403;
  *  is rendered for (§2.13). The narrow layout's 298 × 298 card stretches
  *  it a little under the blur. */
 export const CARD_BOX_CSS = { width: 336, height: 328 } as const;
-/** The study's card-mode buffer policy: ≥1.5× at DPR 1, honour up to 2×,
- *  cap the long edge at 768 px. */
-const MAX_LONG_EDGE_PX = 768;
 /** Idle governor (after DeviceGlow / AuraVisual, which breathe at 30): the
  *  loop TICKS at 20 Hz while breathing — every third vsync; its fastest
  *  cycle is 1.35 s, so a tick moves the lamp under 1/255 of its range —
@@ -632,14 +630,6 @@ function attachCloudField(light: THREE.DirectionalLight) {
 }
 
 // ── Scene ───────────────────────────────────────────────────────────────────
-
-function renderPixelRatio(width: number, height: number, dpr: number): number {
-  const desired = Math.max(1.5, dpr);
-  return Math.max(
-    1,
-    Math.min(2, desired, MAX_LONG_EDGE_PX / Math.max(width, height, 1)),
-  );
-}
 
 /** The contact shadow's strength at rest: how dark the floor and the wall
  *  get right at the device's base (the flat card's shadow layer peaks at
@@ -1197,10 +1187,13 @@ async function buildDeviceScene(
     stageWidth = width;
     stageHeight = height;
     frameCamera(stageWidth, stageHeight);
-    const ratio = renderPixelRatio(
+    // Driven mode takes the caller's ratio as given; the 2× / long-edge
+    // guard is the live card's frame budget (buffer-ratio.ts, §2.15).
+    const ratio = bufferPixelRatio(
+      driven,
       stageWidth,
       stageHeight,
-      driven?.pixelRatio ?? window.devicePixelRatio ?? 1,
+      window.devicePixelRatio ?? 1,
     );
     if (renderer.getPixelRatio() !== ratio) renderer.setPixelRatio(ratio);
     renderer.setSize(stageWidth, stageHeight, false);
