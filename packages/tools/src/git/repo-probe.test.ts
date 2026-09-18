@@ -19,6 +19,11 @@ import {
   resolveGitDir,
 } from "./repo-probe.js";
 
+// Every describe below carries a 60 s timeout, the git-fixture budget the
+// rest of this package uses: under the full suite's load a fixture that
+// pushes to and prunes a bare origin took 23 s on Windows (the "gone
+// upstream" case, 2026-09-17 and 09-18 — 2 s alone), and a 20 s budget
+// reported the file red with every assertion green.
 const GIT_AVAILABLE = (() => {
   try {
     return spawnSync("git", ["--version"], { stdio: "ignore" }).status === 0;
@@ -37,7 +42,7 @@ function mkDir(prefix: string): string {
   return d;
 }
 
-describe.skipIf(!GIT_AVAILABLE)("probeRepoState", { timeout: 20_000 }, () => {
+describe.skipIf(!GIT_AVAILABLE)("probeRepoState", { timeout: 60_000 }, () => {
   const git = (dir: string, ...a: string[]) =>
     spawnSync("git", a, { cwd: dir, encoding: "utf8" });
 
@@ -139,7 +144,7 @@ describe("detectInProgressState (fs only, no git needed)", () => {
   });
 });
 
-describe.skipIf(!GIT_AVAILABLE)("resolveGitDir", { timeout: 20_000 }, () => {
+describe.skipIf(!GIT_AVAILABLE)("resolveGitDir", { timeout: 60_000 }, () => {
   const git = (dir: string, ...a: string[]) =>
     spawnSync("git", a, { cwd: dir, encoding: "utf8" });
 
@@ -414,7 +419,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
 describe.skipIf(!GIT_AVAILABLE)(
   "describeRepoContext — a gone upstream (ADR 0058 §7)",
-  { timeout: 20_000 },
+  { timeout: 60_000 },
   () => {
     const git = (dir: string, ...a: string[]) =>
       spawnSync("git", a, { cwd: dir, encoding: "utf8" });
@@ -447,7 +452,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
 describe.skipIf(!GIT_AVAILABLE)(
   "describeRepoOutcome — absent is definite, transient is not (ADR 0058 §7.6)",
-  { timeout: 20_000 },
+  { timeout: 60_000 },
   () => {
     it("a plain directory and a missing one are absent; an abort is transient; a repository is a repo", async () => {
       const plain = mkDir("outcome-plain-");
