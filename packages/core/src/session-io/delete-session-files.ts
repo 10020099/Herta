@@ -74,5 +74,56 @@ export async function deleteSessionFiles(
   const base = resolve(workspacesBaseDir);
   const target = resolve(base, sessionId);
   if (!isPathInside(base, target, { strict: true })) return;
-  await rm(target, { recursive: true, force: true });
+  await rmTreeWithRetry(target);
+}
+
+/** How long the workspace delete keeps retrying a busy directory. The
+ *  holders are short-lived: the repository probe's `git` (fire-and-forget
+ *  at close, ADR 0058) and the backend's shell exit within a few hundred
+ *  milliseconds; the deadline only bounds a pathological case. */
+const RM_TREE_DEADLINE_MS = 5_000;
+
+/**
+ * Remove a directory tree, retrying while a child process still holds it.
+ *
+ * Windows: a process's cwd holds its directory. `close()` does not await the
+ * repository probe's `git` or the backend's shell, so the managed workspace
+ * can still be some child's cwd for a moment after the session closes — and
+ * `rm({ maxRetries })` alone does not cover that: Node tries `rmdir` first,
+ * a busy directory answers EBUSY at once, and the retries never engage
+ * (2026-09-16, the test-suite leftovers had exactly that shape). The whole
+ * remove is retried until the deadline; the last error propagates so a
+ * delete that truly cannot happen is still reported, never swallowed.
+ *
+ * `opts` exists for the unit test: the remove and the deadline are
+ * injectable so a busy directory can be simulated without holding one.
+ */
+export async function rmTreeWithRetry(
+  target: string,
+  opts: {
+    readonly rmImpl?: typeof rm;
+    readonly deadlineMs?: number;
+    readonly pauseMs?: number;
+  } = {},
+): Promise<void> {
+  const rmImpl = opts.rmImpl ?? rm;
+  const pauseMs = opts.pauseMs ?? 250;
+  const deadline = Date.now() + (opts.deadlineMs ?? RM_TREE_DEADLINE_MS);
+  for (;;) {
+    try {
+      await rmImpl(target, {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 100,
+      });
+      return;
+    } catch (err) {
+      const code = (err as { code?: string }).code;
+      const transient =
+        code === "EBUSY" || code === "ENOTEMPTY" || code === "EPERM";
+      if (!transient || Date.now() > deadline) throw err;
+      await new Promise((r) => setTimeout(r, pauseMs));
+    }
+  }
 }

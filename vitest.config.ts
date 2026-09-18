@@ -1,6 +1,12 @@
 import { defineConfig } from "vitest/config";
 import { DOM_FREE_TESTS } from "./packages/gui/vitest.dom-free.js";
 
+// Every project that can make a temp workspace gets the tracker: it removes
+// the `herta-*` directories a test file created under os.tmpdir() when the
+// file is done (59 263 leaked ones on 2026-09-18 — see the file's header).
+// packages/gui/vitest.config.ts lists it too for the jsdom project.
+const TRACK_TMP_DIRS = "./packages/core/test-setup/track-tmp-dirs.ts";
+
 // Workspace vitest config — uses Vitest 3's `projects` feature so each
 // package can opt into its own environment / setup files. Without
 // projects, every test would inherit the root environment (node) and
@@ -8,6 +14,9 @@ import { DOM_FREE_TESTS } from "./packages/gui/vitest.dom-free.js";
 // packages/gui.
 export default defineConfig({
   test: {
+    // Once per run: sweep the `herta-*` temp dirs earlier runs left behind
+    // (the ones a test process itself held open — see the file's header).
+    globalSetup: ["./packages/core/test-setup/sweep-tmp-dirs.ts"],
     projects: [
       // Default project: all non-gui packages. Node environment,
       // .test.ts only (no React / JSX in these packages).
@@ -17,6 +26,7 @@ export default defineConfig({
           include: [
             "packages/{app-server,cli,core,herta,knowledge,memory,providers,tools}/src/**/*.test.ts",
           ],
+          setupFiles: [TRACK_TMP_DIRS],
           passWithNoTests: true,
         },
       },
@@ -38,6 +48,7 @@ export default defineConfig({
             // project's include patterns miss it; named here so it runs.
             "packages/gui/src/vitest-dom-free.test.ts",
           ],
+          setupFiles: [TRACK_TMP_DIRS],
         },
       },
       // Website project (audit T3.7): the demo lives OUTSIDE packages/, so

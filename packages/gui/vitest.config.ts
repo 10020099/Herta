@@ -4,7 +4,12 @@ import { DOM_FREE_TESTS } from "./vitest.dom-free.js";
 export default defineConfig({
   test: {
     environment: "jsdom",
-    setupFiles: ["./src/renderer/setup-tests.ts"],
+    // The temp-dir tracker first (it wraps the fs builtins before any test
+    // module loads), then the jest-dom matchers.
+    setupFiles: [
+      "../core/test-setup/track-tmp-dirs.ts",
+      "./src/renderer/setup-tests.ts",
+    ],
     globals: false,
     // Every source tree that holds tests. `src/shared/` was missing
     // (2026-09-10): the external-link allowlist test added on 09-09 matched

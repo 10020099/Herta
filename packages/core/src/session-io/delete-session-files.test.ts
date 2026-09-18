@@ -8,7 +8,49 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { deleteSessionFiles, recapCachePath } from "./delete-session-files.js";
+import {
+  deleteSessionFiles,
+  recapCachePath,
+  rmTreeWithRetry,
+} from "./delete-session-files.js";
+
+describe("rmTreeWithRetry — the managed workspace while a child still holds it (2026-09-18)", () => {
+  const busy = (code: string) => Object.assign(new Error(code), { code });
+
+  it("retries a busy directory until the remove succeeds", async () => {
+    // Windows: the repository probe's `git` or the backend's shell can still
+    // have the workspace as its cwd for a moment after close(); the first
+    // rmdir answers EBUSY and rm's own maxRetries never engage.
+    let calls = 0;
+    const rmImpl = (async () => {
+      calls += 1;
+      if (calls < 3) throw busy("EBUSY");
+    }) as unknown as typeof import("node:fs/promises").rm;
+    await rmTreeWithRetry("X:/never/used", { rmImpl, pauseMs: 1 });
+    expect(calls).toBe(3);
+  });
+
+  it("gives up at the deadline with the last error, never silently", async () => {
+    const rmImpl = (async () => {
+      throw busy("EBUSY");
+    }) as unknown as typeof import("node:fs/promises").rm;
+    await expect(
+      rmTreeWithRetry("X:/never/used", { rmImpl, deadlineMs: 20, pauseMs: 5 }),
+    ).rejects.toMatchObject({ code: "EBUSY" });
+  });
+
+  it("propagates a non-transient error at once", async () => {
+    let calls = 0;
+    const rmImpl = (async () => {
+      calls += 1;
+      throw busy("EACCES");
+    }) as unknown as typeof import("node:fs/promises").rm;
+    await expect(
+      rmTreeWithRetry("X:/never/used", { rmImpl, pauseMs: 1 }),
+    ).rejects.toMatchObject({ code: "EACCES" });
+    expect(calls).toBe(1);
+  });
+});
 
 function tmp(): string {
   return mkdtempSync(join(tmpdir(), "herta-del-"));
