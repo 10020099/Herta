@@ -13,7 +13,6 @@ import { editFileTool } from "./edit-file/index.js";
 import { gitDiffTool } from "./git-diff/index.js";
 import { gitStatusTool } from "./git-status/index.js";
 import { globTool } from "./glob/index.js";
-import { listFilesTool } from "./list-files/index.js";
 import { memorySaveTool } from "./memory-save/index.js";
 import { readFileTool } from "./read-file/index.js";
 import { reportFindingTool } from "./report-finding/index.js";
@@ -141,9 +140,6 @@ export { globToRegExp } from "./glob/glob-to-regex.js";
 export type { GlobData, GlobFileEntry } from "./glob/index.js";
 export { globTool } from "./glob/index.js";
 export type { GlobInput } from "./glob/schema.js";
-export type { ListFilesData } from "./list-files/index.js";
-export { listFilesTool } from "./list-files/index.js";
-export type { ListFilesInput } from "./list-files/schema.js";
 export type { MemorySaveData } from "./memory-save/index.js";
 export { memorySaveTool } from "./memory-save/index.js";
 export type { MemorySaveInput } from "./memory-save/schema.js";
@@ -252,6 +248,39 @@ export interface DigestToolsOpts {
    * believe it looked. Absent = false, which is every stack today.
    */
   readonly vision?: boolean;
+  /**
+   * Mount `digest_document` now (ADR 0067). Default true — a lab or a test
+   * that builds the set directly keeps the whole set. The app's wiring
+   * passes false and mounts the tool through `digestToolFor` once the
+   * session actually holds a document: ~280 schema tokens on every call
+   * are worth nothing in a session that never attaches one.
+   */
+  readonly digest?: boolean;
+  /**
+   * Mount `git_status` / `git_diff` (the standard contract only; the
+   * minimal contract's bash runs git itself). Default true. The wiring
+   * passes whether the workspace is inside a git repository and refreshes
+   * it when the workspace moves (ADR 0067).
+   */
+  readonly gitTools?: boolean;
+}
+
+/**
+ * The digest tool as a stack mounts it later (ADR 0067): the same path
+ * mapping the contract's other record channels use — the shell's spelling
+ * on the minimal contract, identity on the standard one.
+ */
+export function digestToolFor(
+  opts: DigestToolsOpts & { readonly bashPath: string | null },
+): HertaTool {
+  const paths = shellPathsFor(opts.bashPath);
+  return digestDocumentTool({
+    model: opts.digestModel,
+    ...(opts.bashPath !== null
+      ? { mapPath: (p: string): string => paths.toNative(p) ?? p }
+      : {}),
+    ...(opts.lang !== undefined ? { lang: opts.lang } : {}),
+  });
 }
 
 export interface MinimalToolsOpts extends DigestToolsOpts {
@@ -300,11 +329,15 @@ export function createMinimalTools(opts: MinimalToolsOpts): HertaTool[] {
     }),
     showExcerptTool({ mapPath }),
     todoWriteTool(opts.lang !== undefined ? { lang: opts.lang } : {}),
-    digestDocumentTool({
-      model: opts.digestModel,
-      mapPath,
-      ...(opts.lang !== undefined ? { lang: opts.lang } : {}),
-    }),
+    ...(opts.digest !== false
+      ? [
+          digestDocumentTool({
+            model: opts.digestModel,
+            mapPath,
+            ...(opts.lang !== undefined ? { lang: opts.lang } : {}),
+          }),
+        ]
+      : []),
     // Only on a vision-capable model (ADR 0048 §5): the caption is one shot
     // and lossy, and a visual question that outruns it deserves a RE-LOOK
     // rather than a longer guess.
@@ -330,7 +363,9 @@ export function createMvpTools(
     // Presentation, not navigation: read_file is silent to the user and to
     // Herta, so "show me what's in that file" needs its own tool (ADR 0027).
     showExcerptTool(),
-    listFilesTool(),
+    // list_files left the set on 2026-09-18 (ADR 0067): glob finds files by
+    // name and run_command's `ls`/`dir` lists a directory, the way Claude
+    // Code retired its LS tool. ~160 schema tokens per call, every call.
     searchTextTool(),
     globTool(),
     editFileTool(),
@@ -339,17 +374,23 @@ export function createMvpTools(
     commandStopTool(),
     writeNewFileTool(),
     todoWriteTool(opts.lang !== undefined ? { lang: opts.lang } : {}),
-    gitStatusTool(),
-    gitDiffTool(),
+    // Structured git reads — inside a git repository only (ADR 0067): the
+    // wiring decides from the workspace and refreshes on a move.
+    ...(opts.gitTools !== false ? [gitStatusTool(), gitDiffTool()] : []),
     memorySaveTool(),
     // The backend's channel for CONCLUSIONS (ADR 0039): its final prose has
     // none by design, so an analysis brief needs this or it delivers nothing.
     reportFindingTool(opts.lang !== undefined ? { lang: opts.lang } : {}),
-    // A whole attached document's content in one call (ADR 0043).
-    digestDocumentTool({
-      model: opts.digestModel,
-      ...(opts.lang !== undefined ? { lang: opts.lang } : {}),
-    }),
+    // A whole attached document's content in one call (ADR 0043) — see
+    // DigestToolsOpts.digest for when the wiring mounts it instead.
+    ...(opts.digest !== false
+      ? [
+          digestDocumentTool({
+            model: opts.digestModel,
+            ...(opts.lang !== undefined ? { lang: opts.lang } : {}),
+          }),
+        ]
+      : []),
     // Vision-capable models only (ADR 0048 §5) — see createMinimalTools.
     ...(opts.vision === true ? [viewImageTool()] : []),
   ];

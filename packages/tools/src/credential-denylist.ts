@@ -2,7 +2,7 @@
  * Single source of truth for credential-material path patterns (audit T3.4).
  *
  * Two tool surfaces previously carried DIVERGENT denylists: `path-safety.ts`
- * (guards read_file / edit_file / write_new_file / search_text / list_files
+ * (guards read_file / edit_file / write_new_file / search_text / glob
  * via resolveSafePath) and `run-command/classifier.ts` (guards allow-listed
  * shell readers). They disagreed — the classifier uniquely knew `.netrc` /
  * `.npmrc` / `credentials`; path-safety uniquely knew `*-api-key.txt` and the

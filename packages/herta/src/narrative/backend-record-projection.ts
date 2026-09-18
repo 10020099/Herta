@@ -684,7 +684,6 @@ export function workflowLabel(
 ): Extract<SystemBlockDigest, { kind: "op" }>["verb"] | null {
   switch (tool) {
     case "read_file":
-    case "list_files":
     case "glob":
     // show_excerpt starts as a Reading row like any other read; what makes
     // it different is its FINISHED row, which carries the excerpt.

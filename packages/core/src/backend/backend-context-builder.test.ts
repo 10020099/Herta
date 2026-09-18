@@ -406,7 +406,7 @@ describe("EN backend prompt (ADR 0016)", () => {
       "edit_file",
       "read_file",
       "search_text",
-      "list_files",
+      "glob",
       "run_command",
       "package.json",
       "AGENTS.md",

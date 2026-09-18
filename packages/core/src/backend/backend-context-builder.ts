@@ -65,8 +65,8 @@ export const BACKEND_EXECUTION_CONTRACT = `你是后端的编码执行智能体�
     是拖延。
 
 如果是「探查」：
-  - 用 search_text（搜内容）、glob（按文件名找文件，新改动的排前面）、
-    list_files 和有针对性的 read_file。
+  - 用 search_text（搜内容）、glob（按文件名找文件，新改动的排前面）
+    和有针对性的 read_file。
   - 结论用 report_finding 逐条记录：一条结论一次调用，claim 是一句话，用中文写
     （它会原样给开拓者看），cites 给出支持它的 path:line 或 path:from-to（必须是你真读到过的位置，
     工具会逐条核对存在）。这是结论抵达记录和最终报告的唯一通道——你最后
@@ -184,7 +184,7 @@ If scope = "edit":
 
 If scope = "explore":
   - DO use search_text (contents), glob (find files by name, newest
-    first), list_files, and targeted read_file.
+    first), and targeted read_file.
   - DO record each conclusion with report_finding: one call per
     conclusion, "claim" one sentence written in English (it is shown to
     the user verbatim), "cites" the path:line or
@@ -424,14 +424,14 @@ export function windowsBackendHostNote(lang: "zh" | "en"): string {
 This machine runs Windows and has no bash: Unix utilities (grep, sed, ls,
 cat) do not exist here, and run_command executes an argv directly — no shell
 expansion, no pipes, no redirection. Search content with search_text, find
-files with glob / list_files, read with read_file, edit with edit_file /
+files with glob, read with read_file, edit with edit_file /
 write_new_file; a command that must run (node, npm test, …) gets its argv
 directly. Do not reach for Unix tools or try to compose pipelines.`
     : `# 主机环境
 
 这台机器是 Windows，没有 bash：grep、sed、ls、cat 这类 Unix 命令不存在，
 run_command 直接按 argv 执行，没有 shell 展开、管道和重定向。搜内容用
-search_text，找文件用 glob / list_files，读文件用 read_file，改文件用
+search_text，找文件用 glob，读文件用 read_file，改文件用
 edit_file / write_new_file；要跑的命令（node、npm test 等）直接给 argv。
 不要试 Unix 工具，也不要拼管道。`;
 }

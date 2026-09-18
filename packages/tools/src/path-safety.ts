@@ -295,9 +295,10 @@ export interface ResolveSafePathOpts {
   /**
    * Allow DISCOVERY (listing / searching) of the redacted log directory
    * itself — `.herta/logs` and anything beneath it, nothing else under
-   * `.herta`. Passed by list_files and search_text so the backend can find
-   * the receipt it is about to read; without it the log filenames are
-   * unguessable. See EVIDENCE_DISCOVERY_ROOT.
+   * `.herta`. Passed by search_text and glob (list_files' successor since
+   * 2026-09-18, ADR 0067) so the backend can find the receipt it is about
+   * to read; without it the log filenames are unguessable. See
+   * EVIDENCE_DISCOVERY_ROOT.
    */
   allowEvidenceDiscoveryPaths?: boolean;
   /**
@@ -368,8 +369,8 @@ export async function resolveSafePath(
           canonicalRel.length > p.length,
       );
     // Discovery matches the log ROOT itself as well as anything beneath it —
-    // the one carve-out that has to, since `list_files .herta/logs` names a
-    // directory rather than a file strictly inside one.
+    // the one carve-out that has to, since a glob rooted at `.herta/logs`
+    // names a directory rather than a file strictly inside one.
     const atOrBeneath = (root: string): boolean => {
       const rel = caseNormalize(canonicalRel);
       const r = caseNormalize(root);

@@ -28,7 +28,7 @@ import { renderScopedMemory } from "./scoped-memory.js";
 
 /**
  * Tools whose SUCCESS argues that the task advanced (audit 2026-07-24, 1.2).
- * Read-only and bookkeeping tools — read_file, list_files, search_text, glob,
+ * Read-only and bookkeeping tools — read_file, search_text, glob,
  * git_status, git_diff, todo_write, command_output — execute successfully
  * while changing nothing, so counting them as completion evidence let a
  * backend that merely investigated report 完成.

@@ -73,6 +73,7 @@ import {
 } from "./session-titler.js";
 import { loadSessionVoice, type SessionVoice } from "./session-voice.js";
 import {
+  type BackendStack,
   createActorStack,
   createBackendProvider,
   createBackendStack,
@@ -256,6 +257,10 @@ export interface SessionInternalDeps {
   /** Clock (ms) for the easter-egg per-session hourly throttle. Defaults to
    *  `Date.now`; tests inject a controllable clock. */
   readonly easterEggNow?: () => number;
+  /** Test seam (ADR 0067): receives the backend stack the session built,
+   *  so a test can watch its tool registry follow the workspace and the
+   *  attachments. Production never passes it. */
+  readonly backendStackObserver?: (stack: BackendStack) => void;
 }
 
 /**
@@ -419,6 +424,11 @@ export class SessionImpl implements Session {
   /** The shared bus — `steerText` publishes `user.steer` on it for the
    *  bridge's drain to project and the beat policy to stage. */
   private readonly bus: EventBus<AgentEvent>;
+  /** ADR 0067: the toolset follows the environment — the backend stack's
+   *  git-tool refresh after a workspace move, and its digest-tool mount
+   *  when the first document lands. Both optional (tests build without). */
+  private readonly onWorkspaceChanged: (() => void) | undefined;
+  private readonly onDocumentAttached: (() => void) | undefined;
   /** True between the backend's `turn.started` and its `turn.finished` /
    *  `turn.failed` on the bus — the window in which a steer has a sampling
    *  boundary to reach. Tracked from the bus, cleared with the turn. */
@@ -486,9 +496,16 @@ export class SessionImpl implements Session {
     captionImage: ImageCaptioner | null;
     steer: SteerChannel;
     bus: EventBus<AgentEvent>;
+    /** ADR 0067: the toolset follows the environment. Fired after the
+     *  workspace holder moves (setWorkspace / resetWorkspace). */
+    onWorkspaceChanged?: () => void;
+    /** ADR 0067: fired when a readable document is attached. */
+    onDocumentAttached?: () => void;
   }) {
     this.steer = opts.steer;
     this.bus = opts.bus;
+    this.onWorkspaceChanged = opts.onWorkspaceChanged;
+    this.onDocumentAttached = opts.onDocumentAttached;
     this.lastTurnEnd = opts.lastTurnEnd;
     this.sessionId = opts.sessionId;
     this.workspaceRoot = opts.workspaceRoot;
@@ -1187,6 +1204,8 @@ export class SessionImpl implements Session {
     }
     this.wsHolder.current = workspace;
     this.wsIsDefault = false;
+    // The git tools follow the workspace (ADR 0067) — one cache miss, once.
+    this.onWorkspaceChanged?.();
     this.persister.appendWorkspaceSet(workspace, new Date().toISOString());
     this.projector.emitWorkspace({
       kind: "workspace",
@@ -1203,8 +1222,14 @@ export class SessionImpl implements Session {
 
   /** Ingest documents the 开拓者 handed over (ADR 0033) — see
    *  SessionAttachments.attachFiles. */
-  attachFiles(paths: readonly string[]): Promise<AttachResult> {
-    return this.attachments.attachFiles(paths);
+  async attachFiles(paths: readonly string[]): Promise<AttachResult> {
+    const result = await this.attachments.attachFiles(paths);
+    // The first readable document mounts `digest_document` for the next
+    // brief (ADR 0067); later ones find it already there.
+    if (result.ok && result.files.some((f) => f.unreadable === undefined)) {
+      this.onDocumentAttached?.();
+    }
+    return result;
   }
 
   /** Take back an attached document (ADR 0033, owner 2026-08-10) — see
@@ -1243,6 +1268,7 @@ export class SessionImpl implements Session {
     }
     this.wsHolder.current = def;
     this.wsIsDefault = true;
+    this.onWorkspaceChanged?.();
     this.persister.appendWorkspaceSet(def, new Date().toISOString());
     this.projector.emitWorkspace({
       kind: "workspace",
@@ -1589,6 +1615,14 @@ export class SessionImpl implements Session {
       // reports `bashFound`), and since ADR 0044 a NEW session also carries
       // one `→ 系统` record note naming the remedy (see contractFallbackNote).
       wantMinimal: config.backendContract === "minimal",
+      // ADR 0067: a reopened record that already carries a document mounts
+      // `digest_document` from the start; a fresh session waits for one.
+      attachmentsPresent: initialRecord.some(
+        (b) =>
+          b.kind === "system" &&
+          b.digest?.kind === "attachment" &&
+          b.digest.unreadable !== "removed",
+      ),
       backendProvider,
       // ADR 0048 §5: the stack mounts `view_image` only when this model can
       // actually see (isVisionModel, one rule for both hosts).
@@ -1633,6 +1667,7 @@ export class SessionImpl implements Session {
         return overlayResolver;
       },
     });
+    deps.backendStackObserver?.(backend);
     if (overlayResolver === undefined) {
       throw new Error("createBackendStack did not build the ask resolver");
     }
@@ -1850,6 +1885,10 @@ export class SessionImpl implements Session {
     const session = new SessionImpl({
       steer,
       bus,
+      // ADR 0067: the git tools follow the workspace, the digest tool waits
+      // for a document — both decided by the backend stack.
+      onWorkspaceChanged: () => backend.refreshGitTools(),
+      onDocumentAttached: () => backend.mountDigestTool(),
       sessionId,
       workspaceRoot,
       wsHolder,

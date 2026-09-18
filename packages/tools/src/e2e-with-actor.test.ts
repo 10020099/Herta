@@ -169,7 +169,6 @@ describe("MVP tools end-to-end with CodingAgentRuntime", () => {
       "git_diff",
       "git_status",
       "glob",
-      "list_files",
       "read_file",
       "search_text",
       // show_excerpt reads and presents; it mutates nothing (ADR 0027).
@@ -191,7 +190,7 @@ describe("MVP tools end-to-end with CodingAgentRuntime", () => {
     }
   });
 
-  it("registers all sixteen MVP tools via createMvpTools (fifteen + digest_document, ADR 0043)", () => {
+  it("registers all fifteen MVP tools via createMvpTools (list_files left on 2026-09-18, ADR 0067)", () => {
     const tools = createMvpTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
       "command_output",
@@ -201,7 +200,6 @@ describe("MVP tools end-to-end with CodingAgentRuntime", () => {
       "git_diff",
       "git_status",
       "glob",
-      "list_files",
       "memory_save",
       "read_file",
       "report_finding",

@@ -22,7 +22,7 @@
  * callbacks are the front-end's own).
  */
 import { randomUUID } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -81,7 +81,10 @@ import {
   type DigestModel,
   describeRepoContext,
   diffCommittedRange,
+  digestToolFor,
   findBash,
+  gitDiffTool,
+  gitStatusTool,
   PersistentShell,
   probeRepoState,
   registerEditFileRule,
@@ -256,6 +259,11 @@ export interface BackendStackOpts {
   /** The steer source (ADR 0063) every dispatch's runtime drains at its
    *  loop head — the session's `SteerChannel`. Absent (the CLI): no steer. */
   readonly pendingUserInput?: () => readonly string[];
+  /** Whether the session already holds an attached document (a reopened
+   *  record with attachment rows). Mounts `digest_document` at build; a
+   *  session without one gets it from `mountDigestTool` when the first
+   *  document lands (ADR 0067). Absent = false (the CLI never attaches). */
+  readonly attachmentsPresent?: boolean;
 }
 
 export interface BackendStack {
@@ -274,6 +282,22 @@ export interface BackendStack {
   /** Per-invocation `CodingAgentRuntime` (per ADR 0007): each `@板砖`
    *  dispatch gets a fresh one, reading the workspace holder at call time. */
   readonly runtimeFactory: () => CodingAgentRuntime;
+  /** Mount `digest_document` (ADR 0067) — idempotent. The session calls it
+   *  when the first document is attached; the builder lists tools per
+   *  brief, so the next dispatch sees it. */
+  readonly mountDigestTool: () => void;
+  /** Re-decide the git tools from the CURRENT workspace (ADR 0067): mounted
+   *  inside a git repository, unmounted outside. Standard contract only —
+   *  the minimal contract's bash runs git itself. The session calls it after
+   *  a workspace move; a no-op when nothing changes. */
+  readonly refreshGitTools: () => void;
+}
+
+/** A workspace is "inside a git repository" when it carries a `.git` entry
+ *  (a directory, or the file a worktree keeps). Cheap and synchronous: the
+ *  decision is made at build and at a workspace move, never per call. */
+export function hasGitDir(workspace: string): boolean {
+  return existsSync(join(workspace, ".git"));
 }
 
 export function createBackendStack(opts: BackendStackOpts): BackendStack {
@@ -313,6 +337,10 @@ export function createBackendStack(opts: BackendStackOpts): BackendStack {
   // `view_image` on either contract; false everywhere else, so a model
   // without vision is never told it can look.
   const vision = isVisionModel(opts.backendModel);
+  // The toolset follows the environment, per session (ADR 0067): the
+  // digest tool waits for a document, the git tools for a repository. Both
+  // decisions are made here and at the two events that change them —
+  // never per turn, since the tools array heads the cached prefix.
   if (contract === "minimal") {
     for (const t of createMinimalTools({
       bashPath: bashPath as string,
@@ -320,6 +348,7 @@ export function createBackendStack(opts: BackendStackOpts): BackendStack {
       digestModel: opts.digestModel,
       lang,
       vision,
+      digest: false,
     }))
       backendTools.register(t);
   } else {
@@ -327,9 +356,30 @@ export function createBackendStack(opts: BackendStackOpts): BackendStack {
       digestModel: opts.digestModel,
       lang,
       vision,
+      digest: false,
+      gitTools: hasGitDir(wsHolder.current),
     }))
       backendTools.register(t);
   }
+  const mountDigestTool = (): void => {
+    if (backendTools.get("digest_document") !== undefined) return;
+    backendTools.register(
+      digestToolFor({ digestModel: opts.digestModel, lang, bashPath }),
+    );
+  };
+  if (opts.attachmentsPresent === true) mountDigestTool();
+  const refreshGitTools = (): void => {
+    if (contract !== "standard") return;
+    const want = hasGitDir(wsHolder.current);
+    const have = backendTools.get("git_status") !== undefined;
+    if (want && !have) {
+      backendTools.register(gitStatusTool());
+      backendTools.register(gitDiffTool());
+    } else if (!want && have) {
+      backendTools.unregister("git_status");
+      backendTools.unregister("git_diff");
+    }
+  };
 
   const backendBuilder = new BackendContextBuilder({
     tools: backendTools,
@@ -404,6 +454,8 @@ export function createBackendStack(opts: BackendStackOpts): BackendStack {
     backendBuilder,
     memory,
     runtimeFactory,
+    mountDigestTool,
+    refreshGitTools,
   };
 }
 

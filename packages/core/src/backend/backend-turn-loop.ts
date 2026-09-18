@@ -968,10 +968,6 @@ export function summarizeInput(
         if (path !== null) return cap(path);
         break; // malformed → fall through to JSON fallback
       }
-      case "list_files": {
-        const path = str(obj.path);
-        return cap(path ?? ".");
-      }
       case "show_excerpt": {
         // Was the JSON fallback until 2026-08-17 — the record read
         // `Reading {"path":".herta/attachments/…` (real session). Cite it

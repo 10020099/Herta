@@ -357,8 +357,8 @@ describe("runBackendTurnLoop", () => {
       run: async () => ok,
     });
     tools.register({
-      name: "list_files",
-      schema: schemaFor("list_files"),
+      name: "glob",
+      schema: schemaFor("glob"),
       summarize: () => {
         throw new Error("boom");
       },
@@ -377,7 +377,7 @@ describe("runBackendTurnLoop", () => {
           },
           {
             type: "tool-call-request",
-            call: { id: "c3", tool: "list_files", input: { path: "src" } },
+            call: { id: "c3", tool: "glob", input: { pattern: "src/**" } },
           },
           { type: "finish", reason: "tool_calls" },
         ],
@@ -408,7 +408,7 @@ describe("runBackendTurnLoop", () => {
     }
     expect(headers.get("own")).toBe("own:hdr second line @ /repo");
     expect(headers.get("read_file")).toBe("a.ts");
-    expect(headers.get("list_files")).toBe("src");
+    expect(headers.get("glob")).toBe('"src/**"');
   });
 
   it("builds the base frame ONCE per turn; iterations only refresh messages (audit L2)", async () => {
@@ -1480,9 +1480,10 @@ describe("summarizeInput (tool-aware working-state argument)", () => {
     );
   });
 
-  it("returns the dir for list_files, defaulting to '.'", () => {
-    expect(summarizeInput("list_files", { recursive: true })).toBe(".");
-    expect(summarizeInput("list_files", { path: "src" })).toBe("src");
+  it("returns the quoted pattern for glob (list_files left the set 2026-09-18, ADR 0067)", () => {
+    expect(summarizeInput("glob", { pattern: "src/**/*.ts" })).toBe(
+      '"src/**/*.ts"',
+    );
   });
 
   it("returns the quoted pattern for search_text, plus `in <path>` when scoped (2026-08-17)", () => {

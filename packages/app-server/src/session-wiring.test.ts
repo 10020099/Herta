@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AskResolver } from "@herta/core";
@@ -154,9 +154,9 @@ describe("createBackendStack", () => {
     expect(names).toContain("edit_file");
     expect(names).toContain("run_command");
     expect(names).toContain("report_finding");
-    // Both contracts mount the digest tool (ADR 0043) — with a null model it
-    // answers `unavailable` instead of disappearing.
-    expect(names).toContain("digest_document");
+    // Neither contract mounts the digest tool until a document is attached
+    // (ADR 0067) — see the environment-gate block below.
+    expect(names).not.toContain("digest_document");
     expect(names).not.toContain("bash");
     expect(names).not.toContain("str_replace_editor");
   });
@@ -272,6 +272,130 @@ describe("createBackendStack", () => {
           stack.backendBuilder.build(buildInput).backendSystem,
         ).not.toContain("# 主机环境");
       }
+    });
+  });
+
+  // ADR 0067: the toolset follows the environment, decided per session at
+  // build and at the two events that change it — never per turn, since the
+  // tools array heads the prefix the provider caches.
+  describe("environment gates (ADR 0067)", () => {
+    const names = (stack: ReturnType<typeof createBackendStack>): string[] =>
+      stack.backendTools.list().map((t) => t.name);
+    const mkStack = (
+      root: string,
+      extra: { wantMinimal?: boolean; attachmentsPresent?: boolean } = {},
+    ) =>
+      createBackendStack({
+        wsHolder: { current: root },
+        workspaceRoot: root,
+        lang: "zh",
+        wantMinimal: extra.wantMinimal ?? false,
+        backendProvider: new FakeProvider({ turns: [] }),
+        backendModel: "deepseek-v4-pro",
+        digestModel: null,
+        makeAsk: () => noAsk,
+        ...(extra.attachmentsPresent !== undefined
+          ? { attachmentsPresent: extra.attachmentsPresent }
+          : {}),
+      });
+
+    it("standard contract outside a git repository: no git_status / git_diff, and no list_files anywhere", () => {
+      const stack = mkStack(mkWorkspace());
+      expect(stack.contract).toBe("standard");
+      const n = names(stack);
+      expect(n).not.toContain("git_status");
+      expect(n).not.toContain("git_diff");
+      expect(n).not.toContain("list_files");
+      expect(n).toContain("glob");
+    });
+
+    it("standard contract inside a git repository: both git tools mount at build", () => {
+      const root = mkWorkspace();
+      mkdirSync(join(root, ".git"));
+      const n = names(mkStack(root));
+      expect(n).toContain("git_status");
+      expect(n).toContain("git_diff");
+    });
+
+    it("refreshGitTools follows the CURRENT workspace: mounts on a move into a repository, unmounts on a move out, idempotent either way", () => {
+      const plain = mkWorkspace();
+      const repo = mkWorkspace();
+      mkdirSync(join(repo, ".git"));
+      const wsHolder = { current: plain };
+      const stack = createBackendStack({
+        wsHolder,
+        workspaceRoot: plain,
+        lang: "zh",
+        wantMinimal: false,
+        backendProvider: new FakeProvider({ turns: [] }),
+        backendModel: "deepseek-v4-pro",
+        digestModel: null,
+        makeAsk: () => noAsk,
+      });
+      expect(names(stack)).not.toContain("git_status");
+      stack.refreshGitTools();
+      expect(names(stack)).not.toContain("git_status");
+
+      wsHolder.current = repo;
+      stack.refreshGitTools();
+      stack.refreshGitTools();
+      const inRepo = names(stack);
+      expect(inRepo.filter((x) => x === "git_status")).toHaveLength(1);
+      expect(inRepo).toContain("git_diff");
+
+      wsHolder.current = plain;
+      stack.refreshGitTools();
+      const out = names(stack);
+      expect(out).not.toContain("git_status");
+      expect(out).not.toContain("git_diff");
+      // Everything else stayed put.
+      expect(out).toContain("read_file");
+      expect(out).toContain("run_command");
+    });
+
+    it("minimal contract: no git tools either way — bash runs git itself; refresh is a no-op", () => {
+      const root = mkWorkspace();
+      mkdirSync(join(root, ".git"));
+      process.env.HERTA_BASH = root;
+      const stack = mkStack(root, { wantMinimal: true });
+      expect(stack.contract).toBe("minimal");
+      expect(names(stack)).not.toContain("git_status");
+      stack.refreshGitTools();
+      expect(names(stack)).not.toContain("git_status");
+      expect(names(stack)).toContain("bash");
+    });
+
+    it("digest_document waits for a document: absent at build, mounted once by mountDigestTool, on both contracts", () => {
+      const standard = mkStack(mkWorkspace());
+      expect(names(standard)).not.toContain("digest_document");
+      standard.mountDigestTool();
+      standard.mountDigestTool();
+      expect(
+        names(standard).filter((x) => x === "digest_document"),
+      ).toHaveLength(1);
+
+      const root = mkWorkspace();
+      process.env.HERTA_BASH = root;
+      const minimal = mkStack(root, { wantMinimal: true });
+      expect(minimal.contract).toBe("minimal");
+      expect(names(minimal)).not.toContain("digest_document");
+      minimal.mountDigestTool();
+      expect(names(minimal)).toContain("digest_document");
+    });
+
+    it("a session that already holds a document (attachmentsPresent) mounts digest_document at build", () => {
+      const stack = mkStack(mkWorkspace(), { attachmentsPresent: true });
+      expect(names(stack)).toContain("digest_document");
+      // The builder lists the live registry per brief, so the frame's tool
+      // schemas follow the mount without a rebuild.
+      const frame = stack.backendBuilder.build({
+        brief: { taskId: "t-1" },
+        userMessages: [{ text: "hi" }],
+        scopedRepoInstructions: "",
+        scopedMemory: "",
+        messages: [],
+      });
+      expect(frame.toolSchemas.map((s) => s.name)).toContain("digest_document");
     });
   });
 });

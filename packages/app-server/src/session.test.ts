@@ -21,6 +21,7 @@ import {
   spanEditedFiles,
 } from "./session.js";
 import { createSessionHost } from "./session-host.js";
+import type { BackendStack } from "./session-wiring.js";
 import { makePng } from "./testing/image-fixtures.js";
 import {
   STUB_THOUGHT,
@@ -326,6 +327,8 @@ async function mkStubSession(
     // The history reader behind the viewer's log tab (ADR 0059 §6).
     logDescriber?: SessionInternalDeps["logDescriber"];
     branchesDescriber?: SessionInternalDeps["branchesDescriber"];
+    // The backend-stack seam (ADR 0067 toolset-gate tests).
+    backendStackObserver?: SessionInternalDeps["backendStackObserver"];
   },
 ): Promise<{
   session: SessionImpl;
@@ -418,6 +421,9 @@ async function mkStubSession(
       branchesDescriber: extra?.branchesDescriber ?? (async () => null),
       ...(extra?.easterEggNow !== undefined
         ? { easterEggNow: extra.easterEggNow }
+        : {}),
+      ...(extra?.backendStackObserver !== undefined
+        ? { backendStackObserver: extra.backendStackObserver }
         : {}),
     },
   });
@@ -1514,6 +1520,71 @@ describe("Session — no-key onboarding (live DeepSeek key)", () => {
     const second = await session.submitText("hi");
     expect(second).toHaveProperty("turnId");
     expect(session.record.some((b) => b.kind === "herta")).toBe(true);
+    await cleanup();
+  });
+});
+
+describe("Session — the toolset follows the environment (ADR 0067)", () => {
+  /** A stub session whose backend stack the test can watch, moved to a
+   *  temp workspace so nothing lands under the real homedir. */
+  async function mkGateSession(initialRecord?: TerminalRecord) {
+    const cfg = mkConfig();
+    let stack: BackendStack | undefined;
+    const made = await mkStubSession(cfg, initialRecord, 1, undefined, {
+      backendStackObserver: (s) => {
+        stack = s;
+      },
+    });
+    if (stack === undefined) throw new Error("no backend stack observed");
+    const names = (): string[] =>
+      (stack as BackendStack).backendTools.list().map((t) => t.name);
+    return { ...made, cfg, stack, names };
+  }
+
+  it("git_status / git_diff follow the workspace: mounted on a move into a repository, unmounted on a move out", async () => {
+    const { session, stack, names, cleanup } = await mkGateSession();
+    expect(stack.contract).toBe("standard");
+    const plain = mkdtempSync(join(tmpdir(), "herta-gate-plain-"));
+    const repo = mkdtempSync(join(tmpdir(), "herta-gate-repo-"));
+    mkdirSync(join(repo, ".git"));
+
+    expect((await session.setWorkspace(repo)).ok).toBe(true);
+    expect(names()).toContain("git_status");
+    expect(names()).toContain("git_diff");
+
+    expect((await session.setWorkspace(plain)).ok).toBe(true);
+    expect(names()).not.toContain("git_status");
+    expect(names()).not.toContain("git_diff");
+    // The rest of the standard set is untouched by the move.
+    expect(names()).toContain("read_file");
+    expect(names()).toContain("glob");
+    expect(names()).not.toContain("list_files");
+    await cleanup();
+  });
+
+  it("digest_document mounts when the first document is attached — and a reopened record that holds one mounts it at build", async () => {
+    const { session, names, cleanup } = await mkGateSession();
+    const ws = mkdtempSync(join(tmpdir(), "herta-gate-ws-"));
+    expect((await session.setWorkspace(ws)).ok).toBe(true);
+    expect(names()).not.toContain("digest_document");
+
+    const srcDir = mkdtempSync(join(tmpdir(), "herta-gate-src-"));
+    writeFileSync(join(srcDir, "spec.md"), "# spec\nbody\n");
+    const first = await session.attachFiles([join(srcDir, "spec.md")]);
+    expect(first.ok).toBe(true);
+    expect(names().filter((n) => n === "digest_document")).toHaveLength(1);
+    // A second document finds the tool already there — still exactly one.
+    writeFileSync(join(srcDir, "notes.txt"), "notes\n");
+    expect((await session.attachFiles([join(srcDir, "notes.txt")])).ok).toBe(
+      true,
+    );
+    expect(names().filter((n) => n === "digest_document")).toHaveLength(1);
+
+    // Reopen: the record carries the attachment rows, so the tool is there
+    // from the first brief without waiting for another attach.
+    const resumed = await mkGateSession([...session.record]);
+    expect(resumed.names()).toContain("digest_document");
+    await resumed.cleanup();
     await cleanup();
   });
 });

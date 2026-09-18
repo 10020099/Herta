@@ -24,6 +24,13 @@ export class InMemoryToolRegistry implements ToolRegistry {
     this.tools.set(tool.name, tool);
   }
 
+  /** Remove a tool by name; a name not registered is a no-op. The toolset
+   *  follows the environment per session (ADR 0067): the wiring unmounts the
+   *  git tools when the workspace moves out of a repository. */
+  unregister(name: string): void {
+    this.tools.delete(name);
+  }
+
   get(name: string): HertaTool | undefined {
     return this.tools.get(name);
   }

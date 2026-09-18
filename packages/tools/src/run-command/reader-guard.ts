@@ -10,7 +10,7 @@ import { readerPathCandidates } from "./classifier.js";
  * the repo) passed `readerArgvGuard` and was auto-allowed — the OS followed
  * the link and the credential's contents entered the tool result, the
  * evidence store, `.herta/logs`, and the prompt tail. read_file /
- * search_text / list_files already realpath every target through
+ * search_text / glob already realpath every target through
  * resolveSafePath; run_command's readers were the one gap.
  *
  * This mirrors that: for each file-path operand of an allow-listed reader,

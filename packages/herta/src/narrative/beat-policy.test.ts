@@ -65,8 +65,8 @@ describe("classifyBeatTrigger — event → trigger", () => {
       type: "tool.call.started",
       layer: "backend",
       id: "t2",
-      tool: "list_files",
-      inputSummary: "src",
+      tool: "glob",
+      inputSummary: "src/**",
     };
     expect(classifyBeatTrigger(a)).toBeNull();
     expect(classifyBeatTrigger(b)).toBeNull();

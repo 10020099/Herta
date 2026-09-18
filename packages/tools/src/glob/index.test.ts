@@ -100,6 +100,37 @@ describe("globTool", () => {
     }
   });
 
+  it("lists the redacted log dir BY NAME when rooted there, and nothing else under .herta (ADR 0036; list_files' role since ADR 0067)", async () => {
+    ws = await mkTmpWorkspace({
+      ".herta/logs/abc-call_00_xyz.log": "exit 0\n",
+      ".herta/tool-results/c.json": "{}\n",
+      "a.ts": "keep",
+    });
+    try {
+      const logs = await run({ pattern: "*.log", path: ".herta/logs" });
+      expect(logs.ok).toBe(true);
+      expect((logs.data as GlobData).files.map((f) => f.path)).toEqual([
+        ".herta/logs/abc-call_00_xyz.log",
+      ]);
+      // A workspace-root glob never descends into `.herta` at all.
+      const fromRoot = await run({ pattern: "**/*" });
+      expect(fromRoot.ok).toBe(true);
+      expect(
+        (fromRoot.data as GlobData).files.some((f) =>
+          f.path.startsWith(".herta"),
+        ),
+      ).toBe(false);
+      // `.herta` itself and the unredacted tool-results stay denied.
+      const herta = await run({ pattern: "**/*", path: ".herta" });
+      expect(herta.ok).toBe(false);
+      expect(herta.error?.code).toBe("path_denied");
+      const results = await run({ pattern: "*", path: ".herta/tool-results" });
+      expect(results.ok).toBe(false);
+    } finally {
+      await ws.cleanup();
+    }
+  });
+
   it("rejects malformed patterns and unsafe roots", async () => {
     ws = await mkTmpWorkspace({ "a.ts": "x" });
     try {

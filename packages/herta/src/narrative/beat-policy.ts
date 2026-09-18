@@ -30,7 +30,6 @@ export interface TriggerSpec {
 export function workflowKindForBeat(tool: string): string | null {
   switch (tool) {
     case "read_file":
-    case "list_files":
     case "search_text":
     case "glob":
       return "read";
