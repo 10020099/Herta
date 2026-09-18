@@ -1160,6 +1160,17 @@ describe("parseSupervisorVerdict — the 改说 line (ADR 0065)", () => {
     ).toBe("好，明白了。");
   });
 
+  it("drops an unpaired opening quote but keeps a quote the line closes (soak 2026-09-18)", () => {
+    expect(
+      parseSupervisorVerdict("BLOCK：声音：x\n改说：\"……'一切'？你也敢用。")
+        .revision,
+    ).toBe("……'一切'？你也敢用。");
+    expect(
+      parseSupervisorVerdict("BLOCK：声音：x\n改说：「一切」这词你也敢用。")
+        .revision,
+    ).toBe("「一切」这词你也敢用。");
+  });
+
   it("a BLOCK line after 改说 (the wrong order) still counts and ends the capture", () => {
     const r = parseSupervisorVerdict(
       "改说：好，明白了。\nBLOCK：声音：我刚才撒娇了",

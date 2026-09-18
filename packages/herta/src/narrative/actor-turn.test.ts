@@ -347,6 +347,43 @@ describe("runActorCompletionTurn — basic chat (no side effects)", () => {
     expect((thought as { text: string }).text).not.toContain("开拓者");
   });
 
+  it("stops the stream at （/开拓者 说） when the model fabricates the user's reply WITHOUT its open tag and rolls on (soak 2026-09-18)", async () => {
+    // The 被顶嘴版 scene of the full-stack soak: the speech carried the
+    // Trailblazer's next line with no `（开拓者 说）` in front of it — so the
+    // opener stop never fired — then `（/开拓者 说）` and a second,
+    // thought-shaped analysis, all in one block the supervisor passed.
+    // The close tag is a stop sequence now; what follows it never lands.
+    // (The fabricated line before it is the supervisor's to catch.)
+    const { provider } = mkScriptedThoughtsProvider([
+      [
+        { type: "text-delta", text: "想想看。（/我 想）" },
+        { type: "finish", reason: "stop" },
+      ],
+      [
+        {
+          type: "text-delta",
+          text: "哈。我背书？你先把假设摆出来。\n谁说数据大就装不下？（/开拓者 说）\n他准备用几百 G 当挡箭牌。（/我 说）",
+        },
+        { type: "finish", reason: "stop" },
+      ],
+    ]);
+    const deps = mkDeps({ provider });
+    const { record } = await runActorCompletionTurn(
+      { record: [] as TerminalRecord },
+      "您这个结论就是错的。",
+      deps,
+    );
+    const speech = record.find(
+      (b) => b.kind === "herta" && b.surface === "speech",
+    );
+    expect(speech).toBeDefined();
+    expect((speech as { text: string }).text).toBe(
+      "哈。我背书？你先把假设摆出来。\n谁说数据大就装不下？",
+    );
+    expect((speech as { text: string }).text).not.toContain("挡箭牌");
+    expect((speech as { text: string }).text).not.toContain("开拓者 说");
+  });
+
   it("strips the trailing （/我 说） if the provider includes it in the buffered text", async () => {
     // Some providers emit the stop token before halting; the loop must strip it
     // so the Herta block's text doesn't include the closing delimiter.

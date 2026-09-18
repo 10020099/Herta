@@ -46,10 +46,23 @@ import {
 export const STOP_OPENER_USER = "（开拓者 说）";
 
 /**
+ * The user turn's CLOSE tag, the other half of the runaway (soak
+ * 2026-09-18, the 被顶嘴版 scene): the model fabricated the user's reply
+ * WITHOUT its open tag — so `STOP_OPENER_USER` never fired — then wrote
+ * `（/开拓者 说）` and rolled into a second, thought-shaped analysis, all
+ * inside one speech block that the supervisor passed. Herta never writes
+ * this string either, so stopping on it cuts at least the half that
+ * follows the fabricated turn; the fabricated line itself is the
+ * supervisor's to catch.
+ */
+export const STOP_CLOSER_USER = "（/开拓者 说）";
+
+/**
  * Stop sequences passed to the LLM provider. The two surface close
- * tags terminate Herta's own surface as expected; `（开拓者 说）`
- * catches the runaway case where the model skips its own close tag
- * and starts emitting the user's next-turn envelope.
+ * tags terminate Herta's own surface as expected; `（开拓者 说）` and
+ * `（/开拓者 说）` catch the runaway cases where the model skips its own
+ * close tag and emits the user's next-turn envelope, with or without
+ * its open tag.
  *
  * History note: an earlier revision also watched mid-stream for
  * inline `read_file("…")` / `list_files("…")` calls and aborted the
@@ -63,6 +76,7 @@ const STOP_SEQS = [
   STOP_SPEECH_CLOSE,
   STOP_THOUGHT_CLOSE,
   STOP_OPENER_USER,
+  STOP_CLOSER_USER,
 ] as const;
 
 /** Stray duplicate open tags the model sometimes re-emits mid-body. The
@@ -753,7 +767,7 @@ async function consumePhaseTwoStream(opts: {
     {
       model: opts.model,
       prompt: opts.prompt,
-      stop: [STOP_SPEECH_CLOSE, STOP_THOUGHT_CLOSE, STOP_OPENER_USER],
+      stop: [...STOP_SEQS],
       // Capped (slice 3); the supervisor call is deadline-only by design —
       // see PRIMARY_COMPLETION_MAX_TOKENS.
       maxTokens: PRIMARY_COMPLETION_MAX_TOKENS,

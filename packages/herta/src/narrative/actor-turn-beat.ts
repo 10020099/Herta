@@ -7,7 +7,11 @@ import { selectBeatHint } from "./actor-hints.js";
 import { type ActorPrompt, serializeActorPrompt } from "./actor-prompt.js";
 import type { ActorTurnDeps } from "./actor-turn-deps.js";
 import { resolveHints } from "./actor-turn-prompts.js";
-import { firstStopIndex, STOP_OPENER_USER } from "./actor-turn-stream.js";
+import {
+  firstStopIndex,
+  STOP_CLOSER_USER,
+  STOP_OPENER_USER,
+} from "./actor-turn-stream.js";
 import type { BeatFirer } from "./backend-bridge.js";
 import { isPlaceholderOnly, stripHintScaffolding } from "./block-shape.js";
 import { sanitizeActorText } from "./escape.js";
@@ -82,7 +86,11 @@ export function makeFireBeat(
     let beatBuffered = "";
     let beatEmittedTail = 0;
     let beginCalled = false; // deferred until first emit
-    const beatStops = [STOP_SPEECH_CLOSE, STOP_OPENER_USER] as const;
+    const beatStops = [
+      STOP_SPEECH_CLOSE,
+      STOP_OPENER_USER,
+      STOP_CLOSER_USER,
+    ] as const;
 
     try {
       for await (const ev of deps.provider.streamCompletion(
@@ -93,10 +101,11 @@ export function makeFireBeat(
           // inline tool calls in practice. If a beat ever DID emit one
           // we'd lack the parallel-supervisor coordination that the
           // main loop has — keep beats simple, no mid-stream watcher.
-          // Include `STOP_OPENER_USER` so a runaway beat that
-          // hallucinates the user's next message (`（开拓者 说）...`)
+          // Include the user envelope's tags so a runaway beat that
+          // hallucinates the user's next message (`（开拓者 说）...`, or
+          // the reply without its open tag and then `（/开拓者 说）`)
           // halts immediately, same as the main-loop streams.
-          stop: [STOP_SPEECH_CLOSE, STOP_OPENER_USER],
+          stop: [...beatStops],
           // Backstop, not the primary terminator: the `（/我 说）` close marker
           // (a stop sequence) ends a well-behaved beat well under this cap — a
           // one/two-line Chinese reaction + marker is ~15-40 tokens. The cap

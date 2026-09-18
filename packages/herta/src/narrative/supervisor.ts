@@ -583,6 +583,20 @@ function tidyRevision(lines: readonly string[]): string {
   if (text.endsWith("（/我 说）")) {
     text = text.slice(0, text.length - "（/我 说）".length);
   }
+  // A quote opened and never closed (the 2026-09-18 soak: `"……'一切'？…`)
+  // is the model half-obeying "no quotation marks"; the lone mark would
+  // otherwise reach the screen and the record. Only an UNPAIRED opener is
+  // dropped — a line that quotes something inside itself keeps both.
+  for (const [open, close] of [
+    ['"', '"'],
+    ["“", "”"],
+    ["「", "」"],
+  ] as const) {
+    if (text.startsWith(open) && !text.slice(open.length).includes(close)) {
+      text = text.slice(open.length).trimStart();
+      break;
+    }
+  }
   return text.trim();
 }
 
