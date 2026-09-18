@@ -17,6 +17,7 @@ import {
 } from "../UtilityRail/device-scene/device-scene-prefs.js";
 import { Select } from "./Select.js";
 import { SettingRow } from "./SettingRow.js";
+import { useRememberedSetting } from "./settings-snapshot.js";
 import { Toggle } from "./Toggle.js";
 
 type DemoState =
@@ -113,9 +114,13 @@ export function BanzhuanSettings(): JSX.Element {
   // demo omit it); the row hides with it, mirroring LanguageSettings' handling
   // of the interaction-language pair.
   const thinkingSupported = bridge.setBackendConfig !== undefined;
-  // Default "high" until the persisted value loads (the real handler's
-  // default).
-  const [thinking, setThinking] = useState<BackendThinking>("high");
+  // The last-known tier on the first frame (settings-snapshot.ts); "high" —
+  // the real handler's default — only when nothing has been read yet.
+  const [thinking, setThinking] = useRememberedSetting(
+    bridge,
+    "banzhuan.thinking",
+    "high",
+  );
   const [failed, setFailed] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
   // Once the user picks, the in-flight async load must not clobber the pick.
@@ -136,9 +141,19 @@ export function BanzhuanSettings(): JSX.Element {
   // made.
   // Pre-load optimistic state = the real handler's default (minimal —
   // owner flip 2026-08-17), so the pill never flashes 标准 while the
-  // config is in flight.
-  const [contract, setContract] = useState<BackendContractChoice>("minimal");
-  const [bashFound, setBashFound] = useState<boolean | undefined>(undefined);
+  // config is in flight. The last-known values win over both defaults
+  // (settings-snapshot.ts): a user on 标准 no longer sees 极简 for a beat,
+  // and the no-bash sentence is in the description on the first frame.
+  const [contract, setContract] = useRememberedSetting(
+    bridge,
+    "banzhuan.contract",
+    "minimal",
+  );
+  const [bashFound, setBashFound] = useRememberedSetting(
+    bridge,
+    "banzhuan.bashFound",
+    undefined,
+  );
   const [contractFailed, setContractFailed] = useState(false);
   const contractTouchedRef = useRef(false);
   const contractSeqRef = useRef(0);
@@ -160,7 +175,7 @@ export function BanzhuanSettings(): JSX.Element {
     return () => {
       alive = false;
     };
-  }, [bridge]);
+  }, [bridge, setThinking, setContract, setBashFound]);
 
   const onContract = (next: BackendContractChoice): void => {
     const prev = contract;

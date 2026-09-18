@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useHertaBridge } from "../../context/HertaBridgeContext.js";
 import { useT } from "../../i18n/LocaleProvider.js";
 import { SettingRow } from "./SettingRow.js";
+import { useRememberedSetting } from "./settings-snapshot.js";
 import { Toggle } from "./Toggle.js";
 
 /**
@@ -13,8 +14,13 @@ import { Toggle } from "./Toggle.js";
 export function DreamSettings(): JSX.Element {
   const t = useT();
   const { bridge } = useHertaBridge();
-  // Default to ON until the persisted value loads (Dream is on by default).
-  const [enabled, setEnabled] = useState(true);
+  // The last-known value on the first frame (settings-snapshot.ts); ON —
+  // Dream's default — only when nothing has been read yet.
+  const [enabled, setEnabled] = useRememberedSetting(
+    bridge,
+    "dream.enabled",
+    true,
+  );
   // The value when the section opened — what the running app is using. The
   // restart note shows only when the toggle now DIFFERS from it, so toggling
   // back to the original hides it again.
@@ -41,7 +47,7 @@ export function DreamSettings(): JSX.Element {
     return () => {
       alive = false;
     };
-  }, [bridge]);
+  }, [bridge, setEnabled]);
 
   const onChange = (next: boolean): void => {
     // Optimistic: flip now, persist async. If the write fails, snap back so the

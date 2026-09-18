@@ -311,7 +311,7 @@ export const zh = {
   // coprocessor runs — a conversation with Herta has no such strip.
   "composer.hold.label": "待板砖完成后发送",
   "composer.hold.aria": "待发送的消息",
-  "composer.hold.steer": "立即插入",
+  "composer.hold.steer": "立即插话",
   "composer.hold.edit": "修改",
   "composer.hold.discard": "撤回",
   // Click-to-enlarge lightbox (ADR 0048 §4a). `lightbox.open` prefixes the

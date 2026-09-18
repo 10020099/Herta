@@ -2,13 +2,15 @@ import { useEffect, useRef, useState } from "react";
 import { useHertaBridge } from "../../context/HertaBridgeContext.js";
 import { useActiveSession } from "../../hooks/useActiveSession.js";
 import { useT } from "../../i18n/LocaleProvider.js";
-import type {
-  DeepSeekKeyStatus,
-  ModelChoice,
-  ModelConfig,
-} from "../../ipc/bridge-types.js";
+import type { ModelChoice, ModelConfig } from "../../ipc/bridge-types.js";
 import { Select } from "./Select.js";
 import { SettingRow } from "./SettingRow.js";
+import { useRememberedSetting } from "./settings-snapshot.js";
+
+const DEFAULT_MODELS: ModelConfig = {
+  actor: "deepseek-v4-pro",
+  backend: "deepseek-flash",
+};
 
 /**
  * The DeepSeek API-key section. Reads the masked status on mount (the raw key
@@ -24,7 +26,15 @@ export function DeepSeekSettings(): JSX.Element {
   const { status: sessionStatus } = useActiveSession();
   const busy = sessionStatus !== "idle";
 
-  const [status, setStatus] = useState<DeepSeekKeyStatus | null>(null);
+  // The last-known masked status on the first frame (settings-snapshot.ts):
+  // the pane used to paint 检查中… and then 已连接 plus the delete link, which
+  // stepped everything under it down on every switch in (owner 2026-09-18).
+  // null — 检查中… — only when nothing has been read yet.
+  const [status, setStatus] = useRememberedSetting(
+    bridge,
+    "deepseek.keyStatus",
+    null,
+  );
   // A rejected status fetch previously left `status` null forever — the pane
   // showed "Checking…" indefinitely with no retry affordance.
   const [statusFailed, setStatusFailed] = useState(false);
@@ -47,11 +57,13 @@ export function DeepSeekSettings(): JSX.Element {
   // 2026-09 rename, ADR 0048 §5a/§5b), so the pills never flash a wrong
   // selection while getModelConfig is in flight. Keep in lockstep with
   // session-service's getModelConfig and buildConfig — three statements of
-  // one default.
-  const [models, setModels] = useState<ModelConfig>({
-    actor: "deepseek-v4-pro",
-    backend: "deepseek-flash",
-  });
+  // one default. The last-known choice wins over it on the first frame
+  // (settings-snapshot.ts) — a user on Flash/Flash saw Pro for a beat.
+  const [models, setModels] = useRememberedSetting(
+    bridge,
+    "deepseek.models",
+    DEFAULT_MODELS,
+  );
   const [modelsFailed, setModelsFailed] = useState(false);
   const [modelsLoadFailed, setModelsLoadFailed] = useState(false);
   const modelsTouchedRef = useRef(false);
@@ -70,7 +82,7 @@ export function DeepSeekSettings(): JSX.Element {
     return () => {
       alive = false;
     };
-  }, [bridge]);
+  }, [bridge, setModels]);
 
   // Both stages pick from the same two names (the flash reads images since
   // the 2026-09 API), so one handler serves both rows.
@@ -102,7 +114,7 @@ export function DeepSeekSettings(): JSX.Element {
     return () => {
       alive = false;
     };
-  }, [bridge]);
+  }, [bridge, setStatus]);
 
   const onSave = (): void => {
     const key = draft.trim();

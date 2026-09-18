@@ -1,10 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { NETDISK_URL } from "../../../shared/links.js";
 import { useHertaBridge } from "../../context/HertaBridgeContext.js";
 import { useT } from "../../i18n/LocaleProvider.js";
 import type { UpdateState } from "../../ipc/bridge-types.js";
 import { SettingRow } from "./SettingRow.js";
+import { useRememberedSetting } from "./settings-snapshot.js";
 import { Toggle } from "./Toggle.js";
+
+const IDLE_STATE: UpdateState = { phase: "idle" };
 
 /**
  * Settings → Update (2026-07-10): current version + update state + the two
@@ -19,12 +22,27 @@ import { Toggle } from "./Toggle.js";
 export function UpdateSettings(): JSX.Element {
   const t = useT();
   const { bridge } = useHertaBridge();
-  const [version, setVersion] = useState<string | null>(null);
-  const [state, setState] = useState<UpdateState>({ phase: "idle" });
+  // All three start from the last-known value (settings-snapshot.ts), so
+  // the version line never paints "—" first and a `ready` reached while
+  // another section was up shows its button on the first frame.
+  const [version, setVersion] = useRememberedSetting(
+    bridge,
+    "update.version",
+    null,
+  );
+  const [state, setState] = useRememberedSetting(
+    bridge,
+    "update.state",
+    IDLE_STATE,
+  );
   // Automatic checks/downloads (2026-07-12): persisted app-global, applied
   // live by main. Default true; the row hides when the bridge lacks the
   // setting (fakes / the website demo).
-  const [autoUpdate, setAutoUpdate] = useState(true);
+  const [autoUpdate, setAutoUpdate] = useRememberedSetting(
+    bridge,
+    "update.auto",
+    true,
+  );
   const supported = bridge.checkForUpdate !== undefined;
   const autoSupported = bridge.setAutoUpdate !== undefined;
 
@@ -46,7 +64,7 @@ export function UpdateSettings(): JSX.Element {
       alive = false;
       unsub?.();
     };
-  }, [bridge]);
+  }, [bridge, setVersion, setState, setAutoUpdate]);
 
   const statusText = ((): string => {
     switch (state.phase) {

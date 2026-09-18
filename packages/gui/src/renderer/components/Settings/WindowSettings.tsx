@@ -5,6 +5,7 @@ import type { ThemePref } from "../../ipc/bridge-types.js";
 import { applyThemePref, themePref } from "../../lib/theme.js";
 import { Select } from "./Select.js";
 import { SettingRow } from "./SettingRow.js";
+import { useRememberedSetting } from "./settings-snapshot.js";
 import { Toggle } from "./Toggle.js";
 
 /**
@@ -17,8 +18,13 @@ import { Toggle } from "./Toggle.js";
 export function WindowSettings(): JSX.Element {
   const t = useT();
   const { bridge } = useHertaBridge();
-  // Default ON until the persisted value loads (tray is the default).
-  const [enabled, setEnabled] = useState(true);
+  // The last-known value on the first frame (settings-snapshot.ts); ON —
+  // the default — only when nothing has been read yet.
+  const [enabled, setEnabled] = useRememberedSetting(
+    bridge,
+    "window.closeToTray",
+    true,
+  );
   const [failed, setFailed] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
   // Seed from the controller (already booted by App) — no async flash.
@@ -47,7 +53,7 @@ export function WindowSettings(): JSX.Element {
     return () => {
       alive = false;
     };
-  }, [bridge]);
+  }, [bridge, setEnabled]);
 
   const onChange = (next: boolean): void => {
     // Optimistic: flip now, persist async. On a failed write, snap back so

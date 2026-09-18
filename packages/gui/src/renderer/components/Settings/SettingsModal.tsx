@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useHertaBridge } from "../../context/HertaBridgeContext.js";
 import type { MessageKey } from "../../i18n/keys.js";
 import { useT } from "../../i18n/LocaleProvider.js";
 import { OVERLAY_Z, useModalOverlay } from "../../lib/overlay-stack.js";
@@ -6,6 +7,7 @@ import { BanzhuanSettings } from "./BanzhuanSettings.js";
 import { DeepSeekSettings } from "./DeepSeekSettings.js";
 import { DreamSettings } from "./DreamSettings.js";
 import { LanguageSettings } from "./LanguageSettings.js";
+import { primeSettings } from "./settings-snapshot.js";
 import { UpdateSettings } from "./UpdateSettings.js";
 import { VoiceSettings } from "./VoiceSettings.js";
 import { WindowSettings } from "./WindowSettings.js";
@@ -245,6 +247,18 @@ export function SettingsModal({
   onClose,
 }: SettingsModalProps): JSX.Element | null {
   const t = useT();
+  const { bridge } = useHertaBridge();
+  // Prime the panes' last-known values (settings-snapshot.ts): once when the
+  // app starts — this component is mounted, closed, from launch — and again
+  // on every open, so each pane's FIRST frame shows the stored state instead
+  // of a default it corrects a few frames later (owner 2026-09-18). A pane
+  // mounts on a nav click, which no hand makes before these reads answer.
+  useEffect(() => {
+    primeSettings(bridge);
+  }, [bridge]);
+  useEffect(() => {
+    if (open) primeSettings(bridge);
+  }, [open, bridge]);
   const [mounted, setMounted] = useState(open);
   const [leaving, setLeaving] = useState(false);
   const [section, setSection] = useState<Section>("voice");

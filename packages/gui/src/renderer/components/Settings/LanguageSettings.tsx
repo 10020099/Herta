@@ -7,6 +7,7 @@ import type {
 } from "../../ipc/bridge-types.js";
 import { Select } from "./Select.js";
 import { SettingRow } from "./SettingRow.js";
+import { useRememberedSetting } from "./settings-snapshot.js";
 
 /** Settings → Language. The UI-language row applies live (no restart). The
  *  control is the app's own Select (2026-07-12) — the native `<select>` popup
@@ -24,9 +25,13 @@ export function LanguageSettings(): JSX.Element {
   // demo omit it); the row hides with it, mirroring UpdateSettings.tsx's
   // `autoSupported`.
   const interactionSupported = bridge.setInteractionLanguage !== undefined;
-  // Default "follow" until the persisted choice loads (follow is the default).
-  const [interaction, setInteraction] =
-    useState<InteractionLanguageChoice>("follow");
+  // The last-known choice on the first frame (settings-snapshot.ts);
+  // "follow" — the default — only when nothing has been read yet.
+  const [interaction, setInteraction] = useRememberedSetting(
+    bridge,
+    "language.interaction",
+    "follow",
+  );
   const [failed, setFailed] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
   // Once the user picks, the in-flight async load must not clobber the pick.
@@ -48,7 +53,7 @@ export function LanguageSettings(): JSX.Element {
     return () => {
       alive = false;
     };
-  }, [bridge]);
+  }, [bridge, setInteraction]);
 
   const onInteraction = (next: InteractionLanguageChoice): void => {
     // Optimistic: show the choice now, persist async. On a failed write, snap

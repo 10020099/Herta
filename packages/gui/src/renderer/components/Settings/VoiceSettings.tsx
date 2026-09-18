@@ -5,12 +5,9 @@ import type {
   DeepSeekKeyStatus,
   MiniMaxRefusalState,
   MiniMaxVoiceError,
-  MiniMaxVoiceState,
-  RealtimeVoiceState,
   SetKeyResult,
   VoiceEngine,
   VoiceModelFailure,
-  VoiceModelState,
 } from "../../ipc/bridge-types.js";
 import { applyVoiceVolume, stopAllVoice } from "../../voice/play-voice.js";
 import { useVoiceMuted } from "../../voice/useVoiceMuted.js";
@@ -18,6 +15,7 @@ import { useVoiceVolume } from "../../voice/useVoiceVolume.js";
 import { setVoiceMuted, setVoiceVolume } from "../../voice/voice-prefs.js";
 import { Select } from "./Select.js";
 import { SettingRow } from "./SettingRow.js";
+import { useRememberedSetting } from "./settings-snapshot.js";
 import { Toggle } from "./Toggle.js";
 
 const mb = (bytes: number): string => String(Math.round(bytes / 1e6));
@@ -322,15 +320,35 @@ export function VoiceSettings(): JSX.Element {
   const engineSupported =
     bridge.setVoiceEngine !== undefined && bridge.setMiniMaxKey !== undefined;
   const planSupported = bridge.setMiniMaxPlanKey !== undefined;
-  const [rt, setRt] = useState<RealtimeVoiceState | null>(null);
+  // Every fact starts from its last-known value (settings-snapshot.ts). The
+  // engine is the one that mattered most: it decides WHICH rows exist, so a
+  // user on the cloud voice saw the local-model row for a beat and then the
+  // two key rows in its place, pushing 静音 and 音量 down (owner 2026-09-18).
+  const [rt, setRt] = useRememberedSetting(bridge, "voice.realtime", null);
   const [rtFailed, setRtFailed] = useState(false);
-  const [model, setModel] = useState<VoiceModelState | null>(null);
-  const [engine, setEngine] = useState<VoiceEngine>("local");
+  const [model, setModel] = useRememberedSetting(bridge, "voice.model", null);
+  const [engine, setEngine] = useRememberedSetting(
+    bridge,
+    "voice.engine",
+    "local",
+  );
   const [engineFailed, setEngineFailed] = useState(false);
-  const [mmKey, setMmKey] = useState<DeepSeekKeyStatus | null>(null);
-  const [mmPlanKey, setMmPlanKey] = useState<DeepSeekKeyStatus | null>(null);
-  const [clone, setClone] = useState<MiniMaxVoiceState | null>(null);
-  const [refusal, setRefusal] = useState<MiniMaxRefusalState | null>(null);
+  const [mmKey, setMmKey] = useRememberedSetting(
+    bridge,
+    "voice.minimaxKey",
+    null,
+  );
+  const [mmPlanKey, setMmPlanKey] = useRememberedSetting(
+    bridge,
+    "voice.minimaxPlanKey",
+    null,
+  );
+  const [clone, setClone] = useRememberedSetting(bridge, "voice.clone", null);
+  const [refusal, setRefusal] = useRememberedSetting(
+    bridge,
+    "voice.refusal",
+    null,
+  );
   const [keyUnverified, setKeyUnverified] = useState(false);
   const [planUnverified, setPlanUnverified] = useState(false);
 
@@ -381,7 +399,16 @@ export function VoiceSettings(): JSX.Element {
       unsubClone?.();
       unsubSpeech?.();
     };
-  }, [bridge]);
+  }, [
+    bridge,
+    setRt,
+    setModel,
+    setEngine,
+    setMmKey,
+    setMmPlanKey,
+    setClone,
+    setRefusal,
+  ]);
 
   // A downloaded bundle counts the moment its state says ready; the initial
   // read's `bundle` covers the dev workspace's copy, which no download owns.
