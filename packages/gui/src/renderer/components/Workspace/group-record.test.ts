@@ -9,6 +9,7 @@ import {
   groupRecord,
   liftUserImages,
   type SystemBlock,
+  shareRunIdentity,
 } from "./group-record.js";
 
 const user = (text: string): TerminalRecordBlock => ({ kind: "user", text });
@@ -361,5 +362,125 @@ describe("liftUserImages (ADR 0048 §4)", () => {
     if (a?.kind !== "block" || b?.kind !== "block") throw new Error("shape");
     expect(a.images?.map(attName)).toEqual(["a.png"]);
     expect(b.images?.map(attName)).toEqual(["b.png"]);
+  });
+});
+
+describe("shareRunIdentity — an unchanged run keeps its ARRAY (ADR 0068 §8)", () => {
+  const picture = (name: string): SystemBlock => ({
+    kind: "system",
+    label: "系统",
+    body: `附件 ${name} · 图片 PNG`,
+    digest: {
+      kind: "attachment",
+      name,
+      path: `.herta/attachments/s1/${name}`,
+      lines: 0,
+      chars: 0,
+      image: { format: "png", width: 8, height: 8 },
+    },
+  });
+  const project = (record: readonly TerminalRecordBlock[]) =>
+    shareRunIdentity(liftUserImages(groupRecord(record)));
+  const runs = (items: ReturnType<typeof project>) =>
+    items.flatMap((i) => (i.kind === "activity" ? [i.blocks] : []));
+
+  it("an append leaves every earlier run's array identical; only the run that grew is new", () => {
+    // The store appends by `[...record, block]`: the block OBJECTS persist.
+    const record: TerminalRecordBlock[] = [
+      user("one"),
+      sys("Reading a"),
+      sys("Writing a"),
+      herta("done"),
+      user("two"),
+      sys("Reading b"),
+    ];
+    const before = runs(project(record));
+    const appended = sys("Writing b");
+    const after = runs(project([...record, appended]));
+    expect(before).toHaveLength(2);
+    expect(after[0]).toBe(before[0]); // history: the very same array
+    expect(after[1]).not.toBe(before[1]); // the live run really changed
+    expect(after[1]).toHaveLength(2);
+    // …and a commit that does not touch runs at all shares every one.
+    const again = runs(project([...record, appended, herta("ok")]));
+    expect(again[0]).toBe(before[0]);
+    expect(again[1]).toBe(after[1]);
+  });
+
+  it("anti-vacuous: without the pass every commit mints new arrays", () => {
+    const record: TerminalRecordBlock[] = [user("one"), sys("Reading a")];
+    const a = groupRecord(record)[1];
+    const b = groupRecord([...record, herta("ok")])[1];
+    if (a?.kind !== "activity" || b?.kind !== "activity")
+      throw new Error("shape");
+    expect(b.blocks).not.toBe(a.blocks);
+    expect(b.blocks).toEqual(a.blocks);
+  });
+
+  it("survives a load-earlier prepend and a window trim — indices move, arrays do not", () => {
+    const tail: TerminalRecordBlock[] = [
+      user("two"),
+      sys("Reading b"),
+      sys("Writing b"),
+    ];
+    const before = project(tail);
+    const prepended = project([user("one"), sys("Reading a"), ...tail]);
+    const mine = before[1];
+    const moved = prepended[3];
+    if (mine?.kind !== "activity" || moved?.kind !== "activity")
+      throw new Error("shape");
+    expect(moved.blocks).toBe(mine.blocks);
+    expect(mine.startIndex).toBe(1);
+    expect(moved.startIndex).toBe(3); // the item is re-minted, its array is not
+    const trimmed = project(tail);
+    const back = trimmed[1];
+    if (back?.kind !== "activity") throw new Error("shape");
+    expect(back.blocks).toBe(mine.blocks);
+  });
+
+  it("a reset mints new blocks, so nothing stale is shared", () => {
+    const make = (): TerminalRecordBlock[] => [user("one"), sys("Reading a")];
+    const a = runs(project(make()));
+    const b = runs(project(make())); // equal content, NEW objects
+    expect(b[0]).not.toBe(a[0]);
+    expect(b[0]).toEqual(a[0]);
+  });
+
+  it("a run that opens with pictures and the pictures lifted out of it do not evict each other", () => {
+    // Both start with the same block. One cache would flip between them on
+    // every commit and stabilize neither.
+    const record: TerminalRecordBlock[] = [
+      user("看看"),
+      picture("a.png"),
+      picture("b.png"),
+      sys("Reading a"),
+    ];
+    const first = project(record);
+    const second = project([...record, herta("看到了。")]);
+    const bubble1 = first[0];
+    const bubble2 = second[0];
+    if (bubble1?.kind !== "block" || bubble2?.kind !== "block")
+      throw new Error("shape");
+    expect(bubble1.images).toHaveLength(2);
+    expect(bubble2.images).toBe(bubble1.images);
+    expect(runs(second)[0]).toBe(runs(first)[0]);
+    // A third picture-free commit still shares both.
+    const third = project([...record, herta("看到了。"), user("再来")]);
+    const bubble3 = third[0];
+    if (bubble3?.kind !== "block") throw new Error("shape");
+    expect(bubble3.images).toBe(bubble1.images);
+    expect(runs(third)[0]).toBe(runs(first)[0]);
+  });
+
+  it("changes nothing but identity: items, indices and order are what came in", () => {
+    const record: TerminalRecordBlock[] = [
+      user("看看"),
+      picture("a.png"),
+      sys("Reading a"),
+      herta("嗯。"),
+      sys("Writing b"),
+    ];
+    const plain = liftUserImages(groupRecord(record));
+    expect(shareRunIdentity(plain)).toEqual(plain);
   });
 });

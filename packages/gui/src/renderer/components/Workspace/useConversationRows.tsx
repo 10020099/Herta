@@ -16,6 +16,7 @@ import {
   groupRecord,
   liftUserImages,
   type SystemBlock,
+  shareRunIdentity,
 } from "./group-record.js";
 import { HertaBubble } from "./HertaBubble.js";
 import { planContext } from "./plan-context.js";
@@ -111,7 +112,11 @@ export function useConversationRows(opts: {
     // Pictures sent with a message ride the bubble rather than the activity
     // run that carries them in the record (ADR 0048 §4) — same record,
     // different overlay.
-    () => liftUserImages(groupRecord(record)),
+    //
+    // `shareRunIdentity` last: an unchanged run keeps the ARRAY it had on the
+    // previous commit, so `memo(ActivityBlock)` — and a user bubble's lifted
+    // pictures — skip instead of re-deriving the whole window per block.
+    () => shareRunIdentity(liftUserImages(groupRecord(record))),
     [record],
   );
   // The CURRENT dispatch's 任务清单, scanned across the WHOLE record — an

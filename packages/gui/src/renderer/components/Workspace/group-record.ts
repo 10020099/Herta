@@ -145,6 +145,68 @@ export function groupRecord(
   return items;
 }
 
+/** The previous array for a run that starts with this block — reused while
+ *  the run is element-for-element the same. Weak: a record that is dropped
+ *  takes its entries with it. */
+type RunCache = WeakMap<SystemBlock, readonly SystemBlock[]>;
+// Two caches, not one: a run that opens with pictures and the pictures
+// lifted out of it START WITH THE SAME BLOCK, and sharing a cache would
+// have each evict the other on every commit.
+const activityRuns: RunCache = new WeakMap();
+const liftedImages: RunCache = new WeakMap();
+
+function sameRun(
+  a: readonly SystemBlock[],
+  b: readonly SystemBlock[],
+): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+function stableRun(
+  cache: RunCache,
+  run: readonly SystemBlock[],
+): readonly SystemBlock[] {
+  const first = run[0];
+  if (first === undefined) return run;
+  const prev = cache.get(first);
+  if (prev !== undefined && sameRun(prev, run)) return prev;
+  cache.set(first, run);
+  return run;
+}
+
+/**
+ * Give every run of blocks the ARRAY it had last time, when nothing in it
+ * changed (perf audit 2026-09-20, ADR 0068 §8).
+ *
+ * `groupRecord` rebuilds every group's `blocks` array on each record commit,
+ * and `memo(ActivityBlock)` compares props by identity — so one new block at
+ * the tail re-rendered EVERY activity group in the window: each re-derived
+ * its rows, re-folded its patches through `summarizeDiff`, re-minted the
+ * objects its steps memoize on. A tool call is two or three commits, a
+ * parallel batch five to ten, each its own synchronous render. The same
+ * went for a user bubble's lifted pictures (a fresh `slice` per commit).
+ *
+ * The store keeps block OBJECTS across an append, a load-earlier prepend
+ * and a window trim, so "the same run" is decidable by reference, in one
+ * pass over the window. A run that really changed — the live group growing,
+ * a reset or a rewind minting new blocks — fails the comparison and gets
+ * its new array, as it must. Only identity is touched: the items, their
+ * indices and their order are exactly what came in.
+ */
+export function shareRunIdentity(items: readonly RenderItem[]): RenderItem[] {
+  return items.map((item) => {
+    if (item.kind === "activity") {
+      const blocks = stableRun(activityRuns, item.blocks);
+      return blocks === item.blocks ? item : { ...item, blocks };
+    }
+    if (item.images === undefined) return item;
+    const images = stableRun(liftedImages, item.images);
+    return images === item.images ? item : { ...item, images };
+  });
+}
+
 function isTerminal(b: SystemBlock): boolean {
   return b.role === "done-marker" || b.role === "noop-marker";
 }
