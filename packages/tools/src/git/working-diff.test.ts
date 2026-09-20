@@ -143,29 +143,6 @@ describe.skipIf(!GIT_AVAILABLE)(
   },
 );
 
-describe.skipIf(!GIT_AVAILABLE)(
-  "describeWorkingDiff — a read the clock ends (ADR 0058 §7.7)",
-  { timeout: 20_000 },
-  () => {
-    it("reports a timeout, not an absent diff", async () => {
-      const dir = mkDir("wdiff-timeout-");
-      const git = (...a: string[]) =>
-        spawnSync("git", a, { cwd: dir, encoding: "utf8" });
-      git("init", "-q", "-b", "main");
-      git("config", "user.email", "t@t");
-      git("config", "user.name", "T");
-      git("config", "commit.gpgsign", "false");
-      mkdirSync(join(dir, "src"));
-      writeFileSync(join(dir, "src", "a.ts"), "one\n");
-      git("add", "-A");
-      git("commit", "-qm", "init");
-      writeFileSync(join(dir, "src", "a.ts"), "one\ntwo\n");
-      const out = await describeWorkingDiff(dir, "src/a.ts", undefined, {
-        timeoutMs: 1,
-      });
-      expect(isGitReadTimeout(out)).toBe(true);
-      const ok = read(await describeWorkingDiff(dir, "src/a.ts"));
-      expect(ok !== null && !isGitReadTimeout(ok) && ok.added === 1).toBe(true);
-    });
-  },
-);
+// "A read the clock ends reports a timeout" lives in read-timeout.test.ts,
+// against a git that never finishes — racing the real one against 1 ms was
+// lost on the Linux CI runner (2026-09-18, 2026-09-20).

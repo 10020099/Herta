@@ -311,11 +311,16 @@ describe.skipIf(!GIT_AVAILABLE)(
 );
 
 describe.skipIf(!GIT_AVAILABLE)(
-  "describeLog / describeBranches — a read the clock ends (ADR 0058 §7.7)",
-  { timeout: 20_000 },
+  "describeLog — a one-commit history reads as one entry",
+  { timeout: 60_000 },
   () => {
-    it("reports a timeout, not an empty or absent history", async () => {
-      const dir = mkDir("log-timeout-");
+    // "A read the clock ends reports a timeout" lives in
+    // read-timeout.test.ts, against a git that never finishes — racing the
+    // real one against 1 ms was lost on the Linux CI runner (2026-09-18,
+    // 2026-09-20: scheduled CI red on this test alone). What stays here is
+    // the half that needs a real repository.
+    it("an empty commit is a history of one", async () => {
+      const dir = mkDir("log-one-");
       const git = (...a: string[]) =>
         spawnSync("git", a, { cwd: dir, encoding: "utf8" });
       git("init", "-q", "-b", "main");
@@ -323,12 +328,6 @@ describe.skipIf(!GIT_AVAILABLE)(
       git("config", "user.name", "T");
       git("config", "commit.gpgsign", "false");
       git("commit", "-q", "--allow-empty", "-m", "step 1");
-      const page = await describeLog(dir, { skip: 0, limit: 10 }, undefined, {
-        timeoutMs: 1,
-      });
-      expect(isGitReadTimeout(page)).toBe(true);
-      const refs = await describeBranches(dir, undefined, { timeoutMs: 1 });
-      expect(isGitReadTimeout(refs)).toBe(true);
       const ok = read(await describeLog(dir, { skip: 0, limit: 10 }));
       expect(
         ok !== null && !isGitReadTimeout(ok) && ok.entries.length === 1,

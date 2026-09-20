@@ -171,26 +171,6 @@ describe.skipIf(!GIT_AVAILABLE)(
   },
 );
 
-describe.skipIf(!GIT_AVAILABLE)(
-  "describeCommit — a read the clock ends (ADR 0058 §7.7)",
-  { timeout: 20_000 },
-  () => {
-    it("reports a timeout, not an absent commit", async () => {
-      const dir = mkDir("cshow-timeout-");
-      const git = (...a: string[]) =>
-        spawnSync("git", a, { cwd: dir, encoding: "utf8" });
-      git("init", "-q", "-b", "main");
-      git("config", "user.email", "t@t");
-      git("config", "user.name", "T");
-      git("config", "commit.gpgsign", "false");
-      writeFileSync(join(dir, "a.ts"), "one\n");
-      git("add", "-A");
-      git("commit", "-qm", "init");
-      const sha = git("rev-parse", "HEAD").stdout.trim();
-      const out = await describeCommit(dir, sha, undefined, { timeoutMs: 1 });
-      expect(isGitReadTimeout(out)).toBe(true);
-      const ok = read(await describeCommit(dir, sha));
-      expect(ok !== null && !isGitReadTimeout(ok) && ok.sha === sha).toBe(true);
-    });
-  },
-);
+// "A read the clock ends reports a timeout" lives in read-timeout.test.ts,
+// against a git that never finishes — racing the real one against 1 ms was
+// lost on the Linux CI runner (2026-09-18, 2026-09-20).
