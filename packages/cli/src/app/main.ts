@@ -6,6 +6,8 @@ import {
   createBackendProvider,
   createBackendStack,
   defaultDigestModel,
+  installUsageLog,
+  prepareBackendStack,
 } from "@herta/app-server/wiring";
 import {
   ensureHertaGitignore,
@@ -83,6 +85,19 @@ export async function main(
   // results and permission grants, right beside their source. Self-ignore it
   // before anything writes there (audit BL6).
   ensureHertaGitignore(workspaceRoot);
+  // HERTA_USAGE_LOG: each model call's token counts as the API states them,
+  // prompt-cache hits included (numbers only) — `1` writes
+  // `<workspace>/.herta/usage.jsonl`, anything else is the file to write.
+  // An environment knob like the CLI's model knobs; the desktop app always
+  // keeps one beside its settings.
+  const usageLog = process.env.HERTA_USAGE_LOG;
+  if (usageLog !== undefined && usageLog.length > 0) {
+    installUsageLog(
+      usageLog === "1"
+        ? join(workspaceRoot, ".herta", "usage.jsonl")
+        : usageLog,
+    );
+  }
 
   // Resolve --resume target early (before the API key check) so that a bad
   // prefix fails fast without a key lookup.
@@ -252,11 +267,13 @@ export async function main(
   // exists on this machine (owner flip 2026-08-17, parity with the GUI); the
   // standard 15-tool set otherwise, or with HERTA_BACKEND_CONTRACT=standard.
   // The CLI takes the knob from the environment like its model knobs.
+  const wantMinimal = process.env.HERTA_BACKEND_CONTRACT !== "standard";
+  await prepareBackendStack({ wantMinimal });
   const backend = createBackendStack({
     wsHolder,
     workspaceRoot,
     lang,
-    wantMinimal: process.env.HERTA_BACKEND_CONTRACT !== "standard",
+    wantMinimal,
     backendProvider,
     // ADR 0048 §5: the stack mounts `view_image` only when this model can
     // actually see — one rule for both hosts (isVisionModel in the wiring);

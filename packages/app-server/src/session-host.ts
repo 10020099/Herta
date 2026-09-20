@@ -42,6 +42,7 @@ import type {
   SessionHost,
   SessionMetadata,
 } from "./types.js";
+import { installUsageLog } from "./usage-log.js";
 
 export function createSessionHost(config: AppServerConfig): SessionHost {
   validateConfig(config);
@@ -49,6 +50,9 @@ export function createSessionHost(config: AppServerConfig): SessionHost {
   // no-op for a PACKAGED app, whose workspace is userData and not a repo —
   // it matters for a dev GUI and for any build pointed at a real project.
   ensureHertaGitignore(config.workspaceRoot);
+  // The usage log is per process, like the provider sink it installs; a
+  // host rebuilt with the same path just installs it again.
+  if (config.usageLogPath !== undefined) installUsageLog(config.usageLogPath);
   return new SessionHostImpl(config);
 }
 

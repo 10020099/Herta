@@ -86,6 +86,7 @@ import {
   gitDiffTool,
   gitStatusTool,
   PersistentShell,
+  primeShellPaths,
   probeRepoState,
   registerEditFileRule,
   registerMinimalRules,
@@ -94,6 +95,10 @@ import {
   shellWorkspaceHint,
 } from "@herta/tools";
 import type { AppServerConfig } from "./types.js";
+
+// The usage log (token counts per model call) — a host that builds its
+// stacks by hand, as the CLI does, installs it from the same entry point.
+export { installUsageLog } from "./usage-log.js";
 
 // ── Backend stack ───────────────────────────────────────────────────────────
 
@@ -298,6 +303,20 @@ export interface BackendStack {
  *  decision is made at build and at a workspace move, never per call. */
 export function hasGitDir(workspace: string): boolean {
   return existsSync(join(workspace, ".git"));
+}
+
+/**
+ * What `createBackendStack` would otherwise have to find out while holding
+ * the thread: how this machine's bash spells `/tmp` (one bash start, Windows
+ * only). The stack build is synchronous and, in the desktop app, runs on
+ * the main thread — a host awaits this first and the build finds the answer
+ * cached. Optional: a host that skips it gets the same stack, just slower.
+ * Never rejects.
+ */
+export function prepareBackendStack(opts: {
+  readonly wantMinimal: boolean;
+}): Promise<void> {
+  return opts.wantMinimal ? primeShellPaths(findBash()) : Promise.resolve();
 }
 
 export function createBackendStack(opts: BackendStackOpts): BackendStack {

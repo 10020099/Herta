@@ -149,6 +149,16 @@ export default defineConfig({
     plugins: [react(), dropDeadTranscoder(), bundleManifest("renderer")],
     build: {
       outDir: "out/renderer",
+      // electron-vite's renderer default is `minify: false` (it is Vite's
+      // that minifies) — the app had shipped 15.7 MB of readable JS: a
+      // 928 KB entry the window parses before its first paint, a 2.6 MB
+      // scene chunk (perf audit 2026-09-20). JS only: the stylesheet stays
+      // byte-for-byte what was authored — its masks, fallback declarations
+      // and `-webkit-` pairs were tuned by eye, and a minifier's merges are
+      // not worth re-checking every surface for ~100 KB. Main and preload
+      // stay readable: a stack trace from a user's log has to name things.
+      minify: "esbuild",
+      cssMinify: false,
       rollupOptions: {
         input: resolve(__dirname, "src/renderer/index.html"),
       },

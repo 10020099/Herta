@@ -40,6 +40,7 @@ import type {
   SessionOpenFailure,
   SessionSnapshot,
 } from "../renderer/ipc/bridge-types.js";
+import { slimAgentEventForRenderer } from "../shared/agent-event-wire.js";
 import type { VoiceEngine } from "./app-global-settings.js";
 import {
   type InteractionLang,
@@ -360,19 +361,30 @@ export function startForwarders(session: Session, send: Send): () => void {
   // their subscription buffers + this `send` closure) parked in `it.next()`
   // forever, accumulating per session switch.
   const iterators: AsyncIterator<unknown>[] = [];
-  async function pump<T>(it: AsyncIterable<T>, channel: string): Promise<void> {
+  async function pump<T>(
+    it: AsyncIterable<T>,
+    channel: string,
+    // What crosses for one event; `null` = nothing does.
+    wire?: (value: T) => T | null,
+  ): Promise<void> {
     const iterator = it[Symbol.asyncIterator]();
     iterators.push(iterator);
     while (true) {
       const r = await iterator.next();
       if (r.done === true || !live) break;
-      send(channel, r.value);
+      const value = wire === undefined ? r.value : wire(r.value);
+      if (value !== null) send(channel, value);
     }
   }
   void pump(session.subscribeRecord(), EVT.record);
   void pump(session.subscribeOverlay(), EVT.overlay);
   void pump(session.subscribeSpeech(), EVT.speech);
-  void pump(session.subscribeAgentEvents(), EVT.agent);
+  // The raw stream is a trace; the renderer wants its signals only.
+  void pump(
+    session.subscribeAgentEvents(),
+    EVT.agent,
+    slimAgentEventForRenderer,
+  );
   void pump(session.subscribeTurnLifecycle(), EVT.turn);
   void pump(session.subscribeTitle(), EVT.title);
   void pump(session.subscribeWorkspace(), EVT.workspace);
@@ -1262,7 +1274,14 @@ export function createSessionService(
         app.isPackaged ? undefined : process.env.HERTA_DEEPSEEK_BASE_URL,
         speech,
       );
-      host = createSessionHost(config);
+      host = createSessionHost({
+        ...config,
+        // Per-install, beside the settings: each model call's token counts
+        // as the API states them, cache hits included — numbers only. The
+        // path needs Electron's `app`, so it is set here, not in the pure
+        // `buildConfig`.
+        usageLogPath: join(userDataPath, "usage.jsonl"),
+      });
       // Launch lands on the connect screen (接入黑塔空间站) rather than
       // auto-resuming the latest session: the user explicitly opens one from the
       // sidebar or starts a new one from the connect button (user 2026-06-20).

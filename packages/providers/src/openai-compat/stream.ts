@@ -1,6 +1,9 @@
 import type { ProviderEvent, ToolCallRequest } from "@herta/core";
 import { errorMessage } from "@herta/core";
 import { ProviderError } from "../errors.js";
+import { type ProviderUsage, parseUsageChunk } from "../usage.js";
+
+export type StreamUsage = Omit<ProviderUsage, "endpoint" | "model">;
 
 interface OpenAIDeltaChunk {
   choices?: ReadonlyArray<{
@@ -29,6 +32,10 @@ interface ToolBufEntry {
 export async function* mapStream(
   events: AsyncIterable<unknown>,
   signal: AbortSignal,
+  /** Told the call's token usage when a chunk states it (`usage.ts`) —
+   *  BEFORE that chunk's `finish` is yielded, since every consumer stops
+   *  reading there. */
+  onUsage?: (usage: StreamUsage) => void,
 ): AsyncGenerator<ProviderEvent, void, void> {
   const toolBuf = new Map<number, ToolBufEntry>();
   let sawFinish = false;
@@ -36,6 +43,10 @@ export async function* mapStream(
 
   for await (const ev of events) {
     signal.throwIfAborted();
+    if (onUsage !== undefined) {
+      const usage = parseUsageChunk(ev);
+      if (usage !== null) onUsage(usage);
+    }
     // Mid-stream error payload (audit BL4) — the completion-mode twin got this
     // guard in the 2026-07-24 pass and this one did not, so a gateway that
     // emitted an error object and then [DONE] fell through the `choices`

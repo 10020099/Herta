@@ -1,5 +1,6 @@
 import type { PromptFrame, ProviderAdapter, ProviderEvent } from "@herta/core";
 import { ProviderError } from "../errors.js";
+import { type ProviderUsage, reportProviderUsage } from "../usage.js";
 import type { ApiKey } from "./api-key.js";
 import { postChatCompletions } from "./http.js";
 import { parseSSE } from "./sse.js";
@@ -24,6 +25,9 @@ export interface OpenAICompatibleProviderOpts {
   /** SSE idle watchdog: max ms between body chunks before the stream is
    * treated as stalled. Default 90s; 0 disables. See `ParseSSEOpts`. */
   idleTimeoutMs?: number;
+  /** Told each call's token usage as the API states it — in addition to the
+   *  process-wide sink (`usage.ts`). */
+  onUsage?: (usage: ProviderUsage) => void;
 }
 
 export class OpenAICompatibleProvider implements ProviderAdapter {
@@ -79,6 +83,15 @@ export class OpenAICompatibleProvider implements ProviderAdapter {
           : {},
       ),
       signal,
+      (usage) => {
+        const stated: ProviderUsage = {
+          endpoint: "chat",
+          model: this.opts.model,
+          ...usage,
+        };
+        this.opts.onUsage?.(stated);
+        reportProviderUsage(stated);
+      },
     );
   }
 }

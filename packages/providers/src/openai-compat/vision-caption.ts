@@ -1,4 +1,5 @@
 import { ProviderError } from "../errors.js";
+import { parseUsageChunk, reportProviderUsage } from "../usage.js";
 import type { HttpOpts } from "./http.js";
 import { postChatCompletions } from "./http.js";
 
@@ -92,6 +93,11 @@ export function visionCaptioner(opts: VisionCaptionerOpts): VisionCaptioner {
         cause,
       });
     }
+
+    // The one non-streamed call: its usage sits on the body (`usage.ts`).
+    const usage = parseUsageChunk(json);
+    if (usage !== null)
+      reportProviderUsage({ endpoint: "chat", model: opts.model, ...usage });
 
     const choice = json.choices?.[0];
     const content = choice?.message?.content;

@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { isAbsolute, join, resolve } from "node:path";
 
 /**
@@ -27,33 +27,79 @@ const IDENTITY: ShellPaths = {
 };
 
 const cache = new Map<string, ShellPaths>();
+const priming = new Map<string, Promise<void>>();
+
+const PROBE_ARGS = ["--noprofile", "--norc", "-c", "cygpath -w /tmp"];
+const PROBE_TIMEOUT_MS = 10_000;
+
+function tmpFromProbe(ok: boolean, stdout: string): string | null {
+  const out = stdout.trim().split(/\r?\n/)[0] ?? "";
+  return ok && /^[A-Za-z]:\\/.test(out) ? resolve(out) : null;
+}
 
 /** Probe once per bash binary; identity mapping on POSIX or when the probe
  *  fails (then only native absolute paths are understood — still correct,
- *  just less forgiving). */
+ *  just less forgiving).
+ *
+ *  Synchronous, because its callers are (tool construction, the permission
+ *  rules, a record header). An async caller that can afford to should
+ *  `primeShellPaths` first: this probe then finds its answer cached and
+ *  spawns nothing. */
 export function shellPathsFor(bashPath: string | null): ShellPaths {
   if (process.platform !== "win32" || bashPath === null) return IDENTITY;
   const cached = cache.get(bashPath);
   if (cached !== undefined) return cached;
   let tmpNative: string | null = null;
   try {
-    const r = spawnSync(
-      bashPath,
-      ["--noprofile", "--norc", "-c", "cygpath -w /tmp"],
-      {
-        encoding: "utf8",
-        timeout: 10_000,
-        windowsHide: true,
-      },
-    );
-    const out = (r.stdout ?? "").trim().split(/\r?\n/)[0] ?? "";
-    if (r.status === 0 && /^[A-Za-z]:\\/.test(out)) tmpNative = resolve(out);
+    const r = spawnSync(bashPath, PROBE_ARGS, {
+      encoding: "utf8",
+      timeout: PROBE_TIMEOUT_MS,
+      windowsHide: true,
+    });
+    tmpNative = tmpFromProbe(r.status === 0, r.stdout ?? "");
   } catch {
     tmpNative = null;
   }
   const paths = makeMsysPaths(tmpNative);
   cache.set(bashPath, paths);
   return paths;
+}
+
+/**
+ * The same probe without blocking the thread: fills the cache
+ * `shellPathsFor` reads. The synchronous probe ran inside the (synchronous)
+ * backend bootstrap — on the desktop app's main thread, a whole bash start
+ * at the first session create or open (perf audit 2026-09-20). Never
+ * rejects; concurrent calls share one probe; a no-op on POSIX, without a
+ * bash, or once the answer is known.
+ */
+export function primeShellPaths(bashPath: string | null): Promise<void> {
+  if (process.platform !== "win32" || bashPath === null)
+    return Promise.resolve();
+  if (cache.has(bashPath)) return Promise.resolve();
+  const inFlight = priming.get(bashPath);
+  if (inFlight !== undefined) return inFlight;
+  const p = new Promise<void>((settled) => {
+    const done = (tmpNative: string | null): void => {
+      // A synchronous probe may have answered meanwhile — first one wins,
+      // so nobody ever holds a mapping that later changes under them.
+      if (!cache.has(bashPath)) cache.set(bashPath, makeMsysPaths(tmpNative));
+      priming.delete(bashPath);
+      settled();
+    };
+    try {
+      execFile(
+        bashPath,
+        PROBE_ARGS,
+        { encoding: "utf8", timeout: PROBE_TIMEOUT_MS, windowsHide: true },
+        (err, stdout) => done(tmpFromProbe(err === null, stdout)),
+      );
+    } catch {
+      done(null);
+    }
+  });
+  priming.set(bashPath, p);
+  return p;
 }
 
 /** Exposed for tests: an MSYS mapping with a known /tmp. */

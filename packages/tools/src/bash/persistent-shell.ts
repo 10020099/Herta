@@ -1,4 +1,4 @@
-import { type ChildProcess, spawn, spawnSync } from "node:child_process";
+import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { type BackgroundProcess, isPathInside } from "@herta/core";
@@ -79,6 +79,8 @@ export class PersistentShell implements BackgroundProcess {
   readonly paths: ShellPaths;
   /** The shell's own spelling of the workspace (what `pwd` prints there). */
   private shellWs: string | null = null;
+  /** Set while a spawned shell still owes its workspace line. */
+  private wsMarker: string | null = null;
   private child: ChildProcess | null = null;
   private buf = "";
   private waiter: Waiter | null = null;
@@ -185,29 +187,45 @@ export class PersistentShell implements BackgroundProcess {
         this.failWaiter({ shellExited: true, timedOut: false });
     });
     // Merge stderr into stdout in ORDER; remember the workspace spelling.
-    child.stdin?.write('exec 2>&1\nset +o history\n__herta_ws="$(pwd)"\n');
+    //
+    // The shell reports that spelling itself, on a line of its own ahead of
+    // any command's output (`takeWorkspaceLine`). It used to be asked of a
+    // SECOND bash, synchronously — `spawnSync(bash -c pwd)`, 70–120 ms warm
+    // on Windows and far more cold — on the first command of every brief,
+    // which in the desktop app is the Electron main thread: the paced
+    // reveal and the voice IPC stalled behind it (perf audit 2026-09-20).
+    // Nothing needed it that early: the prompt's line is built from a shell
+    // that never spawns (the mapping), and every other reader asks after a
+    // command has run.
+    const wsMarker =
+      this.shellWs === null
+        ? `__HERTA_WS_${randomBytes(6).toString("hex")}__`
+        : null;
+    this.wsMarker = wsMarker;
+    child.stdin?.write(
+      `exec 2>&1\nset +o history\n__herta_ws="$(pwd)"\n${
+        wsMarker !== null
+          ? `printf '%s:%s\\n' '${wsMarker}' "$__herta_ws"\n`
+          : ""
+      }`,
+    );
     this.child = child;
     this.currentCwd = this.opts.workspaceRoot;
-    if (this.shellWs === null) {
-      // Ask once, synchronously, so `workspaceShellPath` is exact from the
-      // first call (the model reads it in its prompt).
-      try {
-        const r = spawnSync(
-          this.opts.bashPath,
-          ["--noprofile", "--norc", "-c", "pwd"],
-          {
-            cwd: this.opts.workspaceRoot,
-            encoding: "utf8",
-            timeout: 10_000,
-            windowsHide: true,
-          },
-        );
-        const out = (r.stdout ?? "").trim().split(/\r?\n/)[0] ?? "";
-        if (r.status === 0 && out.startsWith("/")) this.shellWs = out;
-      } catch {
-        // keep the mapping fallback
-      }
-    }
+  }
+
+  /** Lift the shell's own `<marker>:<pwd>` line out of the buffer — it is
+   *  protocol, never a command's output. Waits for the whole line. */
+  private takeWorkspaceLine(): void {
+    const marker = this.wsMarker;
+    if (marker === null) return;
+    const at = this.buf.indexOf(marker);
+    if (at === -1) return;
+    const end = this.buf.indexOf("\n", at);
+    if (end === -1) return;
+    const spelled = this.buf.slice(at + marker.length + 1, end);
+    if (spelled.startsWith("/")) this.shellWs = spelled;
+    this.buf = this.buf.slice(0, at) + this.buf.slice(end + 1);
+    this.wsMarker = null;
   }
 
   private failWaiter(how: { shellExited: boolean; timedOut: boolean }): void {
@@ -232,6 +250,7 @@ export class PersistentShell implements BackgroundProcess {
   }
 
   private pump(): void {
+    this.takeWorkspaceLine();
     const w = this.waiter;
     if (w === null) return;
     const idx = this.buf.indexOf(w.marker);
@@ -418,10 +437,28 @@ async function killTree(child: ChildProcess): Promise<void> {
       // loaded machine took longer than the close grace (the permission
       // lab hung on 2026-09-16 with the whole chain alive after `done.`).
       // Its own timeout is generous; the grace below only bounds the wait
-      // for the exit event.
-      spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
-        windowsHide: true,
-        timeout: TASKKILL_TIMEOUT_MS,
+      // for the exit event. AWAITED, never `spawnSync`: this runs at the
+      // end of every brief, and blocking here froze the desktop app's main
+      // thread — the reveal, the voice IPC, the window — for as long as the
+      // tree walk took (perf audit 2026-09-20). The order is unchanged:
+      // taskkill settles, then the stdio ends are dropped below.
+      await new Promise<void>((settled) => {
+        execFile(
+          "taskkill",
+          ["/PID", String(pid), "/T", "/F"],
+          { windowsHide: true, timeout: TASKKILL_TIMEOUT_MS },
+          (err) => {
+            // A string code is a failure to LAUNCH taskkill (a number is
+            // its exit status): fell at least the shell itself.
+            if (typeof (err as NodeJS.ErrnoException | null)?.code === "string")
+              try {
+                child.kill("SIGKILL");
+              } catch {
+                // already gone
+              }
+            settled();
+          },
+        );
       });
     } else {
       try {

@@ -44,6 +44,7 @@ export const DOM_FREE_TESTS = [
   "src/main/voice-path.test.ts",
   "src/main/win-path.test.ts",
   // Shared between main and renderer — pure functions.
+  "src/shared/agent-event-wire.test.ts",
   "src/shared/dead-transcoder.test.ts",
   "src/shared/links.test.ts",
   // The 3D device card's build-time helpers — pure, no DOM (ADR 0057 §6.5).

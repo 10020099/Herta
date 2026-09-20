@@ -33,6 +33,10 @@ export interface AppServerConfig {
   /** Absolute. Where `<sessionId>.jsonl` files live. Typically
    *  `<workspaceRoot>/.herta/transcript/v2`. */
   readonly transcriptDir: string;
+  /** Absolute. When set, every model call's token usage — as the API states
+   *  it, prompt-cache hits included; numbers only — is appended to this
+   *  JSONL file (`usage-log.ts`). Unset: nothing is recorded. */
+  readonly usageLogPath?: string;
   /** Absolute. Project-scoped memory dir. Typically
    *  `<workspaceRoot>/.herta/memory`. */
   readonly projectMemoryDir: string;

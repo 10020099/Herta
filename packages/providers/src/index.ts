@@ -36,3 +36,9 @@ export {
   providerFetch,
   setProviderFetch,
 } from "./transport.js";
+export type { ProviderUsage, ProviderUsageSink } from "./usage.js";
+export {
+  parseUsageChunk,
+  reportProviderUsage,
+  setProviderUsageSink,
+} from "./usage.js";

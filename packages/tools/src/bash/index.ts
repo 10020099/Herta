@@ -39,6 +39,7 @@ export {
 } from "./shell-classifier.js";
 export {
   makeMsysPaths,
+  primeShellPaths,
   type ShellPaths,
   shellPathsFor,
 } from "./shell-paths.js";

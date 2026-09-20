@@ -42,6 +42,7 @@ export {
   makeBashRule,
   makeMsysPaths,
   PersistentShell,
+  primeShellPaths,
   registerBashRule,
   SHELL_BG_ID,
   type ShellPaths,

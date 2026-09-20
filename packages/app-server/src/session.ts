@@ -79,6 +79,7 @@ import {
   createBackendStack,
   defaultDigestModel,
   digestModelFrom,
+  prepareBackendStack,
 } from "./session-wiring.js";
 import type { StagedImage } from "./staged-images.js";
 import { SteerChannel } from "./steer-channel.js";
@@ -1604,6 +1605,11 @@ export class SessionImpl implements Session {
     // The steer channel (ADR 0063) exists before the stack: the runtime
     // factory closes over its `drain`, and every dispatch reads it.
     const steer = new SteerChannel();
+    // The one thing the synchronous build would block on (a bash start, on
+    // the desktop app's main thread) is found out here, awaited.
+    await prepareBackendStack({
+      wantMinimal: config.backendContract === "minimal",
+    });
     const backend = createBackendStack({
       wsHolder,
       workspaceRoot,
