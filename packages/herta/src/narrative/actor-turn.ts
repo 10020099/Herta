@@ -521,6 +521,24 @@ async function recoverFromVeto(ctx: {
  * autoregressive surface pick behind the `（我 ` branch tag) was removed on
  * 2026-09-03 — see the surface decision inside the loop.
  */
+/**
+ * Does this user message make the HARNESS dispatch 板砖 before Herta says
+ * anything (the user-typed pre-empt, SPEC §7)? A bare — not backticked —
+ * `@板砖` with something left to hand over once the token is stripped.
+ *
+ * One predicate, two readers: the turn below, which runs the dispatch, and
+ * the driver, which knows from it that the mood for this turn is already
+ * decided and the router need not be asked (ADR 0066 amendment 2026-09-21).
+ * They must never disagree — a driver that skipped the router for a message
+ * the turn then did NOT dispatch would run Herta under the wrong mood.
+ */
+export function userTextPreemptsDispatch(userText: string): boolean {
+  return (
+    parseHertaBlock(userText).hasBanzhuanTrigger &&
+    stripBanzhuanTrigger(userText).trim().length > 0
+  );
+}
+
 export async function runActorCompletionTurn(
   state: ActorTurnState,
   userText: string,
@@ -590,28 +608,25 @@ export async function runActorCompletionTurn(
   // normal turn; she can still delegate herself if it's actually a
   // task. stripBanzhuanTrigger below matches: it removes only bare
   // triggers, so a quoted span stays part of the brief text.
-  if (parseHertaBlock(userText).hasBanzhuanTrigger) {
-    const brief = stripBanzhuanTrigger(userText).trim();
-    if (brief.length > 0) {
-      deps.sink?.flushBlocks(record);
-      const policy = new BeatPolicy();
-      const fireBeat = makeFireBeat(
-        deps,
-        priorTurnLength,
-        recap,
-        recapBoundaryIndex,
-      );
-      record = await invokeBanzhuanBridge(record, [], {
-        bus: deps.bus,
-        runtimeFactory: deps.runtimeFactory,
-        lang: deps.lang,
-        signal,
-        beatPolicy: policy,
-        fireBeat,
-        sink: deps.sink,
-      });
-      dispatchCount += 1;
-    }
+  if (userTextPreemptsDispatch(userText)) {
+    deps.sink?.flushBlocks(record);
+    const policy = new BeatPolicy();
+    const fireBeat = makeFireBeat(
+      deps,
+      priorTurnLength,
+      recap,
+      recapBoundaryIndex,
+    );
+    record = await invokeBanzhuanBridge(record, [], {
+      bus: deps.bus,
+      runtimeFactory: deps.runtimeFactory,
+      lang: deps.lang,
+      signal,
+      beatPolicy: policy,
+      fireBeat,
+      sink: deps.sink,
+    });
+    dispatchCount += 1;
   }
 
   // -- Main loop -----------------------------------------------------------

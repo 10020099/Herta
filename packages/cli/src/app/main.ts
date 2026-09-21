@@ -415,6 +415,7 @@ export async function main(
     supervisorProvider: actor.supervisorProvider,
     supervisorReference: actor.supervisorReference,
     supervisorRevision: actor.supervisorRevision,
+    speculativeThought: actor.speculativeThought,
     recap: actor.recap,
     lang,
   });

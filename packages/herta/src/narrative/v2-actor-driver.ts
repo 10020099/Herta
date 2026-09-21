@@ -12,7 +12,12 @@ import type {
 } from "@herta/core";
 import type { ActorHints } from "./actor-hints.js";
 import type { StaticHertaPrefix } from "./actor-prompt.js";
-import { ActorTurnAbortedError, runActorCompletionTurn } from "./actor-turn.js";
+import {
+  ActorTurnAbortedError,
+  runActorCompletionTurn,
+  userTextPreemptsDispatch,
+} from "./actor-turn.js";
+import { startThoughtSpeculation } from "./actor-turn-stream.js";
 import { classifyIntent, lastNSpeechTurns } from "./intent-router.js";
 import {
   type AttachedMetaThink,
@@ -197,6 +202,17 @@ export interface V2ActorDriverDeps {
    */
   readonly speakAnchorPolicy?: "refresh" | "expire";
   /**
+   * Start the turn's first thought while the router is still classifying,
+   * under the mood the turn would have if it does not change (ADR 0066
+   * amendment 2026-09-21). Adopted only when the prompt turns out
+   * byte-identical; a changed mood cancels it and the thought is asked
+   * again, as before. Default OFF here — a direct caller (a test, a lab)
+   * gets exactly one completion request per thought unless it asks for
+   * more; the runtime wiring turns it on (`HERTA_SPECULATIVE_THOUGHT=0`
+   * turns it back off).
+   */
+  readonly speculativeThought?: boolean;
+  /**
    * Interaction language of the session (slice 4). Per-session — the
    * driver lives for one session and threads this into EVERY
    * language-parameterized call it makes: the intent router
@@ -378,21 +394,80 @@ export class V2ActorDriver {
     // reject unhandled while the recap is still running nor mask it. The
     // driver intentionally does not log the failure — main.ts can decide
     // whether to surface router failures.
-    const routerPending = classifyIntent({
-      recentRecord: lastNSpeechTurns(prelimRecord, 5),
-      currentState: this.currentIntentState,
-      provider: this.deps.routerProvider,
-      lang: this.deps.lang ?? "zh",
-      signal,
-    }).then(
-      (result) => result,
-      () => null,
-    );
+    //
+    // A message that makes the HARNESS dispatch 板砖 before Herta speaks (a
+    // bare `@板砖` with a brief) is not classified at all (ADR 0066 amendment
+    // 2026-09-21): the router's own first rule — 「如果开拓者直接 @板砖 …
+    // 走板砖代答版」, top of its priority order — already decides that case,
+    // and the predicate is the very one the turn dispatches on, so the mood
+    // is known without asking. The call sat in front of the dispatch: ~0.65 s
+    // and one request before 板砖 could start.
+    const preempts = userTextPreemptsDispatch(text);
+    let routerSettled = preempts;
+    const routerPending = preempts
+      ? Promise.resolve(null)
+      : classifyIntent({
+          recentRecord: lastNSpeechTurns(prelimRecord, 5),
+          currentState: this.currentIntentState,
+          provider: this.deps.routerProvider,
+          lang: this.deps.lang ?? "zh",
+          signal,
+        })
+          .then(
+            (result) => result,
+            () => null,
+          )
+          .finally(() => {
+            routerSettled = true;
+          });
     const precomputedRecap: PreparedRecap = await recapPending;
+
+    // The first thought, started on a guess while the router is still out
+    // (see `speculativeThought`). The guess is "the mood stays": the
+    // attachment below is what this turn gets if the router agrees, built
+    // by the same planner that builds the real one after it answers — and
+    // the record, the recap and the hints are exactly the turn's. Skipped
+    // when there is nothing to gain: the router has already answered (a
+    // compaction turn's summarizer outlasts it), the message pre-empts a
+    // dispatch (the record will have moved on before Herta thinks), or the
+    // turn is already cancelled.
+    const corpusActive = corpusHasContent(this.deps.metaThinkCorpus);
+    const speculation =
+      this.deps.speculativeThought === true &&
+      !preempts &&
+      !routerSettled &&
+      !signal.aborted
+        ? startThoughtSpeculation({
+            deps: {
+              provider: this.deps.provider,
+              model: this.deps.model,
+              staticPrefix: this.deps.staticPrefix,
+              attachedMetaThink: corpusActive
+                ? this.planMetaThink(this.currentIntentState).attachment
+                : undefined,
+              lang: this.deps.lang ?? "zh",
+              ...(this.deps.hints !== undefined
+                ? { hints: this.deps.hints }
+                : {}),
+            },
+            record: [
+              ...this.record,
+              { kind: "user" as const, text },
+              ...userAttachments,
+            ],
+            priorTurnLength: this.record.length,
+            ...(precomputedRecap.recap !== undefined
+              ? { recap: precomputedRecap.recap }
+              : {}),
+            recapBoundaryIndex: precomputedRecap.recapBoundaryIndex,
+            signal,
+          })
+        : undefined;
     const routed = await routerPending;
 
     let routerPrompt: string | undefined;
     let routerRawOutput: string | undefined;
+    if (preempts) this.currentIntentState = "板砖代答版";
     if (routed !== null) {
       this.currentIntentState = routed.state;
       routerPrompt = routed.prompt;
@@ -414,8 +489,8 @@ export class V2ActorDriver {
     // phase fallback an absent state used to select is gone). The corpus
     // check below gates only the meta-think ATTACHMENT: an all-empty corpus
     // (a test seam) means there is no preamble to splice, and the turn runs
-    // think-then-speak without one.
-    const corpusActive = corpusHasContent(this.deps.metaThinkCorpus);
+    // think-then-speak without one. (`corpusActive` is computed above, where
+    // the speculative thought needs it too.)
 
     // Build the meta-think attachment for this turn. Asymmetric
     // anchoring — the two surfaces have different stickiness AND
@@ -458,76 +533,9 @@ export class V2ActorDriver {
     // same value), saving a redundant resolve. `loadRecord` resets
     // the attachment to null so the next turn rebuilds from scratch.
     if (corpusActive) {
-      const sameState =
-        this.attachedMetaThink !== null &&
-        this.attachedMetaThink.state === this.currentIntentState;
-      if (sameState && this.attachedMetaThink !== null) {
-        this.turnsSinceSpeakAnchor += 1;
-        const speakStale =
-          this.turnsSinceSpeakAnchor >= SPEAK_ANCHOR_REFRESH_INTERVAL;
-        if (
-          speakStale &&
-          (this.deps.speakAnchorPolicy ?? "expire") === "expire"
-        ) {
-          // Expire: the speak preamble is dropped in place. The record
-          // behind the old anchor changes once (as a jump would) and never
-          // again until the state changes; the think anchor keeps moving.
-          // Idempotent on the following turns — the text is already empty.
-          this.attachedMetaThink = {
-            ...this.attachedMetaThink,
-            beforeThinkIndex: this.record.length,
-            preSpeakText: "",
-          };
-        } else if (speakStale) {
-          // Speak anchor drifted too far back across same-state turns.
-          // Re-anchor at this turn's speech position so the preamble
-          // re-enters the model's effective attention window. Texts
-          // are re-resolved too (no-op for unchanged corpus, but
-          // picks up hot-reloaded content if the corpus changed mid-
-          // session).
-          this.attachedMetaThink = {
-            state: this.currentIntentState,
-            beforeThinkIndex: this.record.length,
-            beforeSpeakIndex: this.record.length + 2,
-            preThinkText: resolveMetaThink(
-              this.deps.metaThinkCorpus,
-              "thought",
-              this.currentIntentState,
-            ),
-            preSpeakText: resolveMetaThink(
-              this.deps.metaThinkCorpus,
-              "speech",
-              this.currentIntentState,
-            ),
-          };
-          this.turnsSinceSpeakAnchor = 0;
-        } else {
-          // Keep speak anchor + texts; update only the think anchor.
-          this.attachedMetaThink = {
-            ...this.attachedMetaThink,
-            beforeThinkIndex: this.record.length,
-          };
-        }
-      } else {
-        // State change (or first turn): fresh anchors at current
-        // record positions, fresh corpus lookups, counter reset.
-        this.attachedMetaThink = {
-          state: this.currentIntentState,
-          beforeThinkIndex: this.record.length,
-          beforeSpeakIndex: this.record.length + 2,
-          preThinkText: resolveMetaThink(
-            this.deps.metaThinkCorpus,
-            "thought",
-            this.currentIntentState,
-          ),
-          preSpeakText: resolveMetaThink(
-            this.deps.metaThinkCorpus,
-            "speech",
-            this.currentIntentState,
-          ),
-        };
-        this.turnsSinceSpeakAnchor = 0;
-      }
+      const planned = this.planMetaThink(this.currentIntentState);
+      this.attachedMetaThink = planned.attachment;
+      this.turnsSinceSpeakAnchor = planned.turnsSinceSpeakAnchor;
     }
 
     let result: { record: TerminalRecord };
@@ -565,8 +573,14 @@ export class V2ActorDriver {
           ? { supervisorRevision: this.deps.supervisorRevision }
           : {}),
         ...(this.deps.hints !== undefined ? { hints: this.deps.hints } : {}),
+        ...(speculation !== undefined
+          ? { thoughtSpeculation: speculation }
+          : {}),
       });
     } catch (err) {
+      // A speculation the turn never reached (it threw first) must not keep
+      // generating; after an adoption this is a no-op.
+      speculation?.discard();
       // Interrupt at an iteration boundary (typically right after a @板砖
       // bridge run): adopt the partial record BEFORE re-throwing. The blocks
       // — backend projections, beats, the done-marker — were already rendered
@@ -585,6 +599,9 @@ export class V2ActorDriver {
       }
       throw err;
     }
+    // Idempotent: nothing to cancel once adopted; a speculation the turn
+    // had no use for stops here.
+    speculation?.discard();
     this.record = result.record;
     // Push newly-appended blocks to the persister, in order. Per-turn diff:
     // only the blocks at indices [prevLen, this.record.length). D1: SKIP when
@@ -598,6 +615,68 @@ export class V2ActorDriver {
       }
     }
     return this.record;
+  }
+
+  /**
+   * This turn's meta-think attachment IF the mood were `state` — computed,
+   * never committed. A pure function of the driver's current attachment,
+   * its same-state counter and the record length, so it can be asked twice
+   * per turn: once for the GUESS a speculative first thought runs under
+   * (the state staying what it is), once for the state the router actually
+   * returned. The three branches are the ones `runTurn` used to run inline
+   * (asymmetric anchoring — see the comment at the call site).
+   */
+  private planMetaThink(state: MoodState): {
+    readonly attachment: AttachedMetaThink;
+    readonly turnsSinceSpeakAnchor: number;
+  } {
+    const prev = this.attachedMetaThink;
+    const at = this.record.length;
+    const fresh = (): AttachedMetaThink => ({
+      state,
+      beforeThinkIndex: at,
+      beforeSpeakIndex: at + 2,
+      preThinkText: resolveMetaThink(
+        this.deps.metaThinkCorpus,
+        "thought",
+        state,
+      ),
+      preSpeakText: resolveMetaThink(
+        this.deps.metaThinkCorpus,
+        "speech",
+        state,
+      ),
+    });
+    // State change (or first turn): fresh anchors at current record
+    // positions, fresh corpus lookups, counter reset.
+    if (prev === null || prev.state !== state) {
+      return { attachment: fresh(), turnsSinceSpeakAnchor: 0 };
+    }
+    const turns = this.turnsSinceSpeakAnchor + 1;
+    const speakStale = turns >= SPEAK_ANCHOR_REFRESH_INTERVAL;
+    if (speakStale && (this.deps.speakAnchorPolicy ?? "expire") === "expire") {
+      // Expire: the speak preamble is dropped in place. The record behind
+      // the old anchor changes once (as a jump would) and never again until
+      // the state changes; the think anchor keeps moving. Idempotent on the
+      // following turns — the text is already empty.
+      return {
+        attachment: { ...prev, beforeThinkIndex: at, preSpeakText: "" },
+        turnsSinceSpeakAnchor: turns,
+      };
+    }
+    if (speakStale) {
+      // Speak anchor drifted too far back across same-state turns.
+      // Re-anchor at this turn's speech position so the preamble re-enters
+      // the model's effective attention window. Texts are re-resolved too
+      // (no-op for unchanged corpus, but picks up hot-reloaded content if
+      // the corpus changed mid-session).
+      return { attachment: fresh(), turnsSinceSpeakAnchor: 0 };
+    }
+    // Keep speak anchor + texts; update only the think anchor.
+    return {
+      attachment: { ...prev, beforeThinkIndex: at },
+      turnsSinceSpeakAnchor: turns,
+    };
   }
 
   /**

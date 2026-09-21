@@ -563,6 +563,10 @@ export interface ActorStack {
   readonly metaThinkCorpus: MetaThinkCorpus;
   /** Resolved `supervisorRevision` (ADR 0065) for `V2ActorDriverDeps`. */
   readonly supervisorRevision: boolean;
+  /** Whether the driver starts the first thought while the router is still
+   *  classifying (ADR 0066 amendment 2026-09-21) — on unless
+   *  `HERTA_SPECULATIVE_THOUGHT=0`. For `V2ActorDriverDeps`. */
+  readonly speculativeThought: boolean;
   readonly actorHints: ActorHints;
   readonly supervisorReference: string;
   readonly recap: RecapRuntime;
@@ -719,6 +723,9 @@ export async function createActorStack(
     seedBlock,
     metaThinkCorpus,
     supervisorRevision,
+    // On by default; `0` is the operator's escape hatch and the lab's A/B
+    // lever, the same shape as HERTA_SUPERVISOR_REVISION.
+    speculativeThought: process.env.HERTA_SPECULATIVE_THOUGHT !== "0",
     actorHints,
     supervisorReference,
     recap,

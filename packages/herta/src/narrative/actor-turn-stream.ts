@@ -10,7 +10,12 @@
 
 import type { CompletionProviderAdapter, TerminalRecord } from "@herta/core";
 import { type ActorPrompt, serializeActorPrompt } from "./actor-prompt.js";
-import type { ActorTurnDeps, Surface } from "./actor-turn-deps.js";
+import type {
+  ActorTurnDeps,
+  PhaseTwoSink,
+  Surface,
+  ThoughtSpeculation,
+} from "./actor-turn-deps.js";
 import { resolveHints } from "./actor-turn-prompts.js";
 import {
   isPlaceholderOnly,
@@ -18,10 +23,7 @@ import {
   retryCause,
   stripHintScaffolding,
 } from "./block-shape.js";
-import type {
-  ActorStreamingSink,
-  SlowStreamController,
-} from "./streaming-sink.js";
+import type { SlowStreamController } from "./streaming-sink.js";
 import { safeEmitBoundary, stripDanglingStopPrefix } from "./streaming-sink.js";
 import {
   buildSupervisorVetoHint,
@@ -382,6 +384,152 @@ export async function recoverEmptyThought(opts: {
   return result;
 }
 
+/** What a phase-2 prompt is made of. ONE builder for every caller, so the
+ *  speculative first thought below and the ordinary call in `runPhaseTwo`
+ *  cannot drift apart — adoption compares their output byte for byte. */
+function buildPhaseTwoPrompt(o: {
+  deps: Pick<ActorTurnDeps, "staticPrefix" | "attachedMetaThink" | "lang">;
+  record: TerminalRecord;
+  priorTurnLength: number;
+  surface: Surface;
+  formatHint: string;
+  bodySeed?: string;
+  vetoedSpeech?: string;
+  recap?: string;
+  recapBoundaryIndex: number;
+}): string {
+  const docPrompt: ActorPrompt = {
+    staticPrefix: o.deps.staticPrefix,
+    record: o.record,
+    priorTurnLength: o.priorTurnLength,
+    attachedMetaThink: o.deps.attachedMetaThink,
+    metaThinkSurface: o.surface,
+    formatHint: o.formatHint,
+    openTag: o.surface === "thought" ? "（我 想）" : "（我 说）",
+    ...(o.bodySeed !== undefined ? { openTagSuffix: o.bodySeed } : {}),
+    ...(o.vetoedSpeech !== undefined
+      ? { replayBlock: `（我 说）\n${o.vetoedSpeech}\n（/我 说）` }
+      : {}),
+    ...(o.recap !== undefined ? { recap: o.recap } : {}),
+    recapBoundaryIndex: o.recapBoundaryIndex,
+    lang: o.deps.lang ?? "zh",
+  };
+  return serializeActorPrompt(docPrompt);
+}
+
+/**
+ * A first thought started EARLY, on a guess (ADR 0066 amendment 2026-09-21).
+ *
+ * Every turn used to run router → thought → speech strictly in that order,
+ * because the thought's prompt carries the routed mood's preamble. But the
+ * mood usually does not change from one turn to the next, and the router's
+ * ~0.65 s sat in front of the first thought on every turn. So the driver
+ * starts the thought while the router is still thinking, under the
+ * attachment the turn would have IF the mood stays — and `runPhaseTwo`
+ * adopts it only when the prompt it builds for real is byte-identical to the
+ * one this was asked. Same prompt, same model, same sampling: the turn is
+ * what it would have been, only sooner. A wrong guess costs one cancelled
+ * request against a cached prefix.
+ *
+ * Nothing of a speculation reaches the screen or the record until it is
+ * adopted: a thought only ever sends the sink a begin and an end (its text
+ * is never streamed), and both are held here until `adopt` names the sink.
+ */
+export function startThoughtSpeculation(o: {
+  deps: Pick<
+    ActorTurnDeps,
+    | "provider"
+    | "model"
+    | "staticPrefix"
+    | "attachedMetaThink"
+    | "lang"
+    | "hints"
+  >;
+  record: TerminalRecord;
+  priorTurnLength: number;
+  recap?: string;
+  recapBoundaryIndex: number;
+  /** The TURN's signal: an interrupt cancels the speculation too. */
+  signal: AbortSignal;
+}): ThoughtSpeculation {
+  const prompt = buildPhaseTwoPrompt({
+    deps: o.deps,
+    record: o.record,
+    priorTurnLength: o.priorTurnLength,
+    surface: "thought",
+    formatHint: resolveHints(o.deps).phase2Thought,
+    ...(o.recap !== undefined ? { recap: o.recap } : {}),
+    recapBoundaryIndex: o.recapBoundaryIndex,
+  });
+  const own = new AbortController();
+  const onTurnAbort = (): void => own.abort();
+  if (o.signal.aborted) own.abort();
+  else o.signal.addEventListener("abort", onTurnAbort, { once: true });
+
+  let settled = false;
+  // The indicator, held until adoption.
+  let target: PhaseTwoSink | undefined;
+  let began = false;
+  let ended = false;
+  let forwarded = false;
+  const held: PhaseTwoSink = {
+    beginHertaStream: (surface) => {
+      began = true;
+      if (target !== undefined) {
+        target.beginHertaStream(surface);
+        forwarded = true;
+      }
+    },
+    streamHertaToken: () => {
+      // A thought's text is never streamed (consumePhaseTwoStream).
+    },
+    endHertaStream: () => {
+      ended = true;
+      if (forwarded) target?.endHertaStream();
+    },
+  };
+
+  const result = consumePhaseTwoStream({
+    provider: o.deps.provider,
+    model: o.deps.model,
+    prompt,
+    surface: "thought",
+    signal: own.signal,
+    sink: held,
+  }).finally(() => {
+    settled = true;
+    o.signal.removeEventListener("abort", onTurnAbort);
+  });
+  // Never an unhandled rejection: a discarded or never-adopted speculation
+  // fails (its own abort) with nobody awaiting it.
+  result.catch(() => undefined);
+
+  let taken = false;
+  const self: ThoughtSpeculation = {
+    prompt,
+    take: () => {
+      if (taken) return undefined;
+      taken = true;
+      return self;
+    },
+    adopt: (sink) => {
+      target = sink;
+      // Already thinking out loud, not yet done: show it from now on. A
+      // thought that finished before adoption has no moment left to show.
+      if (began && !ended && sink !== undefined) {
+        sink.beginHertaStream("thought");
+        forwarded = true;
+      }
+      return result;
+    },
+    // A request that already finished has nothing to cancel.
+    discard: () => {
+      if (!settled) own.abort();
+    },
+  };
+  return self;
+}
+
 /**
  * Phase 2 — Slice 13 two-phase generation. Builds a fresh prompt with
  * the attached meta-think section spliced in at the right position
@@ -563,23 +711,19 @@ export async function runPhaseTwo(opts: {
   } else {
     formatHint = hints.phase2Speech;
   }
-  const docPrompt: ActorPrompt = {
-    staticPrefix: opts.deps.staticPrefix,
+  const prompt = buildPhaseTwoPrompt({
+    deps: opts.deps,
     record: opts.record,
     priorTurnLength: opts.priorTurnLength,
-    attachedMetaThink: opts.deps.attachedMetaThink,
-    metaThinkSurface: opts.surface,
+    surface: opts.surface,
     formatHint,
-    openTag: opts.surface === "thought" ? "（我 想）" : "（我 说）",
-    ...(bodySeed !== undefined ? { openTagSuffix: bodySeed } : {}),
+    ...(bodySeed !== undefined ? { bodySeed } : {}),
     ...(opts.vetoedSpeech !== undefined
-      ? { replayBlock: `（我 说）\n${opts.vetoedSpeech}\n（/我 说）` }
+      ? { vetoedSpeech: opts.vetoedSpeech }
       : {}),
     ...(opts.recap !== undefined ? { recap: opts.recap } : {}),
     recapBoundaryIndex: opts.recapBoundaryIndex ?? 0,
-    lang: opts.deps.lang ?? "zh",
-  };
-  const prompt = serializeActorPrompt(docPrompt);
+  });
   opts.deps.onPrompt?.("phase2", prompt);
 
   // Defer the sink for supervised speech that buffers (no live feed); a live
@@ -591,18 +735,38 @@ export async function runPhaseTwo(opts: {
       ? undefined
       : opts.deps.sink;
 
-  let result = await consumePhaseTwoStream({
-    provider: opts.deps.provider,
-    model: opts.deps.model,
-    prompt,
-    surface: opts.surface,
-    signal: opts.signal,
-    ...(effectiveSink !== undefined ? { sink: effectiveSink } : {}),
-    ...(liveFeeding ? { onLiveToken: opts.onLiveToken } : {}),
-    ...(opts.temperature !== undefined
-      ? { temperature: opts.temperature }
-      : {}),
-  });
+  // A thought that was started early, on a guess (ADR 0066 amendment
+  // 2026-09-21): it is THIS call's answer if and only if it was asked the
+  // byte-identical prompt — then nothing about the turn differs but when the
+  // request left. Any difference (the router chose another mood, the record
+  // moved) and it is dropped; the ordinary call below runs as if it had
+  // never existed. One-shot, first-pass thoughts only: retries and rethinks
+  // carry their own hints and temperatures and are never speculated.
+  const speculation =
+    opts.surface === "thought" && !isRetry && opts.temperature === undefined
+      ? opts.deps.thoughtSpeculation?.take()
+      : undefined;
+  const adopted =
+    speculation !== undefined && speculation.prompt === prompt
+      ? speculation
+      : undefined;
+  if (speculation !== undefined && adopted === undefined) speculation.discard();
+
+  let result =
+    adopted !== undefined
+      ? await adopted.adopt(effectiveSink)
+      : await consumePhaseTwoStream({
+          provider: opts.deps.provider,
+          model: opts.deps.model,
+          prompt,
+          surface: opts.surface,
+          signal: opts.signal,
+          ...(effectiveSink !== undefined ? { sink: effectiveSink } : {}),
+          ...(liveFeeding ? { onLiveToken: opts.onLiveToken } : {}),
+          ...(opts.temperature !== undefined
+            ? { temperature: opts.temperature }
+            : {}),
+        });
   // Dump shows the prompt (with the seed already in the open tag if
   // any) + the model's RAW response. The seed is NOT in result.text
   // yet at this point — the consumer only sees the model's text-
@@ -656,7 +820,7 @@ async function consumePhaseTwoStream(opts: {
   prompt: string;
   surface: Surface;
   signal: AbortSignal;
-  sink?: ActorStreamingSink;
+  sink?: PhaseTwoSink;
   /**
    * Sampling temperature passed verbatim to the provider's
    * `streamCompletion` request. `undefined` (the default) means the

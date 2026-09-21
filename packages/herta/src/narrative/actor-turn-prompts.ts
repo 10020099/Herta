@@ -9,7 +9,9 @@ import type { ActorTurnDeps } from "./actor-turn-deps.js";
 import { stripStopSequence } from "./streaming-sink.js";
 import { STOP_THOUGHT_CLOSE } from "./thought-hint.js";
 
-export function resolveHints(deps: ActorTurnDeps): ActorHints {
+export function resolveHints(
+  deps: Pick<ActorTurnDeps, "hints" | "lang">,
+): ActorHints {
   return deps.hints ?? defaultActorHintsFor(deps.lang ?? "zh");
 }
 

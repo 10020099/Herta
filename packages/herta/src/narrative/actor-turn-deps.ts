@@ -22,6 +22,33 @@ import type { PromptLang } from "./prompt-lang.js";
 import type { PreparedRecap, RecapRuntime } from "./session-recap-runtime.js";
 import type { ActorStreamingSink } from "./streaming-sink.js";
 
+/** The three sink calls a phase-2 stream makes — all a speculation's held
+ *  indicator has to stand in for. */
+export type PhaseTwoSink = Pick<
+  ActorStreamingSink,
+  "beginHertaStream" | "streamHertaToken" | "endHertaStream"
+>;
+
+/**
+ * A first thought started EARLY, on a guess (ADR 0066 amendment 2026-09-21).
+ * The contract lives here (types only — this module imports nothing of the
+ * turn); `startThoughtSpeculation` in actor-turn-stream.ts is the one
+ * implementation, and its doc comment is the full story.
+ */
+export interface ThoughtSpeculation {
+  /** The exact prompt the request was made with. */
+  readonly prompt: string;
+  /** One-shot: the first caller gets the speculation, later ones nothing. */
+  take(): ThoughtSpeculation | undefined;
+  /** Make it the turn's thought: forward its indicator to `sink` from here
+   *  on and resolve with its result (or reject as the ordinary call would). */
+  adopt(
+    sink: PhaseTwoSink | undefined,
+  ): Promise<{ surface: Surface; text: string }>;
+  /** Cancel the request. Idempotent; safe after `adopt` settled. */
+  discard(): void;
+}
+
 export interface ActorTurnDeps {
   readonly provider: CompletionProviderAdapter;
   readonly model: string;
@@ -208,6 +235,12 @@ export interface ActorTurnDeps {
    *  the notify; undefined (e.g. a direct test call) → the turn computes it
    *  inline below (firing the notify itself). */
   readonly precomputedRecap?: PreparedRecap;
+  /** A first thought the driver started while the router was still
+   *  classifying, under the mood it GUESSED (ADR 0066 amendment 2026-09-21).
+   *  `runPhaseTwo` adopts it only if the prompt it builds for real is
+   *  byte-identical; otherwise it is cancelled and ignored. Absent → the
+   *  turn runs exactly as it always has. */
+  readonly thoughtSpeculation?: ThoughtSpeculation;
 }
 
 /**
