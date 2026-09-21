@@ -14,12 +14,12 @@ import { Toggle } from "./Toggle.js";
 export function DreamSettings(): JSX.Element {
   const t = useT();
   const { bridge } = useHertaBridge();
-  // The last-known value on the first frame (settings-snapshot.ts); ON —
-  // Dream's default — only when nothing has been read yet.
+  // The last-known value on the first frame (settings-snapshot.ts); OFF —
+  // Dream is opt-in (2026-09-21) — only when nothing has been read yet.
   const [enabled, setEnabled] = useRememberedSetting(
     bridge,
     "dream.enabled",
-    true,
+    false,
   );
   // The value when the section opened — what the running app is using. The
   // restart note shows only when the toggle now DIFFERS from it, so toggling

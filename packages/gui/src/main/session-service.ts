@@ -50,6 +50,7 @@ import {
   updateGlobalSettings,
 } from "./app-global-settings.js";
 import {
+  dreamEnabled,
   isBackendContract,
   isBackendThinking,
   normalizeModelChoice,
@@ -242,7 +243,7 @@ export async function buildConfig(
     ...(speechSynthesizer !== undefined
       ? { speech: { synthesizer: speechSynthesizer } }
       : {}),
-    dream: { enabled: settings.dream?.enabled ?? true },
+    dream: { enabled: dreamEnabled(settings) },
     providers: {
       deepseekApiKey,
       // Model names MUST match the working CLI (packages/cli/src/app/main.ts).

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  dreamEnabled,
   isBackendContract,
   isBackendThinking,
   isModelChoice,
@@ -23,6 +24,21 @@ describe("app-settings", () => {
 
   it("returns {} for a missing file", async () => {
     expect(await readAppSettings(mk())).toEqual({});
+  });
+
+  it("Dream is opt-in: no recorded choice reads as OFF, a recorded one is kept (2026-09-21)", async () => {
+    // The ONE resolver the bootstrap and the Settings pane both read — the
+    // pane can never show a default the app is not running with.
+    expect(dreamEnabled({})).toBe(false);
+    expect(dreamEnabled({ backend: { thinking: "low" } })).toBe(false);
+    expect(dreamEnabled({ dream: {} })).toBe(false);
+    expect(dreamEnabled({ dream: { enabled: true } })).toBe(true);
+    expect(dreamEnabled({ dream: { enabled: false } })).toBe(false);
+    // …and through the file: a missing one, then a written choice.
+    const ws = mk();
+    expect(dreamEnabled(await readAppSettings(ws))).toBe(false);
+    await writeAppSettings(ws, { dream: { enabled: true } });
+    expect(dreamEnabled(await readAppSettings(ws))).toBe(true);
   });
 
   it("write then read round-trips", async () => {

@@ -100,6 +100,18 @@ export interface AppSettings {
   };
 }
 
+/**
+ * Whether Dream's automatic pass is on. OPT-IN (owner 2026-09-21): it runs
+ * while the user is away, on their API key, so a file that never recorded a
+ * choice means OFF — the default used to be on, and someone who had never
+ * opened Settings → 入梦 found tokens spent on days they had not chatted.
+ * One resolver for the two readers (the bootstrap and the Settings pane), so
+ * the pane can never show a default the app is not running with.
+ */
+export function dreamEnabled(settings: AppSettings): boolean {
+  return settings.dream?.enabled ?? false;
+}
+
 function settingsPath(workspaceRoot: string): string {
   return join(workspaceRoot, ".herta", "settings.json");
 }

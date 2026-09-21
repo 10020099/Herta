@@ -653,7 +653,8 @@ export function createMockHertaBridge(
     },
     getDreamConfig: async () => {
       calls.getDreamConfig += 1;
-      return opts.getDreamConfigResult ?? { enabled: true };
+      // The shipped default: Dream is opt-in (2026-09-21).
+      return opts.getDreamConfigResult ?? { enabled: false };
     },
     setDreamConfig: async (cfg) => {
       calls.setDreamConfig.push(cfg);

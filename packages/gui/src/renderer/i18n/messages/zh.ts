@@ -141,7 +141,9 @@ export const zh = {
   "voice.volume": "音量",
   "voice.volumeDesc": "调整黑塔语音的响度。",
   "dream.enable": "开启入梦",
-  "dream.enableDesc": "你离开时让黑塔入梦。",
+  // Opt-in since 2026-09-21: the pass runs while the user is away, on their
+  // key — the row says so, since that is the whole reason it is a choice.
+  "dream.enableDesc": "你离开时让黑塔入梦。入梦会消耗 DeepSeek API 额度。",
   "dream.intro":
     "入梦是黑塔的休息时间。你离开时，她会回顾过往的会话，把那些值得记住的片刻写下来——相处越久，就越了解你。",
   // Punctuation rule (owner 2026-08-27): a single-clause LABEL or status

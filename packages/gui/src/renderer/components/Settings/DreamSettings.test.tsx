@@ -6,6 +6,24 @@ import { createMockHertaBridge } from "../../ipc/mock-bridge.js";
 import { DreamSettings } from "./DreamSettings.js";
 
 describe("DreamSettings", () => {
+  it("is OFF on the first frame when nothing has been read, and says what turning it on costs (opt-in, 2026-09-21)", () => {
+    // A read that never answers: what paints is the pane's own fallback.
+    const mock = createMockHertaBridge();
+    Object.assign(mock.bridge, {
+      getDreamConfig: () => new Promise(() => {}),
+    });
+    const { getByLabelText, getByText } = renderWithLocale(
+      <HertaBridgeProvider bridge={mock.bridge}>
+        <DreamSettings />
+      </HertaBridgeProvider>,
+    );
+    expect(getByLabelText("Enable Dream").getAttribute("aria-checked")).toBe(
+      "false",
+    );
+    // The row names the one trade-off that makes this a choice.
+    expect(getByText(/uses your DeepSeek API quota/)).toBeTruthy();
+  });
+
   it("reflects the persisted value, writes on toggle, shows the restart note", async () => {
     const mock = createMockHertaBridge({
       getDreamConfigResult: { enabled: false },

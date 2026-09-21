@@ -197,24 +197,38 @@ describe("buildConfig", () => {
     expect(cfg.providers.backendModel).toBe("deepseek-flash");
   });
 
-  it("defaults Dream enabled to true with no settings file", async () => {
+  it("Dream is OPT-IN: off with no settings file, and with a file that never recorded a choice (2026-09-21)", async () => {
+    // The pass runs while the user is away, on their key — a default of ON
+    // spent tokens for people who had never opened the Dream pane.
     const cwd = mkdtempSync(join(tmpdir(), "herta-bc-dream-"));
     const home = mkdtempSync(join(tmpdir(), "herta-bc-dreamh-"));
-    const cfg = await buildConfig(cwd, home, "sk-test-123");
-    expect(cfg.dream?.enabled).toBe(true);
-  });
-
-  it("honors a persisted Dream enabled:false from settings.json", async () => {
-    const cwd = mkdtempSync(join(tmpdir(), "herta-bc-dream2-"));
-    const home = mkdtempSync(join(tmpdir(), "herta-bc-dream2h-"));
+    expect((await buildConfig(cwd, home, "sk-test-123")).dream?.enabled).toBe(
+      false,
+    );
     mkdirSync(join(cwd, ".herta"), { recursive: true });
     writeFileSync(
       join(cwd, ".herta", "settings.json"),
-      JSON.stringify({ dream: { enabled: false } }),
+      JSON.stringify({ backend: { thinking: "low" } }),
       "utf-8",
     );
-    const cfg = await buildConfig(cwd, home, "sk-test-123");
-    expect(cfg.dream?.enabled).toBe(false);
+    expect((await buildConfig(cwd, home, "sk-test-123")).dream?.enabled).toBe(
+      false,
+    );
+  });
+
+  it("honors a persisted Dream choice from settings.json — on, and off", async () => {
+    for (const enabled of [true, false]) {
+      const cwd = mkdtempSync(join(tmpdir(), "herta-bc-dream2-"));
+      const home = mkdtempSync(join(tmpdir(), "herta-bc-dream2h-"));
+      mkdirSync(join(cwd, ".herta"), { recursive: true });
+      writeFileSync(
+        join(cwd, ".herta", "settings.json"),
+        JSON.stringify({ dream: { enabled } }),
+        "utf-8",
+      );
+      const cfg = await buildConfig(cwd, home, "sk-test-123");
+      expect(cfg.dream?.enabled).toBe(enabled);
+    }
   });
 
   it("honors a persisted backend thinking tier from settings.json", async () => {

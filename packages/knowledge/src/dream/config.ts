@@ -1,7 +1,12 @@
 import type { DreamConfig } from "./types.js";
 
 export const DEFAULT_DREAM_CONFIG: DreamConfig = {
-  enabled: true,
+  // OPT-IN (owner 2026-09-21). The automatic pass runs while the user is
+  // AWAY, on their API key — left on by default, someone who never opened
+  // Settings → 入梦 found tokens spent on days they had not chatted. `enabled`
+  // gates only that automatic pass (the idle trigger and its poll): dreams
+  // already written stay in Herta's prefix, and a manual pass is unaffected.
+  enabled: false,
   idleMs: 30 * 60_000, // 30 min "user stepped away" before a pass is considered
   cooldownMs: 7 * 24 * 60 * 60_000, // ≥ 7 days between completed passes
   minRetryMs: 60 * 60_000, // 1 h backoff between attempts (no-op pass guard)

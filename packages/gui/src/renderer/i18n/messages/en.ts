@@ -161,7 +161,8 @@ export const en = {
   "voice.volume": "Volume",
   "voice.volumeDesc": "Adjust the loudness of Herta's voice.",
   "dream.enable": "Enable Dream",
-  "dream.enableDesc": "Let Herta dream while you're away.",
+  "dream.enableDesc":
+    "Let Herta dream while you are away. Dreaming uses your DeepSeek API quota.",
   "dream.intro":
     "Dream is Herta's downtime. While you're away, she looks back over your finished sessions and writes down the memorable moments — coming to know you a little better the longer you work together.",
   // Punctuation rule (owner 2026-08-27): a single-clause LABEL or status

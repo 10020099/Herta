@@ -32,6 +32,7 @@ import {
   updateGlobalSettings,
 } from "./app-global-settings.js";
 import {
+  dreamEnabled,
   isBackendContract,
   isBackendThinking,
   isModelChoice,
@@ -123,7 +124,7 @@ export function registerSettingsHandlers(deps: SettingsIpcDeps): void {
   // running app-server is untouched (it reads config.dream at next bootstrap).
   handle(CMD.getDreamConfig, async () => {
     const s = await readAppSettings(workspaceRoot());
-    return { enabled: s.dream?.enabled ?? true };
+    return { enabled: dreamEnabled(s) };
   });
   handle(CMD.setDreamConfig, async (_e, cfg: { enabled: boolean }) => {
     const ws = workspaceRoot();
