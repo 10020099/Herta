@@ -2131,7 +2131,13 @@ button.agent-preview {
   color: var(--muted-slate);
 }
 .card-menu-trust-toggle {
+  /* Bleeds through the section's 12px side padding so its hover band runs
+     edge to edge like the rows above it. The width has to bleed WITH the
+     margins: `.card-menu-item` is `width: 100%`, and a negative left margin
+     only shifts a box of fixed width — the band started at the menu's left
+     edge and stopped 24px short of its right one (owner 2026-09-21). */
   margin: 2px -12px 0;
+  width: calc(100% + 24px);
 }
 .card-menu-rules-list {
   list-style: none;
