@@ -52,6 +52,14 @@ export interface CompactionConfig {
 // compact threshold, with room for the static prefix + recap on top, or
 // compaction can't bring the prompt back under budget and would re-roll
 // every turn.
+//
+// These are ESTIMATED tokens, and since 2026-09-21 the estimate is
+// calibrated for Chinese (a Han ideograph 0.65 token, measured against the
+// API — ADR 0068 §9). Until then a zh session's estimate ran ~1.35× the
+// real count, so "200K" engaged near 130–150K real tokens and the 60K tail
+// kept ~40K. The numbers below did not change; what they MEAN did: in a
+// Chinese session they are now within a few percent of real tokens, as
+// they always were in an English one.
 export const DEFAULT_COMPACTION_CONFIG: CompactionConfig = {
   enabled: true,
   contextWindowTokens: 1_000_000,

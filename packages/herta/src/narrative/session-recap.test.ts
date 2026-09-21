@@ -21,8 +21,9 @@ describe("estimatePromptTokens", () => {
     // ，(U+FF0C) ！(U+FF01) （）(U+FF08/09) previously fell into the ÷4 run.
     expect(estimatePromptTokens("，！（）")).toBe(4);
     expect(estimatePromptTokens("（我 说）")).toBe(5); // 4 full-width + " 说"→说 CJK + space
-    // Mixed prose: 6 CJK + full-width comma + full-width period.
-    expect(estimatePromptTokens("你好，世界。")).toBe(6);
+    // Mixed prose: 4 Han at the measured 0.65 (ceil 2.6 = 3, ADR 0068 §9)
+    // + full-width comma + full-width period at 1 each.
+    expect(estimatePromptTokens("你好，世界。")).toBe(5);
   });
 });
 
@@ -37,8 +38,9 @@ describe("tailWithinTokenBudget", () => {
   });
 
   it("keeps the newest tail and reports the dropped head when over budget", () => {
+    // 10 Han = 7 estimated tokens a block (0.65 each): one fits 10, two do not.
     const blocks = [b("旧".repeat(10)), b("中".repeat(10)), b("新".repeat(10))];
-    const r = tailWithinTokenBudget(blocks, 15);
+    const r = tailWithinTokenBudget(blocks, 10);
     expect(r.droppedBlocks).toBe(2);
     expect(r.blocks).toHaveLength(1);
     expect((r.blocks[0] as { text: string }).text).toContain("新");

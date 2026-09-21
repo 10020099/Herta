@@ -128,15 +128,21 @@ describe("checkFewShot (audit BL3, rebuilt ADR 0051)", () => {
   });
 
   it("drops an oversized body — the prefix is paid for on every completion", () => {
-    const r = checkFewShot("f.txt", `### 废案_01：x\n\n${"字".repeat(10_500)}`);
+    // 16k Han characters ≈ 10.4k tokens at the measured 0.65 per ideograph
+    // (2026-09-21) — over the 10k cap; the same body at 15k fits, which is
+    // the cap meaning in Chinese what it already meant in English.
+    const r = checkFewShot("f.txt", `### 废案_01：x\n\n${"字".repeat(16_000)}`);
     expect(r.ok).toBe(false);
     expect(r.reason).toContain("too long");
+    expect(
+      checkFewShot("f.txt", `### 废案_01：x\n\n${"字".repeat(15_000)}`).ok,
+    ).toBe(true);
   });
 
   it("the cap is token-based, so the long-in-chars EN anchor still fits", () => {
     // The EN 废案_00 is 27k CHARS but only ~7k estimated tokens (ASCII counts
     // ÷4). A char cap silently discriminated by script; ~28k ASCII chars must
-    // pass where 10.5k CJK chars (above) fail.
+    // pass where 16k CJK chars (above) fail.
     const ascii = "the same content runs three times the chars in english. ";
     const r = checkFewShot("f.txt", `### 废案_01：x\n\n${ascii.repeat(500)}`);
     expect(r.ok).toBe(true);

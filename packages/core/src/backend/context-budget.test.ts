@@ -18,14 +18,15 @@ describe("estimate memoization (2026-09-03)", () => {
       toolCalls: [],
       ts,
     };
-    // 100 CJK + the two "\n" joiners (÷4 → 1) + the 4-token overhead.
+    // 100 Han at the measured 0.65 (= 65) + the two "\n" joiners (÷4 → 1)
+    // + the 4-token overhead.
     const first = estimateMessagesTokens([m]);
-    expect(first).toBe(105);
+    expect(first).toBe(70);
     (m as { text: string }).text = "汉".repeat(1000);
     expect(estimateMessagesTokens([m])).toBe(first);
     // A new object with the same content is estimated afresh.
     expect(estimateMessagesTokens([{ ...m, text: "汉".repeat(1000) }])).toBe(
-      1005,
+      655,
     );
   });
 
@@ -40,7 +41,8 @@ describe("estimate memoization (2026-09-03)", () => {
     expect(base).toBe(
       100 + estimateFrameBaseTokens({ ...frame, backendSystem: "" }, ""),
     );
-    expect(estimateFrameBaseTokens(frame, "汉".repeat(10))).toBe(base + 10);
+    // 10 Han = ceil(6.5) = 7 estimated tokens.
+    expect(estimateFrameBaseTokens(frame, "汉".repeat(10))).toBe(base + 7);
     // Same object, same answer — the contract text is not re-walked.
     expect(estimateFrameBaseTokens(frame, "")).toBe(base);
   });
@@ -189,10 +191,12 @@ describe("fitMessagesToBudget", () => {
     expect(messages).toEqual(snapshot);
   });
 
-  it("estimateMessagesTokens charges CJK ~1 token/char (non-ASCII floor)", () => {
+  it("estimateMessagesTokens charges Han far above the ASCII ÷4 — 0.65 a character, as measured", () => {
     const ascii = estimateMessagesTokens([assistant("a".repeat(400))]);
     const cjk = estimateMessagesTokens([assistant("汉".repeat(400))]);
-    expect(cjk).toBeGreaterThan(ascii * 3);
+    // 260 against 100 (+ the same small overhead on both).
+    expect(cjk).toBeGreaterThan(ascii * 2.4);
+    expect(cjk).toBeLessThan(ascii * 2.7);
   });
 });
 

@@ -690,13 +690,19 @@ describe("recap estimatePromptTokens — non-ASCII floor (L4)", () => {
       }
     }
 
-    // Contrast pin: BMP Han and its NON-BMP sibling (U+20000, also a Han
-    // ideograph) now estimate identically — the boundary the old heuristic
-    // undercounted across.
+    // Contrast pin, revised 2026-09-21 (ADR 0068 §9): BMP Han carries the
+    // MEASURED weight — 0.65 token per ideograph, against the API's own
+    // count — while its NON-BMP sibling (U+20000, also a Han ideograph, never
+    // measured) stays at the conservative 1. Neither falls into the ÷4 run,
+    // which was the undercount this block exists to keep out.
     const bmpHan = String.fromCodePoint(0x4e00).repeat(40);
     const extHan = String.fromCodePoint(0x20000).repeat(40);
-    expect(estimatePromptTokens(bmpHan), "BMP Han counts 1/char").toBe(40);
+    expect(estimatePromptTokens(bmpHan), "BMP Han counts 0.65/char").toBe(26);
     expect(estimatePromptTokens(extHan), "non-BMP Han counts 1/char").toBe(40);
+    expect(
+      estimatePromptTokens(bmpHan),
+      "Han never falls into the ÷4 ASCII run",
+    ).toBeGreaterThan(10);
 
     // ASCII runs still compress ÷4 — the cheap side of the heuristic.
     expect(estimatePromptTokens("a".repeat(40)), "ASCII ÷4").toBe(10);
