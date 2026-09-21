@@ -134,6 +134,49 @@ d("PersistentShell (real bash)", () => {
     }
   });
 
+  it("the pump looks only at the newest window, and the totals stay EXACT — several cuts, a marker behind megabytes, then an ordinary command (perf audit 2026-09-20)", async () => {
+    // The pump used to search the whole buffer on every chunk (a flatten — a
+    // copy — of everything received so far). It now tests the newest window
+    // and trims in amortized steps; nothing about the RESULT may move.
+    // 40 000 lines × 32 bytes (31 characters + the newline) = 1 280 000 bytes
+    // through a 50 000-byte cap: many amortized cuts, the marker arriving
+    // long after the first chunk.
+    const small = new PersistentShell({
+      bashPath: BASH as string,
+      workspaceRoot: ws,
+      maxOutputBytes: 50_000,
+    });
+    try {
+      const r = await small.run(
+        "for i in $(seq -w 1 40000); do echo line-$i-xxxxxxxxxxxxxxxxxxxx; done",
+        { timeoutMs: 60_000 },
+      );
+      expect(r.exitCode).toBe(0);
+      expect(r.capped).toBe(true);
+      // Exact accounting: every byte is either kept or counted as dropped.
+      expect(r.outputBytes).toBe(40_000 * 32);
+      expect(r.output.startsWith("[earlier output dropped")).toBe(true);
+      expect(
+        r.output.trimEnd().endsWith("line-40000-xxxxxxxxxxxxxxxxxxxx"),
+      ).toBe(true);
+      const body = r.output.slice(r.output.indexOf("\n") + 1);
+      expect(Buffer.byteLength(body, "utf8")).toBeLessThanOrEqual(50_000);
+      // The lines that survived are the LAST ones, contiguous and in order.
+      const kept = body.split("\n").filter((l) => /^line-\d{5}-x+$/.test(l));
+      expect(kept.length).toBeGreaterThan(1_500);
+      const first = Number(kept[0]?.slice(5, 10));
+      kept.forEach((l, i) => {
+        expect(Number(l.slice(5, 10))).toBe(first + i);
+      });
+      // The shell is still in step: the next command's output is its own.
+      const next = await small.run("echo after", { timeoutMs: 10_000 });
+      expect(next.output).toBe("after\n");
+      expect(next.capped).toBe(false);
+    } finally {
+      await small.kill();
+    }
+  }, 90_000);
+
   it("registers as an INTERNAL background process and kill() is idempotent", async () => {
     expect(shell.internal).toBe(true);
     expect(shell.id).toBe("shell");

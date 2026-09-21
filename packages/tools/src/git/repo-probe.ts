@@ -449,28 +449,33 @@ async function probe(
   // is worth less than a fast brief.
   const opts = { timeoutMs: 5_000 } as const;
 
-  const head = await spawnGit(
-    workspaceRoot,
-    hardenedGitArgs(["rev-parse", "HEAD"]),
-    sig,
-    // An unborn branch exits 128 with "unknown revision"; that is an ANSWER
-    // (no commits yet), not a failure.
-    { ...opts, allowExitCodes: [128] },
-  );
-  if (!head.ok) return null;
-
-  const status = await spawnGit(
-    workspaceRoot,
-    hardenedGitArgs([
-      "status",
-      "--porcelain=v1",
-      "-z",
-      "--untracked-files=all",
-    ]),
-    sig,
-    opts,
-  );
-  if (!status.ok) return null;
+  // Together, not one after the other (perf audit 2026-09-20): neither read
+  // needs the other's answer, this runs at the start AND the end of every
+  // dispatch, and a process start is the expensive part on Windows. It also
+  // puts the two observations closer to the same instant. Outside a
+  // repository both fail and the answer is `null`, exactly as before.
+  const [head, status] = await Promise.all([
+    spawnGit(
+      workspaceRoot,
+      hardenedGitArgs(["rev-parse", "HEAD"]),
+      sig,
+      // An unborn branch exits 128 with "unknown revision"; that is an ANSWER
+      // (no commits yet), not a failure.
+      { ...opts, allowExitCodes: [128] },
+    ),
+    spawnGit(
+      workspaceRoot,
+      hardenedGitArgs([
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+      ]),
+      sig,
+      opts,
+    ),
+  ]);
+  if (!head.ok || !status.ok) return null;
 
   const parsed = parseStatusPorcelainZ(status.stdout);
   const dirty: string[] = [];

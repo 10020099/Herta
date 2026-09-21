@@ -283,6 +283,14 @@ async function extractPdfText(
     let nextLine = 1;
     let body = 0;
     for (let p = 1; p <= pages; p += 1) {
+      // Back to the event loop between pages. pdfjs runs here on its
+      // in-process "fake worker", whose message port dispatches through
+      // `Promise.then` alone (LoopbackPort, pdfjs 6.2) — so every `await`
+      // below yields a MICROtask and the whole document parsed as one
+      // uninterrupted turn of the loop. In the desktop app that loop is the
+      // main thread: a few hundred pages froze the window, its drag region
+      // and every IPC for the length of the parse (perf audit 2026-09-20).
+      if (p > 1) await new Promise<void>((next) => setImmediate(next));
       const page = await doc.getPage(p);
       try {
         const content = await page.getTextContent();

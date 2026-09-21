@@ -3,6 +3,7 @@ import {
   type ReactNode,
   type RefObject,
   useContext,
+  useMemo,
   useRef,
 } from "react";
 
@@ -20,11 +21,13 @@ export function WorkspaceRefsProvider(props: {
   const composerRef = useRef<HTMLFormElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const sendButtonRef = useRef<HTMLButtonElement>(null);
-  return (
-    <Ctx.Provider value={{ composerRef, overlayRef, sendButtonRef }}>
-      {props.children}
-    </Ctx.Provider>
-  );
+  // ONE value object for the provider's life. A fresh `{…}` per render made
+  // every consumer — Conversation and Composer among them — re-render whenever
+  // this provider's parent did (a sidebar-search keystroke, the sidebar
+  // collapsing, Settings opening), straight past their `memo` (perf audit
+  // 2026-09-20). The refs themselves never change identity.
+  const value = useMemo(() => ({ composerRef, overlayRef, sendButtonRef }), []);
+  return <Ctx.Provider value={value}>{props.children}</Ctx.Provider>;
 }
 
 export function useWorkspaceRefs(): WorkspaceRefsValue {

@@ -1,3 +1,4 @@
+import type { Dirent } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { countDiffLinesFor, type ToolContext } from "@herta/core";
@@ -155,18 +156,29 @@ export async function listDirectory(
   display: string,
 ): Promise<string> {
   const rows: string[] = [`d\t${display}`];
+  // Characters gathered so far. Past the clip budget nothing more can be
+  // SHOWN, so nothing more is walked: a flat directory of ten thousand files
+  // used to be stat'ed one by one, serially, to produce rows `clip` then
+  // threw away (perf audit 2026-09-20).
+  let chars = rows[0]?.length ?? 0;
   const visit = async (
     dir: string,
     disp: string,
     depth: number,
   ): Promise<void> => {
-    let names: string[];
+    let entries: Dirent[];
     try {
-      names = (await readdir(dir)).sort();
+      // The entry already knows its type — one readdir instead of a stat per
+      // name. Same order as before: by name, code-unit ascending.
+      entries = (await readdir(dir, { withFileTypes: true })).sort((a, b) =>
+        a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+      );
     } catch {
       return;
     }
-    for (const name of names) {
+    for (const entry of entries) {
+      if (chars > MAX_OUTPUT_CHARS) return;
+      const name = entry.name;
       if (
         name.startsWith(".") ||
         name === "node_modules" ||
@@ -174,14 +186,20 @@ export async function listDirectory(
       )
         continue;
       const p = join(dir, name);
-      let isDir = false;
-      try {
-        isDir = (await stat(p)).isDirectory();
-      } catch {
-        continue;
+      let isDir = entry.isDirectory();
+      if (entry.isSymbolicLink()) {
+        // A link is what it POINTS at, as `stat` always answered; a broken
+        // one is skipped, as it always was.
+        try {
+          isDir = (await stat(p)).isDirectory();
+        } catch {
+          continue;
+        }
       }
       const d = `${disp.replace(/\/$/, "")}/${name}`;
-      rows.push(`${isDir ? "d" : "f"}\t${d}`);
+      const row = `${isDir ? "d" : "f"}\t${d}`;
+      rows.push(row);
+      chars += row.length + 1;
       if (isDir && depth < 2) await visit(p, d, depth + 1);
     }
   };

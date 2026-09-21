@@ -57,6 +57,11 @@ export const SHELL_BG_ID = "shell";
 
 const DEFAULT_MAX_OUTPUT = 1_048_576;
 const KILL_GRACE_MS = 3_000;
+/** Every protocol marker's length: `__HERTA_SH_` / `__HERTA_WS_` (11) +
+ *  12 hex digits + `__` (2). `onData` keeps one less than this as its tail. */
+const MARKER_LEN = 25;
+const markerFor = (kind: "SH" | "WS"): string =>
+  `__HERTA_${kind}_${randomBytes(6).toString("hex")}__`;
 /** How long `taskkill /T` may take to fell the shell's process tree. */
 const TASKKILL_TIMEOUT_MS = 15_000;
 
@@ -83,6 +88,11 @@ export class PersistentShell implements BackgroundProcess {
   private wsMarker: string | null = null;
   private child: ChildProcess | null = null;
   private buf = "";
+  /** The last `MARKER_LEN − 1` characters received — what a marker split
+   *  across chunks would have left behind. */
+  private tail = "";
+  /** The waiting command's marker is in `buf`; its line may not be yet. */
+  private markerSeen = false;
   private waiter: Waiter | null = null;
   private currentCwd: string;
   private spawnCount = 0;
@@ -168,8 +178,14 @@ export class PersistentShell implements BackgroundProcess {
     child.stdout?.setEncoding("utf8");
     child.stderr?.setEncoding("utf8");
     const onData = (chunk: string): void => {
-      this.buf += chunk.replace(/\r\n/g, "\n");
-      this.pump();
+      const text = chunk.replace(/\r\n/g, "\n");
+      // The newest window — this chunk plus the few characters before it a
+      // marker could straddle — is all that can hold a marker that was not
+      // there a moment ago.
+      const window = this.tail + text;
+      this.tail = window.slice(-(MARKER_LEN - 1));
+      this.buf += text;
+      this.onOutput(window);
     };
     child.stdout?.on("data", onData);
     child.stderr?.on("data", onData);
@@ -197,10 +213,7 @@ export class PersistentShell implements BackgroundProcess {
     // Nothing needed it that early: the prompt's line is built from a shell
     // that never spawns (the mapping), and every other reader asks after a
     // command has run.
-    const wsMarker =
-      this.shellWs === null
-        ? `__HERTA_WS_${randomBytes(6).toString("hex")}__`
-        : null;
+    const wsMarker = this.shellWs === null ? markerFor("WS") : null;
     this.wsMarker = wsMarker;
     child.stdin?.write(
       `exec 2>&1\nset +o history\n__herta_ws="$(pwd)"\n${
@@ -232,6 +245,7 @@ export class PersistentShell implements BackgroundProcess {
     const w = this.waiter;
     if (w === null) return;
     this.waiter = null;
+    this.markerSeen = false;
     if (w.timer !== null) clearTimeout(w.timer);
     if (w.onAbort !== null && w.signal !== undefined)
       w.signal.removeEventListener("abort", w.onAbort);
@@ -249,28 +263,73 @@ export class PersistentShell implements BackgroundProcess {
     });
   }
 
+  /**
+   * One chunk arrived. The expensive look — `pump`, which searches and cuts
+   * the WHOLE buffer — runs only when it can find something: while the
+   * shell still owes its workspace line (the first chunks after a spawn), or
+   * once the waiting command's marker is in. Otherwise the chunk is only
+   * appended and the buffer bounded.
+   *
+   * It used to `indexOf` the whole buffer on every chunk. `buf += chunk`
+   * builds a rope; a search flattens it — a copy of everything received so
+   * far, per chunk. A test log of a few megabytes arriving line by line
+   * (`PYTHONUNBUFFERED=1` is set above) cost gigabytes of copying, on the
+   * desktop app's main thread (perf audit 2026-09-20).
+   */
+  private onOutput(window: string): void {
+    const w = this.waiter;
+    if (
+      this.wsMarker !== null ||
+      this.markerSeen ||
+      (w !== null && window.includes(w.marker))
+    ) {
+      this.pump();
+      return;
+    }
+    this.bound(w);
+  }
+
+  /**
+   * Bound memory while a chatty command runs (`yes`, a runaway log): keep the
+   * last cap-worth plus a margin, count what was dropped. AMORTIZED — the cut
+   * happens once the buffer is twice the limit, so its cost (the cut flattens
+   * the rope) is paid once per limit's worth of output, not per chunk. What
+   * the command finally returns is unchanged: `pump` trims the result to the
+   * cap and reports the same totals. Output that arrives while NO command is
+   * waiting (a background job's chatter) is bounded too, uncounted — it used
+   * to grow without limit until the next command.
+   */
+  private bound(w: Waiter | null): void {
+    const limit = this.opts.maxOutputBytes + 4096;
+    if (this.buf.length <= limit * 2) return;
+    const drop = this.buf.length - limit;
+    if (w !== null)
+      w.dropped += Buffer.byteLength(this.buf.slice(0, drop), "utf8");
+    this.buf = this.buf.slice(drop);
+  }
+
   private pump(): void {
     this.takeWorkspaceLine();
     const w = this.waiter;
-    if (w === null) return;
-    const idx = this.buf.indexOf(w.marker);
-    if (idx === -1) {
-      // Bound memory while a chatty command runs (`yes`, a runaway log):
-      // keep the last cap-worth plus a margin, count what was dropped.
-      const limit = this.opts.maxOutputBytes + 4096;
-      if (this.buf.length > limit) {
-        const drop = this.buf.length - limit;
-        w.dropped += Buffer.byteLength(this.buf.slice(0, drop), "utf8");
-        this.buf = this.buf.slice(drop);
-      }
+    if (w === null) {
+      this.bound(null);
       return;
     }
+    const idx = this.buf.indexOf(w.marker);
+    if (idx === -1) {
+      this.bound(w);
+      return;
+    }
+    // The marker is in: every later chunk must come back here until its
+    // line is complete — the window test above no longer sees it.
+    this.markerSeen = true;
     const after = this.buf.slice(idx + w.marker.length);
     const m = /^:(-?\d+):([01]):([^\n]*)\n/.exec(after);
     if (m === null) return; // marker line not complete yet
     const rawOutput = this.buf.slice(0, idx).replace(/\n$/, "");
     this.buf = after.slice(m[0].length);
     this.waiter = null;
+    this.markerSeen = false;
     if (w.timer !== null) clearTimeout(w.timer);
     if (w.onAbort !== null && w.signal !== undefined)
       w.signal.removeEventListener("abort", w.onAbort);
@@ -338,7 +397,7 @@ export class PersistentShell implements BackgroundProcess {
         freshShell: fresh,
       };
     }
-    const marker = `__HERTA_SH_${randomBytes(6).toString("hex")}__`;
+    const marker = markerFor("SH");
     const result = await new Promise<
       Omit<ShellRunResult, "durationMs" | "freshShell">
     >((resolvePromise) => {
@@ -394,6 +453,7 @@ export class PersistentShell implements BackgroundProcess {
         opts.signal.addEventListener("abort", w.onAbort, { once: true });
       }
       this.waiter = w;
+      this.markerSeen = false;
       // Group + stdin from /dev/null: a stdin-reading command cannot eat
       // the protocol line that follows. Heredocs still work — they are
       // read from the script text, not from the command's stdin.

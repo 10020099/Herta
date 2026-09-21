@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useHertaBridge } from "../../context/HertaBridgeContext.js";
-import { useActiveSession } from "../../hooks/useActiveSession.js";
+import { useSessionSelector } from "../../hooks/useSessionSelector.js";
 import { useT } from "../../i18n/LocaleProvider.js";
 import type { ModelChoice, ModelConfig } from "../../ipc/bridge-types.js";
 import { Select } from "./Select.js";
@@ -23,8 +23,10 @@ const DEFAULT_MODELS: ModelConfig = {
 export function DeepSeekSettings(): JSX.Element {
   const t = useT();
   const { bridge } = useHertaBridge();
-  const { status: sessionStatus } = useActiveSession();
-  const busy = sessionStatus !== "idle";
+  // A selector, not the whole snapshot: with the pane open during a turn,
+  // `useActiveSession()` re-rendered it on every streamed token to re-derive
+  // this one boolean (perf audit 2026-09-20).
+  const busy = useSessionSelector((s) => s.status !== "idle");
 
   // The last-known masked status on the first frame (settings-snapshot.ts):
   // the pane used to paint 检查中… and then 已连接 plus the delete link, which

@@ -136,7 +136,13 @@ async function invokeBanzhuanBridgeInner(
   record: TerminalRecord,
   deps: BanzhuanBridgeDeps,
 ): Promise<TerminalRecord> {
-  const eventQueue: AgentEvent[] = [];
+  // A processed slot is released (set to `undefined`): nothing reads behind
+  // `processedIdx`, and the queue otherwise held EVERY event of the brief
+  // until it ended — one object per 板砖 token, every tool result whole (a
+  // `view_image` data URI is megabytes), every assistant message with its
+  // reasoning (perf audit 2026-09-20). Indices stay stable, which is what
+  // the cursor and the pending-permission peek rely on.
+  const eventQueue: (AgentEvent | undefined)[] = [];
   let processedIdx = 0;
   let runBriefDone = false;
   let current: TerminalRecord = record;
@@ -315,6 +321,7 @@ async function invokeBanzhuanBridgeInner(
       // and stage (do not fire) any beat triggers.
       while (processedIdx < eventQueue.length) {
         const event = eventQueue[processedIdx];
+        eventQueue[processedIdx] = undefined;
         processedIdx += 1;
         if (event === undefined) continue;
 

@@ -1,3 +1,5 @@
+import { memo } from "react";
+
 /** One diff line's role, decided by its first character. */
 type DiffLineKind = "add" | "del" | "hunk" | "file" | "meta" | "ctx";
 
@@ -58,8 +60,17 @@ export interface DiffBodyProps {
  * anchors (the differ emits plain ` `/`+`/`-` runs with omission markers), so
  * any number in that gutter would be inferred rather than measured — the same
  * class of fabrication this row's `+N −M` was careful to avoid.
+ *
+ * Memoized (perf audit 2026-09-20): both props are primitives, so the
+ * comparison is exact, and this is the heavy leaf — a patch is capped at
+ * 200 000 characters, about 5 000 rows of three elements. Its parents
+ * re-render for reasons that cannot change a diff: the file viewer on every
+ * pointer move of its divider and every frame of a sidebar slide (its width
+ * is state), an activity row whenever its group's live timer ticks.
  */
-export function DiffBody(props: DiffBodyProps): JSX.Element {
+export const DiffBody = memo(function DiffBody(
+  props: DiffBodyProps,
+): JSX.Element {
   const lines = props.text.split("\n");
   return (
     <div
@@ -93,4 +104,4 @@ export function DiffBody(props: DiffBodyProps): JSX.Element {
       })}
     </div>
   );
-}
+});

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useT } from "../../../i18n/LocaleProvider.js";
 import type { ViewerAnchor } from "../file-viewer-context.js";
 import { setSanitizedHtml } from "./dom-html.js";
@@ -47,12 +47,20 @@ export function CodeView({
     readonly height: number;
   } | null>(null);
 
-  const allLines = content.split("\n");
-  const lines = allLines.slice(0, MAX_RENDER_LINES);
-  const elided = allLines.length - lines.length;
-  const lineCount = lines.length;
-  const shown = lines.join("\n");
-  const gutter = lines.map((_, i) => i + 1).join("\n");
+  // Once per CONTENT, not per render: the panel re-renders on every pointer
+  // move of its divider and every frame of a sidebar slide (its width is
+  // state), and this split / slice / join / gutter build runs over up to
+  // 300K characters and 8 000 lines (perf audit 2026-09-20).
+  const { elided, lineCount, shown, gutter } = useMemo(() => {
+    const allLines = content.split("\n");
+    const lines = allLines.slice(0, MAX_RENDER_LINES);
+    return {
+      elided: allLines.length - lines.length,
+      lineCount: lines.length,
+      shown: lines.join("\n"),
+      gutter: lines.map((_, i) => i + 1).join("\n"),
+    };
+  }, [content]);
 
   // Plain text first (synchronous, so the first paint and the anchor
   // metrics never wait on a chunk); tokens replace it when the highlighter

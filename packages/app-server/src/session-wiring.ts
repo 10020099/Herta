@@ -64,11 +64,15 @@ import {
   supervisorReferenceFor,
   type V2ActorDriverDeps,
 } from "@herta/herta";
+// The narrow entry, NOT the package root: the root is the whole knowledge
+// package — ingest, voice tooling, the SQLite store and its native addon —
+// and cost the unbundled CLI ~470 ms on every start for these three names
+// (measured 2026-09-21; see knowledge/src/dream-prompt.ts).
 import {
   readManifest,
   resolveDreamConfig,
   selectPromptExclusions,
-} from "@herta/knowledge";
+} from "@herta/knowledge/dream-prompt";
 import { FileMemoryManager } from "@herta/memory";
 import {
   type ApiKey,

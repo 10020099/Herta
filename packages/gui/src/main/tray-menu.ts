@@ -50,6 +50,8 @@ export function trayLabels(locale: Locale): TrayLabels {
  *  (mirrors the Codex tray layout the user asked for). */
 const RECENT_INLINE = 3;
 const RECENT_MORE_MAX = 12;
+/** How many sessions the menu can ever show — what a caller needs to list. */
+export const TRAY_SESSION_ROWS = RECENT_INLINE + RECENT_MORE_MAX;
 const LABEL_MAX_CODEPOINTS = 30;
 
 /** One menu line per session: the generated title, else the last user

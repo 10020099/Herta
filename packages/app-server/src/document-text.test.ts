@@ -147,6 +147,35 @@ describe("extractDocumentText — pdf", () => {
     expect(en.ok && en.text).toBe("── page 1 ──\nx\n\n── page 2 ──\ny");
   });
 
+  it("returns to the event loop between pages — the parse is not one uninterrupted turn (perf audit 2026-09-20)", async () => {
+    // pdfjs runs on its in-process fake worker, whose port dispatches through
+    // `Promise.then` alone: every await in the page loop was a MICROtask, so a
+    // long document held the loop — in the desktop app, the main thread — for
+    // the whole parse. A macrotask that re-arms itself counts the turns the
+    // loop got while the extraction ran.
+    const PAGES = 12;
+    let turns = 0;
+    let running = true;
+    const tick = (): void => {
+      if (!running) return;
+      turns += 1;
+      setImmediate(tick);
+    };
+    const pdf = makePdf(
+      Array.from({ length: PAGES }, (_, i) => [`page ${i + 1} text`]),
+    );
+    // Warm the lazy pdfjs import first, so the turns counted belong to the
+    // page loop and not to loading the library.
+    await extractDocumentText("pdf", makePdf([["warm"]]));
+    setImmediate(tick);
+    const r = await extractDocumentText("pdf", pdf);
+    running = false;
+    expect(r.ok && r.pages).toBe(PAGES);
+    // One yield per page boundary. Without them the count is 0–2 (whatever
+    // the document load itself lets through).
+    expect(turns).toBeGreaterThanOrEqual(PAGES - 1);
+  }, 30_000);
+
   it("a page with no text content is `empty` — the scanned-PDF case ADR 0033 §5 warned about; the markers alone do not make it a text file", async () => {
     const r = await extractDocumentText("pdf", makePdf([[], []]));
     expect(r).toEqual({ ok: false, reason: "empty", pages: 2 });

@@ -70,6 +70,7 @@ import {
   registerSettingsHandlers,
   type SettingsHooks,
 } from "./settings-ipc.js";
+import { TRAY_SESSION_ROWS } from "./tray-menu.js";
 import { createFallbackFetch } from "./tts/fallback-fetch.js";
 import {
   createMiniMaxSynthesizer,
@@ -1364,7 +1365,15 @@ export function createSessionService(
   return {
     start,
     dispose,
-    listSessions: () => host?.listSessions() ?? [],
+    // Bounded like the sidebar's listing above (audit BL11): the tray shows
+    // at most TRAY_SESSION_ROWS sessions, and an unbounded listing ran a stat,
+    // a 128KB read and a sidecar open PER session ever created, on this
+    // thread, on every right-click (perf audit 2026-09-20). Twice the rows:
+    // the host orders by transcript mtime and the menu re-sorts by
+    // lastActivityAt, so a little slack keeps the two orders from disagreeing
+    // about who is fifteenth.
+    listSessions: () =>
+      host?.listSessions({ limit: TRAY_SESSION_ROWS * 2 }) ?? [],
     // Tray-initiated navigation carries the SAME guards the renderer's
     // sidebar/top bar enforce (audit 2026-07-10): pre-guard-less, a tray
     // click on the already-open session tore down a running turn (re-open →
