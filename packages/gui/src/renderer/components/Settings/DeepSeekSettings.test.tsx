@@ -99,7 +99,7 @@ describe("DeepSeekSettings", () => {
       await waitFor(() => expect(backend.textContent).toContain("Flash"));
       fireEvent.click(backend);
       fireEvent.click(getByRole("option", { name: "Pro" }));
-      await waitFor(() => expect(queryByText(/Couldn't save/)).toBeTruthy());
+      await waitFor(() => expect(queryByText(/Could not save/)).toBeTruthy());
       expect(backend.textContent).toContain("Flash");
     });
 

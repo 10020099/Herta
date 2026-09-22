@@ -30,7 +30,7 @@ describe("UpdateSettings — a failed write (UX review 2026-09-22, item 17)", ()
     expect(toggle).toHaveAttribute("aria-checked", "true");
     act(() => toggle.click());
     expect(
-      await screen.findByText("Couldn't save — try again."),
+      await screen.findByText("Could not save — try again."),
     ).toBeInTheDocument();
     expect(toggle).toHaveAttribute("aria-checked", "true");
   });

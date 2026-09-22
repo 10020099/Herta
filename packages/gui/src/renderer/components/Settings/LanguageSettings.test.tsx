@@ -52,7 +52,7 @@ describe("LanguageSettings — the UI-language row persists, and says when it co
     fireEvent.click(screen.getByLabelText("Display language"));
     fireEvent.click(screen.getByRole("option", { name: "中文" }));
     expect(
-      await screen.findByText("Couldn't save — try again."),
+      await screen.findByText("Could not save — try again."),
     ).toBeInTheDocument();
     // Back in English: the trigger is labelled in the stored language again.
     expect(
@@ -121,6 +121,6 @@ describe("LanguageSettings — interaction-language row (slice 4)", () => {
       ).toContain("Follow UI language"),
     );
     expect(mock.calls.setInteractionLanguage).toEqual(["zh"]);
-    expect(screen.getByText("Couldn't save — try again.")).toBeInTheDocument();
+    expect(screen.getByText("Could not save — try again.")).toBeInTheDocument();
   });
 });

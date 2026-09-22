@@ -103,7 +103,7 @@ describe("DreamSettings", () => {
     );
     fireEvent.click(toggle); // optimistic off → write fails → snaps back on
     await waitFor(() =>
-      expect(queryByText("Couldn't save — try again.")).toBeTruthy(),
+      expect(queryByText("Could not save — try again.")).toBeTruthy(),
     );
     expect(toggle.getAttribute("aria-checked")).toBe("true");
     expect(queryByText("Restart to apply")).toBeNull();

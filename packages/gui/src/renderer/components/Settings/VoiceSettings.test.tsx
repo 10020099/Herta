@@ -118,7 +118,7 @@ describe("VoiceSettings", () => {
     const toggle = getByLabelText("Real-time voice");
     expect(toggle.getAttribute("aria-checked")).toBe("true");
     fireEvent.click(toggle);
-    expect(await findByText("Couldn't save — try again.")).toBeTruthy();
+    expect(await findByText("Could not save — try again.")).toBeTruthy();
     expect(toggle.getAttribute("aria-checked")).toBe("true");
   });
 

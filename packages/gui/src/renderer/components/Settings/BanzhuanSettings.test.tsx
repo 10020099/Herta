@@ -119,7 +119,7 @@ describe("BanzhuanSettings", () => {
       fireEvent.click(trigger);
       fireEvent.click(screen.getByRole("option", { name: "Low" }));
       await waitFor(() =>
-        expect(queryByText("Couldn't save — try again.")).toBeTruthy(),
+        expect(queryByText("Could not save — try again.")).toBeTruthy(),
       );
       // Snapped back to the value on disk; no restart note for a failed write.
       expect(trigger.textContent).toContain("High");
@@ -204,7 +204,7 @@ describe("BanzhuanSettings", () => {
       fireEvent.click(trigger);
       fireEvent.click(screen.getByRole("option", { name: "Standard" }));
       await waitFor(() =>
-        expect(queryByText("Couldn't save — try again.")).toBeTruthy(),
+        expect(queryByText("Could not save — try again.")).toBeTruthy(),
       );
       expect(trigger.textContent).toContain("Minimal");
     });
@@ -243,7 +243,7 @@ describe("BanzhuanSettings", () => {
       );
       fireEvent.click(toggle);
       await waitFor(() =>
-        expect(queryByText("Couldn't save — try again.")).toBeTruthy(),
+        expect(queryByText("Could not save — try again.")).toBeTruthy(),
       );
       expect(toggle.getAttribute("aria-checked")).toBe("true");
       expect(deviceScenePref()).toBe(true);

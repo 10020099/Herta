@@ -167,9 +167,9 @@ export const en = {
     "Dream is Herta's downtime. While you are away, she looks back over your sessions and writes down the memorable moments — coming to know you a little better the longer you work together.",
   // Punctuation rule (owner 2026-08-27): a single-clause LABEL or status
   // carries no terminal period — only prose that explains or instructs keeps
-  // one. So "Couldn't save — try again." keeps its period and "Restart to
-  // apply" does not.
-  "common.couldntSave": "Couldn't save — try again.",
+  // one. So "Could not save — try again." keeps its period and "Restart to
+  // apply" does not. (No contraction: UI copy is formal register.)
+  "common.couldntSave": "Could not save — try again.",
   "common.restartToApply": "Restart to apply",
   "deepseek.intro":
     "The API key is stored encrypted on this device. Get one at platform.deepseek.com.",
@@ -211,7 +211,7 @@ export const en = {
   "keyprompt.where": "Get a key at platform.deepseek.com",
   "keyprompt.notNow": "Not now",
   "keyprompt.saveSend": "Save & send",
-  "keyprompt.saveFail": "Couldn't save the key — try again.",
+  "keyprompt.saveFail": "Could not save the key — try again.",
   "device.state.idle": "Idle",
   "device.state.working": "Working",
   "device.state.reading": "Reading",
