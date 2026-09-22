@@ -39,6 +39,10 @@ export interface ProviderUsage {
    *  `null` when the provider does not say (a non-DeepSeek gateway). */
   readonly cacheHitTokens: number | null;
   readonly cacheMissTokens: number | null;
+  /** Who made the call when it is not the session's own providers: "dream"
+   *  for the idle pass (its client is @herta/knowledge's, not these).
+   *  Absent = the actor, 板砖 or a sidecar. */
+  readonly source?: "dream";
 }
 
 export type ProviderUsageSink = (usage: ProviderUsage) => void;

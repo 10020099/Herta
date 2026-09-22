@@ -52,6 +52,20 @@ describe("installUsageLog", () => {
     expect(Number.isNaN(Date.parse(rows[0].at))).toBe(false);
   });
 
+  it("the idle dream pass's calls say so — `source: dream` — and the session's own carry no source (dream review 2026-09-22, finding 4)", async () => {
+    const file = join(dir, "usage.jsonl");
+    const uninstall = installUsageLog(file);
+    reportProviderUsage(call(1));
+    reportProviderUsage({ ...call(2), endpoint: "chat", source: "dream" });
+    await uninstall();
+    const rows = readFileSync(file, "utf8")
+      .trimEnd()
+      .split("\n")
+      .map((l) => JSON.parse(l));
+    expect(rows[0]).not.toHaveProperty("source");
+    expect(rows[1]).toMatchObject({ endpoint: "chat", source: "dream" });
+  });
+
   it("moves an oversized log aside once, at install, and starts a fresh one", async () => {
     const file = join(dir, "usage.jsonl");
     writeFileSync(file, "x".repeat(4 * 1024 * 1024 + 1));

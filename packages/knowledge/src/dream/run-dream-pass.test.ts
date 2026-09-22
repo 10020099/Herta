@@ -1543,6 +1543,41 @@ describe("runDreamPass hardening", () => {
   ];
   const testConfig = { minEpisodeChars: 10 };
 
+  it("stops at maxEpisodes and leaves the rest undreamed for the next pass (dream review 2026-09-22, finding 3)", async () => {
+    const sessions = ["a", "b", "c"].map((id) => ({
+      sessionId: id,
+      record: record.map((b) =>
+        b.kind === "user" ? { ...b, text: `${b.text}（${id}）` } : b,
+      ),
+    }));
+    const first = await runDreamPass({
+      workspaceRoot: ws,
+      sessions,
+      client: fakeClient(),
+      runId: "cap-1",
+      config: testConfig,
+      maxEpisodes: 2,
+      now: () => new Date("2026-06-18T09:30:00Z"),
+    });
+    expect(first.considered).toBe(2);
+    expect(first.budgetStopped).toBe(true);
+    const ledger = readManifest(join(ws, ".herta", "dream")).episodes;
+    expect(ledger.map((e) => e.sessionId).sort()).toEqual(["a", "b"]);
+    // The next pass takes up what the cap left, and only that.
+    const second = await runDreamPass({
+      workspaceRoot: ws,
+      sessions,
+      client: fakeClient(),
+      runId: "cap-2",
+      config: testConfig,
+      maxEpisodes: 2,
+      now: () => new Date("2026-06-26T09:30:00Z"),
+    });
+    expect(second.considered).toBe(1);
+    expect(second.skipped).toBe(2);
+    expect(second.budgetStopped).toBeUndefined();
+  });
+
   it("aborts without consuming episodes when the LLM call itself fails", async () => {
     const failing: DeepSeekClient = {
       chatJson: vi.fn(async () => {

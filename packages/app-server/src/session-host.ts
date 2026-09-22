@@ -25,6 +25,7 @@ import {
   resolveDreamConfig,
   runDreamPass,
 } from "@herta/knowledge";
+import { reportProviderUsage } from "@herta/providers";
 import { DreamTrigger } from "./dream-trigger.js";
 import { SessionImpl } from "./session.js";
 import {
@@ -226,6 +227,11 @@ class SessionHostImpl implements SessionHost {
       const client = new RealDeepSeekClient({
         apiKey: key,
         model: dreamCfg.model,
+        // Into usage.jsonl with every other call, marked as the dream's
+        // (dream review 2026-09-22, finding 4): the one consumer of the key
+        // that runs while the user is away was the one the log never saw.
+        onUsage: (u) =>
+          reportProviderUsage({ endpoint: "chat", source: "dream", ...u }),
       });
 
       // Enumerate sessions, GROUPED by the interaction language each was
@@ -280,6 +286,8 @@ class SessionHostImpl implements SessionHost {
           config: this.config.dream,
           now: () => new Date(),
           lang,
+          // The automatic pass's spend ceiling (finding 3); the rest waits.
+          maxEpisodes: dreamCfg.autoPassMaxEpisodes,
         });
       }
     } catch {

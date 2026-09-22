@@ -84,6 +84,12 @@ export interface RunDreamPassOptions {
    *  The caller runs one pass per language over that language's sessions.
    *  Default "zh" — byte-identical to the pre-slice behavior. */
   lang?: "zh" | "en";
+  /** Most episodes this pass sends through the LLM stages (dedup skips do
+   *  not count). Past it the pass stops considering episodes: the rest stay
+   *  undreamed and un-ledgered for a later pass, and the end-of-pass work
+   *  runs as usual. Undefined = no limit (the manual CLI pass, which has its
+   *  own cost cap); the automatic pass passes `autoPassMaxEpisodes`. */
+  maxEpisodes?: number;
 }
 
 export interface RunDreamPassResult {
@@ -122,6 +128,8 @@ export interface RunDreamPassResult {
   aborted?: string;
   /** True when another pass held the cross-process lock; nothing was done. */
   lockBusy?: boolean;
+  /** True when the pass reached `maxEpisodes` and left the rest for later. */
+  budgetStopped?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -473,6 +481,16 @@ export async function runDreamPass(
         ) {
           res.skipped++;
           continue;
+        }
+        // The spend ceiling (dream review 2026-09-22, finding 3): checked
+        // before the episode is marked seen, so what the pass leaves is
+        // simply undreamed — the next pass takes it up.
+        if (
+          opts.maxEpisodes !== undefined &&
+          res.considered >= opts.maxEpisodes
+        ) {
+          res.budgetStopped = true;
+          break;
         }
         dreamedKeys.add(`${ep.sessionId}\u0000${ep.episodeHash}`);
         try {
@@ -969,7 +987,7 @@ export async function runDreamPass(
         }
         if (res.aborted !== undefined) break;
       }
-      if (res.aborted !== undefined) break;
+      if (res.aborted !== undefined || res.budgetStopped === true) break;
     }
 
     // Living-memory semanticization sources (ADR 0023 — consolidation

@@ -51,6 +51,13 @@ export const DEFAULT_DREAM_CONFIG: DreamConfig = {
   model: "deepseek-v4-pro",
   generationEffort: "max",
   gateEffort: "high",
+  // The AUTOMATIC pass's spend ceiling (dream review 2026-09-22, finding 3):
+  // at most this many episodes go through the LLM stages per pass — each is
+  // ~6 Pro calls, more through the reactivation junction — and the rest wait,
+  // undreamed and un-ledgered, for the next pass. The first pass after opting
+  // in used to walk the whole history at once. The manual CLI pass keeps its
+  // own `--budget-cap-usd` and is not limited by this.
+  autoPassMaxEpisodes: 24,
 };
 
 export function resolveDreamConfig(

@@ -44,6 +44,8 @@ export function installUsageLog(filePath: string): () => Promise<void> {
       hit: u.cacheHitTokens,
       miss: u.cacheMissTokens,
       completion: u.completionTokens,
+      // The idle dream pass says so: it spends while the user is away.
+      ...(u.source !== undefined ? { source: u.source } : {}),
     })}\n`;
     queue = queue
       .then(() => appendFile(filePath, line, "utf8"))

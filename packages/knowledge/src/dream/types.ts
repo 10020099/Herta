@@ -200,4 +200,8 @@ export interface DreamConfig {
   /** Thinking budget for the judgment gates — worthiness, critique, refine,
    *  similarity (default "high"). */
   readonly gateEffort: ReasoningEffort;
+  /** Most episodes the AUTOMATIC pass sends through the LLM stages in one
+   *  run; the rest wait for the next pass. The host passes it to
+   *  `runDreamPass` as `maxEpisodes`; a manual pass is not limited by it. */
+  readonly autoPassMaxEpisodes: number;
 }

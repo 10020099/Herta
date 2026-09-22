@@ -6,6 +6,16 @@ import {
   type DisambiguationBatchInput,
 } from "./types.js";
 
+/** One call's token counts as the API stated them (numbers only). */
+export interface KnowledgeCallUsage {
+  readonly model: string;
+  readonly promptTokens: number;
+  readonly completionTokens: number;
+  /** DeepSeek's prefix-cache split; null when the answer does not say. */
+  readonly cacheHitTokens: number | null;
+  readonly cacheMissTokens: number | null;
+}
+
 export interface RealDeepSeekClientOptions {
   apiKey: string;
   model: string;
@@ -13,7 +23,16 @@ export interface RealDeepSeekClientOptions {
   fetch?: typeof fetch;
   maxRetries?: number;
   backoffMs?: number;
+  /** Told each successful call's usage. The dream pass is the one consumer
+   *  of the key that runs while the user is away, and its calls never
+   *  reached the host's usage log (dream review 2026-09-22, finding 4): the
+   *  host forwards these into the providers' process-wide sink. A throw
+   *  here never reaches the call. */
+  onUsage?: (usage: KnowledgeCallUsage) => void;
 }
+
+const count = (v: unknown): number | null =>
+  typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null;
 
 const DEFAULT_BASE_URL = "https://api.deepseek.com";
 const DEFAULT_MAX_RETRIES = 3;
@@ -26,6 +45,7 @@ export class RealDeepSeekClient implements DeepSeekClient {
   private readonly fetchImpl: typeof fetch;
   private readonly maxRetries: number;
   private readonly backoffMs: number;
+  private readonly onUsage: ((usage: KnowledgeCallUsage) => void) | undefined;
 
   constructor(opts: RealDeepSeekClientOptions) {
     this.apiKey = opts.apiKey;
@@ -34,6 +54,7 @@ export class RealDeepSeekClient implements DeepSeekClient {
     this.fetchImpl = opts.fetch ?? fetch;
     this.maxRetries = opts.maxRetries ?? DEFAULT_MAX_RETRIES;
     this.backoffMs = opts.backoffMs ?? DEFAULT_BACKOFF_MS;
+    this.onUsage = opts.onUsage;
   }
 
   async chatJson(
@@ -88,11 +109,33 @@ export class RealDeepSeekClient implements DeepSeekClient {
             prompt_tokens?: number;
             completion_tokens?: number;
             total_tokens?: number;
+            prompt_cache_hit_tokens?: number;
+            prompt_cache_miss_tokens?: number;
           };
         };
         const content = json.choices?.[0]?.message?.content;
         if (typeof content !== "string") {
           throw new DeepSeekShapeError("missing choices[0].message.content");
+        }
+        const u = json.usage;
+        const promptTokens = count(u?.prompt_tokens);
+        const completionTokens = count(u?.completion_tokens);
+        if (
+          this.onUsage !== undefined &&
+          promptTokens !== null &&
+          completionTokens !== null
+        ) {
+          try {
+            this.onUsage({
+              model: typeof json.model === "string" ? json.model : input.model,
+              promptTokens,
+              completionTokens,
+              cacheHitTokens: count(u?.prompt_cache_hit_tokens),
+              cacheMissTokens: count(u?.prompt_cache_miss_tokens),
+            });
+          } catch {
+            // observation must not break the call it observes
+          }
         }
         return {
           rawJsonText: content,
