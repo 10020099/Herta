@@ -114,7 +114,10 @@ export interface ActorPrompt {
    *  to — verbatim (full diffs, uncompacted board output). Supersedes
    *  the old beat-path blanket `compressDiffs/compactBridgeOutput:
    *  false`, which un-compressed every EARLIER dispatch too. When set,
-   *  the two flags above are ignored. */
+   *  the two flags above are ignored. Attachments are exempt from the
+   *  verbatim treatment: their fold is decided over the whole record and
+   *  applies in a beat exactly as in the main turn (ADR 0033 §6g
+   *  amendment, 2026-09-22). */
   readonly verbatimSinceLastDispatch?: boolean;
   /** Session interaction language. Reaches only the harness's elision
    *  markers inside the serialized record (compaction header, no-output

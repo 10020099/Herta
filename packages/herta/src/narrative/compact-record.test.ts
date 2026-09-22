@@ -7,7 +7,9 @@ import { describe, expect, it } from "vitest";
 import {
   buildCompactionBody,
   compactRecordForPrompt,
+  decideAttachmentFolds,
   digestSystemBlock,
+  foldAttachments,
 } from "./compact-record.js";
 
 describe("digestSystemBlock — 差分协处理器 entries", () => {
@@ -1231,6 +1233,78 @@ describe("done-marker diff re-read hint (E2E 2026-08-11)", () => {
     expect(JSON.stringify(out)).toContain(
       "re-read it via git diff before quoting details",
     );
+  });
+});
+
+describe("decideAttachmentFolds / foldAttachments — the fold lane on its own (ADR 0033 §6g amendment, 2026-09-22)", () => {
+  // The beat projection renders the record in two pieces and needs the
+  // attachment decision made over the WHOLE record first (serialize.ts).
+  // These pin the seam: the pre-decided folds are what compactRecordForPrompt
+  // would have decided itself, and foldAttachments applies that lane alone.
+  const attachment: SystemBlock = {
+    kind: "system",
+    label: "系统",
+    body: "附件 spec.md · 120 行 · 4.8K 字 · .herta/attachments/s1/spec.md",
+    evidenceDetail: "↳ 附件 spec.md\n# Spec\nCONFIDENTIAL-HEAD-LINE",
+    digest: {
+      kind: "attachment",
+      name: "spec.md",
+      path: ".herta/attachments/s1/spec.md",
+      lines: 120,
+      chars: 4800,
+    },
+  };
+  const readA: SystemBlock = {
+    kind: "system",
+    label: "差分协处理器",
+    body: 'Reading {"path":"a.ts"}',
+  };
+  const readB: SystemBlock = {
+    kind: "system",
+    label: "差分协处理器",
+    body: 'Reading {"path":"b.ts"}',
+  };
+  const record: TerminalRecord = [
+    attachment,
+    { kind: "user", text: "看看这份" },
+    { kind: "herta", surface: "speech", text: "看完了。" },
+    { kind: "user", text: "聊点别的" },
+    { kind: "herta", surface: "speech", text: "行。" },
+    { kind: "user", text: "改一下 a.ts @板砖" },
+    { kind: "herta", surface: "speech", text: "@板砖，处理 a.ts。" },
+    readA,
+    readB,
+  ];
+
+  it("the pre-decided folds are compactRecordForPrompt's own decision", () => {
+    const folds = decideAttachmentFolds(record);
+    expect(folds.size).toBe(1);
+    expect(folds.get(attachment)).toBe("citation-hint");
+    expect(compactRecordForPrompt(record, { attachmentFolds: folds })).toEqual(
+      compactRecordForPrompt(record),
+    );
+  });
+
+  it("foldAttachments applies the attachment lane and nothing else", () => {
+    const out = foldAttachments(record, decideAttachmentFolds(record));
+    expect(out).toHaveLength(record.length);
+    const folded = out[0];
+    expect(folded?.kind === "system" ? folded.evidenceDetail : "?").toBe(
+      undefined,
+    );
+    expect(folded?.kind === "system" ? folded.body : "").toContain(
+      "正文已略去",
+    );
+    // The system run beside it is neither compacted nor touched: the same
+    // block objects come back, uncompacted.
+    expect(out[7]).toBe(readA);
+    expect(out[8]).toBe(readB);
+    expect(JSON.stringify(out)).not.toContain("[历史已压缩");
+  });
+
+  it("a block nobody decided stays verbatim", () => {
+    const out = foldAttachments([attachment], new Map());
+    expect(out[0]).toBe(attachment);
   });
 });
 

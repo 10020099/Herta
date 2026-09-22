@@ -61,6 +61,10 @@ export function makeFireBeat(
     // and board output into every beat prompt, tokens that grew with
     // each dispatch and slowed the beat's TTFT. The full record stays
     // in the in-memory `TerminalRecord` and the JSONL either way.
+    // Attachments are the one exception to "verbatim": they fold in the
+    // beat exactly as in the main turn (ADR 0033 §6g amendment) — the
+    // fresh window is for the current run's output, not for re-opening
+    // a document the turn prompt has already closed.
     const beatDoc: ActorPrompt = {
       staticPrefix: deps.staticPrefix,
       record: currentRecord,

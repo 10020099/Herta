@@ -582,6 +582,155 @@ describe("serializeTerminalRecord — verbatimSinceLastDispatch (beat mode, M-pr
   });
 });
 
+describe("serializeTerminalRecord — the attachment fold reaches the beat's fresh window (ADR 0033 §6g amendment, 2026-09-22)", () => {
+  // Beat mode keeps everything after the prior dispatch verbatim so Herta
+  // sees the CURRENT run's diffs and output in full. The attachment fold
+  // rode the same opt-out, so it never applied there: a document older than
+  // its window came back with its head excerpt in every beat — up to ~4K
+  // chars per document per beat, a prompt that stopped matching the turn's
+  // at the document rather than at the current run, and a beat that could
+  // quote what the next turn cannot read. And the head, compacted on its
+  // own, decided the fold from the head alone: it kept an excerpt the user
+  // turns after the boundary had already spent, and folded one a later
+  // mention had re-opened. The fold is now decided once over the whole
+  // record and applied to both halves — attachments fold in a beat exactly
+  // as in the main turn.
+  const attachment: SystemBlock = {
+    kind: "system",
+    label: "系统",
+    body: "附件 spec.md · 120 行 · 4.8K 字 · .herta/attachments/s1/spec.md",
+    evidenceDetail: "↳ 附件 spec.md\n# Spec\nCONFIDENTIAL-HEAD-LINE",
+    digest: {
+      kind: "attachment",
+      name: "spec.md",
+      path: ".herta/attachments/s1/spec.md",
+      lines: 120,
+      chars: 4800,
+    },
+  };
+  const reading = (path: string): TerminalRecordBlock => ({
+    kind: "system",
+    label: "差分协处理器",
+    body: `Reading {"path":"${path}"}`,
+  });
+  const doneMarker: TerminalRecordBlock = {
+    kind: "system",
+    label: "差分协处理器",
+    body: "完成：读完了",
+    role: "done-marker",
+    evidenceDetail: "↳ changed: (none)",
+  };
+  const beat = (record: TerminalRecord): string =>
+    serializeTerminalRecord(record, { verbatimSinceLastDispatch: true });
+  /** The attachment's own line in a prompt — what the two projections must
+   *  agree on, byte for byte. */
+  const attachmentLine = (prompt: string): string | undefined =>
+    prompt.match(/^附件 spec\.md.*$/mu)?.[0];
+
+  it("a document past its window folds in the beat as in the main turn (no prior dispatch: the whole record is the fresh window)", () => {
+    const record: TerminalRecord = [
+      attachment,
+      { kind: "user", text: "看看这份" },
+      { kind: "herta", surface: "speech", text: "看完了，一般。" },
+      { kind: "user", text: "聊点别的" },
+      { kind: "herta", surface: "speech", text: "行。" },
+      { kind: "user", text: "今天天气不错" },
+      { kind: "herta", surface: "speech", text: "嗯。" },
+      { kind: "user", text: "改一下 foo.ts @板砖" },
+      { kind: "herta", surface: "speech", text: "@板砖，处理 foo.ts。" },
+      reading("a.ts"),
+      reading("b.ts"),
+    ];
+    const main = serializeTerminalRecord(record);
+    const out = beat(record);
+    // The main turn folded it four user turns ago…
+    expect(main).not.toContain("CONFIDENTIAL-HEAD-LINE");
+    expect(attachmentLine(main)).toContain("正文已略去");
+    // …and the beat agrees, line for line.
+    expect(out).not.toContain("CONFIDENTIAL-HEAD-LINE");
+    expect(attachmentLine(out)).toBe(attachmentLine(main));
+    // The fresh window is otherwise untouched: the current run stays raw.
+    expect(out).toContain('Reading {"path":"a.ts"}');
+    expect(out).not.toContain("[历史已压缩");
+  });
+
+  it("a document inside its window stays verbatim in the beat — it is the one the dispatch is about", () => {
+    const record: TerminalRecord = [
+      { kind: "user", text: "看看这份" },
+      attachment,
+      {
+        kind: "herta",
+        surface: "speech",
+        text: "@板砖，把 spec.md 第三章对一遍。",
+      },
+      reading("spec.md"),
+    ];
+    const out = beat(record);
+    expect(out).toContain("CONFIDENTIAL-HEAD-LINE");
+    expect(out).not.toContain("正文已略去");
+    expect(attachmentLine(out)).toBe(
+      attachmentLine(serializeTerminalRecord(record)),
+    );
+  });
+
+  it("user turns AFTER the boundary count against a document BEFORE it — the head cannot decide from the head alone", () => {
+    const record: TerminalRecord = [
+      attachment,
+      { kind: "user", text: "看看这份，@板砖 读一下" },
+      { kind: "herta", surface: "speech", text: "@板砖，读 spec.md。" },
+      reading("spec.md"),
+      reading("notes.md"),
+      doneMarker,
+      { kind: "herta", surface: "speech", text: "读完了。" },
+      { kind: "user", text: "聊点别的" },
+      { kind: "herta", surface: "speech", text: "行。" },
+      { kind: "user", text: "今天天气不错" },
+      { kind: "herta", surface: "speech", text: "嗯。" },
+      { kind: "user", text: "改一下 foo.ts @板砖" },
+      { kind: "herta", surface: "speech", text: "@板砖，处理 foo.ts。" },
+      reading("foo.ts"),
+    ];
+    // Within the head alone one user turn follows the block, which keeps
+    // the excerpt; over the record four do, which folds it.
+    const main = serializeTerminalRecord(record);
+    const out = beat(record);
+    expect(main).not.toContain("CONFIDENTIAL-HEAD-LINE");
+    expect(out).not.toContain("CONFIDENTIAL-HEAD-LINE");
+    expect(attachmentLine(out)).toBe(attachmentLine(main));
+    // The beat treatment of the halves is unchanged around it: the old run
+    // compacted, the boundary marker legible, the current run raw.
+    expect(out).toContain("[历史已压缩 · 板砖]");
+    expect(out).toContain("完成：读完了");
+    expect(out).toContain('Reading {"path":"foo.ts"}');
+  });
+
+  it("a mention AFTER the boundary re-opens a document BEFORE it — a head-local decision would have folded it", () => {
+    const record: TerminalRecord = [
+      attachment,
+      { kind: "user", text: "看看这份" },
+      { kind: "herta", surface: "speech", text: "看完了。" },
+      { kind: "user", text: "聊点别的" },
+      { kind: "herta", surface: "speech", text: "行。" },
+      { kind: "user", text: "改一下 foo.ts @板砖" },
+      { kind: "herta", surface: "speech", text: "@板砖，处理 foo.ts。" },
+      reading("foo.ts"),
+      reading("bar.ts"),
+      doneMarker,
+      { kind: "herta", surface: "speech", text: "改完了。" },
+      { kind: "user", text: "回到 spec.md，第二段站得住吗？@板砖 对一下" },
+      { kind: "herta", surface: "speech", text: "@板砖，对 spec.md 第二段。" },
+      reading("spec.md"),
+    ];
+    // Head alone: three user turns past the block, folded. Whole record:
+    // the last user message names the file, so the window is open again.
+    const main = serializeTerminalRecord(record);
+    const out = beat(record);
+    expect(main).toContain("CONFIDENTIAL-HEAD-LINE");
+    expect(out).toContain("CONFIDENTIAL-HEAD-LINE");
+    expect(attachmentLine(out)).toBe(attachmentLine(main));
+  });
+});
+
 describe("serializeTerminalRecord — long-record equivalence vs naive reference (audit 2026-07-15)", () => {
   // compactRecordForPrompt's done-marker two-state decision moved from two
   // full-record FORWARD scans to one backward-walk-and-stop from the tail.
