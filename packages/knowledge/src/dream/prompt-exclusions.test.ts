@@ -79,6 +79,50 @@ function hashesOf(record: readonly TerminalRecordBlock[]): string[] {
 }
 
 describe("selectPromptExclusions", () => {
+  it("cuts the record the way the ledger was cut — the verdict cut from the manifest's cutover (ADR 0069 §4)", () => {
+    const CUT = "2026-09-24T00:00:00.000Z";
+    const at = (m: number): string =>
+      new Date(Date.parse(CUT) + m * 60_000).toISOString();
+    const record: TerminalRecordBlock[] = [
+      u("fix the parser", at(1)),
+      h("@板砖 修一下 parser", at(2)),
+      {
+        kind: "system",
+        label: "差分协处理器",
+        body: "完成",
+        role: "done-marker",
+        at: at(3),
+      },
+      h("修好了，定向测试过了。", at(4)),
+      u("now the docs", at(5)),
+      h("docs 我看看。", at(6)),
+    ];
+    // The pass dreamed the commission as the verdict cut makes it: [0, 4).
+    const [commission] = segmentSession("s1", record, {
+      ...OPTS,
+      verdictCutSinceMs: Date.parse(CUT),
+    });
+    expect(commission?.endIndex).toBe(4);
+    const manifest: DreamManifest = {
+      ...withLedger(
+        withCreated(mkCreated("1", [commission?.episodeHash ?? ""])),
+        [[commission?.episodeHash ?? "", "s1"]],
+      ),
+      verdictCutSince: CUT,
+    };
+    // A fold put the commission behind the boundary: its 废案 is recovered
+    // memory and loads. A filter cutting at the marker would not find the
+    // hash, read it as withdrawn, and withhold it.
+    const excluded = selectPromptExclusions({
+      manifest,
+      sessionId: "s1",
+      record,
+      recapBoundaryIndex: 4,
+      config: OPTS,
+    });
+    expect(excluded.size).toBe(0);
+  });
+
   it("excludes a 废案 whose source episode is verbatim (no recap engaged)", () => {
     const [ep1Hash] = hashesOf(TWO_EPISODE_RECORD);
     const rec = mkCreated("1", [ep1Hash ?? ""]);

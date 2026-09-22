@@ -108,6 +108,14 @@ export interface DreamManifest {
    *  fold reads the bodies back from the archive and clears the list only
    *  when the page was written. Absent = nothing pending. */
   pendingFold?: string[];
+  /** The verdict cut's cutover (ADR 0069 §4, ISO): a done/noop-marker
+   *  stamped at or after it no longer ends its episode — the cut moves past
+   *  Herta's verdict to the next user block. Set by the first pass that
+   *  runs with the rule and never moved, so every episode ledgered before
+   *  it keeps its hash and the reopen filter keeps matching its 废案.
+   *  Absent = no pass has run with the rule yet: the marker cut
+   *  everywhere. */
+  verdictCutSince?: string;
 }
 
 export interface DreamConfig {

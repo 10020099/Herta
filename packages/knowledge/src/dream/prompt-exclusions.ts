@@ -1,5 +1,5 @@
 import type { TerminalRecordBlock } from "@herta/core";
-import { liveDreamRecords } from "./manifest.js";
+import { liveDreamRecords, verdictCutSinceMs } from "./manifest.js";
 import { segmentSession } from "./segment-session.js";
 import type { DreamConfig, DreamManifest } from "./types.js";
 
@@ -61,9 +61,15 @@ export function selectPromptExclusions(
   if (live.length === 0 || record.length === 0) return excluded;
 
   // hash → end index of the episode in the current record. Built once per
-  // open; segmentation is pure and linear in the record length.
+  // open; segmentation is pure and linear in the record length. Cut the
+  // way the ledger was cut (ADR 0069 §4): the verdict cut from the
+  // manifest's cutover, the marker cut before it.
   const episodeEnd = new Map<string, number>();
-  for (const ep of segmentSession(sessionId, record, config)) {
+  const verdictCut = verdictCutSinceMs(manifest);
+  for (const ep of segmentSession(sessionId, record, {
+    ...config,
+    ...(verdictCut !== undefined ? { verdictCutSinceMs: verdictCut } : {}),
+  })) {
     episodeEnd.set(ep.episodeHash, ep.endIndex);
   }
   // hash → the sessions the ledger dreamed it from.

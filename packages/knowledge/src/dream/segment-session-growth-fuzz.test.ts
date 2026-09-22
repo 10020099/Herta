@@ -238,9 +238,13 @@ const OPTS_TIGHT: SegmentOptions = {
   maxEpisodeBlocks: 3,
   maxEpisodeMs: 30 * 60_000,
 };
+// The verdict cut (ADR 0069 §4) with a cutover before every stamp: each
+// stamped marker defers its cut to the next user block.
 const OPTS_VARIANTS: readonly (readonly [string, SegmentOptions])[] = [
   ["default", OPTS_DEFAULT],
   ["tight", OPTS_TIGHT],
+  ["verdict", { ...OPTS_DEFAULT, verdictCutSinceMs: 0 }],
+  ["verdict-tight", { ...OPTS_TIGHT, verdictCutSinceMs: 0 }],
 ];
 
 // ── Labels / summaries ───────────────────────────────────────────────────
@@ -333,7 +337,7 @@ function checkCoverage(
 
 // ── Sweep 1: determinism + coverage + cap + settled ──────────────────────
 describe("segment-session fuzz — coverage / determinism / cap / settled", () => {
-  it("holds G1–G3 over a random record sweep (1000 records x 2 opts)", {
+  it("holds G1–G3 over a random record sweep (1000 records x 4 opts)", {
     timeout: 60_000,
   }, () => {
     const rng = mulberry32(0x5eed_1234);
@@ -360,7 +364,7 @@ describe("segment-session fuzz — coverage / determinism / cap / settled", () =
 
 // ── Sweep 1b: trailing-silence settling (ADR 0024, clocked form) ─────────
 describe("segment-session fuzz — trailing-silence settling (ADR 0024)", () => {
-  it("holds: non-tail settled unchanged; tail settled iff stamped-silence > gap (1000 x 2 opts)", {
+  it("holds: non-tail settled unchanged; tail settled iff stamped-silence > gap (1000 x 4 opts)", {
     timeout: 60_000,
   }, () => {
     const rng = mulberry32(0x0024_ad24);
@@ -427,7 +431,7 @@ describe("segment-session fuzz — trailing-silence settling (ADR 0024)", () => 
 
 // ── Sweep 2: P-GROWTH ────────────────────────────────────────────────────
 describe("segment-session fuzz — P-GROWTH prefix stability", () => {
-  it("holds G4: idle-gap append preserves E as an exact prefix of E' (1000 x 2 opts)", {
+  it("holds G4: idle-gap append preserves E as an exact prefix of E' (1000 x 4 opts)", {
     timeout: 60_000,
   }, () => {
     const rng = mulberry32(0x6_9ada_55);
@@ -862,7 +866,7 @@ describe("segment-session — non-monotonic timestamps / clock skew (pin)", () =
   // can fire across it. Out-of-order stamps therefore UNDER-segment. Determinism
   // and full partition must still hold; the under-segmentation is pinned so a
   // future reorder of the boundary logic can't silently re-hash episodes.
-  it("holds G1 (determinism) + G2 (partition/cap/settled) under out-of-order stamps (1000 x 2 opts)", {
+  it("holds G1 (determinism) + G2 (partition/cap/settled) under out-of-order stamps (1000 x 4 opts)", {
     timeout: 60_000,
   }, () => {
     const rng = mulberry32(0x5ce7_0003);

@@ -1626,6 +1626,32 @@ describe("runDreamPass hardening", () => {
     expect(readManifest(dreamDir).episodes).toHaveLength(2);
   });
 
+  it("records the verdict cut's cutover at the first pass that runs with it, and never moves it (ADR 0069 §4)", async () => {
+    const dreamDir = join(ws, ".herta", "dream");
+    await runDreamPass({
+      workspaceRoot: ws,
+      sessions: [{ sessionId: "s1", record }],
+      client: fakeClient(),
+      runId: "cut-1",
+      config: testConfig,
+      now: () => new Date("2026-09-24T00:00:00Z"),
+    });
+    expect(readManifest(dreamDir).verdictCutSince).toBe(
+      "2026-09-24T00:00:00.000Z",
+    );
+    await runDreamPass({
+      workspaceRoot: ws,
+      sessions: [{ sessionId: "s1", record }],
+      client: fakeClient(),
+      runId: "cut-2",
+      config: testConfig,
+      now: () => new Date("2026-10-02T00:00:00Z"),
+    });
+    expect(readManifest(dreamDir).verdictCutSince).toBe(
+      "2026-09-24T00:00:00.000Z",
+    );
+  });
+
   it("aborts without consuming episodes when the LLM call itself fails", async () => {
     const failing: DeepSeekClient = {
       chatJson: vi.fn(async () => {

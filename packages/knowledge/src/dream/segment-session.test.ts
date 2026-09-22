@@ -55,6 +55,83 @@ describe("segmentSession", () => {
     expect(eps[0]?.endIndex).toBe(3);
   });
 
+  // ── The verdict cut (ADR 0069 §4; dream review 2026-09-22, finding 6) ────
+  describe("the verdict cut", () => {
+    const CUT = Date.parse("2026-09-24T00:00:00Z");
+    const t = (min: number): string =>
+      new Date(CUT + min * 60_000).toISOString();
+    const commission = (at: (m: number) => string): TerminalRecordBlock[] => [
+      u("fix the parser", at(1)),
+      h("@板砖 修一下 parser", at(2)),
+      done(at(3)),
+      { kind: "herta", surface: "thought", text: "测试过了。", at: at(4) },
+      h("修好了，定向测试过了，全量没跑。", at(5)),
+      u("now the docs", at(6)),
+      h("docs 我看看。", at(7)),
+    ];
+
+    it("keeps Herta's verdict in the episode with the run's evidence once the cutover has passed", () => {
+      const eps = segmentSession("s1", commission(t), {
+        ...OPTS,
+        verdictCutSinceMs: CUT,
+      });
+      expect(eps.map((e) => [e.startIndex, e.endIndex])).toEqual([
+        [0, 5],
+        [5, 7],
+      ]);
+      expect(eps[0]?.blocks.at(-1)).toMatchObject({
+        text: "修好了，定向测试过了，全量没跑。",
+      });
+    });
+
+    it("a marker stamped before the cutover cuts where it always did — every ledgered hash survives", () => {
+      const before = (m: number): string =>
+        new Date(CUT - 60 * 60_000 + m * 60_000).toISOString();
+      const rec = commission(before);
+      const legacy = segmentSession("s1", rec, OPTS);
+      const now = segmentSession("s1", rec, {
+        ...OPTS,
+        verdictCutSinceMs: CUT,
+      });
+      expect(legacy[0]?.endIndex).toBe(3);
+      expect(now.map((e) => e.episodeHash)).toEqual(
+        legacy.map((e) => e.episodeHash),
+      );
+    });
+
+    it("an unstamped marker cannot prove it is past the cutover and keeps the marker cut", () => {
+      const rec = [u("fix it"), h("@板砖"), done(), h("verdict"), u("next")];
+      const eps = segmentSession("s1", rec, { ...OPTS, verdictCutSinceMs: 0 });
+      expect(eps[0]?.endIndex).toBe(3);
+    });
+
+    it("a run whose verdict never came settles like any tail — by silence — and gains nothing from growth later", () => {
+      const rec = commission(t).slice(0, 3); // ask, dispatch, marker
+      const open = segmentSession(
+        "s1",
+        rec,
+        { ...OPTS, verdictCutSinceMs: CUT },
+        CUT + 10 * 60_000,
+      );
+      expect(open.at(-1)?.settled).toBe(false);
+      const quiet = segmentSession(
+        "s1",
+        rec,
+        { ...OPTS, verdictCutSinceMs: CUT },
+        CUT + 60 * 60_000,
+      );
+      expect(quiet.at(-1)?.settled).toBe(true);
+      // The user comes back after the silence: a new episode, the settled
+      // one's hash unchanged.
+      const grown = segmentSession(
+        "s1",
+        [...rec, u("still there?", t(90)), h("在。", t(91))],
+        { ...OPTS, verdictCutSinceMs: CUT },
+      );
+      expect(grown[0]?.episodeHash).toBe(quiet.at(-1)?.episodeHash);
+    });
+  });
+
   it("marks the trailing episode unsettled, earlier ones settled", () => {
     const rec = [u("a"), h("a"), done(), u("b"), h("b")];
     const eps = segmentSession("s1", rec, OPTS);

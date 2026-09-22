@@ -97,7 +97,19 @@ function parseManifest(raw: string): DreamManifest | null {
     ...(Array.isArray(parsed.pendingFold) && parsed.pendingFold.length > 0
       ? { pendingFold: parsed.pendingFold }
       : {}),
+    ...(typeof parsed.verdictCutSince === "string"
+      ? { verdictCutSince: parsed.verdictCutSince }
+      : {}),
   };
+}
+
+/** The segmenter options that agree with this manifest's ledger: the
+ *  verdict cut applies from the cutover the manifest recorded, and not at
+ *  all when it recorded none (ADR 0069 §4). */
+export function verdictCutSinceMs(m: DreamManifest): number | undefined {
+  if (m.verdictCutSince === undefined) return undefined;
+  const t = Date.parse(m.verdictCutSince);
+  return Number.isNaN(t) ? undefined : t;
 }
 
 /** One copy per distinct corrupt content, beside the manifest. Null when

@@ -32,6 +32,7 @@ import {
   readManifestStrict,
   reinforceRecord,
   staleLiveRecords,
+  verdictCutSinceMs,
   writeManifest,
 } from "./manifest.js";
 import { titleNoveltyOk } from "./novelty.js";
@@ -407,6 +408,17 @@ export async function runDreamPass(
       return res;
     }
     const manifest = read.manifest;
+    // The verdict cut (ADR 0069 §4) starts with the first pass that runs
+    // with it: every marker in a record today predates this moment, so it
+    // cuts where it always did and every ledgered episode keeps its hash.
+    // Recorded with the manifest's next flush, and never moved after.
+    if (manifest.verdictCutSince === undefined) {
+      manifest.verdictCutSince = now().toISOString();
+    }
+    const segmentOpts = {
+      ...cfg,
+      verdictCutSinceMs: verdictCutSinceMs(manifest),
+    };
 
     // Crash recovery: make the on-disk state and the ledger consistent before
     // the cap + dedup run — sweep stale temp files from an interrupted
@@ -505,7 +517,7 @@ export async function runDreamPass(
       const episodes = segmentSession(
         s.sessionId,
         record,
-        cfg,
+        segmentOpts,
         now().getTime(),
       );
       // The open session dreams only behind its recap boundary (ADR 0069

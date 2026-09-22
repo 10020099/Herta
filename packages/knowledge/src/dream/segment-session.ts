@@ -6,6 +6,18 @@ export interface SegmentOptions {
   readonly episodeGapMs: number;
   readonly maxEpisodeBlocks: number;
   readonly maxEpisodeMs: number;
+  /**
+   * The verdict cut's cutover (ADR 0069 §4), ms epoch. A done/noop-marker
+   * stamped at or after it no longer ends its episode: the cut moves to the
+   * next user block, so Herta's verdict on the run — the speech right after
+   * the marker — stays in the episode that holds the run's evidence. A
+   * marker stamped before it, or unstamped, cuts where it always did, so
+   * every episode dreamed before the cutover keeps its hash. The dream
+   * manifest records the cutover the first time a pass runs with this rule
+   * (`DreamManifest.verdictCutSince`); every segmenter that must agree with
+   * the ledger reads it from there. Absent → the marker cut everywhere.
+   */
+  readonly verdictCutSinceMs?: number;
 }
 
 /**
@@ -58,12 +70,31 @@ function parseAt(b: TerminalRecordBlock): number | undefined {
   return Number.isFinite(t) ? t : undefined;
 }
 
+function isMarker(b: TerminalRecordBlock): boolean {
+  return (
+    b.kind === "system" &&
+    (b.role === "done-marker" || b.role === "noop-marker")
+  );
+}
+
+/** A marker past the cutover defers its cut to the next user block
+ *  (ADR 0069 §4); see `SegmentOptions.verdictCutSinceMs`. */
+function defersToVerdict(
+  marker: TerminalRecordBlock,
+  opts: SegmentOptions,
+): boolean {
+  if (opts.verdictCutSinceMs === undefined) return false;
+  const at = parseAt(marker);
+  return at !== undefined && at >= opts.verdictCutSinceMs;
+}
+
 /**
  * True between record[i-1] and record[i]: a topic boundary starts at i.
  *
  * Priority order:
  *   (a) idle gap        — both blocks timestamped and gap > episodeGapMs
- *   (b) done/noop-marker — structural settled point
+ *   (b) done/noop-marker — structural settled point (a marker past the
+ *       verdict cutover defers to the next user block — the caller's rule)
  *   (c) duration cap    — episode wall-clock span exceeds maxEpisodeMs
  *   (d) per-turn fallback — herta→user when timestamps are unavailable
  */
@@ -81,11 +112,8 @@ function isBoundary(
     if (curMs - prevMs > opts.episodeGapMs) return true;
   }
 
-  // (b) Structural done/noop-marker.
-  if (
-    prev.kind === "system" &&
-    (prev.role === "done-marker" || prev.role === "noop-marker")
-  ) {
+  // (b) Structural done/noop-marker — before the verdict cutover only.
+  if (isMarker(prev) && !defersToVerdict(prev, opts)) {
     return true;
   }
 
@@ -156,6 +184,12 @@ export function segmentSession(
     // the first stamped block encountered in the loop below.
   };
 
+  // A marker past the verdict cutover was seen in the current episode: the
+  // episode ends at the next user block instead, after Herta's verdict on
+  // the run (ADR 0069 §4). The review found the old cut stranding it: the
+  // run's evidence closed one episode, and the verdict opened the next as
+  // an ungrounded claim over a digest with no evidence in it.
+  let verdictPending = false;
   for (let i = 1; i < record.length; i++) {
     const cur = record[i];
     const prev = record[i - 1];
@@ -167,11 +201,15 @@ export function segmentSession(
       if (t !== undefined) episodeStartMs = t;
     }
 
+    if (isMarker(prev) && defersToVerdict(prev, opts)) verdictPending = true;
+
     if (
       isBoundary(prev, cur, episodeStartMs, opts) ||
+      (verdictPending && cur.kind === "user") ||
       i - start >= opts.maxEpisodeBlocks
     ) {
       flush(i);
+      verdictPending = false;
     }
   }
   flush(record.length);
