@@ -473,6 +473,39 @@ describe("Composer", () => {
     expect(document.activeElement).toBe(input);
     expect(form.classList.contains("is-shrunk")).toBe(false);
   });
+
+  it("the turn-end refocus never takes the caret from a field the user is typing in elsewhere (UX review 2026-09-22, item 12)", () => {
+    const { mock } = renderComposer();
+    const input = screen.getByPlaceholderText(
+      "Message Herta…",
+    ) as HTMLTextAreaElement;
+    act(() => {
+      mock.emitReset({
+        sessionId: "s",
+        workspaceRoot: "/r",
+        record: [],
+        overlay: null,
+        backendWorkspace: "/r",
+        backendWorkspaceIsDefault: true,
+      });
+      mock.emitTurn({ kind: "started", turnId: "t1" });
+    });
+    // During the reply the user opens Settings and starts typing a key.
+    const elsewhere = document.createElement("input");
+    document.body.appendChild(elsewhere);
+    try {
+      act(() => {
+        elsewhere.focus();
+      });
+      act(() => {
+        mock.emitTurn({ kind: "finished", turnId: "t1" });
+      });
+      expect(document.activeElement).toBe(elsewhere);
+      expect(document.activeElement).not.toBe(input);
+    } finally {
+      elsewhere.remove();
+    }
+  });
 });
 
 describe("Composer — a message while 板砖 works (ADR 0063)", () => {
@@ -726,6 +759,112 @@ describe("Composer — a message while 板砖 works (ADR 0063)", () => {
     expect(screen.queryByText("Interject now")).toBeNull();
     expect(screen.getByTestId("composer-held")).toBeInTheDocument();
     expect(screen.getByText("Edit")).toBeInTheDocument();
+  });
+
+  it("the hold window opening gives the caret back QUIETLY — the composer stays shrunk until the first keystroke (UX review 2026-09-22, item 13)", () => {
+    const { mock } = renderComposer();
+    const form = document.querySelector(".composer") as HTMLFormElement;
+    const input = screen.getByPlaceholderText(
+      "Message Herta…",
+    ) as HTMLTextAreaElement;
+    act(() => {
+      mock.emitReset({
+        sessionId: "s",
+        workspaceRoot: "/r",
+        record: [],
+        overlay: null,
+        backendWorkspace: "/r",
+        backendWorkspaceIsDefault: true,
+      });
+      mock.emitTurn({ kind: "started", turnId: "t1" });
+    });
+    // Nothing holds the caret: the disable at turn start dropped it.
+    expect(document.activeElement).toBe(document.body);
+    act(() => {
+      mock.emitAgent({ kind: "agent", event: backendStarted });
+    });
+    expect(document.activeElement).toBe(input);
+    // Quiet: the reading room the shrink exists for stays until the user
+    // actually types.
+    expect(form.classList.contains("is-shrunk")).toBe(true);
+    fireEvent.change(input, { target: { value: "a" } });
+    expect(form.classList.contains("is-shrunk")).toBe(false);
+  });
+
+  it("an answered gate gives the caret back to a held message being typed (UX review 2026-09-22, item 13)", () => {
+    const { mock } = renderComposer();
+    startCommission(mock);
+    const input = screen.getByPlaceholderText(
+      "Message Herta…",
+    ) as HTMLTextAreaElement;
+    act(() => {
+      input.focus();
+    });
+    fireEvent.change(input, { target: { value: "also the tests" } });
+    // A gate: the composer is suppressed (textarea disabled) and the panel
+    // takes focus.
+    act(() => {
+      mock.emitOverlay({
+        kind: "pending",
+        overlay: {
+          kind: "pending-permission",
+          requestId: "req-1",
+          risk: "workspace_write",
+          tool: "bash",
+          summary: "writes a file",
+          cacheable: false,
+        },
+      });
+    });
+    expect(input.disabled).toBe(true);
+    // The approval panel holds focus through its exit (jsdom ignores blur()
+    // on a disabled element, so the stand-in panel takes it explicitly).
+    const panel = document.createElement("div");
+    panel.className = "approval-panel";
+    panel.tabIndex = -1;
+    document.body.appendChild(panel);
+    try {
+      act(() => {
+        panel.focus();
+      });
+      expect(document.activeElement).toBe(panel);
+      act(() => {
+        mock.emitOverlay({ kind: "resolved", requestId: "req-1" });
+      });
+      expect(input.disabled).toBe(false);
+      expect(document.activeElement).toBe(input);
+      expect(input.value).toBe("also the tests");
+    } finally {
+      panel.remove();
+    }
+  });
+
+  it("the hold window opening leaves a caret the user put elsewhere where it is", () => {
+    const { mock } = renderComposer();
+    act(() => {
+      mock.emitReset({
+        sessionId: "s",
+        workspaceRoot: "/r",
+        record: [],
+        overlay: null,
+        backendWorkspace: "/r",
+        backendWorkspaceIsDefault: true,
+      });
+      mock.emitTurn({ kind: "started", turnId: "t1" });
+    });
+    const elsewhere = document.createElement("input");
+    document.body.appendChild(elsewhere);
+    try {
+      act(() => {
+        elsewhere.focus();
+      });
+      act(() => {
+        mock.emitAgent({ kind: "agent", event: backendStarted });
+      });
+      expect(document.activeElement).toBe(elsewhere);
+    } finally {
+      elsewhere.remove();
+    }
   });
 
   it("a bridge without steerText (the demo) holds and delivers but never offers the interject", () => {

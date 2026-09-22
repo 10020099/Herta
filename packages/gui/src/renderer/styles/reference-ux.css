@@ -3132,6 +3132,13 @@ button.agent-preview {
   border: 1px solid rgba(148, 163, 184, 0.35);
   animation: approval-rise 220ms var(--ease-pop);
 }
+/* A fresh gate focuses the dialog itself, not a button (UX review
+   2026-09-22): the card is its own focus sign, so no ring around it. The
+   buttons keep theirs. */
+.approval-panel:focus,
+.approval-panel:focus-visible {
+  outline: none;
+}
 .approval-panel.is-out {
   opacity: 0;
   transform: translateY(12px);

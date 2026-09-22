@@ -34,7 +34,6 @@ export function ApprovalPanel(): JSX.Element | null {
   const [shown, setShown] = useState<PendingPermissionApproval | null>(null);
   const [leaving, setLeaving] = useState(false);
   const timerRef = useRef<number>();
-  const allowRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
 
   // Sync the rendered overlay from the store, with a timed exit when it clears.
@@ -167,10 +166,16 @@ export function ApprovalPanel(): JSX.Element | null {
     ).text;
   }, [shown?.command, shown?.diff, shown?.files, t]);
 
-  // Focus the primary action when a fresh request appears (or when the
-  // overlay covering this panel closes).
+  // Focus the PANEL — never a decision — when a fresh request appears (or
+  // when the overlay covering this panel closes). The gate arrives on its
+  // own clock, usually while the user is doing something else: typing a
+  // held message (ADR 0063), searching the sidebar, confirming a pinyin
+  // candidate with Space. Focus on Allow turned the next Space or Enter
+  // into "allow once", unread (UX review 2026-09-22, item 1). The dialog
+  // itself takes focus: Space and Enter do nothing there, the screen reader
+  // reads the description, Escape denies, and one Tab reaches the buttons.
   useEffect(() => {
-    if (shown !== null && !leaving && isTop) allowRef.current?.focus();
+    if (shown !== null && !leaving && isTop) panelRef.current?.focus();
   }, [shown, leaving, isTop]);
 
   const resolve = (
@@ -209,29 +214,32 @@ export function ApprovalPanel(): JSX.Element | null {
     if (shown === null || leaving || !isTop) return;
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === "Escape") {
-        // Deny only when the Escape is OURS: it originated inside the panel,
-        // or with nothing focused (body/documentElement). A surface that
-        // consumes Escape locally — the sidebar search field, a session
-        // card's 确认删除 — must never silently deny the gate behind it
-        // (audit 2026-07-24, H2: opening search over a pending gate and
-        // pressing Escape refused the operation with no attribution).
+        // Deny only when the Escape is OURS: it originated INSIDE the panel.
+        // A surface that consumes Escape locally — the sidebar search field,
+        // a session card's 确认删除 — must never silently deny the gate
+        // behind it (audit 2026-07-24, H2: opening search over a pending
+        // gate and pressing Escape refused the operation with no
+        // attribution).
         //
         // An ORIGIN test, not another registration rule: `isTop` protects
         // only against the five surfaces that opted into the overlay stack,
         // so every future Escape consumer would have to know the stack
         // exists. That opt-in model is exactly what let the bug the stack
         // was built for recur (see lib/overlay-stack.ts's header).
-        // Foreign == the key originated in another FOCUSED element. A
-        // window/document/body target means nothing was focused, which is
-        // ours (and is what the keyboard-only path produces).
+        //
+        // Nothing focused (body) is NOT ours any more (UX review 2026-09-22,
+        // item 2): that is where focus lands when another surface closes
+        // under an Escape — the file viewer, a menu — so "Esc Esc" to close
+        // the viewer denied the write behind it. The panel takes focus when
+        // it appears, so the keyboard-only path's Escape originates inside
+        // it. A key-REPEAT never denies either: holding Escape to close
+        // Settings over a gate would otherwise deny the moment the panel
+        // became topmost and took focus.
+        if (e.repeat) return;
         const target = e.target;
         const root = panelRef.current;
-        const foreign =
-          target instanceof Element &&
-          target !== document.body &&
-          target !== document.documentElement &&
-          (root === null || !root.contains(target));
-        if (foreign) return;
+        if (root === null || !(target instanceof Node)) return;
+        if (!root.contains(target)) return;
         resolve("deny");
         return;
       }
@@ -246,13 +254,16 @@ export function ApprovalPanel(): JSX.Element | null {
       if (first === undefined || last === undefined) return;
       const active = document.activeElement;
       // At the cycle's edge — or with focus outside the panel entirely —
-      // clamp back into the panel instead of letting Tab escape.
+      // clamp back into the panel instead of letting Tab escape. Focus on
+      // the panel ITSELF (where a fresh gate puts it) counts as the edge
+      // both ways: Shift+Tab from the dialog would otherwise walk to the
+      // element before it in the document.
       if (e.shiftKey) {
-        if (active === first || !root.contains(active)) {
+        if (active === first || active === root || !root.contains(active)) {
           e.preventDefault();
           last.focus();
         }
-      } else if (active === last || !root.contains(active)) {
+      } else if (active === last || active === root || !root.contains(active)) {
         e.preventDefault();
         first.focus();
       }
@@ -298,6 +309,9 @@ export function ApprovalPanel(): JSX.Element | null {
       aria-modal="true"
       aria-label={t("approval.title")}
       aria-describedby="approval-panel-desc"
+      // Focusable by script only: a fresh gate focuses the dialog, not a
+      // decision (see the focus effect above).
+      tabIndex={-1}
     >
       <div className="approval-panel__head">
         <span className="approval-panel__title">{t("approval.title")}</span>
@@ -401,7 +415,6 @@ export function ApprovalPanel(): JSX.Element | null {
       )}
       <div className="approval-panel__actions">
         <button
-          ref={allowRef}
           type="button"
           className="approval-btn approval-btn--allow"
           disabled={resolving}

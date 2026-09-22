@@ -34,6 +34,27 @@ function shouldHint(
   return true;
 }
 
+/**
+ * Whether the composer may take the caret without taking it FROM anything
+ * (UX review 2026-09-22, items 12-13): focus is nowhere (a disabled textarea
+ * drops it silently), already in the composer, or on the approval panel of a
+ * gate that has just been answered and is leaving. Focus anywhere else —
+ * Settings' key field, the sidebar search, the file viewer — belongs to what
+ * the user is doing there.
+ */
+function caretIsFree(form: HTMLElement | null): boolean {
+  const active = document.activeElement;
+  if (
+    active === null ||
+    active === document.body ||
+    active === document.documentElement
+  ) {
+    return true;
+  }
+  if (form?.contains(active)) return true;
+  return active.closest(".approval-panel") !== null;
+}
+
 /** How long the rewind notice's slide-out runs before it unmounts. Must match
  *  the `.composer-notice.is-exiting` animation duration in reference-ux.css. */
 const NOTICE_EXIT_MS = 240;
@@ -99,6 +120,10 @@ export function Composer(): JSX.Element {
   // freeze the height until the picker resolves (then the caret handoff
   // below decides).
   const pickerOpen = useRef(false);
+  // Set around a focus() that gives the caret back WITHOUT the expansion
+  // (the hold window opening, below): the textarea's onFocus skips the
+  // expand while it is set, and the first keystroke expands instead.
+  const quietFocus = useRef(false);
   const [hintActive, setHintActive] = useState(false);
   // The index of an `@` whose hint the user dismissed with Esc; re-enabled
   // once the text changes. -1 means "none dismissed".
@@ -238,7 +263,10 @@ export function Composer(): JSX.Element {
         );
       }
     }
-    if (was && !busy && !suppressed) {
+    // Only when the caret is free: a turn that ends while the user types a
+    // key into Settings or searches the sidebar leaves them there (UX review
+    // 2026-09-22, item 12 — the refocus used to be unconditional).
+    if (was && !busy && !suppressed && caretIsFree(composerRef.current)) {
       taRef.current?.focus();
       // "Caret back, ready to type" includes the height: expand directly
       // rather than relying on the focus() call's focusin reaching the form
@@ -246,17 +274,36 @@ export function Composer(): JSX.Element {
       // fails to take should still leave the composer ready).
       setFocusWithin(true);
     }
-  }, [busy, suppressed, bridge, sessionStore]);
+  }, [busy, suppressed, bridge, sessionStore, composerRef]);
 
   // The hold window closing while the turn goes on (板砖 done, Herta
   // speaking) disables the textarea again — silently, like the turn start
   // above — so the engaged height must let go here too.
+  //
+  // The window OPENING re-enables it — when 板砖 starts, and again when an
+  // approval gate is answered — and the caret comes back with it if the
+  // caret is free (UX review 2026-09-22, item 13: the disable at turn start
+  // and the gate had taken it, and nothing gave it back until the turn
+  // ended). QUIETLY: the composer rests shrunk through the reply (owner
+  // 2026-08-20), so the caret returns without the expansion; the first
+  // keystroke expands it.
   const prevHolding = useRef(false);
   useEffect(() => {
     const was = prevHolding.current;
     prevHolding.current = holding;
     if (was && !holding && busy) setFocusWithin(false);
-  }, [holding, busy]);
+    if (!was && holding && caretIsFree(composerRef.current)) {
+      const ta = taRef.current;
+      if (ta !== null && document.activeElement !== ta) {
+        quietFocus.current = true;
+        try {
+          ta.focus();
+        } finally {
+          quietFocus.current = false;
+        }
+      }
+    }
+  }, [holding, busy, composerRef]);
 
   // The held strip's three answers (ADR 0063).
   const onSteer = (): void => {
@@ -685,10 +732,15 @@ export function Composer(): JSX.Element {
             ref={taRef}
             className="composer-input"
             placeholder={t("composer.placeholder")}
-            onFocus={() => setFocusWithin(true)}
+            onFocus={() => {
+              if (!quietFocus.current) setFocusWithin(true);
+            }}
             value={text}
             onChange={(e) => {
               escDismissed.current = -1;
+              // Typing is engagement: a caret given back quietly (the hold
+              // window opening) expands on the first keystroke.
+              setFocusWithin(true);
               setText(e.target.value);
               setHintActive(
                 shouldHint(e.target.value, e.target.selectionStart, -1),
