@@ -87,6 +87,31 @@ type LoadState =
  *  (lines are a source concept). The header toggle overrides per tab. */
 type ViewMode = "rendered" | "source";
 
+/** A tab's identity — the path AND the kind, the same rule the opener
+ *  dedups by. A file tab and its diff tab share a path; keyed by path
+ *  alone they shared a React key and a Markdown mode (UX review
+ *  2026-09-22, item 19). */
+function tabKey(tab: Pick<FileViewerTarget, "path" | "kind">): string {
+  return `${tab.kind ?? "file"}:${tab.path}`;
+}
+
+/** How long the copy action's tip says "Copied" before it reverts. */
+const COPIED_MS = 1500;
+
+/** A control inside the panel that answers Escape itself: a text field (the
+ *  history search) or an open menu (the branch picker). */
+function claimsEscape(target: EventTarget): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target.isContentEditable
+  ) {
+    return true;
+  }
+  return target.closest('[role="listbox"], [aria-expanded="true"]') !== null;
+}
+
 function tabName(tab: FileViewerTarget): string {
   if (tab.label !== undefined) return tab.label;
   const parts = tab.path.split("/").filter((s) => s.length > 0);
@@ -121,12 +146,24 @@ export function FileViewerPanel(): JSX.Element | null {
   const [copied, setCopied] = useState(false);
   const [modes, setModes] = useState<Readonly<Record<string, ViewMode>>>({});
   const panelRef = useRef<HTMLElement | null>(null);
+  // What the body currently shows, so a re-read of the same tab keeps it on
+  // screen until the new read answers.
+  const loadedKey = useRef<string | null>(null);
 
+  // Keyed on the TARGET too, not only its path: a re-cite of an open file
+  // replaces the target (a new cite, a new anchor) with the path unchanged,
+  // and the tab kept showing what it read before 板砖 wrote the file — the
+  // band on stale lines (UX review 2026-09-22, item 9). A re-cite is the
+  // moment the file most likely changed, so it re-reads. Clicking an open
+  // tab keeps its target and reads nothing.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `target` is the re-read trigger, not an input
   useEffect(() => {
     setCopied(false);
     if (path === null || sessionId === null) return;
     let alive = true;
-    setLoad({ kind: "loading" });
+    const key = `${kindInfo.kind}:${path}`;
+    if (loadedKey.current !== key) setLoad({ kind: "loading" });
+    loadedKey.current = key;
     const readText = bridge.readWorkspaceFile?.bind(bridge);
     const readBytes = bridge.readWorkspaceBytes?.bind(bridge);
     const readCommit = bridge.readWorkspaceCommit?.bind(bridge);
@@ -207,25 +244,65 @@ export function FileViewerPanel(): JSX.Element | null {
     return () => {
       alive = false;
     };
-  }, [path, sessionId, bridge, kindInfo.kind]);
+  }, [path, sessionId, bridge, kindInfo.kind, target]);
+  useEffect(() => {
+    if (path === null) loadedKey.current = null;
+  }, [path]);
 
-  // A new target for a path (a fresh cite) drops that path's toggle so the
-  // anchor rule applies again.
+  // A new target for a tab (a fresh cite) drops that tab's toggle so the
+  // anchor rule applies again. Only a NEW target: activating an open tab
+  // shows its existing target, and resetting there threw away the toggle
+  // on every tab switch (UX review 2026-09-22, item 19).
+  const seenTargets = useRef(new WeakSet<FileViewerTarget>());
   useEffect(() => {
     if (target === null) return;
+    if (seenTargets.current.has(target)) return;
+    seenTargets.current.add(target);
+    const key = tabKey(target);
     setModes((m) => {
-      if (!(target.path in m)) return m;
+      if (!(key in m)) return m;
       const next = { ...m };
-      delete next[target.path];
+      delete next[key];
       return next;
     });
   }, [target]);
 
+  // "Copied" is a moment, not a state: it reverts on its own (UX review
+  // 2026-09-22, item 21 — it stayed until the path changed).
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(false), COPIED_MS);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+
   // Focus the panel on open so Escape works immediately; the opener (a
   // record row) keeps working for keyboard users because focus moves to a
-  // labeled region, not into the void.
+  // labeled region, not into the void. On close, focus goes back to the
+  // opener when nothing else took it: left on body, the next Escape was
+  // "nobody's" — and the approval panel used to count that as its own and
+  // deny (UX review 2026-09-22, item 2).
+  const returnFocus = useRef<HTMLElement | null>(null);
   useEffect(() => {
-    if (path !== null) panelRef.current?.focus();
+    const panel = panelRef.current;
+    if (path !== null) {
+      const active = document.activeElement;
+      if (
+        active instanceof HTMLElement &&
+        active !== document.body &&
+        panel !== null &&
+        !panel.contains(active)
+      ) {
+        returnFocus.current = active;
+      }
+      panel?.focus();
+      return;
+    }
+    const back = returnFocus.current;
+    returnFocus.current = null;
+    const active = document.activeElement;
+    if (back?.isConnected && (active === null || active === document.body)) {
+      back.focus();
+    }
   }, [path]);
 
   const onDividerDown = useDividerDrag();
@@ -243,8 +320,9 @@ export function FileViewerPanel(): JSX.Element | null {
           ? load.reply.diff.path
           : load.reply.relative;
   const activeName = tabName(v.tabs[v.active] ?? { path });
+  const modeKey = tabKey(target ?? { path });
   const mode: ViewMode =
-    modes[path] ?? (anchor !== undefined ? "source" : "rendered");
+    modes[modeKey] ?? (anchor !== undefined ? "source" : "rendered");
   const isMarkdown = kindInfo.kind === "markdown";
 
   return (
@@ -256,7 +334,13 @@ export function FileViewerPanel(): JSX.Element | null {
       aria-label={activeName}
       tabIndex={-1}
       onKeyDown={(e) => {
-        if (e.key === "Escape") v.close();
+        // Escape belongs to the innermost thing that answers it: the
+        // history search and the branch picker handle their own, and the
+        // panel closes only on one nothing inside claimed (UX review
+        // 2026-09-22, item 18 — Escape in the search box closed the viewer).
+        if (e.key !== "Escape" || e.defaultPrevented) return;
+        if (claimsEscape(e.target)) return;
+        v.close();
       }}
     >
       {/* Pointer-only resize affordance; the width also self-clamps on
@@ -275,7 +359,7 @@ export function FileViewerPanel(): JSX.Element | null {
         <div className="file-viewer__tabs" role="tablist">
           {v.tabs.map((tab, i) => (
             <span
-              key={tab.path}
+              key={tabKey(tab)}
               className={`file-viewer__tab${i === v.active ? " is-active" : ""}`}
             >
               <button
@@ -337,7 +421,7 @@ export function FileViewerPanel(): JSX.Element | null {
                 onClick={() =>
                   setModes((m) => ({
                     ...m,
-                    [path]: mode === "rendered" ? "source" : "rendered",
+                    [modeKey]: mode === "rendered" ? "source" : "rendered",
                   }))
                 }
               >

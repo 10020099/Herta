@@ -193,6 +193,21 @@ export function LogView(): JSX.Element {
               onChange={(e) => setTyped(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") setQuery(typed.trim());
+                // Escape answers here, not by closing the viewer: a typed
+                // query clears first; an empty box hands focus to the panel,
+                // whose own Escape then closes it (UX review 2026-09-22,
+                // item 18).
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  if (typed.length > 0 || query.length > 0) {
+                    setTyped("");
+                    setQuery("");
+                  } else {
+                    e.currentTarget
+                      .closest<HTMLElement>(".file-viewer")
+                      ?.focus();
+                  }
+                }
               }}
             />
           </div>

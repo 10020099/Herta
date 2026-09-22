@@ -87,6 +87,13 @@ function Probe(): JSX.Element {
       >
         open log
       </button>
+      <button
+        type="button"
+        data-testid="probe-md-diff"
+        onClick={() => open?.("docs/notes.md", { kind: "diff" })}
+      >
+        open md diff
+      </button>
     </>
   );
 }
@@ -723,6 +730,187 @@ describe("FileViewerPanel (ADR 0050)", () => {
     );
     h.switchSession("s2");
     expect(screen.queryByTestId("file-viewer")).toBeNull();
+  });
+});
+
+describe("FileViewerPanel — UX review 2026-09-22", () => {
+  it("a re-cite of an open file RE-READS it, keeping the old content on screen until the new read answers (item 9)", async () => {
+    const mock = createMockHertaBridge();
+    let version = "before the write";
+    const readWorkspaceFile = vi.fn(async () => ({
+      ok: true as const,
+      content: version,
+      truncated: false,
+      size: version.length,
+      relative: "src/a.ts",
+    }));
+    Object.assign(mock.bridge, { readWorkspaceFile });
+    const h = renderWithSession(ui(), { mock });
+    h.openSession("s1");
+    fireEvent.click(screen.getByTestId("probe"));
+    const panel = await screen.findByTestId("file-viewer");
+    await waitFor(() =>
+      expect(panel.querySelector(".file-viewer__text")?.textContent).toContain(
+        "before the write",
+      ),
+    );
+    // 板砖 writes the file and cites it again.
+    version = "after the write";
+    fireEvent.click(screen.getByTestId("probe-anchored"));
+    // No empty flash: the old text stays until the read answers.
+    expect(panel.querySelector(".file-viewer__text")).not.toBeNull();
+    await waitFor(() =>
+      expect(panel.querySelector(".file-viewer__text")?.textContent).toContain(
+        "after the write",
+      ),
+    );
+    expect(readWorkspaceFile).toHaveBeenCalledTimes(2);
+  });
+
+  it("Escape in the history search clears it, then hands focus to the panel — it never closes the viewer from the field (item 18)", async () => {
+    const mock = createMockHertaBridge();
+    Object.assign(mock.bridge, {
+      readWorkspaceFile: vi.fn(async () => ({
+        ok: false as const,
+        reason: "not_found" as const,
+      })),
+      readWorkspaceLog: vi.fn(async (_s: string, opts: { skip: number }) => ({
+        ok: true as const,
+        page: {
+          entries: [logEntry(1)],
+          skip: opts.skip,
+          hasMore: false,
+          upstream: null,
+        },
+      })),
+    });
+    const h = renderWithSession(ui(), { mock });
+    h.openSession("s1");
+    fireEvent.click(screen.getByTestId("probe-log"));
+    const panel = await screen.findByTestId("file-viewer");
+    const search = screen.getByLabelText(
+      "Search commit messages",
+    ) as HTMLInputElement;
+    search.focus();
+    fireEvent.change(search, { target: { value: "fix" } });
+    fireEvent.keyDown(search, { key: "Escape" });
+    expect(screen.queryByTestId("file-viewer")).not.toBeNull();
+    expect(search.value).toBe("");
+    // Empty now: the next Escape moves focus to the panel, still open…
+    fireEvent.keyDown(search, { key: "Escape" });
+    expect(screen.queryByTestId("file-viewer")).not.toBeNull();
+    expect(document.activeElement).toBe(panel);
+    // …and the panel's own Escape closes it.
+    fireEvent.keyDown(panel, { key: "Escape" });
+    expect(screen.queryByTestId("file-viewer")).toBeNull();
+  });
+
+  it("a file tab and its diff tab are two tabs: the Markdown source toggle survives opening the diff (item 19)", async () => {
+    const mock = createMockHertaBridge();
+    Object.assign(mock.bridge, {
+      readWorkspaceFile: vi.fn(async () => ({
+        ok: true as const,
+        content: "# Notes\n\nbody\n",
+        truncated: false,
+        size: 14,
+        relative: "docs/notes.md",
+      })),
+      readWorkspaceDiff: vi.fn(async () => ({
+        ok: true as const,
+        diff: {
+          path: "docs/notes.md",
+          untracked: false,
+          missing: false,
+          patch:
+            "diff --git a/docs/notes.md b/docs/notes.md\n@@ -1 +1 @@\n-a\n+b\n",
+          patchTruncated: false,
+          added: 1,
+          deleted: 1,
+        },
+      })),
+    });
+    const h = renderWithSession(ui(), { mock });
+    h.openSession("s1");
+    fireEvent.click(screen.getByTestId("probe-md"));
+    await screen.findByTestId("file-viewer");
+    // Rendered by default; switch this tab to the source.
+    fireEvent.click(await screen.findByTestId("viewer-toggle-source"));
+    expect(
+      screen.getByTestId("viewer-toggle-source").getAttribute("aria-pressed"),
+    ).toBe("true");
+    fireEvent.click(screen.getByTestId("probe-md-diff"));
+    const tabs = await waitFor(() => {
+      const t = screen.getAllByRole("tab");
+      expect(t).toHaveLength(2);
+      return t;
+    });
+    // Back to the file tab: still the source.
+    fireEvent.click(tabs[0] as HTMLElement);
+    expect(
+      (await screen.findByTestId("viewer-toggle-source")).getAttribute(
+        "aria-pressed",
+      ),
+    ).toBe("true");
+  });
+
+  it("the copy tip says Copied for a moment, then reverts on its own (item 21)", async () => {
+    const mock = createMockHertaBridge();
+    Object.assign(mock.bridge, {
+      readWorkspaceFile: vi.fn(async () => ({
+        ok: true as const,
+        content: "x",
+        truncated: false,
+        size: 1,
+        relative: "src/a.ts",
+      })),
+    });
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    try {
+      const h = renderWithSession(ui(), { mock });
+      h.openSession("s1");
+      fireEvent.click(screen.getByTestId("probe"));
+      await screen.findByTestId("file-viewer");
+      const copy = screen.getByRole("button", { name: "Copy path" });
+      copy.focus(); // the portal tip opens on focus
+      fireEvent.click(copy);
+      await waitFor(() =>
+        expect(screen.getByRole("tooltip").textContent).toBe("Copied"),
+      );
+      await waitFor(
+        () => expect(screen.getByRole("tooltip").textContent).toBe("Copy path"),
+        { timeout: 4000 },
+      );
+    } finally {
+      Reflect.deleteProperty(navigator, "clipboard");
+    }
+  });
+
+  it("closing the viewer hands focus back to what opened it (item 2)", async () => {
+    const mock = createMockHertaBridge();
+    Object.assign(mock.bridge, {
+      readWorkspaceFile: vi.fn(async () => ({
+        ok: true as const,
+        content: "x",
+        truncated: false,
+        size: 1,
+        relative: "src/a.ts",
+      })),
+    });
+    const h = renderWithSession(ui(), { mock });
+    h.openSession("s1");
+    const opener = screen.getByTestId("probe");
+    opener.focus();
+    fireEvent.click(opener);
+    const panel = await screen.findByTestId("file-viewer");
+    expect(document.activeElement).toBe(panel);
+    fireEvent.keyDown(panel, { key: "Escape" });
+    expect(screen.queryByTestId("file-viewer")).toBeNull();
+    // Not body: an Escape from here is the opener's, never "nobody's".
+    expect(document.activeElement).toBe(opener);
   });
 });
 
