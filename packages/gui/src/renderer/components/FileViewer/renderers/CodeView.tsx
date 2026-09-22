@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useT } from "../../../i18n/LocaleProvider.js";
 import type { ViewerAnchor } from "../file-viewer-context.js";
-import { setSanitizedHtml } from "./dom-html.js";
+import { sanitizedFragment, setSanitizedHtml } from "./dom-html.js";
+import { chunkLines, splitHighlightHtml } from "./highlight-chunks.js";
 import { viewerHighlighter } from "./highlighter.js";
 
 /**
@@ -12,6 +13,12 @@ import { viewerHighlighter } from "./highlighter.js";
  * fallback): a plain text file paints synchronously as before, and a code
  * file paints plain first and colors in when the answer lands (a local read
  * answers in single-digit milliseconds; the worker starts once).
+ *
+ * The text is rendered as BLOCKS of `LINES_PER_CHUNK` lines (ADR 0068 §13),
+ * and the answer's tokens replace the plain text one block at a time, a
+ * frame's budget per turn: one `<pre>` of 29K spans adopted at once cost
+ * DOMPurify 437 ms, layout 525 ms and a first frame near a second at the
+ * viewer's cap; a block re-lays out alone, and the swap never moves a line.
  */
 
 /** Rendered-line cap: a 1.5MB log is ~30k lines and 30k gutter rows of DOM
@@ -21,6 +28,75 @@ export const MAX_RENDER_LINES = 8_000;
 /** Fallback line height when the computed style is unreadable (jsdom) —
  *  the CSS pins 12px × 1.6. */
 const FALLBACK_LINE_H = 19.2;
+
+/** Main-thread budget of one turn of the progressive adoption — the time
+ *  spent sanitizing before the turn yields; the chunk's layout follows in
+ *  the same frame. A cap-size chunk sanitizes in ~12 ms in the app and lays
+ *  out in about as much, so this is one chunk per frame there (a turn that
+ *  took two measured 46 ms; one takes ~25) and several per frame for an
+ *  ordinary file's small chunks. The first turn runs right away, in the
+ *  answer's own task. */
+const ADOPT_BUDGET_MS = 4;
+
+/**
+ * Run `fn` on the next frame — or after a short timer where frames are not
+ * being produced (an occluded window pauses requestAnimationFrame; jsdom has
+ * none). Returns the cancel.
+ */
+function onNextFrame(fn: () => void): () => void {
+  let done = false;
+  const run = (): void => {
+    if (done) return;
+    done = true;
+    fn();
+  };
+  const raf =
+    typeof requestAnimationFrame === "function"
+      ? requestAnimationFrame(run)
+      : undefined;
+  const timer = setTimeout(run, 32);
+  return () => {
+    done = true;
+    if (raf !== undefined) cancelAnimationFrame(raf);
+    clearTimeout(timer);
+  };
+}
+
+/**
+ * Swap each chunk's plain text for its tokens, a frame's budget at a time
+ * (ADR 0068 §13). The answer is cut at the chunks' own line boundaries, so
+ * chunk k's tokens are exactly chunk k's lines and nothing moves; each
+ * piece goes through the one door (`sanitizedFragment`) on its own. An
+ * answer that is not highlight.js's shape, or one whose piece count no
+ * longer matches the blocks, is adopted whole as before. A chunk that has
+ * left the `<pre>` (the text changed under a late answer) is left alone.
+ * Returns the cancel.
+ */
+function adoptHighlight(pre: HTMLPreElement, html: string): () => void {
+  const pieces = splitHighlightHtml(html);
+  const chunks = Array.from(pre.children);
+  if (pieces === null || pieces.length !== chunks.length) {
+    setSanitizedHtml(pre, html);
+    return () => undefined;
+  }
+  let k = 0;
+  let cancelFrame: (() => void) | undefined;
+  const step = (): void => {
+    const deadline = performance.now() + ADOPT_BUDGET_MS;
+    do {
+      const piece = pieces[k];
+      const chunk = chunks[k];
+      if (piece === undefined || chunk === undefined) break;
+      if (chunk.parentNode === pre) {
+        chunk.replaceChildren(sanitizedFragment(piece.html));
+      }
+      k += 1;
+    } while (k < pieces.length && performance.now() < deadline);
+    if (k < pieces.length) cancelFrame = onNextFrame(step);
+  };
+  step();
+  return () => cancelFrame?.();
+}
 
 export function CodeView({
   content,
@@ -46,7 +122,7 @@ export function CodeView({
   // move of its divider and every frame of a sidebar slide (its width is
   // state), and this split / slice / join / gutter build runs over up to
   // 300K characters and 8 000 lines (perf audit 2026-09-20).
-  const { elided, lineCount, shown, gutter } = useMemo(() => {
+  const { elided, lineCount, shown, gutter, chunks } = useMemo(() => {
     const allLines = content.split("\n");
     const lines = allLines.slice(0, MAX_RENDER_LINES);
     return {
@@ -54,27 +130,38 @@ export function CodeView({
       lineCount: lines.length,
       shown: lines.join("\n"),
       gutter: lines.map((_, i) => i + 1).join("\n"),
+      chunks: chunkLines(lines),
     };
   }, [content]);
 
   // Plain text first (synchronous, so the first paint and the anchor
-  // metrics never wait on a chunk); tokens replace it when the highlighter
-  // answers for THIS content — a stale answer for a previous file is
-  // dropped.
+  // metrics never wait on the highlighter), as blocks the tokens will land
+  // in one by one; the answer for THIS content replaces them — a stale
+  // answer for a previous file is dropped, and its adoption cancelled.
   useLayoutEffect(() => {
     const pre = textRef.current;
-    if (pre !== null) pre.textContent = shown;
-  }, [shown]);
+    if (pre === null) return;
+    pre.replaceChildren(
+      ...chunks.map((text) => {
+        const div = document.createElement("div");
+        div.className = "file-viewer__chunk";
+        div.textContent = text;
+        return div;
+      }),
+    );
+  }, [chunks]);
   useEffect(() => {
     if (language === undefined) return;
     let alive = true;
+    let cancel: (() => void) | undefined;
     void viewerHighlighter.highlight(shown, language).then((html) => {
-      if (!alive) return;
+      if (!alive || html === null) return;
       const pre = textRef.current;
-      if (html !== null && pre !== null) setSanitizedHtml(pre, html);
+      if (pre !== null) cancel = adoptHighlight(pre, html);
     });
     return () => {
       alive = false;
+      cancel?.();
     };
   }, [shown, language]);
 

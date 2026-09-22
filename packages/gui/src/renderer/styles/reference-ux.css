@@ -5817,6 +5817,15 @@ button.repo-card__path,
   color: var(--slate-deep);
   flex: 1;
 }
+/* The text as blocks of LINES_PER_CHUNK lines (ADR 0068 §13): each block is
+   its own formatting context, so swapping one block's plain text for its
+   tokens lays out that block alone — one `<pre>` of 29K spans laid out at
+   once cost half a second and a one-second frame at the viewer's cap. A
+   block ends without a newline; the block boundary is the line break, so a
+   copied selection crosses it with exactly one. */
+.file-viewer__chunk {
+  display: block;
+}
 .file-viewer__notice {
   margin: 0;
   padding: 10px 16px 14px;
