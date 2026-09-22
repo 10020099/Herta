@@ -117,6 +117,30 @@ describe("ConnectStation", () => {
     expect(onConnectFailed).toHaveBeenCalledTimes(1);
   });
 
+  it("a failed connect's note ends with its attempt — a later, unrelated disconnect shows a clean station (UX review 2026-09-22, item 22)", async () => {
+    const mock = createMockHertaBridge();
+    const nullBridge = {
+      ...mock.bridge,
+      createSession: () => Promise.resolve(null),
+    };
+    const ui = (show: boolean): JSX.Element => (
+      <HertaBridgeProvider bridge={nullBridge}>
+        <ConnectStation show={show} instantExit={!show} />
+      </HertaBridgeProvider>
+    );
+    const { rerender } = renderWithLocale(ui(true));
+    fireEvent.click(screen.getByRole("button", { name: "Connect to Herta" }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+    // A session opens another way (the sidebar) — the station hides…
+    rerender(ui(false));
+    // …and a later disconnect (the open session deleted) brings it back.
+    rerender(ui(true));
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("double-click creates only one session (in-flight latch)", () => {
     const { mock } = renderIt(true);
     const btn = screen.getByRole("button", { name: "Connect to Herta" });

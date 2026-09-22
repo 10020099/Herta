@@ -153,23 +153,38 @@ export function Composer(): JSX.Element {
   const langRef = useRef(lang);
   langRef.current = lang;
 
+  // "The current turn is still in progress" is a refusal ABOUT the turn: it
+  // goes when the turn does. It shares the notice lane with the rewind's
+  // file-edit spill, which persists until the next send — and so did this
+  // one, long after the turn it described had ended (UX review 2026-09-22,
+  // item 14). The text set is remembered so the turn's end clears exactly
+  // that notice and never a newer one.
+  const turnNotice = useRef<string | null>(null);
+  const refuseForTurn = useCallback((): void => {
+    const text = t("composer.attach.busy");
+    turnNotice.current = text;
+    sessionStore.setComposerNotice(text);
+  }, [sessionStore, t]);
+
   // Staged pictures (ADR 0048 §4). Refusals go through the same notice lane
   // every other composer refusal uses.
   const onStageRefusal = useCallback(
     (reason: string) => {
+      if (reason === "a turn is in progress") {
+        refuseForTurn();
+        return;
+      }
       sessionStore.setComposerNotice(
-        reason === "a turn is in progress"
-          ? t("composer.attach.busy")
-          : reason === "too many files at once"
-            ? t("composer.attach.tooMany")
-            : reason === "five images per message"
-              ? t("composer.attach.imageLimit")
-              : reason === "denied"
-                ? t("composer.attach.denied")
-                : t("composer.attach.failed"),
+        reason === "too many files at once"
+          ? t("composer.attach.tooMany")
+          : reason === "five images per message"
+            ? t("composer.attach.imageLimit")
+            : reason === "denied"
+              ? t("composer.attach.denied")
+              : t("composer.attach.failed"),
       );
     },
-    [sessionStore, t],
+    [sessionStore, t, refuseForTurn],
   );
   const images = useStagedImages(sessionId, onStageRefusal);
   const openLightbox = useLightbox();
@@ -240,6 +255,16 @@ export function Composer(): JSX.Element {
       setFocusWithin(false);
     }
     if (was && !busy) {
+      // A refusal about the turn goes with it — only if it is still the
+      // notice showing (a newer one is not this effect's to clear).
+      const refusal = turnNotice.current;
+      turnNotice.current = null;
+      if (
+        refusal !== null &&
+        sessionStore.getSnapshot().composerNotice === refusal
+      ) {
+        sessionStore.clearComposerNotice();
+      }
       // The held message goes as the next turn the moment this one ends
       // (ADR 0063 — Codex's "do nothing"): through the ordinary submit path,
       // so the optimistic echo, the no-key card and the withdraw-on-refusal
@@ -367,7 +392,12 @@ export function Composer(): JSX.Element {
   // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the draft signal; setters/store/ref/restore are stable
   useEffect(() => {
     if (composerDraft === null) return;
-    setText(composerDraft);
+    // In FRONT of whatever is being typed, never over it — the same rule the
+    // held card's Edit follows. A rewind replaced an unsent draft outright
+    // (UX review 2026-09-22, item 15).
+    setText((prev) =>
+      prev.trim().length > 0 ? `${composerDraft}\n\n${prev}` : composerDraft,
+    );
     if (composerDraftImages !== null) images.restore(composerDraftImages);
     setHintActive(false);
     pendingCaret.current = composerDraft.length;
@@ -456,12 +486,14 @@ export function Composer(): JSX.Element {
         // silently did nothing mid-turn would read as a broken drop target
         // (the same no-op-silently failure the M6 audit found on setWorkspace).
         if (!r.ok) {
+          if (r.message === "a turn is in progress") {
+            refuseForTurn();
+            return;
+          }
           sessionStore.setComposerNotice(
-            r.message === "a turn is in progress"
-              ? t("composer.attach.busy")
-              : r.message === "too many files at once"
-                ? t("composer.attach.tooMany")
-                : t("composer.attach.failed"),
+            r.message === "too many files at once"
+              ? t("composer.attach.tooMany")
+              : t("composer.attach.failed"),
           );
         }
       })
@@ -619,7 +651,7 @@ export function Composer(): JSX.Element {
           if (files.length === 0) return; // ordinary text paste: leave it alone
           e.preventDefault();
           if (busy) {
-            sessionStore.setComposerNotice(t("composer.attach.busy"));
+            refuseForTurn();
             return;
           }
           void Promise.all(

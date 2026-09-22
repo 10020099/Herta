@@ -474,6 +474,66 @@ describe("Composer", () => {
     expect(form.classList.contains("is-shrunk")).toBe(false);
   });
 
+  it("a refusal about the turn goes when the turn ends; a rewind's notice beside it stays until the send (UX review 2026-09-22, item 14)", async () => {
+    const { mock, store } = renderComposer();
+    act(() => {
+      mock.emitReset({
+        sessionId: "s",
+        workspaceRoot: "/r",
+        record: [],
+        overlay: null,
+        backendWorkspace: "/r",
+        backendWorkspaceIsDefault: true,
+      });
+      mock.emitTurn({ kind: "started", turnId: "t1" });
+    });
+    const form = document.querySelector(".composer") as HTMLFormElement;
+    const file = {
+      name: "shot.png",
+      type: "image/png",
+      arrayBuffer: async () => new Uint8Array([0x89]).buffer,
+    };
+    await act(async () => {
+      fireEvent.paste(form, { clipboardData: { files: [file] } });
+    });
+    const busyText =
+      "The current turn is still in progress — files cannot be added";
+    expect(store().getSnapshot().composerNotice).toBe(busyText);
+    act(() => {
+      mock.emitTurn({ kind: "finished", turnId: "t1" });
+    });
+    expect(store().getSnapshot().composerNotice).toBeNull();
+
+    // A notice that is NOT about the turn — the rewind's file-edit spill —
+    // is untouched by a turn's end.
+    act(() => {
+      mock.emitTurn({ kind: "started", turnId: "t2" });
+      store().setComposerNotice("Files 板砖 edited stay edited");
+      mock.emitTurn({ kind: "finished", turnId: "t2" });
+    });
+    expect(store().getSnapshot().composerNotice).toBe(
+      "Files 板砖 edited stay edited",
+    );
+  });
+
+  it("a restored draft goes IN FRONT of an unsent one, never over it (UX review 2026-09-22, item 15)", () => {
+    const { store } = renderComposer();
+    const input = screen.getByPlaceholderText(
+      "Message Herta…",
+    ) as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "half-typed follow-up" } });
+    act(() => {
+      store().requestComposerDraft("the rewound message", null);
+    });
+    expect(input.value).toBe("the rewound message\n\nhalf-typed follow-up");
+    // With nothing typed, the restore is the draft itself.
+    fireEvent.change(input, { target: { value: "" } });
+    act(() => {
+      store().requestComposerDraft("again", null);
+    });
+    expect(input.value).toBe("again");
+  });
+
   it("the turn-end refocus never takes the caret from a field the user is typing in elsewhere (UX review 2026-09-22, item 12)", () => {
     const { mock } = renderComposer();
     const input = screen.getByPlaceholderText(

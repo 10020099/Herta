@@ -199,6 +199,42 @@ describe("DeviceCard", () => {
     await waitFor(() => expect(mock.calls.listCommandRules).toBe(2));
   });
 
+  it("an open ⋯ menu closes with its session — a keyboard or tray switch never shows the next session through a stale menu (UX review 2026-09-22, item 11)", async () => {
+    const mock = createMockHertaBridge({
+      commandRules: ["node src/index.mjs:*"],
+    });
+    renderWithLocale(
+      <HertaBridgeProvider bridge={mock.bridge}>
+        <DeviceCard />
+      </HertaBridgeProvider>,
+    );
+    const reset = (sessionId: string): void =>
+      act(() => {
+        mock.emitReset({
+          sessionId,
+          workspaceRoot: "/r",
+          record: [],
+          overlay: null,
+          title: null,
+          backendWorkspace: `/ws/${sessionId}`,
+          backendWorkspaceIsDefault: false,
+        });
+      });
+    reset("s-1");
+    fireEvent.click(screen.getByLabelText("device card info"));
+    await waitFor(() =>
+      expect(screen.queryByText("node src/index.mjs:*")).toBeTruthy(),
+    );
+    reset("s-2");
+    expect(
+      screen.getByLabelText("device card info").getAttribute("aria-expanded"),
+    ).toBe("false");
+    // Reopening fetches the new session's rules.
+    fireEvent.click(screen.getByLabelText("device card info"));
+    await waitFor(() => expect(mock.calls.listCommandRules).toBe(2));
+    expect(screen.getByText("/ws/s-2")).toBeInTheDocument();
+  });
+
   it("⋯ menu hides the rules section when the bridge lacks the surface", async () => {
     const mock = createMockHertaBridge();
     const {

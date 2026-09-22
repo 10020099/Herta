@@ -309,6 +309,12 @@ export function DeviceCard(): JSX.Element {
         />
       )}
       <CardMenu
+        // One menu per session: a switch by keyboard or from the tray left
+        // an open menu showing the new session with an empty rules list and
+        // no trust row — the scoped data reset, and the refetch fires only
+        // on the open edge (UX review 2026-09-22, item 11). The key closes
+        // it with the session it described.
+        key={snap.sessionId ?? "no-session"}
         cardKind="device"
         activeWorkspace={snap.backendWorkspace ?? undefined}
         isDefault={snap.backendWorkspaceIsDefault}
