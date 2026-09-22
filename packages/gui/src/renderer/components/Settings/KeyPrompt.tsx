@@ -31,8 +31,15 @@ export function KeyPrompt(): JSX.Element | null {
   // Escape leak to the approval panel's deny below.
   const isTop = useModalOverlay("key-prompt", open, OVERLAY_Z.keyPrompt);
 
+  // One number per opening of the card: a verification answers into the
+  // opening that asked, never a later one. The answer used to set
+  // rejected/failed unconditionally — after "Not now" the next prompt opened
+  // with a stale error over an empty field (UX review 2026-09-22, item 16).
+  const openingSeq = useRef(0);
+
   // Focus the input on open; reset transient state when it closes.
   useEffect(() => {
+    openingSeq.current += 1;
     if (open) {
       inputRef.current?.focus();
     } else {
@@ -88,12 +95,16 @@ export function KeyPrompt(): JSX.Element | null {
     if (key.length === 0 || saving) return;
     const text = needsKeyText;
     const staged = needsKeyImages ?? undefined;
+    const opening = openingSeq.current;
     setSaving(true);
     setFailed(false);
     setRejected(false);
     void bridge
       .setDeepSeekKey(key)
       .then((r) => {
+        // The card closed (or closed and reopened) while the call was out:
+        // the key was still saved, but nothing here is this answer's to set.
+        if (openingSeq.current !== opening) return;
         setSaving(false);
         if (!r.ok) {
           // DeepSeek rejected the key — keep the card open so the user can fix
@@ -112,6 +123,7 @@ export function KeyPrompt(): JSX.Element | null {
         if (text !== null) submitMessage(bridge, sessionStore, text, staged);
       })
       .catch(() => {
+        if (openingSeq.current !== opening) return;
         setFailed(true);
         setSaving(false);
       });

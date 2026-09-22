@@ -14,6 +14,28 @@ function renderPane(mock = createMockHertaBridge()) {
   return mock;
 }
 
+describe("UpdateSettings — a failed write (UX review 2026-09-22, item 17)", () => {
+  it("snaps the automatic-updates toggle back and says it could not save, like every sibling toggle", async () => {
+    const mock = createMockHertaBridge({ appVersion: "0.1.0" });
+    Object.assign(mock.bridge, {
+      getAutoUpdate: async () => true,
+      setAutoUpdate: async () => {
+        throw new Error("EACCES: permission denied");
+      },
+    });
+    renderPane(mock);
+    const toggle = await screen.findByRole("switch", {
+      name: "Automatic updates",
+    });
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    act(() => toggle.click());
+    expect(
+      await screen.findByText("Couldn't save — try again."),
+    ).toBeInTheDocument();
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+  });
+});
+
 describe("UpdateSettings", () => {
   it("shows the app version and the manual check button; the button checks", async () => {
     const mock = renderPane(createMockHertaBridge({ appVersion: "0.1.0" }));

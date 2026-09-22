@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { NETDISK_URL } from "../../../shared/links.js";
 import { useHertaBridge } from "../../context/HertaBridgeContext.js";
 import { useT } from "../../i18n/LocaleProvider.js";
@@ -43,6 +43,7 @@ export function UpdateSettings(): JSX.Element {
     "update.auto",
     true,
   );
+  const [autoFailed, setAutoFailed] = useState(false);
   const supported = bridge.checkForUpdate !== undefined;
   const autoSupported = bridge.setAutoUpdate !== undefined;
 
@@ -141,12 +142,23 @@ export function UpdateSettings(): JSX.Element {
               checked={autoUpdate}
               ariaLabel={t("update.auto")}
               onChange={(next) => {
+                // Optimistic, with the failure path every sibling toggle
+                // has: a write that never reached disk snaps back and says
+                // so (UX review 2026-09-22, item 17 — this one kept
+                // claiming a state main never stored).
                 setAutoUpdate(next);
-                void bridge.setAutoUpdate?.(next);
+                setAutoFailed(false);
+                bridge.setAutoUpdate?.(next).catch(() => {
+                  setAutoUpdate(!next);
+                  setAutoFailed(true);
+                });
               }}
             />
           }
         />
+      )}
+      {supported && autoSupported && autoFailed && (
+        <p className="settings-note">{t("common.couldntSave")}</p>
       )}
       {supported && (
         <p className="settings-note" data-testid="update-status">

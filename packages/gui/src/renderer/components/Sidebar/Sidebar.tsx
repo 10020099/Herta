@@ -58,8 +58,25 @@ export function Sidebar(props: SidebarProps): JSX.Element {
   // cards show the matching snippet as their preview line. Stale responses
   // are dropped by sequence; a bridge without searchSessions (fakes, the
   // website demo) degrades to title-only.
-  const [contentHits, setContentHits] =
-    useState<ReadonlyMap<string, SearchHitView>>(NO_HITS);
+  // The hits travel WITH the query they answered (UX review 2026-09-22,
+  // item 20): the previous query's hits and snippets used to stand until the
+  // new scan answered — and forever when it failed.
+  const [answered, setContentHits] = useState<{
+    readonly query: string;
+    readonly hits: ReadonlyMap<string, SearchHitView>;
+  }>({ query: "", hits: NO_HITS });
+  // What the list may show for the CURRENT query: the hits of its own scan,
+  // or — while that scan is out, or after it failed — an older hit whose
+  // snippet itself contains the query. A snippet is real dialogue, so such a
+  // hit is a true match; every other old hit is hidden, never shown as one.
+  const contentHits = useMemo<ReadonlyMap<string, SearchHitView>>(() => {
+    if (q === "" || answered.query === q) return answered.hits;
+    const still = new Map<string, SearchHitView>();
+    for (const [id, hit] of answered.hits) {
+      if (hit.snippet.toLowerCase().includes(q)) still.set(id, hit);
+    }
+    return still;
+  }, [answered, q]);
   /** Whether the content scan has ANSWERED for the current query — tracked
    *  alongside its results so the empty state can tell "no hits" from "not
    *  yet" and from "the scan failed" (audit 2026-07-24, 1.13). */
@@ -70,7 +87,7 @@ export function Sidebar(props: SidebarProps): JSX.Element {
   useEffect(() => {
     const my = ++searchSeq.current;
     if (q === "" || bridge.searchSessions === undefined) {
-      setContentHits(NO_HITS);
+      setContentHits({ query: q, hits: NO_HITS });
       // No scan will run: the title filter IS the whole answer here, so an
       // empty result is legitimately definitive.
       setScanState("idle");
@@ -82,14 +99,15 @@ export function Sidebar(props: SidebarProps): JSX.Element {
         .searchSessions?.(q)
         .then((hits) => {
           if (my !== searchSeq.current) return; // superseded by a newer query
-          setContentHits(
-            new Map(
+          setContentHits({
+            query: q,
+            hits: new Map(
               hits.map((h) => [
                 h.sessionId,
                 { snippet: h.snippet, blockIndex: h.blockIndex },
               ]),
             ),
-          );
+          });
           setScanState("ok");
         })
         .catch(() => {

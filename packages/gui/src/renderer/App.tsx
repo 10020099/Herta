@@ -287,10 +287,10 @@ export function App(props: AppProps = {}): JSX.Element {
       {titleBar}
       <LocaleProvider
         locale={locale}
-        onLocaleChange={(l) => {
-          setLocale(l);
-          void bridge.setLocale(l);
-        }}
+        // State only: the Language pane persists the choice itself, so a
+        // failed write can snap the UI back and say so (UX review
+        // 2026-09-22, item 17).
+        onLocaleChange={setLocale}
       >
         <HertaBridgeProvider bridge={bridge}>
           {/* Render-crash containment (audit 2026-07-13 T2.2): a throw in

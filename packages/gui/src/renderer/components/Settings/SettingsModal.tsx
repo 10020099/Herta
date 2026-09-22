@@ -265,10 +265,10 @@ export function SettingsModal({
   const active = SECTIONS.find((s) => s.key === section) ?? SECTIONS[0];
   const cardRef = useRef<HTMLDivElement>(null);
   const prevFocus = useRef<HTMLElement | null>(null);
-  // True once the modal has actually been opened, so the focus-restore below
-  // runs only on a real open→close — never on the initial mount (which would
-  // otherwise focus the sidebar Settings button on app launch).
-  const everOpened = useRef(false);
+  // True while THIS open has taken focus, so the restore below runs only on
+  // a real open→close — never on the initial mount (which would otherwise
+  // focus the sidebar Settings button on app launch), and once per close.
+  const focusTaken = useRef(false);
 
   // Mount on open; keep mounted through the exit animation, then unmount.
   useEffect(() => {
@@ -297,15 +297,21 @@ export function SettingsModal({
 
   // Focus the card on open; restore focus to the trigger on close — falling
   // back to the sidebar Settings button if the prior focus was lost to <body>.
-  // The restore is gated on `everOpened` so it never fires on the initial mount
-  // (open is already false then), which would steal focus to the Settings
-  // button at launch.
+  //
+  // Keyed on `mounted` as well as `open`: from the closed state the card
+  // does not exist in the flush that sees `open` — the mount effect above
+  // only schedules it, and `if (!mounted) return null` renders nothing — so
+  // a focus keyed on `open` alone found no card, the trap never engaged, and
+  // Tab walked the workspace behind the backdrop (UX review 2026-09-22,
+  // item 10). The restore is gated on `focusTaken`, so it never fires on the
+  // initial mount and fires once per close.
   useEffect(() => {
-    if (open) {
-      everOpened.current = true;
+    if (open && mounted && !focusTaken.current) {
+      focusTaken.current = true;
       prevFocus.current = document.activeElement as HTMLElement | null;
       cardRef.current?.focus();
-    } else if (everOpened.current) {
+    } else if (!open && focusTaken.current) {
+      focusTaken.current = false;
       const prev = prevFocus.current;
       if (prev && prev !== document.body && document.contains(prev)) {
         prev.focus?.();
@@ -313,7 +319,7 @@ export function SettingsModal({
         document.querySelector<HTMLElement>(".sidebar-settings")?.focus?.();
       }
     }
-  }, [open]);
+  }, [open, mounted]);
 
   // Overlay-stack registration: only the TOPMOST overlay owns Escape, so
   // closing Settings can never also feed the keypress to the approval panel

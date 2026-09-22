@@ -1,5 +1,5 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { HertaBridgeProvider } from "../../context/HertaBridgeContext.js";
 import { renderWithLocale } from "../../i18n/test-util.js";
 import {
@@ -17,6 +17,49 @@ function setup(opts: MockHertaBridgeOpts = {}) {
   );
   return mock;
 }
+
+describe("LanguageSettings — the UI-language row persists, and says when it could not (UX review 2026-09-22, item 17)", () => {
+  it("a pick applies live and is written through the bridge", async () => {
+    const mock = createMockHertaBridge();
+    const setLocale = vi.fn(async () => undefined);
+    Object.assign(mock.bridge, { setLocale });
+    renderWithLocale(
+      <HertaBridgeProvider bridge={mock.bridge}>
+        <LanguageSettings />
+      </HertaBridgeProvider>,
+    );
+    fireEvent.click(screen.getByLabelText("Display language"));
+    fireEvent.click(screen.getByRole("option", { name: "中文" }));
+    expect(setLocale).toHaveBeenCalledWith("zh");
+    // Live: the pane itself now speaks Chinese.
+    expect(
+      screen.queryByRole("button", { name: "Display language" }),
+    ).toBeNull();
+  });
+
+  it("a failed write snaps the UI back to the stored language and says it could not save", async () => {
+    const mock = createMockHertaBridge();
+    Object.assign(mock.bridge, {
+      setLocale: async () => {
+        throw new Error("EACCES: permission denied");
+      },
+    });
+    renderWithLocale(
+      <HertaBridgeProvider bridge={mock.bridge}>
+        <LanguageSettings />
+      </HertaBridgeProvider>,
+    );
+    fireEvent.click(screen.getByLabelText("Display language"));
+    fireEvent.click(screen.getByRole("option", { name: "中文" }));
+    expect(
+      await screen.findByText("Couldn't save — try again."),
+    ).toBeInTheDocument();
+    // Back in English: the trigger is labelled in the stored language again.
+    expect(
+      screen.getByRole("button", { name: "Display language" }).textContent,
+    ).toContain("English");
+  });
+});
 
 describe("LanguageSettings — interaction-language row (slice 4)", () => {
   it("renders the interaction row next to the UI-language row", () => {

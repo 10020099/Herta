@@ -55,6 +55,26 @@ export function LanguageSettings(): JSX.Element {
     };
   }, [bridge, setInteraction]);
 
+  // The UI language: live first, then persisted — with the failure path the
+  // interaction row below has always had (UX review 2026-09-22, item 17). It
+  // used to be App's fire-and-forget write, so a failed save kept showing a
+  // language the next launch would not have, and said nothing. The same
+  // latest-wins guard: only the newest pick may snap back.
+  const [localeFailed, setLocaleFailed] = useState(false);
+  const localeSeqRef = useRef(0);
+  const onLocale = (next: Locale): void => {
+    const prev = locale;
+    localeSeqRef.current += 1;
+    const seq = localeSeqRef.current;
+    setLocale(next);
+    setLocaleFailed(false);
+    bridge.setLocale(next).catch(() => {
+      if (seq !== localeSeqRef.current) return;
+      setLocale(prev);
+      setLocaleFailed(true);
+    });
+  };
+
   const onInteraction = (next: InteractionLanguageChoice): void => {
     // Optimistic: show the choice now, persist async. On a failed write, snap
     // back so the row never claims a state that didn't reach disk.
@@ -88,7 +108,7 @@ export function LanguageSettings(): JSX.Element {
               { value: "zh", label: "中文" },
               { value: "en", label: "English" },
             ]}
-            onChange={(next) => setLocale(next)}
+            onChange={onLocale}
           />
         }
       />
@@ -110,7 +130,7 @@ export function LanguageSettings(): JSX.Element {
           }
         />
       )}
-      {failed ? (
+      {failed || localeFailed ? (
         <p className="settings-note">{t("common.couldntSave")}</p>
       ) : (
         loadFailed && (

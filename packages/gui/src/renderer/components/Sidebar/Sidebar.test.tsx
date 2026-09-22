@@ -221,6 +221,61 @@ describe("Sidebar", () => {
     vi.useRealTimers();
   });
 
+  it("a previous query's content hits never stand for a new one — not while its scan runs, not after it fails (UX review 2026-09-22, item 20)", async () => {
+    vi.useFakeTimers();
+    try {
+      const mock = createMockHertaBridge({
+        listSessionsResult: mockSessionList,
+      });
+      Object.assign(mock.bridge, {
+        searchSessions: async (query: string) => {
+          if (query === "cursor") {
+            return [
+              {
+                sessionId: "yesterday-1",
+                snippet: "…the parser cursor never reset…",
+                blockIndex: 4,
+              },
+            ];
+          }
+          throw new Error("scan failed");
+        },
+      });
+      const { container } = renderWithLocale(
+        <HertaBridgeProvider bridge={mock.bridge}>
+          <ControlledSidebar initialOpen />
+        </HertaBridgeProvider>,
+      );
+      await settle();
+      const input = screen.getByPlaceholderText("Search sessions");
+      const answer = async (): Promise<void> => {
+        await act(async () => {
+          vi.advanceTimersByTime(200);
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+      };
+      fireEvent.change(input, { target: { value: "cursor" } });
+      await answer();
+      expect(container.querySelectorAll(".session-item")).toHaveLength(1);
+      // A query the old snippet still contains keeps that hit while its own
+      // scan is out — the snippet is real dialogue, so it is a true match.
+      fireEvent.change(input, { target: { value: "cursor never" } });
+      expect(container.querySelectorAll(".session-item")).toHaveLength(1);
+      // A query it does not contain hides it at once, and the failed scan
+      // never brings it back.
+      fireEvent.change(input, { target: { value: "tokenizer" } });
+      expect(container.querySelectorAll(".session-item")).toHaveLength(0);
+      await answer();
+      expect(container.querySelectorAll(".session-item")).toHaveLength(0);
+      expect(
+        screen.queryByText(/the parser cursor never reset/),
+      ).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("content hits clear when the query is emptied", async () => {
     vi.useFakeTimers();
     const mock = createMockHertaBridge({

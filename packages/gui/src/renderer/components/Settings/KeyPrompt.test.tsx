@@ -113,6 +113,45 @@ describe("KeyPrompt", () => {
     expect(mock.calls.submitText).not.toContain("hello world");
   });
 
+  it("a verification answering after Not now leaves NO stale error for the next prompt (UX review 2026-09-22, item 16)", async () => {
+    const mock = createMockHertaBridge();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    Object.assign(mock.bridge, {
+      setDeepSeekKey: async (key: string) => {
+        mock.calls.setDeepSeekKey.push(key);
+        await gate;
+        return { ok: false as const, reason: "rejected" as const };
+      },
+    });
+    const { getByText, getByLabelText, queryByText } = renderHarness(
+      mock,
+      "held message",
+    );
+    fireEvent.click(getByText("open"));
+    fireEvent.change(getByLabelText("DeepSeek API key"), {
+      target: { value: "sk-wrong" },
+    });
+    fireEvent.click(getByText("Save & send"));
+    fireEvent.click(getByText("Not now"));
+    await waitFor(() =>
+      expect(queryByText("Connect Herta to DeepSeek")).toBeNull(),
+    );
+    // The old verification answers "rejected" after the card closed…
+    release();
+    await gate;
+    await new Promise((r) => setTimeout(r, 0));
+    // …and the next prompt opens clean: no error over an empty field, and
+    // the field is not stuck disabled.
+    fireEvent.click(getByText("open"));
+    expect(queryByText(/DeepSeek rejected that key/)).toBeNull();
+    expect(
+      (getByLabelText("DeepSeek API key") as HTMLInputElement).disabled,
+    ).toBe(false);
+  });
+
   it("does NOT re-send if the user cancels while the key is being verified", async () => {
     // setDeepSeekKey hangs until we release it, so the user can cancel mid-verify.
     const mock = createMockHertaBridge();
