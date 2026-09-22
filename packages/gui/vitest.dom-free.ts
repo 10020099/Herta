@@ -35,6 +35,7 @@ export const DOM_FREE_TESTS = [
   "src/main/key-store.test.ts",
   "src/main/login-path.test.ts",
   "src/main/read-workspace-file.test.ts",
+  "src/main/renderer-recovery.test.ts",
   "src/main/session-activation.test.ts",
   "src/main/session-service.test.ts",
   "src/main/settings-ipc.test.ts",

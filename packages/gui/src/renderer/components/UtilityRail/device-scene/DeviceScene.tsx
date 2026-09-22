@@ -42,15 +42,79 @@ export interface DeviceSceneProps {
 const SNAPSHOT_SETTLE_MS = 3000;
 const SNAPSHOT_REFRESH_MS = 10 * 60_000;
 
+/** How long after a lost GPU context the scene is rebuilt: the GPU process
+ *  restarts and restores contexts within a second or two. */
+export const SCENE_REBUILD_DELAY_MS = 3000;
+/** Rebuilds allowed in a row before the card stays flat. */
+export const SCENE_REBUILD_LIMIT = 3;
+/** A scene that stayed live this long has recovered: its next loss starts
+ *  a fresh count (a laptop's sleep loses the context once a day, not in a
+ *  loop). */
+const SCENE_STABLE_MS = 60_000;
+
 /**
- * The 3D device card's canvas (ADR 0057 §4). Mounts a canvas immediately,
- * probes the GPU path, then lazily imports the three.js scene module and
- * builds the scene; `onLive(true)` fires only after a first frame, so the
- * flat renders stay up until there is something to show. Any failure —
- * before or after — is `onLive(false)` and the card is flat again. The
- * scene's inputs ride a ref so the mount effect runs once.
+ * The 3D device card, recovering from a lost GPU context (UX review
+ * 2026-09-22, item 23). A lost context or device used to leave the flat art
+ * up until the app restarted — a sleep and resume, a driver update, a GPU
+ * reset. Now a loss rebuilds the scene after a pause on a FRESH canvas (the
+ * lost one's context is dead): the build is keyed by a generation, so the
+ * rebuild is an ordinary mount. Bounded: a scene that keeps losing its
+ * context stops being rebuilt; one that stayed live a minute starts over.
  */
 export function DeviceScene(props: DeviceSceneProps): JSX.Element {
+  const [generation, setGeneration] = useState(0);
+  const rebuilds = useRef(0);
+  const liveAt = useRef<number | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onLive = useRef(props.onLive);
+  onLive.current = props.onLive;
+  useEffect(
+    () => () => {
+      if (timer.current !== null) clearTimeout(timer.current);
+    },
+    [],
+  );
+  const handleLive = useCallback((live: boolean): void => {
+    if (live) liveAt.current = Date.now();
+    onLive.current(live);
+  }, []);
+  const handleLost = useCallback((): void => {
+    const since = liveAt.current;
+    if (since !== null && Date.now() - since > SCENE_STABLE_MS) {
+      rebuilds.current = 0;
+    }
+    liveAt.current = null;
+    if (rebuilds.current >= SCENE_REBUILD_LIMIT) return;
+    rebuilds.current += 1;
+    if (timer.current !== null) clearTimeout(timer.current);
+    timer.current = setTimeout(() => {
+      timer.current = null;
+      setGeneration((g) => g + 1);
+    }, SCENE_REBUILD_DELAY_MS);
+  }, []);
+  return (
+    <DeviceSceneBuild
+      key={generation}
+      {...props}
+      onLive={handleLive}
+      onLost={handleLost}
+    />
+  );
+}
+
+/**
+ * One build of the 3D device card's canvas (ADR 0057 §4). Mounts a canvas
+ * immediately, probes the GPU path, then lazily imports the three.js scene
+ * module and builds the scene; `onLive(true)` fires only after a first
+ * frame, so the flat renders stay up until there is something to show. Any
+ * failure — before or after — is `onLive(false)` and the card is flat
+ * again; a LOSS after going live (the scene's fallback) also reports
+ * `onLost`, which the wrapper above answers with a rebuild. The scene's
+ * inputs ride a ref so the mount effect runs once.
+ */
+function DeviceSceneBuild(
+  props: DeviceSceneProps & { readonly onLost: () => void },
+): JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const reducedMotion = useReducedMotion();
   const inputs: DeviceSceneInputs = {
@@ -66,6 +130,8 @@ export function DeviceScene(props: DeviceSceneProps): JSX.Element {
   onLive.current = props.onLive;
   const onSnapshot = useRef(props.onSnapshot);
   onSnapshot.current = props.onSnapshot;
+  const onLost = useRef(props.onLost);
+  onLost.current = props.onLost;
   const handle = useRef<DeviceSceneHandle | null>(null);
   const [isLive, setIsLive] = useState(false);
 
@@ -122,6 +188,7 @@ export function DeviceScene(props: DeviceSceneProps): JSX.Element {
         onFallback: () => {
           handle.current = null;
           onLive.current(false);
+          onLost.current();
         },
       });
       if (cancelled) {

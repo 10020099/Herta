@@ -63,6 +63,14 @@ export interface SessionSnapshot {
    *  is not a repository or the first probe has not finished. Optional on
    *  the wire — older fixtures and fakes omit it. */
   readonly repo?: RepoContextSnapshot | null;
+  /** Present while a turn is in flight: a window that reloads mid-turn
+   *  learns it is busy — Stop, the hold window — instead of coming back idle
+   *  over a running turn (UX review 2026-09-22, item 7). Absent = idle. */
+  readonly turn?: { readonly backendActive: boolean };
+  /** Pictures staged in the composer and not yet sent (ADR 0048 §4): a
+   *  reloaded window's strip comes back instead of vanishing while main
+   *  still counts them. Optional on the wire; absent = none. */
+  readonly stagedImages?: readonly StagedImageInfo[];
 }
 
 /** Carried by session:reset when bootstrap fails (e.g. no API key). */

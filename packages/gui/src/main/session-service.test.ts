@@ -19,8 +19,49 @@ import {
   resolveWorkspaceRoot,
   sanitizeCreateOpts,
   sanitizeLogQuery,
+  snapshot,
   startForwarders,
 } from "./session-service.js";
+
+describe("snapshot — the reset payload (UX review 2026-09-22, item 7)", () => {
+  const base = {
+    sessionId: "s",
+    workspaceRoot: "/r",
+    record: [],
+    overlay: null,
+    title: null,
+    backendWorkspace: "/w",
+    backendWorkspaceIsDefault: true,
+    topics: [],
+    lang: "zh",
+    repo: null,
+  };
+
+  it("carries the turn state and the staged strip while a turn is in flight — a reloaded window comes back busy", () => {
+    const s = {
+      ...base,
+      turnInFlight: true,
+      backendActive: true,
+      stagedImageList: [{ id: "i1", name: "shot.png", path: "a/shot.png" }],
+    } as unknown as Session;
+    expect(snapshot(s)).toMatchObject({
+      turn: { backendActive: true },
+      stagedImages: [{ id: "i1", name: "shot.png", path: "a/shot.png" }],
+    });
+  });
+
+  it("an idle session with nothing staged carries neither", () => {
+    const s = {
+      ...base,
+      turnInFlight: false,
+      backendActive: false,
+      stagedImageList: [],
+    } as unknown as Session;
+    const snap = snapshot(s);
+    expect(snap).not.toHaveProperty("turn");
+    expect(snap).not.toHaveProperty("stagedImages");
+  });
+});
 
 describe("sanitizeLogQuery (the history tab's IPC door, ADR 0059 §6)", () => {
   it("passes integer paging, a branch-shaped ref and a trimmed query; drops an empty query", () => {

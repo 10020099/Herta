@@ -554,6 +554,13 @@ export interface Session {
    *  closes this session, which INTERRUPTS the turn — the tray can't show
    *  a two-step confirm, so it refuses and fronts the window instead. */
   readonly turnInFlight: boolean;
+  /** 板砖's run is in progress inside the current turn — the hold window
+   *  (ADR 0063). A window that reloads mid-turn re-learns it from the reset
+   *  snapshot. Optional: hosts without the GUI's session omit it. */
+  readonly backendActive?: boolean;
+  /** Pictures staged in the composer and not yet sent (ADR 0048 §4) — what
+   *  a reloaded window's strip is rebuilt from. Optional like the above. */
+  readonly stagedImageList?: readonly StagedImageInfo[];
 
   /** `stagedImageIds` sends pictures with the message (ADR 0048 §4): their
    *  blocks land right after the user block, inside this turn's span. */

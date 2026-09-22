@@ -55,6 +55,56 @@ describe("SessionStore — the held message (ADR 0063)", () => {
   });
 });
 
+describe("SessionStore — a reset that lands mid-turn (UX review 2026-09-22, item 7)", () => {
+  it("a window that reloads during 板砖's run comes back busy, in the hold window, with its staged pictures", () => {
+    const mock = createMockHertaBridge();
+    const store = new SessionStore();
+    store.connect(mock.bridge);
+    mock.emitReset({
+      sessionId: "s",
+      workspaceRoot: "/r",
+      record: [{ kind: "user", text: "fix it @板砖" }],
+      overlay: null,
+      backendWorkspace: "/r",
+      backendWorkspaceIsDefault: true,
+      turn: { backendActive: true },
+      stagedImages: [{ id: "i1", name: "shot.png", path: "a/shot.png" }],
+    });
+    const s = store.getSnapshot();
+    // Pre-fix every reset was idle: no Stop over a running turn.
+    expect(s.status).not.toBe("idle");
+    expect(s.backendActive).toBe(true);
+    expect(s.turnStartedAt).not.toBeNull();
+    expect(s.backendStartedAt).not.toBeNull();
+    expect(s.restagedImages).toEqual([
+      { id: "i1", name: "shot.png", path: "a/shot.png" },
+    ]);
+    store.clearRestagedImages();
+    expect(store.getSnapshot().restagedImages).toBeNull();
+    // The turn's own end still settles it the ordinary way.
+    mock.emitTurn({ kind: "finished", turnId: "t-unknown" });
+    expect(store.getSnapshot().status).toBe("idle");
+  });
+
+  it("an ordinary reset (no turn in flight) is idle, as before", () => {
+    const mock = createMockHertaBridge();
+    const store = new SessionStore();
+    store.connect(mock.bridge);
+    mock.emitReset({
+      sessionId: "s",
+      workspaceRoot: "/r",
+      record: [],
+      overlay: null,
+      backendWorkspace: "/r",
+      backendWorkspaceIsDefault: true,
+    });
+    const s = store.getSnapshot();
+    expect(s.status).toBe("idle");
+    expect(s.backendActive).toBe(false);
+    expect(s.restagedImages).toBeNull();
+  });
+});
+
 describe("SessionStore", () => {
   it("starts idle/empty", () => {
     const mock = createMockHertaBridge();

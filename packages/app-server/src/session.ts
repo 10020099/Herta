@@ -737,6 +737,11 @@ export class SessionImpl implements Session {
     return this.attachments.stagedImageList;
   }
 
+  /** 板砖's run is in progress (the hold window, ADR 0063). */
+  get backendActive(): boolean {
+    return this.backendRunning;
+  }
+
   async submitText(
     text: string,
     opts: { readonly stagedImageIds?: readonly string[] } = {},

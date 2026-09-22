@@ -81,6 +81,7 @@ export function Composer(): JSX.Element {
     composerNotice,
     backendActive,
     held,
+    restagedImages,
   } = useSessionSelector(
     (s) => ({
       status: s.status,
@@ -91,6 +92,7 @@ export function Composer(): JSX.Element {
       composerNotice: s.composerNotice,
       backendActive: s.backendActive,
       held: s.held,
+      restagedImages: s.restagedImages,
     }),
     shallowEqualObjects,
   );
@@ -426,6 +428,17 @@ export function Composer(): JSX.Element {
     taRef.current?.focus();
     sessionStore.clearComposerDraft();
   }, [composerDraft]);
+
+  // Adopt the pictures main still holds staged (a window that reloaded with
+  // pictures in its strip — UX review 2026-09-22, item 7). Runs after the
+  // strip's own session reset in the same commit, so the reset cannot wipe
+  // what this puts back.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the one-shot; the store and the strip's restore are stable
+  useEffect(() => {
+    if (restagedImages === null) return;
+    images.restore(restagedImages);
+    sessionStore.clearRestagedImages();
+  }, [restagedImages]);
 
   // Drive the notice's enter/exit. On show: mount with the in-animation, cancel
   // any pending unmount. On clear: play the out-animation, then unmount after it

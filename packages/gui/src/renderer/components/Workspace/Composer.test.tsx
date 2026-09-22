@@ -534,6 +534,27 @@ describe("Composer", () => {
     expect(input.value).toBe("again");
   });
 
+  it("a reset carrying staged pictures puts them back in the strip — a reloaded window keeps what main still holds (UX review 2026-09-22, item 7)", () => {
+    const { mock, container } = renderComposer();
+    act(() => {
+      mock.emitReset({
+        sessionId: "s",
+        workspaceRoot: "/r",
+        record: [],
+        overlay: null,
+        backendWorkspace: "/r",
+        backendWorkspaceIsDefault: true,
+        stagedImages: [
+          { id: "i1", name: "one.png", path: "a/one.png" },
+          { id: "i2", name: "two.png", path: "a/two.png" },
+        ],
+      });
+    });
+    expect(container.querySelectorAll(".composer-staged__item")).toHaveLength(
+      2,
+    );
+  });
+
   it("the turn-end refocus never takes the caret from a field the user is typing in elsewhere (UX review 2026-09-22, item 12)", () => {
     const { mock } = renderComposer();
     const input = screen.getByPlaceholderText(

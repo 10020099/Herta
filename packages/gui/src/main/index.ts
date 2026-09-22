@@ -33,6 +33,7 @@ import {
 import { buildCsp } from "./csp.js";
 import { applyLoginPath } from "./login-path.js";
 import { installChromiumFetch } from "./net-transport.js";
+import { shouldReloadAfterCrash } from "./renderer-recovery.js";
 import {
   appWorkspaceRoot,
   createSessionService,
@@ -375,6 +376,25 @@ function createWindow(): BrowserWindow {
   });
   win.webContents.on("did-finish-load", () => {
     void service.start();
+  });
+  // A crashed renderer is reloaded, within a crash-loop bound; the reload's
+  // did-finish-load re-syncs the session above (renderer-recovery.ts).
+  const rendererCrashes: number[] = [];
+  win.webContents.on("render-process-gone", (_event, details) => {
+    console.error(
+      `[herta] renderer gone: ${details.reason} (exit ${details.exitCode})`,
+    );
+    if (
+      shouldReloadAfterCrash({
+        reason: details.reason,
+        quitting: quitRequested,
+        history: rendererCrashes,
+        now: Date.now(),
+      }) &&
+      !win.isDestroyed()
+    ) {
+      win.webContents.reload();
+    }
   });
   // Close-to-tray: the caption close button hides the window (the session —
   // and any streaming turn — keeps running; the tray is the way back in).

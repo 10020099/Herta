@@ -301,7 +301,8 @@ export async function buildConfig(
   };
 }
 
-function snapshot(s: Session): SessionSnapshot {
+/** The `session:reset` payload for a session. Exported for testing. */
+export function snapshot(s: Session): SessionSnapshot {
   // Long-session windowing (2026-07-12): the reset snapshot carries only the
   // trailing RECORD_TAIL_BLOCKS window — a 10MB session no longer crosses IPC
   // in one message or mounts thousands of renderer rows. `recordStart` is the
@@ -322,6 +323,17 @@ function snapshot(s: Session): SessionSnapshot {
     // Whatever the repository probe has answered by now (ADR 0058); the
     // `session:repo` stream carries the rest.
     repo: s.repo ?? null,
+    // A window that reloads mid-turn comes back busy, with the hold window
+    // and the staged strip as they are (UX review 2026-09-22, item 7): the
+    // snapshot used to carry no turn state, so a running turn showed no
+    // Stop and no bubble, and staged pictures vanished while main still
+    // counted them.
+    ...(s.turnInFlight
+      ? { turn: { backendActive: s.backendActive ?? false } }
+      : {}),
+    ...(s.stagedImageList !== undefined && s.stagedImageList.length > 0
+      ? { stagedImages: s.stagedImageList }
+      : {}),
   };
 }
 

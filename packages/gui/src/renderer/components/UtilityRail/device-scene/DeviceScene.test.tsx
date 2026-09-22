@@ -1,7 +1,11 @@
 import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetDeviceSceneBackendForTest } from "./capability.js";
-import { DeviceScene } from "./DeviceScene.js";
+import {
+  DeviceScene,
+  SCENE_REBUILD_DELAY_MS,
+  SCENE_REBUILD_LIMIT,
+} from "./DeviceScene.js";
 
 const createDeviceScene = vi.fn();
 vi.mock("./scene.js", () => ({
@@ -188,6 +192,83 @@ describe("DeviceScene (ADR 0057 §4)", () => {
     await act(flush);
     expect(onLive2).toHaveBeenLastCalledWith(false);
     vi.unstubAllGlobals();
+  });
+});
+
+describe("DeviceScene — a lost GPU context (UX review 2026-09-22, item 23)", () => {
+  it("rebuilds the scene on a FRESH canvas after a pause and goes live again; a scene that keeps losing it stops being rebuilt", async () => {
+    vi.useFakeTimers();
+    try {
+      const gpu = { requestAdapter: async () => null };
+      vi.stubGlobal("navigator", { ...navigator, gpu });
+      vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(((
+        type: string,
+      ) =>
+        type === "webgl2"
+          ? {
+              getExtension: () => null,
+              getParameter: () => "NVIDIA GeForce",
+              RENDERER: 0,
+            }
+          : null) as typeof HTMLCanvasElement.prototype.getContext);
+      const fallbacks: Array<() => void> = [];
+      const canvases: HTMLCanvasElement[] = [];
+      createDeviceScene.mockImplementation(
+        async (o: { onFallback: () => void; canvas: HTMLCanvasElement }) => {
+          fallbacks.push(o.onFallback);
+          canvases.push(o.canvas);
+          return {
+            stats: {
+              backend: "webgl2",
+              loadMs: 1,
+              compileMs: 1,
+              firstFrameMs: 1,
+              presentMs: 1,
+            },
+            snapshot: async () => null,
+            update: vi.fn(),
+            dispose: vi.fn(),
+          };
+        },
+      );
+      const onLive = vi.fn();
+      render(
+        <DeviceScene
+          state="idle"
+          theme="light"
+          paused={false}
+          liftPx={0}
+          onLive={onLive}
+        />,
+      );
+      await act(flush);
+      expect(onLive).toHaveBeenLastCalledWith(true);
+      // The context is lost: flat now…
+      act(() => fallbacks[0]?.());
+      expect(onLive).toHaveBeenLastCalledWith(false);
+      // …and after the pause, a new build on a new canvas.
+      await act(async () => {
+        vi.advanceTimersByTime(SCENE_REBUILD_DELAY_MS);
+      });
+      await act(flush);
+      expect(createDeviceScene).toHaveBeenCalledTimes(2);
+      expect(canvases[1]).not.toBe(canvases[0]);
+      expect(canvases[1]?.isConnected).toBe(true);
+      expect(onLive).toHaveBeenLastCalledWith(true);
+      // A context lost again and again within the minute stops at the limit.
+      for (let i = 1; i <= SCENE_REBUILD_LIMIT + 1; i += 1) {
+        act(() => fallbacks[i]?.());
+        await act(async () => {
+          vi.advanceTimersByTime(SCENE_REBUILD_DELAY_MS);
+        });
+        await act(flush);
+      }
+      expect(createDeviceScene).toHaveBeenCalledTimes(1 + SCENE_REBUILD_LIMIT);
+      expect(onLive).toHaveBeenLastCalledWith(false);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
   });
 });
 

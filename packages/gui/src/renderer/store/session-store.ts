@@ -152,6 +152,11 @@ export interface SessionSnapshotView {
    *  GC'd, so there is nothing left to restage. Rides `composerDraft`'s
    *  lifecycle via the emit guard. */
   readonly composerDraftImages: readonly StagedImageInfo[] | null;
+  /** One-shot: pictures main still holds staged for this session, carried
+   *  by a reset (a window that reloaded with pictures in its strip, UX
+   *  review 2026-09-22, item 7). The composer adopts them into its strip,
+   *  then calls `clearRestagedImages`. Null when there is nothing to adopt. */
+  readonly restagedImages: readonly StagedImageInfo[] | null;
   /** A message sent while 板砖 works (ADR 0063), waiting above the composer:
    *  sent as the next turn the moment this one ends, unless the user
    *  interjects it into the running work (`steerText`) or takes it back.
@@ -232,6 +237,7 @@ const INITIAL: SessionSnapshotView = {
   repo: null,
   composerDraft: null,
   composerDraftImages: null,
+  restagedImages: null,
   held: null,
   composerNotice: null,
   needsKeyText: null,
@@ -421,6 +427,12 @@ export class SessionStore {
   clearComposerDraft(): void {
     if (this.snapshot.composerDraft === null) return;
     this.emit({ ...this.snapshot, composerDraft: null });
+  }
+
+  /** The composer adopted the reset's staged pictures (`restagedImages`). */
+  clearRestagedImages(): void {
+    if (this.snapshot.restagedImages === null) return;
+    this.emit({ ...this.snapshot, restagedImages: null });
   }
 
   /** Hold a message sent while 板砖 works (ADR 0063). ONE held message at a
@@ -637,17 +649,22 @@ export class SessionStore {
           : null,
       streamingText: null,
       overlay: e.overlay,
-      status: "idle",
+      // A reset that lands mid-turn — a window reloaded while Herta or 板砖
+      // worked — comes back busy (UX review 2026-09-22, item 7): Stop, the
+      // hold window, the live timers. Idle was the only state a reset knew,
+      // and a running turn showed no Stop until it ended. The timers start
+      // at the reset: when the turn really began, this window never saw.
+      status: e.turn !== undefined ? "thinking" : "idle",
       error: null,
       pendingUser: null,
       pendingUserImages: null,
       retracting: false,
       retryText: null,
       retractKeepLen: null,
-      turnStartedAt: null,
-      backendActive: false,
+      turnStartedAt: e.turn !== undefined ? Date.now() : null,
+      backendActive: e.turn?.backendActive ?? false,
       backendInFlight: 0,
-      backendStartedAt: null,
+      backendStartedAt: e.turn?.backendActive === true ? Date.now() : null,
       backendError: false,
       backendSucceededSeq: 0,
       recapCompacting: false,
@@ -667,6 +684,10 @@ export class SessionStore {
       // no message held for a turn that belonged to another session).
       composerDraft: null,
       composerDraftImages: null,
+      restagedImages:
+        e.stagedImages !== undefined && e.stagedImages.length > 0
+          ? e.stagedImages
+          : null,
       held: null,
       composerNotice: null,
       needsKeyText: null,
