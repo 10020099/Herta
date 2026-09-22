@@ -46,6 +46,89 @@ describe("buildEpisodeDigest — attachments (ADR 0033)", () => {
     expect(d).not.toContain("CONFIDENTIAL");
     expect(d).not.toContain("REVENUE");
   });
+
+  // ADR 0069 §5 (dream review 2026-09-22, finding 9): the same text came back
+  // through 板砖's read lanes — the fold's own hint sends Herta to re-read the
+  // document — and those rows kept their detail. Keyed on provenance now.
+  const reread: TerminalRecordBlock[] = [
+    { kind: "user", text: "再看看那份 spec 第三节" },
+    { kind: "herta", surface: "speech", text: "@板砖 翻一下第三节。" },
+    {
+      kind: "system",
+      label: "差分协处理器",
+      body: "↳ excerpt .herta/attachments/s1/spec.md:40-60",
+      digest: {
+        kind: "excerpt",
+        path: ".herta/attachments/s1/spec.md",
+        from: 40,
+        to: 60,
+      },
+      evidenceDetail:
+        "↳ 摘录 .herta/attachments/s1/spec.md:40-60\nCONFIDENTIAL ROADMAP",
+    },
+    {
+      kind: "system",
+      label: "差分协处理器",
+      body: "↳ 3 matches in 2 files",
+      digest: {
+        kind: "search",
+        pattern: "TARGET",
+        matches: 3,
+        files: 2,
+        truncated: false,
+      },
+      evidenceDetail: [
+        "↳ 匹配 /TARGET/:",
+        ".herta/attachments/s1/spec.md:12: Q4 REVENUE TARGET",
+        "E:\\ws\\.herta\\attachments\\s1\\spec.md:13: REVENUE TARGET 2",
+        "src/config.ts:4: const TARGET_FPS = 60;",
+      ].join("\n"),
+    },
+    {
+      kind: "system",
+      label: "差分协处理器",
+      body: "Running cat .herta/attachments/s1/spec.md",
+      digest: {
+        kind: "op",
+        verb: "Running",
+        arg: "cat .herta/attachments/s1/spec.md",
+      },
+    },
+    {
+      kind: "system",
+      label: "差分协处理器",
+      body: "↳ exit 0 · 120 lines",
+      digest: { kind: "text", text: "↳ exit 0 · 120 lines" },
+      evidenceDetail: "↳ 输出:\nCONFIDENTIAL APPENDIX",
+    },
+    {
+      kind: "system",
+      label: "差分协处理器",
+      body: "Running npm test",
+      digest: { kind: "op", verb: "Running", arg: "npm test" },
+    },
+    {
+      kind: "system",
+      label: "差分协处理器",
+      body: "↳ exit 1 · 2 lines",
+      digest: { kind: "text", text: "↳ exit 1 · 2 lines" },
+      evidenceDetail: "↳ 输出:\nFAIL src/config.test.ts",
+    },
+    { kind: "herta", surface: "speech", text: "第三节说的是路线图。" },
+  ];
+
+  it("drops what 板砖 re-read from the attachment store and keeps what it read from the repo", () => {
+    const d = buildEpisodeDigest(reread);
+    for (const secret of ["CONFIDENTIAL", "REVENUE", "APPENDIX"]) {
+      expect(d).not.toContain(secret);
+    }
+    // The citations stay: she remembers going back to the document.
+    expect(d).toContain("↳ excerpt .herta/attachments/s1/spec.md:40-60");
+    expect(d).toContain("Running cat .herta/attachments/s1/spec.md");
+    // Repo evidence in the same episode is untouched.
+    expect(d).toContain("src/config.ts:4: const TARGET_FPS = 60;");
+    expect(d).toContain("FAIL src/config.test.ts");
+  });
 });
 
 describe("buildEpisodeDigest", () => {

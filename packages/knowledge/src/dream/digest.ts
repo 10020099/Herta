@@ -36,6 +36,15 @@ export function dreamRelevantSystemBody(b: SystemBlock): string | null {
   return b.body;
 }
 
+/** A path inside the harness's attachment store (ADR 0033), where every
+ *  document the 开拓者 handed over is kept — relative or absolute, either
+ *  separator. */
+const ATTACHMENT_STORE = /\.herta[\\/]+attachments[\\/]/;
+
+export function mentionsAttachmentStore(text: string): boolean {
+  return ATTACHMENT_STORE.test(text);
+}
+
 /**
  * Whether a block's `evidenceDetail` belongs in the episode alongside its body.
  *
@@ -48,25 +57,55 @@ export function dreamRelevantSystemBody(b: SystemBlock): string | null {
  * remember being handed a spec; the spec's contents are not hers to keep.
  *
  * So the citation in `body` stays (that is what happened) and the detail is
- * dropped. `show_excerpt` detail is deliberately NOT dropped here: repo
- * excerpts are bounded work evidence and have ridden into dreams since ADR
- * 0027 — changing that is a separate decision, not a side effect of this one.
+ * dropped. Repo excerpts, search hits and command output are bounded work
+ * evidence and have ridden into dreams since ADR 0027 — except where they
+ * READ the attachment store (ADR 0069 §5): the fold's own hint sends Herta
+ * back to the document through 板砖, and an excerpt of it, a search hit in
+ * it or a `cat` of it carried the same text the attachment row withholds.
+ * The rule is keyed on where the text came from, not on the row's kind.
+ * `afterAttachmentCommand` says the command whose output this row carries
+ * named the store — an output row does not carry its command.
  */
-export function dreamRelevantEvidenceDetail(b: SystemBlock): string | null {
+export function dreamRelevantEvidenceDetail(
+  b: SystemBlock,
+  afterAttachmentCommand = false,
+): string | null {
   if (b.digest?.kind === "attachment") return null;
   // A document digest's overview (ADR 0043) is the same document's contents
   // one step removed — a model's précis of what the user handed over — and
   // no more hers to keep than the head excerpt is. The row stays: she
   // remembers having 板砖 digest the file.
   if (b.digest?.kind === "digest") return null;
-  return b.evidenceDetail ?? null;
+  const detail = b.evidenceDetail ?? null;
+  if (detail === null) return null;
+  if (b.digest?.kind === "excerpt" && mentionsAttachmentStore(b.digest.path)) {
+    return null;
+  }
+  if (b.digest?.kind === "search") {
+    // Hit lines are `path:line: content`: drop the store's, keep the repo's.
+    const lines = detail.split("\n");
+    const kept = lines.filter((l) => !mentionsAttachmentStore(l));
+    const hits = kept.filter(
+      (l) => !l.startsWith("↳ 匹配") && !l.startsWith("（另有"),
+    );
+    return hits.length === 0 ? null : kept.join("\n");
+  }
+  if (afterAttachmentCommand && b.digest?.kind === "text") return null;
+  return detail;
 }
 
 export function buildEpisodeDigest(
   blocks: readonly TerminalRecordBlock[],
 ): string {
   const parts: string[] = [];
+  // The latest `Running …` row named the attachment store: the output row
+  // that follows carries that command's output (ADR 0069 §5).
+  let afterAttachmentCommand = false;
   for (const b of blocks) {
+    if (b.kind === "system" && b.digest?.kind === "op") {
+      afterAttachmentCommand =
+        b.digest.verb === "Running" && mentionsAttachmentStore(b.digest.arg);
+    }
     if (b.kind === "user") {
       parts.push(`开拓者：${b.text}`);
     } else if (b.kind === "herta") {
@@ -91,7 +130,7 @@ export function buildEpisodeDigest(
       // labeled so the model grounds the verdict in what actually happened.
       // The ↳ 待办 roll-up line is dropped: open work items are operational
       // residue, not part of what happened.
-      const detail = dreamRelevantEvidenceDetail(b);
+      const detail = dreamRelevantEvidenceDetail(b, afterAttachmentCommand);
       const evidence =
         detail === null
           ? ""
