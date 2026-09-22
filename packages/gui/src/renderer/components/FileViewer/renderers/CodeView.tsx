@@ -2,14 +2,16 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useT } from "../../../i18n/LocaleProvider.js";
 import type { ViewerAnchor } from "../file-viewer-context.js";
 import { setSanitizedHtml } from "./dom-html.js";
+import { viewerHighlighter } from "./highlighter.js";
 
 /**
  * The ADR 0050 text layout — gutter + `<pre>` over one relative box with
  * the cite-anchor band — now with highlight.js tokens when the kind names
- * a language (ADR 0054 §4). The highlighter is a lazy chunk: a plain text
- * file paints synchronously as before, and a code file paints plain first
- * and colors in when the chunk lands (a local read answers in single-digit
- * milliseconds; the chunk once).
+ * a language (ADR 0054 §4). The highlighter runs on its own thread (ADR
+ * 0068 §12; `highlighter.ts`, with the lazy main-thread chunk as its
+ * fallback): a plain text file paints synchronously as before, and a code
+ * file paints plain first and colors in when the answer lands (a local read
+ * answers in single-digit milliseconds; the worker starts once).
  */
 
 /** Rendered-line cap: a 1.5MB log is ~30k lines and 30k gutter rows of DOM
@@ -19,13 +21,6 @@ export const MAX_RENDER_LINES = 8_000;
 /** Fallback line height when the computed style is unreadable (jsdom) —
  *  the CSS pins 12px × 1.6. */
 const FALLBACK_LINE_H = 19.2;
-
-type Highlighter = typeof import("./highlight.js");
-let highlighterPromise: Promise<Highlighter> | null = null;
-function loadHighlighter(): Promise<Highlighter> {
-  highlighterPromise ??= import("./highlight.js");
-  return highlighterPromise;
-}
 
 export function CodeView({
   content,
@@ -73,15 +68,11 @@ export function CodeView({
   useEffect(() => {
     if (language === undefined) return;
     let alive = true;
-    void loadHighlighter().then(
-      (h) => {
-        if (!alive) return;
-        const html = h.highlightToHtml(shown, language);
-        const pre = textRef.current;
-        if (html !== null && pre !== null) setSanitizedHtml(pre, html);
-      },
-      () => undefined,
-    );
+    void viewerHighlighter.highlight(shown, language).then((html) => {
+      if (!alive) return;
+      const pre = textRef.current;
+      if (html !== null && pre !== null) setSanitizedHtml(pre, html);
+    });
     return () => {
       alive = false;
     };
