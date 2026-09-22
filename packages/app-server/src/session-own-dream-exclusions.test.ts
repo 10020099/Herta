@@ -48,7 +48,12 @@ function episodeHashes(): string[] {
 
 function writeDreamManifest(
   workspaceRoot: string,
-  entries: readonly { file: string; sourceEpisodes: readonly string[] }[],
+  entries: readonly {
+    file: string;
+    sourceEpisodes: readonly string[];
+    /** Defaults to the session under test. */
+    sourceSessionId?: string;
+  }[],
 ): void {
   const dreamDir = join(workspaceRoot, ".herta", "dream");
   mkdirSync(dreamDir, { recursive: true });
@@ -57,7 +62,7 @@ function writeDreamManifest(
     file: e.file,
     nn: 7 + i,
     state: "live",
-    sourceSessionId: SESSION_ID,
+    sourceSessionId: e.sourceSessionId ?? SESSION_ID,
     sourceEpisodeHash: e.sourceEpisodes[0] ?? "",
     sourceEpisodes: e.sourceEpisodes,
     runId: "run",
@@ -158,9 +163,15 @@ describe("ownDreamExclusions", () => {
         lang: "zh",
       }),
     ).toBeUndefined();
-    // A manifest whose record points at foreign episodes.
+    // A manifest whose record was dreamed from ANOTHER session. (This
+    // fixture used to carry the session under test as its source, which
+    // only passed while an absent own hash failed open.)
     writeDreamManifest(workspaceRoot, [
-      { file: "### 废案_07：other.txt", sourceEpisodes: ["foreign-hash"] },
+      {
+        file: "### 废案_07：other.txt",
+        sourceEpisodes: ["foreign-hash"],
+        sourceSessionId: "sess-elsewhere",
+      },
     ]);
     expect(
       ownDreamExclusions({
@@ -171,6 +182,24 @@ describe("ownDreamExclusions", () => {
         lang: "zh",
       }),
     ).toBeUndefined();
+  });
+
+  it("withholds an own dream whose source episode left the record — a rewind or take-back (dream review 2026-09-22, finding 5)", () => {
+    const [, ep2] = episodeHashes();
+    writeDreamManifest(workspaceRoot, [
+      { file: "### 废案_08：b.txt", sourceEpisodes: [ep2 ?? ""] },
+    ]);
+    // The user rewound topic B's answer away: that episode's bytes changed,
+    // so its hash no longer segments out of the record.
+    const rewound = RECORD.slice(0, 3);
+    const excluded = ownDreamExclusions({
+      workspaceRoot,
+      sessionId: SESSION_ID,
+      record: rewound,
+      dream: undefined,
+      lang: "zh",
+    });
+    expect(excluded).toEqual(new Set(["### 废案_08：b.txt"]));
   });
 
   it("hashes here really match the segmentation the dream pass uses", () => {
