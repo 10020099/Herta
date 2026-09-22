@@ -1,6 +1,6 @@
 import type { TerminalRecordBlock } from "@herta/core";
 import { describe, expect, it } from "vitest";
-import { buildEpisodeDigest } from "./digest.js";
+import { buildEpisodeDigest, dreamRelevantSystemBody } from "./digest.js";
 
 const blocks: TerminalRecordBlock[] = [
   { kind: "user", text: "加个 --verbose" },
@@ -142,6 +142,32 @@ describe("buildEpisodeDigest", () => {
     expect(d).toContain("完成 · 1 个文件");
     expect(d).toContain("改动文件: a.ts");
   });
+  it("drops a patch preview in the shape the projector has emitted since 2026-08-25 — digest `patch`, the full diff in the body (dream review 2026-09-22, finding 1)", () => {
+    const current: TerminalRecordBlock[] = [
+      { kind: "herta", surface: "speech", text: "改。" },
+      {
+        kind: "system",
+        label: "系统",
+        body: "patch preview: a.ts (+2 -1)\n\n```diff\n--- a/a.ts\n+++ b/a.ts\n-x\n+y\n+z\n```",
+        digest: { kind: "patch", files: ["a.ts"], add: 2, del: 1 },
+      },
+      {
+        kind: "system",
+        label: "差分协处理器",
+        body: "Writing a.ts ↳ +2 −1",
+        digest: { kind: "op", verb: "Writing", arg: "a.ts" },
+      },
+    ];
+    const d = buildEpisodeDigest(current);
+    expect(d).not.toContain("```diff");
+    expect(d).not.toContain("patch preview");
+    // The write row keeps the outcome and its magnitude.
+    expect(d).toContain("Writing a.ts");
+    const preview = current[1];
+    if (preview?.kind !== "system") throw new Error("fixture");
+    expect(dreamRelevantSystemBody(preview)).toBeNull();
+  });
+
   it("drops a legacy pre-digest patch preview by body prefix", () => {
     const legacy: TerminalRecordBlock[] = [
       { kind: "herta", surface: "speech", text: "看。" },

@@ -51,6 +51,7 @@ export {
   escapeUserText,
   FORBIDDEN_USER_PATTERNS,
 } from "./narrative/escape.js";
+export { checkFewShot, type FewShotCheck } from "./narrative/few-shot-guard.js";
 export {
   type ClassifyIntentInput,
   type ClassifyIntentResult,

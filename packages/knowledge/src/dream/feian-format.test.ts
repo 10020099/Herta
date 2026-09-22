@@ -95,6 +95,28 @@ describe("validateFeian — rejects", () => {
     ));
 });
 
+describe("validateFeian — what the prefix would drop is never promoted (dream review 2026-09-22, finding 15)", () => {
+  it("rejects nested fences — the load gate is one-deep", () => {
+    const nested = GOOD.replace(
+      "在。说吧。",
+      "在。（开拓者 说）你好（/开拓者 说）说吧。",
+    );
+    const r = validateFeian(nested);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.errors.join(" ")).toContain("prefix load gate");
+  });
+
+  it("rejects an all-CJK page under the char cap but over the gate's token cap", () => {
+    // 15 500 Han characters: inside the old 16 000-char cap, above the
+    // gate's 10 000 estimated tokens (Han ≈ 0.65 tokens a character).
+    const long = GOOD.replace("阮·梅难得主动联系我。", "黑".repeat(15_500));
+    expect(long.length).toBeLessThan(16_000);
+    const r = validateFeian(long);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.errors.join(" ")).toContain("prefix load gate");
+  });
+});
+
 describe("validateFeian — exemptions", () => {
   it("allows CJK numerals and the （其N）series suffix in the title", () => {
     expect(

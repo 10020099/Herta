@@ -446,7 +446,7 @@ export async function runDreamPass(
     // size of a manifest that only ever grows. Built once here and kept in
     // step as episodes are recorded below.
     const dreamedKeys = new Set(
-      manifest.episodes.map((e) => `${e.sessionId} ${e.episodeHash}`),
+      manifest.episodes.map((e) => `${e.sessionId}\u0000${e.episodeHash}`),
     );
 
     for (const s of opts.sessions) {
@@ -469,12 +469,12 @@ export async function runDreamPass(
         // manifest flush.
         if (
           !opts.reconsider &&
-          dreamedKeys.has(`${ep.sessionId} ${ep.episodeHash}`)
+          dreamedKeys.has(`${ep.sessionId}\u0000${ep.episodeHash}`)
         ) {
           res.skipped++;
           continue;
         }
-        dreamedKeys.add(`${ep.sessionId} ${ep.episodeHash}`);
+        dreamedKeys.add(`${ep.sessionId}\u0000${ep.episodeHash}`);
         try {
           res.considered++;
           const digest = buildEpisodeDigest(ep.blocks);

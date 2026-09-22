@@ -1,3 +1,4 @@
+import { checkFewShot } from "@herta/herta";
 import type { ValidateResult } from "./types.js";
 
 /** The narrative paragraph(s) of a 废案 — the text between the line-1 header
@@ -168,6 +169,17 @@ export function validateFeian(text: string): ValidateResult {
   const fenceErr = checkFences(text);
   if (fenceErr !== null) errors.push(fenceErr);
   if (!/（我 说）/.test(text)) errors.push("missing a （我 说） block");
+
+  // The page must also pass the gate that loads it into the prefix
+  // (`checkFewShot`): one-deep fences, no truncated tail, the estimated-token
+  // cap. This validator allowed nested fences and 16 000 chars, the load
+  // gate allows neither nesting nor more than 10 000 estimated tokens (an
+  // all-CJK page above ~15 400 chars), so a page could be promoted, take a
+  // slot, and then be dropped at every load with only a console warning —
+  // the failure shape of 2026-08-06 (dream review 2026-09-22, finding 15).
+  // Only its verdict is added: the reasons above already cover the rest.
+  const guard = checkFewShot("dream candidate", text);
+  if (!guard.ok) errors.push(`fails the prefix load gate: ${guard.reason}`);
 
   return errors.length === 0 ? { ok: true } : { ok: false, errors };
 }

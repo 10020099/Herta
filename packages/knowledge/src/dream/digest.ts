@@ -10,11 +10,15 @@ import type { SystemBlock, TerminalRecordBlock } from "@herta/core";
  *             not an outcome.
  *  - "todo" — the plan layout block: working state (same rationale as
  *             the live compaction's Planning/todo skip).
- *  - "skip" — patch previews, i.e. the FULL diff body. The Writing op
- *             row and the done-marker already carry the outcome; a
- *             dream prompt has no use for a hundred-line diff.
- *             Records persisted before the digest field exists are
- *             matched by body prefix instead.
+ *  - "patch" / "skip" — patch previews, i.e. the FULL diff body. The
+ *             Writing op row (with its `↳ +N −M`) and the done-marker
+ *             already carry the outcome; a dream prompt has no use for a
+ *             hundred-line diff. The projector has emitted `patch` since
+ *             2026-08-25 and the skip list never learned it — every
+ *             coding episode carried its diffs into every distillation
+ *             call and past the 200-char floor (dream review 2026-09-22,
+ *             finding 1). `skip` is the older kind; records persisted
+ *             before the digest field existed are matched by body prefix.
  *
  * Everything else — op rows, test results, tool failures, markers,
  * plain text — returns its body verbatim: that is what actually
@@ -25,7 +29,9 @@ import type { SystemBlock, TerminalRecordBlock } from "@herta/core";
  */
 export function dreamRelevantSystemBody(b: SystemBlock): string | null {
   const kind = b.digest?.kind;
-  if (kind === "bg" || kind === "todo" || kind === "skip") return null;
+  if (kind === "bg" || kind === "todo" || kind === "skip" || kind === "patch") {
+    return null;
+  }
   if (b.digest === undefined && b.body.startsWith("patch preview")) return null;
   return b.body;
 }
