@@ -46,6 +46,21 @@ describe("DreamTrigger", () => {
     expect(material).not.toHaveBeenCalled();
   });
 
+  it("never fires while a turn is in flight, however long ago the input came — and fires once it ends (dream review 2026-09-22, finding 2)", async () => {
+    const busy = { now: true };
+    const { trig, runPass, clock } = setup({ isBusy: () => busy.now });
+    trig.noteActivity(); // the user's request, at 0
+    // A 板砖 run long past the idle window, or a gate parked while away.
+    clock.t = 10_000;
+    await trig.tick();
+    expect(runPass).not.toHaveBeenCalled();
+    // The turn ends: busy is not an attempt, so no backoff delays the pass.
+    busy.now = false;
+    clock.t = 10_001;
+    await trig.tick();
+    expect(runPass).toHaveBeenCalledTimes(1);
+  });
+
   it("fires once idle, never-run, and material is present", async () => {
     const { trig, runPass, clock } = setup();
     trig.noteActivity(); // lastActivity = 0

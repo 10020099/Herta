@@ -409,6 +409,18 @@ describe("hasEnoughDreamMaterial (host wiring)", () => {
     expect(materialGate(cfg)).toBe(true); // 5 new sessions ≥ minNewSessions
   });
 
+  it("with no key it is closed before anything is read — the pass could not run (dream review 2026-09-22, finding 11)", () => {
+    const cfg = mkConfig();
+    writeDreamManifest(cfg, "2026-06-10T00:00:00.000Z");
+    writeSession(cfg, "long-new", 25, new Date("2026-06-15T00:00:00.000Z"));
+    expect(
+      materialGate({
+        ...cfg,
+        providers: { ...cfg.providers, deepseekApiKey: "" },
+      }),
+    ).toBe(false);
+  });
+
   it("does not fire on too few short new sessions", () => {
     const cfg = mkConfig();
     writeDreamManifest(cfg, "2026-06-10T00:00:00.000Z");
@@ -585,13 +597,44 @@ describe("wrapSessionForDreamActivity", () => {
     await wrapped.submitText("hi");
     await wrapped.regenerateLastReplyIfOrphaned?.();
     await wrapped.playOpening?.();
-    expect(calls.note).toBe(3);
+    // Both ends of each call count (dream review 2026-09-22, finding 2).
+    expect(calls.note).toBe(6);
     // tick fires in a detached microtask right after each wrapped call.
     await Promise.resolve();
     expect(calls.tick).toBe(3);
 
     // Non-turn methods pass through untouched.
     await wrapped.interrupt();
-    expect(calls.note).toBe(3);
+    expect(calls.note).toBe(6);
+  });
+
+  it("a turn's END restarts the idle clock — a long run never ends into a pass the moment the reply lands (dream review 2026-09-22, finding 2)", async () => {
+    const stamps: string[] = [];
+    let release!: () => void;
+    const turn = new Promise<void>((r) => {
+      release = r;
+    });
+    const trigger = {
+      noteActivity: () => {
+        stamps.push("note");
+      },
+      tick: () => {
+        stamps.push("tick");
+      },
+    };
+    const fake = {
+      submitText: async () => {
+        stamps.push("turn-start");
+        await turn;
+        stamps.push("turn-end");
+        return { turnId: "t" };
+      },
+    } as unknown as Session;
+    const wrapped = wrapSessionForDreamActivity(fake, trigger);
+    const p = wrapped.submitText("a long 板砖 run");
+    release();
+    await p;
+    await Promise.resolve();
+    expect(stamps).toEqual(["note", "turn-start", "turn-end", "note", "tick"]);
   });
 });

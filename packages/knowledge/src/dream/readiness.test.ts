@@ -60,6 +60,29 @@ describe("hasEnoughMaterial", () => {
     expect(hasEnoughMaterial([], thresholds)).toBe(false);
   });
 
+  it("counts a long session's turns SINCE the last pass — one touch never re-qualifies its whole history (dream review 2026-09-22, finding 11)", () => {
+    const anchor = Date.parse("2026-09-15T00:00:00Z");
+    const old = "2026-09-01T10:00:00Z";
+    const fresh = "2026-09-20T10:00:00Z";
+    const weeksOld: TerminalRecordBlock[] = [{ kind: "user", text: "hi" }];
+    for (let i = 0; i < 40; i++) {
+      weeksOld.push({
+        kind: "herta",
+        surface: "speech",
+        text: `l${i}`,
+        at: old,
+      });
+    }
+    // One new exchange since the pass: the file is "modified since".
+    weeksOld.push({ kind: "user", text: "again", at: fresh });
+    weeksOld.push({ kind: "herta", surface: "speech", text: "嗯", at: fresh });
+    expect(countHertaTurns(weeksOld)).toBe(41);
+    expect(countHertaTurns(weeksOld, anchor)).toBe(1);
+    expect(hasEnoughMaterial([weeksOld], thresholds, anchor)).toBe(false);
+    // Unstamped blocks predate stamping: old by definition.
+    expect(countHertaTurns(sessionWithHertaTurns(30), anchor)).toBe(0);
+  });
+
   it("uses the exact boundary: exactly minSessionHertaTurns qualifies", () => {
     expect(hasEnoughMaterial([sessionWithHertaTurns(24)], thresholds)).toBe(
       false,

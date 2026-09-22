@@ -92,6 +92,7 @@ class SessionHostImpl implements SessionHost {
       lastFullPassAt: () => this.lastDreamPassAtMs(),
       hasEnoughMaterial: () => this.hasEnoughDreamMaterial(),
       runPass: () => this.runDreamPassDetached(),
+      isBusy: () => this._active?.turnInFlight === true,
     });
 
     if (dreamCfg.enabled) {
@@ -179,6 +180,11 @@ class SessionHostImpl implements SessionHost {
    */
   private hasEnoughDreamMaterial(): boolean {
     try {
+      // No key, no pass (`runDreamPassDetached` returns at once): checked
+      // FIRST, before the listing and the transcript reads below — they ran
+      // on the main thread for a pass that could not happen (dream review
+      // 2026-09-22, finding 11).
+      if (this.keyHolder.current.trim() === "") return false;
       const dreamCfg = resolveDreamConfig(this.config.dream);
       const since = this.lastDreamPassAtMs() ?? 0;
       const newRecords: TerminalRecord[] = [];
@@ -194,7 +200,9 @@ class SessionHostImpl implements SessionHost {
           // Unreadable transcript — skip it for the material count.
         }
       }
-      return hasEnoughMaterial(newRecords, dreamCfg);
+      // Turns counted SINCE the anchor: a long session touched by one block
+      // used to re-qualify on its whole history every cooldown.
+      return hasEnoughMaterial(newRecords, dreamCfg, since);
     } catch {
       return false;
     }
@@ -584,9 +592,14 @@ const ACTIVITY_METHODS: ReadonlySet<string> = new Set([
 /**
  * Wrap a session so every turn-running entry point notes activity on the
  * dream trigger. The trigger never runs inside the turn — noteActivity()
- * is synchronous BEFORE the turn (the idle clock resets from the user's
- * request, not from when Herta finishes) and tick() fires after in a
- * detached microtask, never awaited in the turn path.
+ * is synchronous BEFORE the turn and again when it ENDS, and tick() fires
+ * after in a detached microtask, never awaited in the turn path.
+ *
+ * Both ends (dream review 2026-09-22, finding 2): the clock used to restart
+ * from the user's request only, so a 板砖 run longer than the idle window
+ * ended into a clock that had already run out, and the post-turn tick fired
+ * a pass the moment the reply landed — while the user was reading it. The
+ * host's busy gate keeps a pass out of the turn itself.
  * Exported for testing (the host's trigger is private).
  */
 export function wrapSessionForDreamActivity(
@@ -603,11 +616,15 @@ export function wrapSessionForDreamActivity(
       ) {
         return async (...args: unknown[]) => {
           trigger.noteActivity();
-          const result = await (
-            value as (...a: unknown[]) => Promise<unknown>
-          ).apply(target, args);
-          void Promise.resolve().then(() => trigger.tick());
-          return result;
+          try {
+            return await (value as (...a: unknown[]) => Promise<unknown>).apply(
+              target,
+              args,
+            );
+          } finally {
+            trigger.noteActivity();
+            void Promise.resolve().then(() => trigger.tick());
+          }
         };
       }
       return value;
