@@ -502,6 +502,9 @@ export function createSessionService(
   hooks: SessionServiceHooks = {},
 ): SessionService {
   let host: SessionHost | null = null;
+  /** The Dream flag the running host was built with (the Settings pane's
+   *  restart note compares against it); undefined before bootstrap. */
+  let dreamRunning: boolean | undefined;
   let handlersRegistered = false;
   // Herta's synthesized voice (ADR 0042). Built once at bootstrap and shared
   // by every session; the enable flag is cached here so `available()` — read
@@ -1038,6 +1041,7 @@ export function createSessionService(
       hooks,
       host: () => host,
       workspaceRoot: appWorkspaceRoot,
+      dreamRunning: () => dreamRunning,
       voice: {
         get synthesizer() {
           return synthesizer;
@@ -1226,6 +1230,7 @@ export function createSessionService(
         app.isPackaged ? undefined : process.env.HERTA_DEEPSEEK_BASE_URL,
         speech,
       );
+      dreamRunning = config.dream?.enabled === true;
       host = createSessionHost({
         ...config,
         // Per-install, beside the settings: each model call's token counts

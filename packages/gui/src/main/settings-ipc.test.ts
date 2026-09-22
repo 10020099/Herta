@@ -61,3 +61,37 @@ describe("settings IPC — 实时语音 off mid-reply (ADR 0042 §7c)", () => {
     expect(voice.realtimeEnabled).toBe(true);
   });
 });
+
+describe("settings IPC — Dream says what the running app has (dream review 2026-09-22, finding 20)", () => {
+  it("answers the saved flag AND the running one; before bootstrap it says only the saved one", async () => {
+    userData.dir = mkdtempSync(join(tmpdir(), "herta-settings-"));
+    const handlers = new Map<string, Handler>();
+    let running: boolean | undefined;
+    registerSettingsHandlers({
+      handle: ((channel: string, fn: Handler) => {
+        handlers.set(channel, fn);
+      }) as never,
+      hooks: {},
+      host: () => null,
+      workspaceRoot: () => userData.dir,
+      voice: {
+        synthesizer: null,
+        voiceModel: null,
+        minimaxVoice: null,
+        engine: "local",
+        realtimeEnabled: false,
+        minimaxFetch: (async () => new Response("")) as never,
+        anyMiniMaxKey: () => false,
+        minimaxRefusal: () => null,
+        stopSpeech: () => {},
+      },
+      dreamRunning: () => running,
+    });
+    const get = handlers.get(CMD.getDreamConfig);
+    const set = handlers.get(CMD.setDreamConfig);
+    expect(await get?.(null)).toEqual({ enabled: false });
+    running = false; // the host bootstrapped with Dream off
+    await set?.(null, { enabled: true });
+    expect(await get?.(null)).toEqual({ enabled: true, running: false });
+  });
+});

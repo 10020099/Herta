@@ -21,9 +21,12 @@ export function DreamSettings(): JSX.Element {
     "dream.enabled",
     false,
   );
-  // The value when the section opened — what the running app is using. The
-  // restart note shows only when the toggle now DIFFERS from it, so toggling
-  // back to the original hides it again.
+  // What the RUNNING app is using. The restart note shows only when the
+  // toggle now DIFFERS from it, so toggling back to it hides the note again.
+  // Main says it (`running`); the saved value on this pane's mount stood in
+  // for it before, and a pane reopened after a change showed ON with no note
+  // while the running app still had the old value (dream review
+  // 2026-09-22, finding 20). A bridge that does not say keeps that stand-in.
   const [initial, setInitial] = useState<boolean | null>(null);
   const [failed, setFailed] = useState(false);
   // A rejected config read previously died silently: the toggle showed the
@@ -37,7 +40,7 @@ export function DreamSettings(): JSX.Element {
       (c) => {
         if (alive) {
           setEnabled(c.enabled);
-          setInitial(c.enabled);
+          setInitial(c.running ?? c.enabled);
         }
       },
       () => {

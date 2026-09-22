@@ -64,6 +64,25 @@ describe("DreamSettings", () => {
     expect(queryByText("Restart to apply")).toBeNull();
   });
 
+  it("compares against what the RUNNING app uses, so a pane reopened after a change still says restart (dream review 2026-09-22, finding 20)", async () => {
+    // Saved ON in an earlier visit to the pane; the app still runs with OFF.
+    const mock = createMockHertaBridge({
+      getDreamConfigResult: { enabled: true, running: false },
+    });
+    const { getByLabelText, queryByText } = renderWithLocale(
+      <HertaBridgeProvider bridge={mock.bridge}>
+        <DreamSettings />
+      </HertaBridgeProvider>,
+    );
+    const toggle = getByLabelText("Enable Dream");
+    await waitFor(() =>
+      expect(toggle.getAttribute("aria-checked")).toBe("true"),
+    );
+    expect(queryByText("Restart to apply")).toBeTruthy();
+    fireEvent.click(toggle); // back to what the app runs with
+    expect(queryByText("Restart to apply")).toBeNull();
+  });
+
   it("reverts and surfaces an error if the write fails", async () => {
     const mock = createMockHertaBridge({
       getDreamConfigResult: { enabled: true },

@@ -116,15 +116,27 @@ export interface SettingsIpcDeps {
    *  read and write (the service's `appWorkspaceRoot`). */
   readonly workspaceRoot: () => string;
   readonly voice: VoiceSettingsState;
+  /** The Dream flag the RUNNING host was built with; undefined before
+   *  bootstrap. Optional for tests. */
+  readonly dreamRunning?: () => boolean | undefined;
 }
 
 export function registerSettingsHandlers(deps: SettingsIpcDeps): void {
   const { handle, hooks, voice, workspaceRoot } = deps;
   // Settings → Dream. Restart-to-apply: read/write the persisted flag; the
   // running app-server is untouched (it reads config.dream at next bootstrap).
+  // The answer carries what the running app has too (`running`): the pane's
+  // "restart to apply" note compares against it, not against the file it
+  // read on mount — a pane reopened after a change showed ON with no note
+  // while the running app still had the old value (dream review 2026-09-22,
+  // finding 20).
   handle(CMD.getDreamConfig, async () => {
     const s = await readAppSettings(workspaceRoot());
-    return { enabled: dreamEnabled(s) };
+    const running = deps.dreamRunning?.();
+    return {
+      enabled: dreamEnabled(s),
+      ...(running !== undefined ? { running } : {}),
+    };
   });
   handle(CMD.setDreamConfig, async (_e, cfg: { enabled: boolean }) => {
     const ws = workspaceRoot();

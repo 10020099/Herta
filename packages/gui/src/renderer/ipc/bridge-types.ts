@@ -113,6 +113,9 @@ export type SpeechControlEvent =
 /** The user-facing Dream config (Settings → Dream). v1 = one enable flag. */
 export interface DreamConfig {
   readonly enabled: boolean;
+  /** On a read: what the RUNNING app was built with (the flag applies at the
+   *  next start). Absent before bootstrap, from fakes, and on a write. */
+  readonly running?: boolean;
 }
 
 /** Backend (差分协处理器) reasoning-effort tiers. DeepSeek's 2026-07-31 update
