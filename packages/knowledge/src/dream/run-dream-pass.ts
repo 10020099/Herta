@@ -1,4 +1,5 @@
 import { readdirSync } from "node:fs";
+import { join } from "node:path";
 import { dreamDirFor, narrativeDirFor, type TerminalRecord } from "@herta/core";
 import { promptAssetsFor } from "@herta/herta";
 import type { DeepSeekClient } from "../llm/types.js";
@@ -28,7 +29,7 @@ import {
   liveDreamRecords,
   markGistFolded,
   pickEvictionTarget,
-  readManifest,
+  readManifestStrict,
   reinforceRecord,
   staleLiveRecords,
   writeManifest,
@@ -136,6 +137,26 @@ export interface RunDreamPassResult {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/** Error codes that mean the DISK refused (a lock, a full volume, a
+ *  permission) rather than anything about the episode. */
+const FILE_SYSTEM_CODES: ReadonlySet<string> = new Set([
+  "EPERM",
+  "EACCES",
+  "EBUSY",
+  "ENOSPC",
+  "EMFILE",
+  "ENFILE",
+  "EIO",
+  "EROFS",
+  "EAGAIN",
+  "EEXIST",
+]);
+
+function isFileSystemError(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === "string" && FILE_SYSTEM_CODES.has(code);
+}
+
 /** Stale-floor forgetting (the actual forgetting curve): archive every live
  *  record whose retention strength has decayed below `cfg.retentionFloor`. A
  *  no-op when the floor is 0 (default). Runs once per pass, before episodes, so
@@ -148,15 +169,12 @@ function forgetStale(
   dreamDir: string,
   nowMs: number,
   now: () => Date,
-  /** Semanticization collector: each dying dream's text is captured BEFORE the
-   *  archive move so the pass can fold its gist into the 关于开拓者 page. */
-  evictedTexts?: EvictedFeianText[],
 ): number {
   const stale = staleLiveRecords(manifest, nowMs, cfg);
+  let forgotten = 0;
   for (const target of stale) {
-    collectForSemanticize(evictedTexts, narrativeDir, target.file);
     const strength = computeStrength(target, nowMs, cfg).toFixed(3);
-    archiveDreamRecord(
+    const outcome = archiveDreamRecord(
       manifest,
       target,
       narrativeDir,
@@ -164,23 +182,27 @@ function forgetStale(
       `forgotten: retention ${strength} < floor ${cfg.retentionFloor}`,
       now,
     );
+    // Held open elsewhere: still live, not forgotten — the next pass tries.
+    if (!outcome.archived) continue;
+    forgotten++;
+    markPendingFold(manifest, outcome.archivedAs);
   }
-  return stale.length;
+  return forgotten;
 }
 
-/** Read a dying dream-created 废案's text into the semanticization collector.
- *  Best-effort: an unreadable file simply contributes nothing. Seeds never
- *  route through here (their eviction path is archiveLiveRecord directly),
- *  and neither do reconsolidation supersede-archives — a reconsolidated
- *  memory lives on sharper, it is not forgotten. */
-function collectForSemanticize(
-  collector: EvictedFeianText[] | undefined,
-  narrativeDir: string,
-  file: string,
+/** A dying dream's gist is owed to the 关于开拓者 page (finding 14): its
+ *  archived name joins the manifest's pending list, flushed with the archive
+ *  move itself, and the fold reads the body back from the archive. Seeds
+ *  never route through here (their eviction path is archiveLiveRecord
+ *  directly), and neither do reconsolidation supersede-archives — a
+ *  reconsolidated memory lives on sharper, it is not forgotten. A file that
+ *  had already vanished owes nothing. */
+function markPendingFold(
+  manifest: DreamManifest,
+  archivedAs: string | null,
 ): void {
-  if (collector === undefined) return;
-  const body = readTextFile(narrativeDir, file);
-  if (body !== undefined) collector.push({ file, body });
+  if (archivedAs === null) return;
+  manifest.pendingFold = [...(manifest.pendingFold ?? []), archivedAs];
 }
 
 /**
@@ -206,8 +228,6 @@ function enforceCap(
   dreamDir: string,
   nowMs: number,
   now: () => Date,
-  /** See forgetStale — dying DREAM records (never seeds) feed the collector. */
-  evictedTexts?: EvictedFeianText[],
 ): number {
   if (cfg.maxLiveCount <= 0) return 0;
   let seedsEvicted = 0;
@@ -240,9 +260,8 @@ function enforceCap(
     // first (redundancy before diversity); unique tags → weakest overall.
     const target = pickEvictionTarget(manifest, nowMs, cfg);
     if (target === undefined) break;
-    collectForSemanticize(evictedTexts, narrativeDir, target.file);
     const strength = computeStrength(target, nowMs, cfg).toFixed(3);
-    archiveDreamRecord(
+    const outcome = archiveDreamRecord(
       manifest,
       target,
       narrativeDir,
@@ -250,6 +269,11 @@ function enforceCap(
       `cap-eviction: retention ${strength} (interference-aware)`,
       now,
     );
+    // Un-archivable (held open): stop rather than spin — the record stays
+    // live, the promotion proceeds over budget this pass, the next retries.
+    // The old path flipped it to archived anyway and went on to the next.
+    if (!outcome.archived) break;
+    markPendingFold(manifest, outcome.archivedAs);
   }
   return seedsEvicted;
 }
@@ -362,23 +386,27 @@ export async function runDreamPass(
   }
 
   try {
-    const manifest = readManifest(dreamDir);
+    // A broken manifest stops the pass before anything is written: an empty
+    // ledger in its place would re-dream everything as new (finding 8).
+    // Reported like a transport abort — `lastRunAt` does not advance.
+    const read = readManifestStrict(dreamDir);
+    if (!read.ok) {
+      res.aborted = read.reason;
+      return res;
+    }
+    const manifest = read.manifest;
 
     // Crash recovery: make the on-disk state and the ledger consistent before
     // the cap + dedup run — sweep stale temp files from an interrupted
     // promotion and prune phantom live records whose file has vanished. Does
     // NOT adopt unknown 废案 files (they may be hand-authored seeds; D7
     // never-touch-user-owned).
-    reconcileDreamState({ narrativeDir, manifest });
-
-    // Semanticization collector: every dream-created 废案 the pass forgets
-    // (stale-floor or cap) contributes its text, folded into the 关于开拓者
-    // page at the end of the pass.
-    const evictedForNotes: EvictedFeianText[] = [];
+    reconcileDreamState({ narrativeDir, manifest, nowMs: now().getTime() });
 
     // Stale-floor forgetting (the forgetting curve): archive dreams whose
     // retention has decayed below the floor, once per pass, before episodes. A
-    // no-op at the default floor of 0. Flush so a crash can't resurrect a fade.
+    // no-op at the default floor of 0. Flush so a crash can't resurrect a fade
+    // — the flush also carries the dying gists' pending-fold entries.
     const forgotten = forgetStale(
       manifest,
       cfg,
@@ -386,7 +414,6 @@ export async function runDreamPass(
       dreamDir,
       now().getTime(),
       now,
-      evictedForNotes,
     );
     if (forgotten > 0) writeManifest(dreamDir, manifest);
 
@@ -924,7 +951,6 @@ export async function runDreamPass(
             dreamDir,
             now().getTime(),
             now,
-            evictedForNotes,
           );
 
           const { nn, file } = promoteCandidate({
@@ -969,6 +995,13 @@ export async function runDreamPass(
             // is retried next pass. Recording it here would let a transient
             // outage permanently consume material.
             res.aborted = err.detail;
+          } else if (isFileSystemError(err)) {
+            // The disk refused a write — the promotion rename under an AV
+            // scan, an indexer or OneDrive on `.herta/narrative`. The same
+            // shape as an outage (finding 7): the episode was ledgered
+            // `archived: error` and never tried again, a memory consumed by
+            // a lock. Abort without consuming it; the next pass retries.
+            res.aborted = `write failed: ${(err as { code: string }).code}`;
           } else {
             recordEpisode(
               manifest,
@@ -1012,12 +1045,31 @@ export async function runDreamPass(
       }
     }
 
+    // The dying gists owed to the page: every archived name on the manifest's
+    // pending list — this pass's forgettings and any an aborted or crashed
+    // earlier pass left owing (finding 14) — read back from the archive. A
+    // name whose file is gone owes nothing more and leaves the list.
+    const archiveDir = join(dreamDir, "archive");
+    const evictedForNotes: EvictedFeianText[] = [];
+    const pendingNames: string[] = [];
+    for (const name of manifest.pendingFold ?? []) {
+      const body = readTextFile(archiveDir, name);
+      if (body === undefined) continue;
+      evictedForNotes.push({ file: name, body });
+      pendingNames.push(name);
+    }
+    if ((manifest.pendingFold?.length ?? 0) !== pendingNames.length) {
+      manifest.pendingFold = pendingNames;
+      writeManifest(dreamDir, manifest);
+    }
+
     // Semanticization (best-effort, after the loops): fold the forgotten
     // dreams' gist — and the stabilized living records' (ADR 0023) — into the
     // 关于开拓者 / "About the Trailblazer" page. Failures leave the page
     // untouched and never abort the pass — the forgetting already happened,
     // and blocking completion on this step would let a flaky call re-trigger
-    // everything.
+    // everything. A failed fold keeps the pending list: the next pass folds
+    // the same gists.
     //
     // Language-aware (ADR 0017 follow-up): each language folds into its OWN
     // notes page (this pass's per-language narrativeDir + notesFileFor/
@@ -1043,6 +1095,11 @@ export async function runDreamPass(
       // "failed" the flags stay unset — the fold retries next pass.
       if (outcome === "updated" && stabilizedIds.length > 0) {
         markGistFolded(manifest, stabilizedIds);
+        writeManifest(dreamDir, manifest);
+      }
+      // The dying gists reached the page: they are owed no more.
+      if (outcome === "updated" && pendingNames.length > 0) {
+        delete manifest.pendingFold;
         writeManifest(dreamDir, manifest);
       }
     }

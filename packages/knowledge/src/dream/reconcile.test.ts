@@ -3,6 +3,7 @@ import {
   mkdtempSync,
   readdirSync,
   rmSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -62,6 +63,24 @@ describe("reconcileDreamState", () => {
     const left = readdirSync(dir);
     expect(left.some((f) => f.startsWith(".dream-tmp-"))).toBe(false);
     expect(left).toContain("### 废案_00：seed.txt");
+  });
+
+  it("sweeps the atomic writer's orphaned temps — the names it has produced since 2026-09-11 — but never a young one (dream review 2026-09-22, finding 19)", () => {
+    const now = Date.now();
+    const old = ".### 废案_05：一晚.txt.4242.1.a1b2c3.tmp";
+    const notes = ".### 记录：关于开拓者.txt.4242.2.d4e5f6.tmp";
+    const young = ".### 废案_06：在写.txt.4242.3.abcdef.tmp";
+    for (const f of [old, notes, young]) writeFileSync(join(dir, f), "x");
+    const hourAgo = new Date(now - 60 * 60_000);
+    utimesSync(join(dir, old), hourAgo, hourAgo);
+    utimesSync(join(dir, notes), hourAgo, hourAgo);
+    const res = reconcileDreamState({
+      narrativeDir: dir,
+      manifest: emptyManifest(),
+      nowMs: now,
+    });
+    expect(res.sweptTemp).toBe(2);
+    expect(readdirSync(dir)).toEqual([young]);
   });
 
   it("sweeps orphaned .dream-notes-tmp-* files from a crashed notes write", () => {

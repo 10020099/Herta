@@ -101,6 +101,13 @@ export interface DreamManifest {
   episodes: EpisodeLedgerEntry[];
   created: DreamCreatedRecord[];
   lastRunAt?: string;
+  /** Archived dying dreams whose gist has not reached the 关于开拓者 page yet
+   *  — names in the dream ARCHIVE dir. The fold runs at the end of a pass,
+   *  after the archive move; a pass that aborted or crashed in between used
+   *  to lose the gist for good (dream review 2026-09-22, finding 14). The
+   *  fold reads the bodies back from the archive and clears the list only
+   *  when the page was written. Absent = nothing pending. */
+  pendingFold?: string[];
 }
 
 export interface DreamConfig {

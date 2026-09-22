@@ -368,7 +368,7 @@ export async function runReconsolidationJunction(
   // on a later archive of merged).
   const mergedId = `${ctx.runId}:${ep.episodeHash.slice(0, 8)}`;
   const mnn = nextFeianIndex(readdirSync(narrativeDir));
-  archiveDreamRecord(
+  const archivedOld = archiveDreamRecord(
     manifest,
     old,
     narrativeDir,
@@ -376,6 +376,13 @@ export async function runReconsolidationJunction(
     `reconsolidated → superseded by ${mergedId}`,
     now,
   );
+  // OLD held open elsewhere: it is still live, and promoting the merge
+  // beside it would load two near-duplicates. Keep OLD, strengthened.
+  if (!archivedOld.archived) {
+    return reinforceOnly(
+      `reinforce-fallback ${old.file}: OLD could not be archived (${archivedOld.code})`,
+    );
+  }
   const mergedHeader = parseFeianHeader(firstHeaderLine(merged));
   const mergedTitle =
     mergedHeader?.title ??

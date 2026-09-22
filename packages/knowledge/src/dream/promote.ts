@@ -1,4 +1,4 @@
-import { mkdirSync, readdirSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, renameSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { isPathInside, writeFileAtomicSync } from "@herta/core";
 import { nextFeianIndex } from "./feian-format.js";
@@ -63,13 +63,35 @@ export interface ArchiveInput {
   reason: string;
 }
 
-export function archiveLiveRecord(input: ArchiveInput): void {
+/** Move a live file into the dream archive. Returns the name it has THERE —
+ *  its own, unless an earlier archived file already held it. */
+export function archiveLiveRecord(input: ArchiveInput): string {
   const archiveDir = join(input.dreamDir, "archive");
   mkdirSync(archiveDir, { recursive: true });
   // Fix 1 (D4 guard): archive target must be inside dreamDir.
   assertUnderDreamRoot(join(archiveDir, input.file), input.dreamDir);
+  const archivedAs = freeArchiveName(archiveDir, input.file);
   renameSync(
     join(input.narrativeDir, input.file),
-    join(archiveDir, input.file),
+    join(archiveDir, archivedAs),
   );
+  return archivedAs;
+}
+
+/**
+ * A name in the archive nothing holds yet. A later 废案 can take an archived
+ * one's exact `NN：title`, and a rename onto an existing name REPLACES it on
+ * every platform this ships on — the earlier archived memory was overwritten,
+ * breaking "archive, never delete" (dream review 2026-09-22, finding 19). The
+ * second copy gets ` (2)` before the extension, then ` (3)`, and so on.
+ */
+function freeArchiveName(archiveDir: string, file: string): string {
+  if (!existsSync(join(archiveDir, file))) return file;
+  const dot = file.lastIndexOf(".");
+  const stem = dot > 0 ? file.slice(0, dot) : file;
+  const ext = dot > 0 ? file.slice(dot) : "";
+  for (let n = 2; ; n++) {
+    const candidate = `${stem} (${n})${ext}`;
+    if (!existsSync(join(archiveDir, candidate))) return candidate;
+  }
 }

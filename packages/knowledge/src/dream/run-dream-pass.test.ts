@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DeepSeekClient } from "../llm/types.js";
 import * as manifestModule from "./manifest.js";
 import { readManifest } from "./manifest.js";
+import * as promoteModule from "./promote.js";
 import { runDreamPass } from "./run-dream-pass.js";
 import type { DreamCreatedRecord } from "./types.js";
 
@@ -2496,6 +2497,184 @@ describe("runDreamPass default forgetting floor (ADR 0023)", () => {
     ).toBe(true);
     // …and its gist folded into the notes page before the archive move.
     expect(res.notesOutcome).toBe("updated");
+    expect(
+      readFileSync(join(narrativeDir, "### 记录：关于开拓者.txt"), "utf8"),
+    ).toContain(notes);
+  });
+});
+
+describe("runDreamPass durability (dream review 2026-09-22, findings 7, 8, 14)", () => {
+  let ws: string;
+  let narrativeDir: string;
+  let dreamDir: string;
+  beforeEach(() => {
+    ws = mkdtempSync(join(tmpdir(), "dream-durable-"));
+    narrativeDir = join(ws, ".herta", "narrative");
+    dreamDir = join(ws, ".herta", "dream");
+    mkdirSync(narrativeDir, { recursive: true });
+    mkdirSync(dreamDir, { recursive: true });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    rmSync(ws, { recursive: true, force: true });
+  });
+
+  const record: TerminalRecord = [
+    { kind: "user", text: "阮·梅又在搞事，你怎么看" },
+    { kind: "herta", surface: "speech", text: "我看她乐在其中。" },
+    { kind: "herta", surface: "speech", text: "至于我，懒得掺和。" },
+    { kind: "user", text: "（新话题）帮我看个 bug" },
+  ];
+  const testConfig = { minEpisodeChars: 10 };
+
+  /** A dying dream: ~426 idle days, below the default floor. */
+  function seedAncient(): string {
+    const file = "### 废案_07：被时间带走的一晚.txt";
+    writeFileSync(
+      join(narrativeDir, file),
+      "### 废案_07：被时间带走的一晚\n那晚的细节，如今只剩一个判断。",
+      "utf8",
+    );
+    const m0 = manifestModule.emptyManifest();
+    m0.created.push({
+      id: "ancient",
+      file,
+      nn: 7,
+      state: "live",
+      sourceSessionId: "s0",
+      sourceEpisodeHash: "hAncient",
+      sourceEpisodes: ["hAncient"],
+      runId: "r0",
+      model: "m",
+      generatedAt: "2025-05-01T00:00:00Z",
+      situationTag: "t",
+      summary: "那晚的细节。",
+      critiqueScores: { voice: 0.9, format: 1, novelty: 1 },
+      validateFeianPassed: true,
+      estimatedPrefixTokens: 100,
+      reactivationCount: 0,
+    });
+    manifestModule.writeManifest(dreamDir, m0);
+    return file;
+  }
+
+  it("a corrupt manifest stops the pass before anything is written — it is copied aside, never replaced by an empty ledger (finding 8)", async () => {
+    const corrupt = '{"version":1,"episodes":[{"sessionId":"s1"';
+    writeFileSync(join(dreamDir, "manifest.json"), corrupt, "utf8");
+    const res = await runDreamPass({
+      workspaceRoot: ws,
+      sessions: [{ sessionId: "s1", record }],
+      client: fakeClient(),
+      runId: "rcorrupt",
+      config: testConfig,
+      now: () => new Date("2026-06-18T09:30:00Z"),
+    });
+    expect(res.aborted).toBe("manifest corrupt");
+    expect(res.promoted).toBe(0);
+    // The broken file is still there for repair, and a copy sits beside it.
+    expect(readFileSync(join(dreamDir, "manifest.json"), "utf8")).toBe(corrupt);
+    expect(
+      readdirSync(dreamDir).some((f) =>
+        /^manifest\.corrupt-[0-9a-f]{8}\.json$/.test(f),
+      ),
+    ).toBe(true);
+    expect(
+      readdirSync(narrativeDir).filter((f) => f.startsWith("### 废案")),
+    ).toEqual([]);
+  });
+
+  it("a promotion the DISK refuses aborts the pass without consuming the episode — the next pass promotes it (finding 7)", async () => {
+    const spy = vi
+      .spyOn(promoteModule, "promoteCandidate")
+      .mockImplementationOnce(() => {
+        throw Object.assign(
+          new Error("EPERM: operation not permitted, rename"),
+          {
+            code: "EPERM",
+          },
+        );
+      });
+    const first = await runDreamPass({
+      workspaceRoot: ws,
+      sessions: [{ sessionId: "s1", record }],
+      client: fakeClient(),
+      runId: "reperm-1",
+      config: testConfig,
+      now: () => new Date("2026-06-18T09:30:00Z"),
+    });
+    expect(first.aborted).toBe("write failed: EPERM");
+    expect(first.archived).toBe(0);
+    expect(readManifest(dreamDir).episodes).toEqual([]);
+    spy.mockRestore();
+    const second = await runDreamPass({
+      workspaceRoot: ws,
+      sessions: [{ sessionId: "s1", record }],
+      client: fakeClient(),
+      runId: "reperm-2",
+      config: testConfig,
+      now: () => new Date("2026-06-18T10:30:00Z"),
+    });
+    expect(second.promoted).toBe(1);
+  });
+
+  it("a forgetting the disk refuses leaves the memory LIVE — never archived in the ledger while its file still loads (finding 7)", async () => {
+    const file = seedAncient();
+    // The archive dir cannot be made: a FILE sits where it should be.
+    writeFileSync(join(dreamDir, "archive"), "", "utf8");
+    await runDreamPass({
+      workspaceRoot: ws,
+      sessions: [],
+      client: fakeClient(),
+      runId: "rblocked",
+      config: {},
+      now: () => new Date("2026-07-01T00:00:00Z"),
+    });
+    const m = readManifest(dreamDir);
+    expect(m.created.find((r) => r.id === "ancient")?.state).toBe("live");
+    expect(m.episodes).toEqual([]);
+    expect(m.pendingFold).toBeUndefined();
+    expect(existsSync(join(narrativeDir, file))).toBe(true);
+  });
+
+  it("a dying gist the pass could not fold stays owed — the next pass folds it from the archive (finding 14)", async () => {
+    const file = seedAncient();
+    const notes = "细节淡了，但那个判断留了下来：他不赖账。";
+    // Pass 1: every model call fails — the episode aborts the pass, and the
+    // fold after the loops fails too.
+    const down: DeepSeekClient = {
+      chatJson: vi.fn(async () => {
+        throw new Error("ECONNRESET");
+      }) as DeepSeekClient["chatJson"],
+    };
+    const first = await runDreamPass({
+      workspaceRoot: ws,
+      sessions: [{ sessionId: "s1", record }],
+      client: down,
+      runId: "rowed-1",
+      config: { ...testConfig },
+      now: () => new Date("2026-07-01T00:00:00Z"),
+    });
+    expect(first.aborted).toBeDefined();
+    expect(existsSync(join(dreamDir, "archive", file))).toBe(true);
+    expect(readManifest(dreamDir).pendingFold).toEqual([file]);
+    // Pass 2: the fold answers; the owed gist reaches the page and is cleared.
+    const up: DeepSeekClient = {
+      chatJson: vi.fn(async ({ systemPrompt }: { systemPrompt: string }) => {
+        if (systemPrompt.includes("自传第六章"))
+          return { rawJsonText: JSON.stringify({ notes }), model: "m" };
+        throw new Error(`unexpected LLM call: ${systemPrompt.slice(0, 30)}`);
+      }) as DeepSeekClient["chatJson"],
+    };
+    const second = await runDreamPass({
+      workspaceRoot: ws,
+      sessions: [],
+      client: up,
+      runId: "rowed-2",
+      config: {},
+      now: () => new Date("2026-07-02T00:00:00Z"),
+    });
+    expect(second.notesOutcome).toBe("updated");
+    expect(readManifest(dreamDir).pendingFold).toBeUndefined();
     expect(
       readFileSync(join(narrativeDir, "### 记录：关于开拓者.txt"), "utf8"),
     ).toContain(notes);

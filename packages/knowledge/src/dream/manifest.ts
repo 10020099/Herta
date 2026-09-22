@@ -1,4 +1,5 @@
-import { mkdirSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { writeFileAtomicSync } from "@herta/core";
 import { computeStrength } from "./retention.js";
@@ -31,18 +32,97 @@ function normalizeCreated(r: DreamCreatedRecord): DreamCreatedRecord {
   };
 }
 
+/** A manifest read that says what went wrong instead of guessing. */
+export type ManifestRead =
+  | { readonly ok: true; readonly manifest: DreamManifest }
+  | { readonly ok: false; readonly reason: string };
+
+/**
+ * Read the manifest, telling a FRESH corpus (no file — an empty ledger)
+ * from a BROKEN one. A corrupt manifest used to become an empty one with no
+ * warning and no copy: dedup, provenance, retention state and the cadence
+ * anchor vanished, the next pass re-dreamed everything as new, and the old
+ * 废案 files stayed forever as untracked "seeds" (dream review 2026-09-22,
+ * finding 8). Now an unparseable file is copied aside once
+ * (`manifest.corrupt-<hash>.json`) and reported; an unreadable one (a lock)
+ * is reported and left alone. The pass refuses to run on either; the
+ * lenient `readManifest` below still answers empty for the readers that
+ * only need a best guess.
+ */
+export function readManifestStrict(dreamDir: string): ManifestRead {
+  let raw: string;
+  try {
+    raw = readFileSync(join(dreamDir, FILE), "utf8");
+  } catch (err) {
+    const code = (err as { code?: string }).code ?? "unknown";
+    if (code === "ENOENT") return { ok: true, manifest: emptyManifest() };
+    return { ok: false, reason: `manifest unreadable: ${code}` };
+  }
+  const manifest = parseManifest(raw);
+  if (manifest === null) {
+    const backup = backUpCorrupt(dreamDir, raw);
+    console.warn(
+      `[herta] dream manifest in ${dreamDir} is corrupt; ${
+        backup === null
+          ? "the copy could not be written"
+          : `copied to ${backup}`
+      }. Dream passes stop until it is repaired or removed.`,
+    );
+    return { ok: false, reason: "manifest corrupt" };
+  }
+  return { ok: true, manifest };
+}
+
+/** The manifest in `raw`, or null when it is not one. */
+function parseManifest(raw: string): DreamManifest | null {
+  let parsed: Partial<DreamManifest> | null;
+  try {
+    parsed = JSON.parse(raw) as Partial<DreamManifest> | null;
+  } catch {
+    return null;
+  }
+  if (
+    parsed === null ||
+    typeof parsed !== "object" ||
+    (parsed.episodes !== undefined && !Array.isArray(parsed.episodes)) ||
+    (parsed.created !== undefined && !Array.isArray(parsed.created))
+  ) {
+    return null;
+  }
+  return {
+    version: 1,
+    episodes: parsed.episodes ?? [],
+    created: (parsed.created ?? []).map(normalizeCreated),
+    ...(parsed.lastRunAt !== undefined ? { lastRunAt: parsed.lastRunAt } : {}),
+    ...(Array.isArray(parsed.pendingFold) && parsed.pendingFold.length > 0
+      ? { pendingFold: parsed.pendingFold }
+      : {}),
+  };
+}
+
+/** One copy per distinct corrupt content, beside the manifest. Null when
+ *  it could not be written. */
+function backUpCorrupt(dreamDir: string, raw: string): string | null {
+  const tag = createHash("sha256").update(raw).digest("hex").slice(0, 8);
+  const name = `manifest.corrupt-${tag}.json`;
+  try {
+    const path = join(dreamDir, name);
+    if (!existsSync(path)) writeFileSync(path, raw, "utf8");
+    return name;
+  } catch {
+    return null;
+  }
+}
+
+/** The manifest, or an empty ledger when it is absent OR broken — silently,
+ *  for the readers that only need a best guess (the reopen filter, the
+ *  cadence anchor, listings). The pass uses `readManifestStrict`. */
 export function readManifest(dreamDir: string): DreamManifest {
   try {
-    const raw = readFileSync(join(dreamDir, FILE), "utf8");
-    const parsed = JSON.parse(raw) as DreamManifest;
-    return {
-      version: 1,
-      episodes: parsed.episodes ?? [],
-      created: (parsed.created ?? []).map(normalizeCreated),
-      ...(parsed.lastRunAt !== undefined
-        ? { lastRunAt: parsed.lastRunAt }
-        : {}),
-    };
+    return (
+      parseManifest(readFileSync(join(dreamDir, FILE), "utf8")) ??
+      emptyManifest()
+    );
   } catch {
     return emptyManifest();
   }
