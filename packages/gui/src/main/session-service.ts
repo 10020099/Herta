@@ -773,6 +773,11 @@ export function createSessionService(
     handle(CMD.resyncRecord, () => {
       host?.activeSession?.resyncRecord?.();
     });
+    // The renderer's store asks for its state once it has subscribed
+    // (session-activation.ts `resync`).
+    handle(CMD.requestSync, () => {
+      activation.resync();
+    });
     // The repository card asks for a fresh probe on window focus (ADR
     // 0058); the answer arrives as a `session:repo` event.
     handle(CMD.refreshRepo, async () => {

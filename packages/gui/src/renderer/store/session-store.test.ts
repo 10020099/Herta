@@ -86,6 +86,19 @@ describe("SessionStore — a reset that lands mid-turn (UX review 2026-09-22, it
     expect(store.getSnapshot().status).toBe("idle");
   });
 
+  it("connecting asks main for the state — a reloaded page's first reset can have gone out before it subscribed", () => {
+    const mock = createMockHertaBridge();
+    let asked = 0;
+    Object.assign(mock.bridge, {
+      requestSessionSync: async () => {
+        asked += 1;
+      },
+    });
+    const store = new SessionStore();
+    store.connect(mock.bridge);
+    expect(asked).toBe(1);
+  });
+
   it("an ordinary reset (no turn in flight) is idle, as before", () => {
     const mock = createMockHertaBridge();
     const store = new SessionStore();

@@ -163,6 +163,31 @@ describe("session activation — the window follows the host (UX review 2026-09-
     expect(resets().at(-1)).toEqual({ noSession: true });
   });
 
+  it("a page that asks for its state gets the open session again, or the connect screen — and nothing before the host exists (the reload re-sync, item 7)", () => {
+    const { h, activation, resets } = setup();
+    // The host is up with a session open: the reloaded page's ask re-points.
+    const x = session("X");
+    h.state.active = x;
+    activation.resync();
+    expect(resets().at(-1)).toEqual({ sessionId: "X" });
+    expect(activation.pointed).toBe(x);
+    // Nothing open: the connect screen.
+    h.state.active = null;
+    activation.resync();
+    expect(resets().at(-1)).toEqual({ noSession: true });
+    // Before bootstrap there is no host: silent.
+    const sent: unknown[] = [];
+    const early = createSessionActivation({
+      host: () => null,
+      send: (ch, p) => sent.push([ch, p]),
+      startForwarders: () => () => undefined,
+      snapshot: (s) => ({ sessionId: s.sessionId }),
+      lang: async () => "zh",
+    });
+    early.resync();
+    expect(sent).toEqual([]);
+  });
+
   it("an ordinary open points and regenerates; an ordinary create points and plays its opening", async () => {
     const { h, activation } = setup();
     const regen = vi.fn(async () => undefined);

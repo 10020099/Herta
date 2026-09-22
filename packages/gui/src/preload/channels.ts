@@ -16,6 +16,7 @@ export const CMD = {
   getWorkspaceTrust: "session:getWorkspaceTrust",
   setWorkspaceTrust: "session:setWorkspaceTrust",
   resyncRecord: "session:resyncRecord",
+  requestSync: "session:requestSync",
   updateCheck: "update:check",
   updateRestart: "update:restartAndInstall",
   updateStatus: "update:status",

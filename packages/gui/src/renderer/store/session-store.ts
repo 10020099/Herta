@@ -343,6 +343,11 @@ export class SessionStore {
         ? [bridge.onRepo((e) => this.onRepo(e))]
         : []),
     ];
+    // Subscribed: now ask for the state. Main's own push at did-finish-load
+    // can land before this line after a reload, and was then lost — the
+    // window came back with no session over a running one (UX review
+    // 2026-09-22, item 7).
+    void bridge.requestSessionSync?.().catch(() => undefined);
     return () => this.disconnect();
   }
 

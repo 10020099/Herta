@@ -37,6 +37,7 @@ const bridge: HertaBridge = {
   setWorkspaceTrust: (value) =>
     ipcRenderer.invoke(CMD.setWorkspaceTrust, value),
   resyncRecord: () => ipcRenderer.invoke(CMD.resyncRecord),
+  requestSessionSync: () => ipcRenderer.invoke(CMD.requestSync),
   refreshRepo: () => ipcRenderer.invoke(CMD.refreshRepo),
   checkForUpdate: () => ipcRenderer.invoke(CMD.updateCheck),
   restartAndInstall: () => ipcRenderer.invoke(CMD.updateRestart),

@@ -522,6 +522,14 @@ export interface HertaBridge {
    *  lost; the mirror has a permanent hole otherwise). OPTIONAL so existing
    *  bridge fakes keep compiling — the store no-ops without it. */
   resyncRecord?(): Promise<void>;
+  /** Ask main to send the current `session:reset` again — what the store
+   *  calls once it has subscribed. Main pushes the reset on the page's
+   *  did-finish-load, which after a RELOAD can run before this page's
+   *  store subscribes: the push was lost and the window showed no session
+   *  at all over a running one (UX review 2026-09-22, item 7). Main answers
+   *  nothing before its host exists; the bootstrap's own reset follows.
+   *  OPTIONAL like `resyncRecord`. */
+  requestSessionSync?(): Promise<void>;
   /** Auto-update surface (2026-07-10). All OPTIONAL so bridge fakes and the
    *  website demo keep compiling — the UI hides without them. Check is
    *  manual (Settings); state also streams via onUpdate. */

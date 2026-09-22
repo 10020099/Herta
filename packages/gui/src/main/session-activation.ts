@@ -31,6 +31,10 @@ export interface SessionActivation {
   pointNowhere(): void;
   /** Stop forwarding without telling the window (dispose). */
   release(): void;
+  /** The window asks for its state (its store just subscribed): point it
+   *  at the host's open session again, or at nothing. Before the host
+   *  exists there is nothing to say — the bootstrap's own reset follows. */
+  resync(): void;
   openAndPoint(id: string): Promise<Session | SessionOpenFailure | null>;
   createAndPoint(opts: CreateSessionOpts): Promise<Session | null>;
   deleteAndReconcile(
@@ -78,6 +82,18 @@ export function createSessionActivation(
   function pointNowhere(): void {
     release();
     deps.send(EVT.reset, { noSession: true });
+  }
+
+  /** A reloaded page subscribes AFTER main's did-finish-load push can
+   *  already have gone out, and that reset was lost: the window showed no
+   *  session over a running one (UX review 2026-09-22, item 7, found live
+   *  2026-09-23). The page asks once subscribed; this answers. */
+  function resync(): void {
+    const host = deps.host();
+    if (host === null) return;
+    const active = host.activeSession;
+    if (active === null) pointNowhere();
+    else pointAt(active);
   }
 
   /** Follow the host. A session pointed at here plays no opening and
@@ -197,6 +213,7 @@ export function createSessionActivation(
     pointAt,
     pointNowhere,
     release,
+    resync,
     openAndPoint,
     createAndPoint,
     deleteAndReconcile,
