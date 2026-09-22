@@ -278,6 +278,28 @@ describe("TopBar new-session mid-turn guard (2026-07-12)", () => {
     expect(btn.className).not.toContain("is-armed");
   });
 
+  it("a DOUBLE-click mid-turn only arms — the second click of it is not the confirm (UX review 2026-09-22, item 3)", () => {
+    const bar = renderTopBar();
+    act(() => {
+      bar.emitReset({
+        sessionId: "s",
+        workspaceRoot: "/r",
+        record: [],
+        overlay: null,
+        backendWorkspace: "/r",
+        backendWorkspaceIsDefault: true,
+      });
+      bar.emitTurn({ kind: "started", turnId: "t1" });
+    });
+    const btn = screen.getByLabelText("New session");
+    fireEvent.click(btn, { detail: 1 });
+    fireEvent.click(btn, { detail: 2 });
+    expect(bar.calls.createSession).toHaveLength(0);
+    expect(btn.className).toContain("is-armed");
+    fireEvent.click(btn, { detail: 1 });
+    expect(bar.calls.createSession).toHaveLength(1);
+  });
+
   it("disarms when the turn ends; an idle click creates immediately", () => {
     const bar = renderTopBar();
     act(() => {

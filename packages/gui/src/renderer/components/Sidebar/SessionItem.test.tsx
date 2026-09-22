@@ -221,6 +221,22 @@ describe("SessionItem delete", () => {
     expect(mock.calls.deleteSession).toEqual([SESSION.sessionId]);
   });
 
+  it("a DOUBLE-click on the trash does not delete — the second click lands on the pill and is not its confirm (UX review 2026-09-22, item 3)", () => {
+    const mock = setup("other-session");
+    // The platform counts the clicks: detail 1, then 2 for the second
+    // click of a double-click, which lands on the pill mounted in the
+    // trash's own slot.
+    fireEvent.click(screen.getByTestId("session-delete"), { detail: 1 });
+    const confirm = screen.getByRole("button", { name: "Confirm delete" });
+    fireEvent.click(confirm, { detail: 2 });
+    expect(mock.calls.deleteSession).toEqual([]);
+    // Still armed; a fresh click after reading it deletes.
+    fireEvent.click(screen.getByRole("button", { name: "Confirm delete" }), {
+      detail: 1,
+    });
+    expect(mock.calls.deleteSession).toEqual([SESSION.sessionId]);
+  });
+
   it("keeps the confirm after click even if a spurious mouseEnter fires (no real leave)", () => {
     // Clicking the trash removes its <svg>, which can fire a spurious
     // onMouseEnter on the card (React rebuilds enter/leave from a detached
@@ -690,6 +706,24 @@ describe("SessionItem mid-turn switch guard", () => {
       ),
     ).toBeInTheDocument();
     fireEvent.click(card);
+    expect(mock.calls.openSession).toEqual([SESSION.sessionId]);
+  });
+
+  it("a DOUBLE-click mid-turn only arms — it never interrupts the reply the arm protects (UX review 2026-09-22, item 3)", () => {
+    const mock = setup("some-other-session");
+    act(() => {
+      mock.emitTurn({ kind: "started", turnId: "t1" });
+    });
+    const card = screen.getByTestId("session-card");
+    fireEvent.click(card, { detail: 1 });
+    fireEvent.click(card, { detail: 2 });
+    expect(mock.calls.openSession).toEqual([]);
+    expect(
+      screen.getByText(
+        "This interrupts the current reply — click again to confirm",
+      ),
+    ).toBeInTheDocument();
+    fireEvent.click(card, { detail: 1 });
     expect(mock.calls.openSession).toEqual([SESSION.sessionId]);
   });
 
