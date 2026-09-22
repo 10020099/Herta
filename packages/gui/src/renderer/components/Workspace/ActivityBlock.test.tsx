@@ -207,6 +207,42 @@ describe("ActivityBlock", () => {
     expect(screen.getByText("Reading scripts")).toBeInTheDocument();
   });
 
+  it("the history's rows mount on the FIRST expand and stay mounted after a collapse (ADR 0068 §11)", () => {
+    // A session carries every dispatch it ever ran; before this, every
+    // historical group built and mounted all of its rows — and folded every
+    // write's diff — at session switch, for a panel nobody had opened.
+    // Measured in jsdom, 40 groups × 13 rows with four 300-line diffs each:
+    // mount 531 → 72 ms, 5401 → 401 DOM nodes.
+    const { container } = renderWithLocale(
+      <A
+        blocks={[
+          step("Reading scripts"),
+          step("Writing a.ts"),
+          done("完成 · 1 file"),
+        ]}
+        active={false}
+        turnStartedAt={null}
+        backendStartedAt={null}
+      />,
+    );
+    // Collapsed at mount: the panel exists (the reveal needs an element to
+    // size), its rows do not.
+    expect(container.querySelector(".activity-line__history")).not.toBeNull();
+    expect(container.querySelectorAll(".activity-step")).toHaveLength(0);
+    expect(screen.queryByText("Reading scripts")).toBeNull();
+    // The first open mounts them, in the same commit as the toggle.
+    fireEvent.click(screen.getByRole("button"));
+    expect(container.querySelectorAll(".activity-step")).toHaveLength(2);
+    expect(screen.getByText("Reading scripts")).toBeInTheDocument();
+    // Collapsing keeps them — the collapse animates the rows out rather than
+    // dropping them, and a re-open has nothing to rebuild.
+    fireEvent.click(screen.getByRole("button"));
+    expect(
+      container.querySelector(".activity-line__history.is-open"),
+    ).toBeNull();
+    expect(container.querySelectorAll(".activity-step")).toHaveLength(2);
+  });
+
   it("the toggle is the CONTENT, not the whole row — dead space is not clickable", () => {
     // Owner 2026-07-27: `.activity-line` was `width: 100%`, so the wide gap
     // between the summary and the right edge belonged to the button — the

@@ -110,6 +110,10 @@ export interface ActivityBlockProps {
  *  off-screen on a pathological plan. */
 const PLAN_MAX_ROWS = 8;
 
+/** The row views of a history nobody has opened yet — one shared empty array,
+ *  so the memo below hands every such group the same identity. */
+const NO_ROWS: readonly RowView[] = [];
+
 /**
  * The magnitude recorded on a patch block, or the honest absence of one.
  *
@@ -270,6 +274,21 @@ export const ActivityBlock = memo(function ActivityBlock(
     blocks.length > 0 && blocks.every((b) => b.digest?.kind === "attachment");
   // Default-collapsed even while running — the line IS the rendering (F4).
   const expanded = expandable ? (userToggled ?? isAttachmentGroup) : false;
+  // The history's rows mount on the FIRST expand and stay mounted — the same
+  // lifecycle as a row's own diff and detail panes (ActivityStep), one level
+  // up (ADR 0068 §11, 2026-09-22). A session carries every dispatch it ever
+  // ran, and the line IS the rendering; yet an unexpanded history still paid,
+  // at mount, for every row's DOM and for the fold of every write's diff (a
+  // split and re-join of the whole patch, in rowViews below) — work no reader
+  // had asked for, repeated for every historical group on every session
+  // switch. The panel element itself stays mounted whenever expandable, so
+  // the measured reveal below always has something to size; only its
+  // contents wait. Seeded from the mount-time `expanded` so a default-open
+  // attachment group draws its filenames at once, and latched by the click
+  // that opens — in the same batch as the toggle, so the layout effect
+  // measures the rows it is about to reveal.
+  const [historyMounted, setHistoryMounted] = useState(expanded);
+  const rowsMounted = historyMounted || expanded;
   // Entrance for a LIVE attach (owner 2026-08-10: the row popped in with no
   // motion). Same adopted feel as the session-switch entrance (350ms / 12px /
   // easeOutQuint — one motion vocabulary, not two). Recency-gated off the
@@ -365,157 +384,166 @@ export const ActivityBlock = memo(function ActivityBlock(
   // take-back factory are identity-stable by their own contracts.
   const rowViews = useMemo(
     (): readonly RowView[] =>
-      rows.map((row) => {
-        const b = row.block;
-        const failed = b.digest?.kind === "tool-fail";
-        // The file NAME as a click target (ADR 0050 §1): op rows whose
-        // digest arg is the path — reads, writes, and the folded-patch edit
-        // rows all carry one. Attachment rows too (owner 2026-08-31): the
-        // NAME in the body opens the STORED copy under .herta/attachments/
-        // — text attachments only (pictures already have the thumbnail +
-        // lightbox), and only while the store still holds the file.
-        const fileTarget: {
-          readonly path: string;
-          readonly name?: string;
-          readonly label?: string;
-          readonly anchor?: ViewerAnchor;
-        } | null =
-          openFile === null
-            ? null
-            : b.digest?.kind === "op" &&
-                (b.digest.verb === "Reading" || b.digest.verb === "Writing") &&
-                b.digest.arg.length > 0
-              ? // An excerpt read's arg carries its range
-                // ("viewer-demo.txt:2-8") — parse it like a cite so the
-                // click opens the REAL file anchored at those lines instead
-                // of asking the jail for a path with a colon in it (found
-                // live, 2026-08-31). `name` stays the verbatim arg — it is
-                // what the row displays.
-                opTarget(b.digest.arg)
-              : b.digest?.kind === "attachment" &&
-                  b.digest.image === undefined &&
-                  b.digest.unreadable !== "removed" &&
-                  // The ORIGINAL document when the ingest kept one (ADR 0038
-                  // amendment): the viewer draws the PDF / Word /
-                  // spreadsheet / deck itself (ADR 0054), even when no text
-                  // came out of it. Otherwise the stored text: `too_large`
-                  // means STORED but no head excerpt taken — the viewer's
-                  // own bounded read is exactly the remedy, so it stays
-                  // clickable; genuinely dead states (read_error / denied /
-                  // …) stay plain.
-                  (b.digest.source !== undefined ||
-                    (b.digest.path.length > 0 &&
-                      (b.digest.unreadable === undefined ||
-                        b.digest.unreadable === "too_large")))
+      // Not before the rows are wanted: the fold of each write's diff is
+      // the costly part of a row's view, and a history nobody has opened
+      // has no rows to give it to.
+      !rowsMounted
+        ? NO_ROWS
+        : rows.map((row) => {
+            const b = row.block;
+            const failed = b.digest?.kind === "tool-fail";
+            // The file NAME as a click target (ADR 0050 §1): op rows whose
+            // digest arg is the path — reads, writes, and the folded-patch edit
+            // rows all carry one. Attachment rows too (owner 2026-08-31): the
+            // NAME in the body opens the STORED copy under .herta/attachments/
+            // — text attachments only (pictures already have the thumbnail +
+            // lightbox), and only while the store still holds the file.
+            const fileTarget: {
+              readonly path: string;
+              readonly name?: string;
+              readonly label?: string;
+              readonly anchor?: ViewerAnchor;
+            } | null =
+              openFile === null
+                ? null
+                : b.digest?.kind === "op" &&
+                    (b.digest.verb === "Reading" ||
+                      b.digest.verb === "Writing") &&
+                    b.digest.arg.length > 0
+                  ? // An excerpt read's arg carries its range
+                    // ("viewer-demo.txt:2-8") — parse it like a cite so the
+                    // click opens the REAL file anchored at those lines instead
+                    // of asking the jail for a path with a colon in it (found
+                    // live, 2026-08-31). `name` stays the verbatim arg — it is
+                    // what the row displays.
+                    opTarget(b.digest.arg)
+                  : b.digest?.kind === "attachment" &&
+                      b.digest.image === undefined &&
+                      b.digest.unreadable !== "removed" &&
+                      // The ORIGINAL document when the ingest kept one (ADR 0038
+                      // amendment): the viewer draws the PDF / Word /
+                      // spreadsheet / deck itself (ADR 0054), even when no text
+                      // came out of it. Otherwise the stored text: `too_large`
+                      // means STORED but no head excerpt taken — the viewer's
+                      // own bounded read is exactly the remedy, so it stays
+                      // clickable; genuinely dead states (read_error / denied /
+                      // …) stay plain.
+                      (b.digest.source !== undefined ||
+                        (b.digest.path.length > 0 &&
+                          (b.digest.unreadable === undefined ||
+                            b.digest.unreadable === "too_large")))
+                    ? {
+                        path: b.digest.source ?? b.digest.path,
+                        // The row DISPLAYS the middle-truncated name (long names
+                        // wrapped the row, owner 2026-08-10) — split on what is
+                        // actually on screen or a long name silently loses its
+                        // click affordance. The panel breadcrumb gets the WHOLE
+                        // name.
+                        name: middleTruncateName(b.digest.name),
+                        label: b.digest.name,
+                      }
+                    : null;
+            const file: ActivityStepProps["file"] =
+              fileTarget !== null && openFile !== null
                 ? {
-                    path: b.digest.source ?? b.digest.path,
-                    // The row DISPLAYS the middle-truncated name (long names
-                    // wrapped the row, owner 2026-08-10) — split on what is
-                    // actually on screen or a long name silently loses its
-                    // click affordance. The panel breadcrumb gets the WHOLE
-                    // name.
-                    name: middleTruncateName(b.digest.name),
-                    label: b.digest.name,
-                  }
-                : null;
-        const file: ActivityStepProps["file"] =
-          fileTarget !== null && openFile !== null
-            ? {
-                path: fileTarget.path,
-                ...(fileTarget.name !== undefined
-                  ? { name: fileTarget.name }
-                  : {}),
-                onOpen: () =>
-                  openFile(fileTarget.path, {
-                    ...(fileTarget.label !== undefined
-                      ? { label: fileTarget.label }
+                    path: fileTarget.path,
+                    ...(fileTarget.name !== undefined
+                      ? { name: fileTarget.name }
                       : {}),
-                    ...(fileTarget.anchor !== undefined
-                      ? { anchor: fileTarget.anchor }
-                      : {}),
-                  }),
-                ariaLabel: `${t("activity.file.openAria")} ${fileTarget.name ?? fileTarget.path}`,
-              }
-            : undefined;
-        // A finding's cites open the viewer AT the cited lines (ADR 0050
-        // v1.5) — each cite in the row becomes its own target; unparseable
-        // ones stay plain text.
-        const links: ActivityStepProps["links"] =
-          openFile !== null &&
-          b.digest?.kind === "finding" &&
-          b.digest.cites.length > 0
-            ? b.digest.cites.flatMap((cite): FileLinkTarget[] => {
-                const parsed = parseCite(cite);
-                if (parsed === null) return [];
-                return [
-                  {
-                    text: cite,
                     onOpen: () =>
-                      openFile(parsed.path, {
-                        ...(parsed.anchor !== undefined
-                          ? { anchor: parsed.anchor }
+                      openFile(fileTarget.path, {
+                        ...(fileTarget.label !== undefined
+                          ? { label: fileTarget.label }
+                          : {}),
+                        ...(fileTarget.anchor !== undefined
+                          ? { anchor: fileTarget.anchor }
                           : {}),
                       }),
-                    ariaLabel: `${t("activity.file.openAria")} ${cite}`,
-                  },
-                ];
-              })
-            : undefined;
-        // Take-back, offered only where it can actually work: a stored
-        // attachment (a path to delete), not already removed. Mid-turn the
-        // control hides by CSS (`.conversation-flow.is-busy`) and the handler
-        // itself re-checks the live status — the factory no longer changes
-        // identity with the turn, so the rows stay memo-stable across it.
-        const remove =
-          onRemoveAttachment !== undefined &&
-          b.digest?.kind === "attachment" &&
-          (b.digest.path.length > 0 || b.digest.source !== undefined) &&
-          b.digest.unreadable !== "removed"
-            ? // Addressed by the text path when there is one, else by the
-              // original's (a source-only document — the session's removal
-              // accepts either).
-              onRemoveAttachment(
-                b.digest.path.length > 0
-                  ? b.digest.path
-                  : (b.digest.source as string),
-              )
-            : undefined;
-        return {
-          body: stepDisplayBody(b, t),
-          // Icon parses the CANONICAL body — the display body may be a
-          // localized verb stepIcon can't recognize. Failure and todo rows
-          // key off the structured digest instead.
-          icon: failed
-            ? "fail"
-            : b.digest?.kind === "todo"
-              ? "todo"
-              : b.digest?.kind === "attachment"
-                ? "attach"
-                : stepIcon(b.body),
-          failed,
-          isOp: b.digest?.kind === "op",
-          detail: stepDisplayDetail(b, t),
-          // The write states its own magnitude, and the diff it wrote folds
-          // in underneath (2026-08-25 evening).
-          patch: row.patch !== undefined ? foldedPatch(row.patch) : undefined,
-          // The row's own stamp gates the magnitude's count-up: live appends
-          // animate, a reloaded session's history does not.
-          at: b.at,
-          // A patch with no write to fold into (a DENIED edit) still answers
-          // with its magnitude, in place of the body's first line — the
-          // element, because the digits count up.
-          stat:
-            row.patch === undefined && b.digest?.kind === "patch"
-              ? patchStat(b)
-              : undefined,
-          remove,
-          removeLabel:
-            remove !== undefined ? t("activity.attachment.remove") : undefined,
-          file,
-          links,
-        };
-      }),
-    [rows, t, openFile, onRemoveAttachment],
+                    ariaLabel: `${t("activity.file.openAria")} ${fileTarget.name ?? fileTarget.path}`,
+                  }
+                : undefined;
+            // A finding's cites open the viewer AT the cited lines (ADR 0050
+            // v1.5) — each cite in the row becomes its own target; unparseable
+            // ones stay plain text.
+            const links: ActivityStepProps["links"] =
+              openFile !== null &&
+              b.digest?.kind === "finding" &&
+              b.digest.cites.length > 0
+                ? b.digest.cites.flatMap((cite): FileLinkTarget[] => {
+                    const parsed = parseCite(cite);
+                    if (parsed === null) return [];
+                    return [
+                      {
+                        text: cite,
+                        onOpen: () =>
+                          openFile(parsed.path, {
+                            ...(parsed.anchor !== undefined
+                              ? { anchor: parsed.anchor }
+                              : {}),
+                          }),
+                        ariaLabel: `${t("activity.file.openAria")} ${cite}`,
+                      },
+                    ];
+                  })
+                : undefined;
+            // Take-back, offered only where it can actually work: a stored
+            // attachment (a path to delete), not already removed. Mid-turn the
+            // control hides by CSS (`.conversation-flow.is-busy`) and the handler
+            // itself re-checks the live status — the factory no longer changes
+            // identity with the turn, so the rows stay memo-stable across it.
+            const remove =
+              onRemoveAttachment !== undefined &&
+              b.digest?.kind === "attachment" &&
+              (b.digest.path.length > 0 || b.digest.source !== undefined) &&
+              b.digest.unreadable !== "removed"
+                ? // Addressed by the text path when there is one, else by the
+                  // original's (a source-only document — the session's removal
+                  // accepts either).
+                  onRemoveAttachment(
+                    b.digest.path.length > 0
+                      ? b.digest.path
+                      : (b.digest.source as string),
+                  )
+                : undefined;
+            return {
+              body: stepDisplayBody(b, t),
+              // Icon parses the CANONICAL body — the display body may be a
+              // localized verb stepIcon can't recognize. Failure and todo rows
+              // key off the structured digest instead.
+              icon: failed
+                ? "fail"
+                : b.digest?.kind === "todo"
+                  ? "todo"
+                  : b.digest?.kind === "attachment"
+                    ? "attach"
+                    : stepIcon(b.body),
+              failed,
+              isOp: b.digest?.kind === "op",
+              detail: stepDisplayDetail(b, t),
+              // The write states its own magnitude, and the diff it wrote folds
+              // in underneath (2026-08-25 evening).
+              patch:
+                row.patch !== undefined ? foldedPatch(row.patch) : undefined,
+              // The row's own stamp gates the magnitude's count-up: live appends
+              // animate, a reloaded session's history does not.
+              at: b.at,
+              // A patch with no write to fold into (a DENIED edit) still answers
+              // with its magnitude, in place of the body's first line — the
+              // element, because the digits count up.
+              stat:
+                row.patch === undefined && b.digest?.kind === "patch"
+                  ? patchStat(b)
+                  : undefined,
+              remove,
+              removeLabel:
+                remove !== undefined
+                  ? t("activity.attachment.remove")
+                  : undefined,
+              file,
+              links,
+            };
+          }),
+    [rows, t, openFile, onRemoveAttachment, rowsMounted],
   );
 
   // ── Live plan strip (2026-07-26) ────────────────────────────────────────
@@ -626,7 +654,11 @@ export const ActivityBlock = memo(function ActivityBlock(
                   // Opening the history grows the record below the line with
                   // no scroll event — unpin so the follow machinery can't
                   // later yank the viewport past it (see ConversationPin.tsx).
-                  if (!expanded) unpin();
+                  // The first open also mounts the rows (see historyMounted).
+                  if (!expanded) {
+                    unpin();
+                    setHistoryMounted(true);
+                  }
                   setUserToggled(!expanded);
                 }
               : undefined
@@ -775,37 +807,38 @@ export const ActivityBlock = memo(function ActivityBlock(
           }}
         >
           <div className="activity-line__history-inner">
-            {rowViews.map((rv, i) => {
-              // A parallel batch (ADR 0025 slice 5) has several ops in
-              // flight at once — shimmer the last `inFlightCount` op rows
-              // together; the classic single-row shimmer otherwise.
-              const shimmer =
-                active &&
-                (i === rowViews.length - 1 ||
-                  (inFlightCount > 1 &&
-                    rv.isOp &&
-                    i >= rowViews.length - inFlightCount));
-              return (
-                <ActivityStep
-                  // biome-ignore lint/suspicious/noArrayIndexKey: rows are append-only and stable-order; bodies can duplicate (repeated "↳ exit 0 · N lines" rows), so body keys would collide and shimmer/reconcile the wrong row.
-                  key={i}
-                  body={rv.body}
-                  t={t}
-                  icon={rv.icon}
-                  active={shimmer}
-                  failed={rv.failed}
-                  detail={rv.detail}
-                  patch={rv.patch}
-                  at={rv.at}
-                  stat={rv.stat}
-                  onRemove={rv.remove}
-                  removeLabel={rv.removeLabel}
-                  file={rv.file}
-                  links={rv.links}
-                />
-              );
-            })}
-            {markerDetail !== undefined && (
+            {rowsMounted &&
+              rowViews.map((rv, i) => {
+                // A parallel batch (ADR 0025 slice 5) has several ops in
+                // flight at once — shimmer the last `inFlightCount` op rows
+                // together; the classic single-row shimmer otherwise.
+                const shimmer =
+                  active &&
+                  (i === rowViews.length - 1 ||
+                    (inFlightCount > 1 &&
+                      rv.isOp &&
+                      i >= rowViews.length - inFlightCount));
+                return (
+                  <ActivityStep
+                    // biome-ignore lint/suspicious/noArrayIndexKey: rows are append-only and stable-order; bodies can duplicate (repeated "↳ exit 0 · N lines" rows), so body keys would collide and shimmer/reconcile the wrong row.
+                    key={i}
+                    body={rv.body}
+                    t={t}
+                    icon={rv.icon}
+                    active={shimmer}
+                    failed={rv.failed}
+                    detail={rv.detail}
+                    patch={rv.patch}
+                    at={rv.at}
+                    stat={rv.stat}
+                    onRemove={rv.remove}
+                    removeLabel={rv.removeLabel}
+                    file={rv.file}
+                    links={rv.links}
+                  />
+                );
+              })}
+            {rowsMounted && markerDetail !== undefined && (
               <ActivityStep
                 body={t("activity.result.detail")}
                 t={t}

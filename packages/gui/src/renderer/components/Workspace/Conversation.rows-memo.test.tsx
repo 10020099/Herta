@@ -348,6 +348,13 @@ describe("Conversation — the row memo does not depend on turn state (2026-07-3
       });
     });
     expect(calls.activityChipLabel - before).toBe(1);
+    // Anti-vacuous: the live group really holds the new block. A group's rows
+    // mount on its first open (ADR 0068 §11), so open the LAST group before
+    // looking for the text.
+    const toggles = document.querySelectorAll(".activity-line");
+    act(() => {
+      (toggles[toggles.length - 1] as HTMLButtonElement).click();
+    });
     expect(screen.getAllByText(/src\/new\.ts/).length).toBeGreaterThan(0);
   });
 
