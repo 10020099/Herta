@@ -338,4 +338,18 @@ describe("planScope — WHY there is no plan (audit 2026-07-26)", () => {
     );
     expect(planScope([herta("我看看")]).kind).toBe("unknown");
   });
+
+  it("a steer mid-run never ends the scan — the plan card stays with its run (ADR 0063 §1.10)", () => {
+    const steer: TerminalRecordBlock = {
+      kind: "user",
+      text: "also rename the test file",
+      steer: true,
+    };
+    expect(
+      planScope([user("go"), layout(), sys("Reading a.ts"), steer]).kind,
+    ).toBe("plan");
+    expect(
+      planScope([user("go"), layout(), steer, sys("Writing b.ts")]).kind,
+    ).toBe("plan");
+  });
 });

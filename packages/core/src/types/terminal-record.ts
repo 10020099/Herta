@@ -36,6 +36,12 @@ export function isSystemBlockLabel(value: string): value is SystemBlockLabel {
 export interface UserBlock {
   readonly kind: "user";
   readonly text: string;
+  /** A steer (ADR 0063 §1.10): words the user interjected into 板砖's
+   *  running work, projected in event order between the rows they
+   *  interrupted. Not a turn of its own — rewind withdraws the turn that
+   *  holds it, and the ⟲ control never sits on it. Absent on every other
+   *  user block. Never enters the prompt (the serializer reads `text`). */
+  readonly steer?: true;
   /** Wall-clock ISO time the block was emitted/persisted. Optional for
    *  backward compat (pre-timestamp sessions lack it). Stamped at the output
    *  boundaries (live sink emit + JSONL persist), never at construction — the

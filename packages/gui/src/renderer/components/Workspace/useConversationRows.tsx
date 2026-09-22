@@ -127,10 +127,13 @@ export function useConversationRows(opts: {
   // ONLY to the group rendered as active, below.
   const plan = useMemo(() => planContext(record), [record]);
   // The rewind control shows only on the LATEST user turn, and only when idle
-  // (no in-flight turn to race the truncation). Find the last `user` block index.
+  // (no in-flight turn to race the truncation). Find the last `user` block
+  // that starts a turn — a steer is words inside 板砖's run, not a turn, and
+  // ⟲ on it offered to withdraw only the steer (ADR 0063 §1.10).
   const lastUserIndex = useMemo(() => {
     for (let i = record.length - 1; i >= 0; i--) {
-      if (record[i]?.kind === "user") return i;
+      const b = record[i];
+      if (b?.kind === "user" && b.steer !== true) return i;
     }
     return -1;
   }, [record]);

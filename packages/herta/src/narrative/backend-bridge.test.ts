@@ -1170,6 +1170,12 @@ describe("bridge drain — todo layout + background dedup (2026-07-23)", () => {
     // done-marker, unchanged by the steer.
     const last = out[out.length - 1];
     expect(last?.kind).toBe("system");
+    // Marked as a steer (§1.10): rewind and ⟲ must not take it for a turn.
+    expect(out[userAt]).toEqual({
+      kind: "user",
+      text: "also rename the test file",
+      steer: true,
+    });
   });
 
   it("projects the FIRST todo layout as one block; later updates become compact progress rows", async () => {

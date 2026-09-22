@@ -1725,6 +1725,37 @@ describe("Conversation", () => {
     vi.useRealTimers();
   });
 
+  it("⟲ sits on the commission, never on a steer inside its run (ADR 0063 §1.10)", () => {
+    const mock = createMockHertaBridge();
+    const { container } = renderWithLocale(
+      <WorkspaceRefsProvider>
+        <HertaBridgeProvider bridge={mock.bridge}>
+          <Conversation />
+        </HertaBridgeProvider>
+      </WorkspaceRefsProvider>,
+    );
+    act(() => {
+      mock.emitReset({
+        sessionId: "session-A",
+        workspaceRoot: "/r",
+        record: [
+          { kind: "user", text: "fix the parser" },
+          { kind: "herta", surface: "speech", text: "on it" },
+          { kind: "user", text: "also rename the test", steer: true },
+          { kind: "herta", surface: "speech", text: "noted" },
+        ],
+        overlay: null,
+        backendWorkspace: "/r",
+        backendWorkspaceIsDefault: true,
+      });
+    });
+    const rewinds = container.querySelectorAll(".message-rewind");
+    expect(rewinds).toHaveLength(1);
+    const row = rewinds[0]?.closest(".message-row");
+    expect(row?.textContent).toContain("fix the parser");
+    expect(row?.textContent).not.toContain("also rename the test");
+  });
+
   it("rewind restores the draft in the EN display form (@板砖 → @Brick round-trip)", async () => {
     vi.useFakeTimers();
     // The record stores the wire token; the EN user typed/saw @Brick — the

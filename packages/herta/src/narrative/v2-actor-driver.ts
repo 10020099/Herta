@@ -827,9 +827,15 @@ export class V2ActorDriver {
    * stay untouched.
    */
   rewindLastUserTurn(): { userText: string; withdrawn: TerminalRecord } | null {
+    // The turn starts at the last user block that is NOT a steer (ADR 0063
+    // §1.10): a steer is words interjected into 板砖's run, inside the turn
+    // that commissioned it. Taking the last user block of any kind withdrew
+    // only the steer and left the commission and half the run standing,
+    // with no 完成 marker.
     let userIndex = -1;
     for (let i = this.record.length - 1; i >= 0; i--) {
-      if (this.record[i]?.kind === "user") {
+      const b = this.record[i];
+      if (b?.kind === "user" && b.steer !== true) {
         userIndex = i;
         break;
       }
@@ -837,6 +843,12 @@ export class V2ActorDriver {
     const userBlock = userIndex === -1 ? undefined : this.record[userIndex];
     if (userBlock === undefined || userBlock.kind !== "user") return null;
     const withdrawn = this.record.slice(userIndex);
+    // Everything the user said in the withdrawn turn comes back: the
+    // commission, then each steer in order, as paragraphs of one draft.
+    const steers = withdrawn.flatMap((b) =>
+      b.kind === "user" && b.steer === true ? [b.text] : [],
+    );
+    const userText = [userBlock.text, ...steers].join("\n\n");
     // Durable-first: truncate the persisted JSONL BEFORE mutating the in-memory
     // record, so a persister failure (disk full, permission denied) propagates
     // with BOTH still intact rather than leaving memory shortened ahead of disk
@@ -865,7 +877,7 @@ export class V2ActorDriver {
     this.currentIntentState = "默认";
     this.attachedMetaThink = null;
     this.turnsSinceSpeakAnchor = 0;
-    return { userText: userBlock.text, withdrawn };
+    return { userText, withdrawn };
   }
 
   /**

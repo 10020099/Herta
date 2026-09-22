@@ -115,6 +115,10 @@ export function planScope(record: readonly TerminalRecordBlock[]): PlanScope {
   for (let i = record.length - 1; i >= 0; i -= 1) {
     const block = record[i];
     if (block === undefined) continue;
+    // A steer is words inside 板砖's run, not the turn's boundary (ADR 0063
+    // §1.10): stopping there read a plan the run still had as "absent", and
+    // the card slid away mid-run.
+    if (block.kind === "user" && block.steer === true) continue;
     if (block.kind === "user") {
       return newest === null
         ? { kind: "absent" }

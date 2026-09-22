@@ -1055,6 +1055,30 @@ describe("V2ActorDriver", () => {
       ]);
     });
 
+    it("a steer inside the run is not the turn: rewind withdraws from the COMMISSION, and the draft carries every word the user said in it (ADR 0063 §1.10)", () => {
+      const driver = mkDriver(mkProvider([]));
+      driver.loadRecord([
+        { kind: "user", text: "u1" },
+        { kind: "herta", surface: "speech", text: "h1" },
+        { kind: "user", text: "fix the parser @板砖" },
+        { kind: "herta", surface: "speech", text: "on it" },
+        { kind: "system", label: "系统", body: "Reading a.ts" },
+        { kind: "user", text: "also rename the test file", steer: true },
+        { kind: "herta", surface: "speech", text: "noted" },
+        { kind: "system", label: "系统", body: "Writing b.ts" },
+      ]);
+      const result = driver.rewindLastUserTurn();
+      expect(result?.userText).toBe(
+        "fix the parser @板砖\n\nalso rename the test file",
+      );
+      // Pre-fix only the steer and what followed it went; the commission and
+      // the first half of 板砖's run stood with no 完成 marker.
+      expect(driver.getRecord()).toEqual([
+        { kind: "user", text: "u1" },
+        { kind: "herta", surface: "speech", text: "h1" },
+      ]);
+    });
+
     it("returns null when there is no user block (e.g. only an opening seed)", () => {
       const driver = mkDriver(mkProvider([]));
       driver.loadRecord([

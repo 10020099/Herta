@@ -148,6 +148,8 @@ export function Composer(): JSX.Element {
   // refs: the effect is keyed on the busy edge, not on either.
   const heldRef = useRef<string | null>(null);
   heldRef.current = held;
+  /** The user pressed Stop in this turn: a held message does not go. */
+  const stopRequested = useRef(false);
   /** The held card's DOM node — the flying clone lifts off from its rect. */
   const heldCardRef = useRef<HTMLElement>(null);
   const langRef = useRef(lang);
@@ -253,6 +255,7 @@ export function Composer(): JSX.Element {
       // learns focus left. Clear the state here: the composer is shrunk for
       // the whole reply, which is the reading-room the shrink exists for.
       setFocusWithin(false);
+      stopRequested.current = false;
     }
     if (was && !busy) {
       // A refusal about the turn goes with it — only if it is still the
@@ -269,8 +272,27 @@ export function Composer(): JSX.Element {
       // (ADR 0063 — Codex's "do nothing"): through the ordinary submit path,
       // so the optimistic echo, the no-key card and the withdraw-on-refusal
       // all apply to it exactly as to a typed send.
+      //
+      // Only when the turn FINISHED (ADR 0063 §1.9, owner 2026-09-23). After
+      // Stop the user has just said "not now"; after a failure (a 402, a
+      // rejected key, a dropped connection) the held text would be sent
+      // straight into the same failure, and the new turn's start wiped the
+      // notice for the first. Either way the text comes back into the
+      // composer, in front of anything typed since — nothing sent, nothing
+      // lost.
       const pending = heldRef.current;
-      if (pending !== null) {
+      const stopped = stopRequested.current;
+      stopRequested.current = false;
+      if (
+        pending !== null &&
+        (stopped || sessionStore.getSnapshot().turnFailed)
+      ) {
+        sessionStore.clearHeld();
+        setText((prev) =>
+          prev.trim().length > 0 ? `${pending}\n\n${prev}` : pending,
+        );
+        pendingCaret.current = pending.length;
+      } else if (pending !== null) {
         // The clone lifts off from the card, not the input: measure it
         // BEFORE the clear unmounts it.
         const rect = heldCardRef.current?.getBoundingClientRect();
@@ -889,6 +911,7 @@ export function Composer(): JSX.Element {
                   // the skip (user 2026-07-13). The stop click IS the intent —
                   // silence immediately, then abort the turn.
                   stopAllVoice();
+                  stopRequested.current = true;
                   void bridge.interrupt();
                 }
               : undefined

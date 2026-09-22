@@ -685,6 +685,44 @@ describe("Composer — a message while 板砖 works (ADR 0063)", () => {
     expect(screen.queryByTestId("composer-held")).toBeNull();
   });
 
+  it("after Stop the held message comes BACK into the composer — nothing is sent (ADR 0063 §1.9)", () => {
+    const { mock } = renderComposer();
+    startCommission(mock);
+    const input = hold("also rename the test file");
+    fireEvent.change(input, { target: { value: "typed since" } });
+    fireEvent.click(screen.getByLabelText("Interrupt the current turn"));
+    expect(mock.calls.interrupt).toHaveLength(1);
+    act(() => {
+      mock.emitTurn({
+        kind: "failed",
+        turnId: "t1",
+        error: { code: "AbortError", message: "aborted" },
+      });
+    });
+    expect(mock.calls.submitText).toHaveLength(0);
+    expect(screen.queryByTestId("composer-held")).toBeNull();
+    // In front of what was typed since, nothing lost.
+    expect(input.value).toBe("also rename the test file\n\ntyped since");
+  });
+
+  it("after a provider failure the held message comes back instead of being sent into the same failure (ADR 0063 §1.9)", () => {
+    const { mock, store } = renderComposer();
+    startCommission(mock);
+    const input = hold("also rename the test file");
+    act(() => {
+      mock.emitTurn({
+        kind: "failed",
+        turnId: "t1",
+        error: { code: "provider_error", message: "402", status: 402 },
+      });
+    });
+    expect(mock.calls.submitText).toHaveLength(0);
+    expect(input.value).toBe("also rename the test file");
+    // The failure's own notice stands: no new turn started to wipe it.
+    expect(store().getSnapshot().turnFailed).toBe(true);
+    expect(store().getSnapshot().turnFailedStatus).toBe(402);
+  });
+
   it("the held card is a footer sibling BEFORE the composer, not inside it — it grows the footer instead of overflowing the fixed-height form", () => {
     const { mock } = renderComposer();
     startCommission(mock);

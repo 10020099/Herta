@@ -421,7 +421,13 @@ async function invokeBanzhuanBridgeInner(
         // to the renderer and persists it. It does not count as backend
         // work for the terminal-marker choice (`projectedAny`).
         if (event.type === "user.steer") {
-          current = [...current, { kind: "user", text: event.text }];
+          // Marked (§1.10): a steer is not a turn. Unmarked, rewind took it
+          // for the latest turn and withdrew only the steer, leaving the
+          // commission and half of 板砖's run standing with no 完成.
+          current = [
+            ...current,
+            { kind: "user", text: event.text, steer: true },
+          ];
           deps.sink?.flushBlocks(current);
         }
 

@@ -103,6 +103,9 @@ export function traceScope(record: readonly TerminalRecordBlock[]): TraceScope {
   for (let i = record.length - 1; i >= 0; i -= 1) {
     const block = record[i];
     if (block === undefined) continue;
+    // A steer sits inside the run it interrupted (ADR 0063 §1.10); the
+    // trace goes on past it to the turn's own boundary.
+    if (block.kind === "user" && block.steer === true) continue;
     if (block.kind === "user") {
       const trace = build(collected);
       return trace.steps > 0 ? { kind: "trace", trace } : { kind: "absent" };
