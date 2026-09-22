@@ -171,7 +171,7 @@ describe("session activation — the window follows the host (UX review 2026-09-
     activation.resync();
     expect(resets().at(-1)).toEqual({ sessionId: "X" });
     expect(activation.pointed).toBe(x);
-    // Nothing open: the connect screen.
+    // Nothing open: the connect station.
     h.state.active = null;
     activation.resync();
     expect(resets().at(-1)).toEqual({ noSession: true });
