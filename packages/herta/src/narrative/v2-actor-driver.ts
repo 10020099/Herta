@@ -58,6 +58,34 @@ import type { ActorStreamingSink } from "./streaming-sink.js";
 const SPEAK_ANCHOR_REFRESH_INTERVAL = 5;
 
 /**
+ * Re-derives the static prefix at a STEP event (ADR 0069 §1): the few-shot
+ * set a session reads is decided by the dream corpus on disk and by which of
+ * the session's own dreams are still verbatim in its record. Called by the
+ * driver only when one of those moved — never per turn. `current` carries
+ * what the session-scoped prefix holds besides the corpus (a new session's
+ * opening preamble); the returned prefix replaces it whole.
+ */
+export type StaticPrefixRebuilder = (input: {
+  /** The committed record (this turn's user block not yet appended). */
+  readonly record: TerminalRecord;
+  /** The recap boundary this turn's prompt uses. */
+  readonly recapBoundaryIndex: number;
+  readonly current: StaticHertaPrefix;
+}) => Promise<StaticHertaPrefix>;
+
+/** The parts of the actor's input that belong to ONE session: rebinding the
+ *  driver to another session (the CLI's in-REPL `/resume`) swaps them
+ *  together, so the loaded record never reads another session's prefix,
+ *  exclusions or recap (dream review 2026-09-22, finding 10). */
+export interface DriverSessionScope {
+  readonly staticPrefix: StaticHertaPrefix;
+  readonly recap?: RecapRuntime;
+  readonly rebuildStaticPrefix?: StaticPrefixRebuilder;
+  /** The recap boundary `staticPrefix` was derived against. Default 0. */
+  readonly prefixRecapBoundary?: number;
+}
+
+/**
  * D3 lead beat: how long a NEW session's opening seed holds AFTER the turn's
  * `started` lifecycle but BEFORE the first speech delta, so the GUI's in-flight
  * hint (`消息正在穿越银河`) shows first and the opening arrives like a reply —
@@ -170,6 +198,19 @@ export interface V2ActorDriverDeps {
    *  Built at app bootstrap (router summarizer + persisted cache). Undefined
    *  → no compaction. */
   readonly recap?: RecapRuntime;
+  /**
+   * Re-derives `staticPrefix` at a step event (ADR 0069 §1). Absent → the
+   * prefix is fixed for the driver's life (tests, a caller with a fixed
+   * prefix). The driver calls it when this turn's recap boundary differs
+   * from `prefixRecapBoundary` (a fold, or a rewind that invalidated the
+   * recap), and on the first turn after `markPrefixStale()` (a dream pass
+   * completed). Between those the prefix bytes never change, so the prompt
+   * cache holds.
+   */
+  readonly rebuildStaticPrefix?: StaticPrefixRebuilder;
+  /** The recap boundary `staticPrefix` was derived against (the validated
+   *  cached boundary on a reopen, 0 for a new session). Default 0. */
+  readonly prefixRecapBoundary?: number;
   /**
    * Optional supervisor chat-mode provider. Typically the same
    * `ProviderAdapter` instance used by the router. When set together
@@ -284,9 +325,26 @@ export class V2ActorDriver {
    * and the driver batch-persists after the turn as before.
    */
   private sinkPersists = false;
+  /**
+   * The session-scoped prompt inputs (ADR 0069). Seeded from `deps`; the
+   * prefix moves only at a step event (`refreshPrefixAtStep`), and all four
+   * move together when `rebindSession` points the driver at another session.
+   * Every turn, beat and speculation reads them from here, never from deps.
+   */
+  private staticPrefix: StaticHertaPrefix;
+  private recap: RecapRuntime | undefined;
+  private rebuildPrefix: StaticPrefixRebuilder | undefined;
+  /** The recap boundary `staticPrefix` was derived against. */
+  private prefixBoundary: number;
+  /** A dream pass completed since the prefix was derived (`markPrefixStale`). */
+  private prefixStale = false;
 
   constructor(private readonly deps: V2ActorDriverDeps) {
     this.persister = deps.persister;
+    this.staticPrefix = deps.staticPrefix;
+    this.recap = deps.recap;
+    this.rebuildPrefix = deps.rebuildStaticPrefix;
+    this.prefixBoundary = deps.prefixRecapBoundary ?? 0;
     // Hand a persisting sink a hook that reads our LIVE persister (so a
     // `/resume` `setPersister` swap is honored without re-wiring the sink), and
     // mark that the sink owns persistence. The hook fires inside the sink's
@@ -302,6 +360,62 @@ export class V2ActorDriver {
    *  by the next turn. Used by the /compact command. */
   forceCompactNextTurn(): void {
     this.forceCompactPending = true;
+  }
+
+  /**
+   * The dream corpus changed on disk (a pass completed, ADR 0069 §1b): the
+   * next turn re-derives the prefix once. Idempotent; a driver without a
+   * rebuilder ignores it.
+   */
+  markPrefixStale(): void {
+    this.prefixStale = true;
+  }
+
+  /** The prefix the next turn will use unless a step event moves it. */
+  getStaticPrefix(): StaticHertaPrefix {
+    return this.staticPrefix;
+  }
+
+  /**
+   * Point the driver's session-scoped inputs at another session (the CLI's
+   * in-REPL `/resume`, ADR 0069 §3). Pair with `loadRecord` and
+   * `setPersister` for the same session before the next turn.
+   */
+  rebindSession(scope: DriverSessionScope): void {
+    this.staticPrefix = scope.staticPrefix;
+    this.recap = scope.recap;
+    this.rebuildPrefix = scope.rebuildStaticPrefix;
+    this.prefixBoundary = scope.prefixRecapBoundary ?? 0;
+    this.prefixStale = false;
+  }
+
+  /**
+   * ADR 0069 §1: re-derive the prefix when a step event moved what it is
+   * derived from — this turn's recap boundary differs from the one the
+   * prefix was built against (a fold advanced it, a rewind invalidated it),
+   * or a dream pass completed since. The fold already re-bills the bytes
+   * behind the prefix, and a pass runs at most weekly, so the prefix's
+   * cache is lost at most once per step and never per turn.
+   *
+   * A failed rebuild keeps the prefix the turn would have had and records
+   * the step as taken: the next step event tries again, rather than every
+   * turn until it works.
+   */
+  private async refreshPrefixAtStep(recapBoundaryIndex: number): Promise<void> {
+    const rebuild = this.rebuildPrefix;
+    if (rebuild === undefined) return;
+    if (!this.prefixStale && recapBoundaryIndex === this.prefixBoundary) return;
+    try {
+      this.staticPrefix = await rebuild({
+        record: this.record,
+        recapBoundaryIndex,
+        current: this.staticPrefix,
+      });
+    } catch {
+      // Keep the current prefix (see above).
+    }
+    this.prefixBoundary = recapBoundaryIndex;
+    this.prefixStale = false;
   }
 
   getCurrentIntentState(): MoodState {
@@ -378,8 +492,8 @@ export class V2ActorDriver {
     this.forceCompactPending = false;
     const recapPending = prepareTurnRecap(
       prelimRecord,
-      this.deps.staticPrefix,
-      this.deps.recap,
+      this.staticPrefix,
+      this.recap,
       forceCompact,
       signal,
       (phase) =>
@@ -421,6 +535,11 @@ export class V2ActorDriver {
             routerSettled = true;
           });
     const precomputedRecap: PreparedRecap = await recapPending;
+    // A step event re-derives the prefix here (ADR 0069 §1), before anything
+    // of this turn reads it: after the recap, whose boundary it needs, and
+    // before the speculative thought and the turn itself. The router runs
+    // on, unaffected — it never reads the prefix.
+    await this.refreshPrefixAtStep(precomputedRecap.recapBoundaryIndex);
 
     // The first thought, started on a guess while the router is still out
     // (see `speculativeThought`). The guess is "the mood stays": the
@@ -441,7 +560,7 @@ export class V2ActorDriver {
             deps: {
               provider: this.deps.provider,
               model: this.deps.model,
-              staticPrefix: this.deps.staticPrefix,
+              staticPrefix: this.staticPrefix,
               attachedMetaThink: corpusActive
                 ? this.planMetaThink(this.currentIntentState).attachment
                 : undefined,
@@ -543,7 +662,7 @@ export class V2ActorDriver {
       result = await runActorCompletionTurn({ record: this.record }, text, {
         provider: this.deps.provider,
         model: this.deps.model,
-        staticPrefix: this.deps.staticPrefix,
+        staticPrefix: this.staticPrefix,
         bus: this.deps.bus,
         runtimeFactory: this.deps.runtimeFactory,
         sink: this.deps.sink,
@@ -861,7 +980,7 @@ export class V2ActorDriver {
     // anyway — deleting here just keeps a knowably-stale file from outliving
     // the rewind. A cache whose boundary survived (tail-only cut above it)
     // stays: its compacted span [0, boundary) is untouched.
-    const recap = this.deps.recap;
+    const recap = this.recap;
     if (recap !== undefined) {
       const cached = recap.cacheRead();
       if (

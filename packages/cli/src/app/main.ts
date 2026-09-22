@@ -417,6 +417,12 @@ export async function main(
     supervisorRevision: actor.supervisorRevision,
     speculativeThought: actor.speculativeThought,
     recap: actor.recap,
+    // ADR 0069 §1: the prefix follows a fold. (The CLI runs no automatic
+    // dream pass, so nothing marks it stale.)
+    ...(actor.rebuildStaticPrefix !== undefined
+      ? { rebuildStaticPrefix: actor.rebuildStaticPrefix }
+      : {}),
+    prefixRecapBoundary: actor.prefixRecapBoundary,
     lang,
   });
 
@@ -438,6 +444,11 @@ export async function main(
 
   await repl({
     actor: driver,
+    // In-REPL /resume rebinds the driver to the loaded session's own
+    // prefix, exclusions and recap (ADR 0069 §3).
+    rebindSession: async (sid, record) => {
+      driver.rebindSession(await actor.sessionScope(sid, record));
+    },
     tools: actorTools,
     input,
     renderer: v2Renderer,

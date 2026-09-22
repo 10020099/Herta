@@ -742,6 +742,12 @@ export class SessionImpl implements Session {
     return this.backendRunning;
   }
 
+  /** A dream pass changed the corpus: the next turn re-derives the prefix
+   *  once (ADR 0069 §1b). */
+  markPrefixStale(): void {
+    this.driver.markPrefixStale();
+  }
+
   async submitText(
     text: string,
     opts: { readonly stagedImageIds?: readonly string[] } = {},
@@ -1876,6 +1882,12 @@ export class SessionImpl implements Session {
       supervisorRevision: actor.supervisorRevision,
       speculativeThought: actor.speculativeThought,
       recap: actor.recap,
+      // ADR 0069 §1: the prefix follows the corpus at a fold and after a
+      // dream pass (the host marks it stale), never per turn.
+      ...(actor.rebuildStaticPrefix !== undefined
+        ? { rebuildStaticPrefix: actor.rebuildStaticPrefix }
+        : {}),
+      prefixRecapBoundary: actor.prefixRecapBoundary,
       lang,
     });
 

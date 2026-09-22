@@ -1,6 +1,7 @@
 import type {
   ProjectCommandRuleStore,
   SessionApprovalCache,
+  TerminalRecord,
   ToolRegistry,
   V2RecordPersister,
 } from "@herta/core";
@@ -26,6 +27,8 @@ export interface ReplDeps {
   approvalCache?: SessionApprovalCache;
   /** Threaded into SlashContext for /permissions (project rules, ADR 0030). */
   commandRules?: ProjectCommandRuleStore;
+  /** Threaded into SlashContext for /resume (ADR 0069 §3). */
+  rebindSession?: (sessionId: string, record: TerminalRecord) => Promise<void>;
   /** Threaded into SlashContext for /resume. */
   transcriptDir?: string;
   /** Threaded into SlashContext for /resume. */
@@ -64,6 +67,9 @@ export async function repl(deps: ReplDeps): Promise<void> {
         approvalCache: deps.approvalCache,
         commandRules: deps.commandRules,
         driver: deps.actor,
+        ...(deps.rebindSession !== undefined
+          ? { rebindSession: deps.rebindSession }
+          : {}),
         transcriptDir: deps.transcriptDir,
         currentWorkspaceRoot: deps.currentWorkspaceRoot,
         workspaceHolder: deps.workspaceHolder,

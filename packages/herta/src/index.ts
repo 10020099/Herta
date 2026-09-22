@@ -177,6 +177,8 @@ export {
 } from "./narrative/supervisor.js";
 export { buildSupervisorVetoHint } from "./narrative/thought-hint.js";
 export {
+  type DriverSessionScope,
+  type StaticPrefixRebuilder,
   V2ActorDriver,
   type V2ActorDriverDeps,
 } from "./narrative/v2-actor-driver.js";

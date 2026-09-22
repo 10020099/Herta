@@ -51,6 +51,7 @@ import {
   type ActorHints,
   buildRecapRuntime,
   buildStaticHertaPrefix,
+  type DriverSessionScope,
   loadActorHints,
   loadMetaThinkCorpus,
   type MetaThinkCorpus,
@@ -61,6 +62,7 @@ import {
   type RecapRuntime,
   readRecapCache,
   type StaticHertaPrefix,
+  type StaticPrefixRebuilder,
   supervisorReferenceFor,
   type V2ActorDriverDeps,
 } from "@herta/herta";
@@ -571,6 +573,19 @@ export interface ActorStack {
   readonly supervisorReference: string;
   readonly recap: RecapRuntime;
   readonly onPrompt: V2ActorDriverDeps["onPrompt"];
+  /** ADR 0069 §1, for `V2ActorDriverDeps`: re-derives the prefix at a step
+   *  event. Undefined when the prefix is overridden (tests). */
+  readonly rebuildStaticPrefix: StaticPrefixRebuilder | undefined;
+  /** The recap boundary `staticPrefix` was derived against. */
+  readonly prefixRecapBoundary: number;
+  /** ADR 0069 §3: the session-scoped parts for ANOTHER session of this
+   *  workspace and language — its prefix and exclusions, its recap runtime,
+   *  its rebuilder. The CLI's in-REPL `/resume` rebinds the driver with
+   *  them instead of keeping the boot session's. */
+  readonly sessionScope: (
+    sessionId: string,
+    record: TerminalRecord,
+  ) => Promise<DriverSessionScope>;
 }
 
 export async function createActorStack(
@@ -588,28 +603,31 @@ export async function createActorStack(
     await materializeSeedFeian(workspaceRoot, lang);
   }
 
-  // Reopen own-dream filter: 废案 distilled from THIS session's episodes stay
-  // out of the prefix while their source content is still verbatim in the
-  // loaded record (behind the recap boundary they return as recovered
-  // memory). Only a reopen can hit this.
-  const excludeFewShotFiles =
-    overrides.staticPrefix === undefined && initialRecord.length > 0
-      ? ownDreamExclusions({
-          workspaceRoot,
-          sessionId,
-          record: initialRecord,
-          dream: opts.dream,
-          lang,
-        })
-      : undefined;
-
   // Static Herta prefix (bio/env compiled in; 废案 from the live, lang-aware
   // narrative dir — an EN session reads .herta/narrative-en, not the zh
   // corpus; must stay consistent with buildStaticHertaPrefix's lang-derived
-  // relPath prefix).
-  const staticPrefix: StaticHertaPrefix =
-    overrides.staticPrefix ??
-    (await buildStaticHertaPrefix({
+  // relPath prefix), with the reopen own-dream filter applied: 废案 distilled
+  // from the session's OWN episodes stay out while their source content is
+  // still verbatim in its record (behind the recap boundary they return as
+  // recovered memory). Derived at open, and again at each step event
+  // (ADR 0069 §1) against the record and boundary of that moment.
+  const derivePrefix = (
+    sid: string,
+    record: TerminalRecord,
+    recapBoundaryIndex: number,
+  ): Promise<StaticHertaPrefix> => {
+    const excludeFewShotFiles =
+      record.length > 0
+        ? ownDreamExclusions({
+            workspaceRoot,
+            sessionId: sid,
+            record,
+            dream: opts.dream,
+            lang,
+            recapBoundaryIndex,
+          })
+        : undefined;
+    return buildStaticHertaPrefix({
       workspaceRoot,
       lang,
       // ALWAYS log a dropped few-shot (ADR 0051): the 2026-08-06 guard
@@ -634,7 +652,29 @@ export async function createActorStack(
         }
       },
       ...(excludeFewShotFiles !== undefined ? { excludeFewShotFiles } : {}),
-    }));
+    });
+  };
+  // A rebuild keeps what the session-scoped prefix carries besides the
+  // corpus: a new session's opening preamble stays for the session's life.
+  // No rebuilder when the prefix is a test override — there is no corpus
+  // behind it to follow.
+  const rebuilderFor = (sid: string): StaticPrefixRebuilder | undefined =>
+    overrides.staticPrefix !== undefined
+      ? undefined
+      : async ({ record, recapBoundaryIndex, current }) => {
+          const next = await derivePrefix(sid, record, recapBoundaryIndex);
+          return current.opening !== undefined
+            ? { ...next, opening: current.opening }
+            : next;
+        };
+
+  const prefixRecapBoundary =
+    initialRecord.length > 0
+      ? cachedRecapBoundary(workspaceRoot, sessionId, initialRecord)
+      : 0;
+  const staticPrefix: StaticHertaPrefix =
+    overrides.staticPrefix ??
+    (await derivePrefix(sessionId, initialRecord, prefixRecapBoundary));
 
   // Opening (new sessions only — a resumed record already carries block 0).
   // The preamble is session-zero scaffolding visible only to the model: it
@@ -705,14 +745,36 @@ export async function createActorStack(
     opts.supervisorRevision ?? supervisorRevisionDefault();
 
   // Recap runtime — automatic long-session compaction (ADR 0009). The
-  // manual /compact path (CLI) bypasses `enabled`.
-  const recap = await buildRecapRuntime({
-    routerProvider: supervisorProvider,
-    workspaceRoot,
-    sessionId,
-    enabled: true,
-    lang,
-  });
+  // manual /compact path (CLI) bypasses `enabled`. Keyed by session: its
+  // sidecar is `.herta/compaction/<sessionId>.json`.
+  const recapFor = (sid: string): Promise<RecapRuntime> =>
+    buildRecapRuntime({
+      routerProvider: supervisorProvider,
+      workspaceRoot,
+      sessionId: sid,
+      enabled: true,
+      lang,
+    });
+  const recap = await recapFor(sessionId);
+
+  // Another session of this workspace and language, rebound in place (the
+  // CLI's in-REPL /resume, ADR 0069 §3). A loaded record is never new, so
+  // there is no opening to carry.
+  const sessionScope = async (
+    sid: string,
+    record: TerminalRecord,
+  ): Promise<DriverSessionScope> => {
+    const boundary =
+      record.length > 0 ? cachedRecapBoundary(workspaceRoot, sid, record) : 0;
+    const rebuild = rebuilderFor(sid);
+    return {
+      staticPrefix:
+        overrides.staticPrefix ?? (await derivePrefix(sid, record, boundary)),
+      recap: await recapFor(sid),
+      ...(rebuild !== undefined ? { rebuildStaticPrefix: rebuild } : {}),
+      prefixRecapBoundary: boundary,
+    };
+  };
 
   return {
     actorProvider,
@@ -730,15 +792,37 @@ export async function createActorStack(
     supervisorReference,
     recap,
     onPrompt: makePromptDump(opts.promptDumpDir, sessionId, opts.onPromptDump),
+    rebuildStaticPrefix: rebuilderFor(sessionId),
+    prefixRecapBoundary,
+    sessionScope,
   };
 }
 
 /**
- * Filenames of dreamed 废案 to withhold from a reopening session's prefix
- * (design 2026-07-07): those whose source episodes still sit verbatim in the
- * loaded record. Fail-open — any error returns undefined (no exclusions),
- * which is exactly the pre-filter behavior. Lang-aware: an EN session reads
- * its own dream manifest (.herta/dream-en), not the zh one.
+ * The recap boundary a session's prompt starts from: the cached sidecar
+ * boundary, validated the way the recap runtime validates it — it must index
+ * a user block inside this record, else the runtime treats the session as
+ * uncompacted and so must everything that follows the runtime's view (the
+ * own-dream filter, and the open session's dreamable span, ADR 0069 §2).
+ * 0 = no recap engaged: the whole record is verbatim.
+ */
+export function cachedRecapBoundary(
+  workspaceRoot: string,
+  sessionId: string,
+  record: TerminalRecord,
+): number {
+  const cached = readRecapCache(workspaceRoot, sessionId)?.boundaryIndex ?? 0;
+  return cached > 0 && cached < record.length && record[cached]?.kind === "user"
+    ? cached
+    : 0;
+}
+
+/**
+ * Filenames of dreamed 废案 to withhold from a session's prefix (design
+ * 2026-07-07): those whose source episodes still sit verbatim in the record,
+ * or were withdrawn from it. Fail-open — any error returns undefined (no
+ * exclusions), which is exactly the pre-filter behavior. Lang-aware: an EN
+ * session reads its own dream manifest (.herta/dream-en), not the zh one.
  */
 export function ownDreamExclusions(opts: {
   workspaceRoot: string;
@@ -746,19 +830,15 @@ export function ownDreamExclusions(opts: {
   record: TerminalRecord;
   dream: AppServerConfig["dream"];
   lang: PromptLang;
+  /** The boundary the prompt uses. Omitted → the validated cached one (a
+   *  session being opened); a step-event rebuild passes the turn's own
+   *  (ADR 0069 §1). */
+  recapBoundaryIndex?: number;
 }): ReadonlySet<string> | undefined {
   try {
-    // Mirror the recap runtime's cache validation: a cached boundary must
-    // index a user block inside this record, else the runtime treats the
-    // session as uncompacted — the prefix filter must see the same view.
-    const cached =
-      readRecapCache(opts.workspaceRoot, opts.sessionId)?.boundaryIndex ?? 0;
     const recapBoundaryIndex =
-      cached > 0 &&
-      cached < opts.record.length &&
-      opts.record[cached]?.kind === "user"
-        ? cached
-        : 0;
+      opts.recapBoundaryIndex ??
+      cachedRecapBoundary(opts.workspaceRoot, opts.sessionId, opts.record);
     const excluded = selectPromptExclusions({
       manifest: readManifest(dreamDirFor(opts.workspaceRoot, opts.lang)),
       sessionId: opts.sessionId,

@@ -35,6 +35,7 @@ import {
   type SessionSearchHit,
   searchSessionTranscripts,
 } from "./session-search.js";
+import { cachedRecapBoundary } from "./session-wiring.js";
 import type {
   AppServerConfig,
   CreateSessionOpts,
@@ -267,6 +268,20 @@ class SessionHostImpl implements SessionHost {
                 return [];
               }
             },
+            // The session open in the window dreams only behind its recap
+            // boundary (ADR 0069 §2): what the prompt has already lost to
+            // compression. Its live tail — what a rewind or a take-back can
+            // still change, what the prompt still shows verbatim — waits.
+            dreamableEnd: (record) => {
+              const open = this._active;
+              return open !== null && open.sessionId === meta.sessionId
+                ? cachedRecapBoundary(
+                    open.workspaceRoot,
+                    meta.sessionId,
+                    record,
+                  )
+                : undefined;
+            },
           });
           byLang.set(lang, arr);
         } catch {
@@ -278,7 +293,7 @@ class SessionHostImpl implements SessionHost {
       // runDreamPass's `lang`). Sequential so they never contend for the shared
       // client; a fresh runId per pass.
       for (const [lang, sessions] of byLang) {
-        await runDreamPass({
+        const result = await runDreamPass({
           workspaceRoot: this.config.workspaceRoot,
           sessions,
           client,
@@ -289,6 +304,13 @@ class SessionHostImpl implements SessionHost {
           // The automatic pass's spend ceiling (finding 3); the rest waits.
           maxEpisodes: dreamCfg.autoPassMaxEpisodes,
         });
+        // The corpus may have moved: the open session's next turn re-derives
+        // its prefix once (ADR 0069 §1b) — new dreams from any session
+        // enter, archived ones leave. Marked after any pass that held the
+        // lock, even an aborted one (the stale floor archives before the
+        // episodes): a rebuild that finds nothing new yields the same bytes,
+        // so the prompt cache does not notice.
+        if (result.lockBusy !== true) this._active?.markPrefixStale?.();
       }
     } catch {
       // Swallow all errors — this is a background pass and must never

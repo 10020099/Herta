@@ -9,14 +9,14 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TerminalRecordBlock } from "@herta/core";
-import { writeRecapCache } from "@herta/herta";
+import { type StaticHertaPrefix, writeRecapCache } from "@herta/herta";
 import {
   episodeHash,
   resolveDreamConfig,
   segmentSession,
 } from "@herta/knowledge";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ownDreamExclusions } from "./session-wiring.js";
+import { createActorStack, ownDreamExclusions } from "./session-wiring.js";
 
 const u = (text: string, at: string): TerminalRecordBlock => ({
   kind: "user",
@@ -200,6 +200,47 @@ describe("ownDreamExclusions", () => {
       lang: "zh",
     });
     expect(excluded).toEqual(new Set(["### 废案_08：b.txt"]));
+  });
+
+  it("the stack's rebuilder lets an own dream in once a fold puts its source behind the boundary (ADR 0069 §1)", async () => {
+    const [ep1] = episodeHashes();
+    const file = "### 废案_07：x.txt";
+    writeDreamManifest(workspaceRoot, [{ file, sourceEpisodes: [ep1 ?? ""] }]);
+    const narrative = join(workspaceRoot, ".herta", "narrative");
+    mkdirSync(narrative, { recursive: true });
+    writeFileSync(
+      join(narrative, file),
+      "### 废案：x\n\nTOPIC_A_DREAM\n\n---\n\n结论。",
+      "utf8",
+    );
+    const stack = await createActorStack({
+      workspaceRoot,
+      sessionId: SESSION_ID,
+      lang: "zh",
+      initialRecord: RECORD,
+      apiKey: "sk-test",
+      supervisorEnabled: false,
+      promptDumpDir: workspaceRoot,
+    });
+    const has = (p: StaticHertaPrefix): boolean =>
+      p.fewShots.some((s) => s.includes("TOPIC_A_DREAM"));
+    // At open, topic A is verbatim: its dream is withheld, and the prefix
+    // remembers it was derived with no recap engaged.
+    expect(has(stack.staticPrefix)).toBe(false);
+    expect(stack.prefixRecapBoundary).toBe(0);
+    // A fold puts topic A behind the boundary: the rebuilt prefix has it.
+    const rebuild = stack.rebuildStaticPrefix;
+    expect(rebuild).toBeDefined();
+    const rebuilt = await rebuild?.({
+      record: RECORD,
+      recapBoundaryIndex: 2,
+      current: stack.staticPrefix,
+    });
+    expect(rebuilt !== undefined && has(rebuilt)).toBe(true);
+    // Another session rebound in place (the CLI's /resume) reads the corpus
+    // from ITS view: the dream is not its own, so it loads.
+    const other = await stack.sessionScope("sess-other", RECORD);
+    expect(has(other.staticPrefix)).toBe(true);
   });
 
   it("hashes here really match the segmentation the dream pass uses", () => {

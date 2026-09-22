@@ -13,13 +13,18 @@ import {
   type V2RecordPersister,
 } from "@herta/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { StaticHertaPrefix } from "./actor-prompt.js";
 import * as actorTurn from "./actor-turn.js";
 import * as intentRouter from "./intent-router.js";
 import type { MetaThinkCorpus, MoodState } from "./meta-think.js";
 import type { PreparedRecap, RecapRuntime } from "./session-recap-runtime.js";
 import * as recapRuntime from "./session-recap-runtime.js";
 import type { ActorStreamingSink } from "./streaming-sink.js";
-import { V2ActorDriver } from "./v2-actor-driver.js";
+import {
+  type StaticPrefixRebuilder,
+  V2ActorDriver,
+  type V2ActorDriverDeps,
+} from "./v2-actor-driver.js";
 
 async function* streamOf<T>(events: readonly T[]): AsyncGenerator<T> {
   for (const e of events) yield e;
@@ -2335,5 +2340,137 @@ describe("V2ActorDriver — interaction language (slice 4)", () => {
     await driver.runTurn("hi", new AbortController().signal);
     expect(intentSpy.mock.calls[0]?.[0]?.lang).toBe("zh");
     expect(seenLangs).toEqual(["zh"]);
+  });
+});
+
+describe("V2ActorDriver — the prefix follows step events, never turns (ADR 0069 §1)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const PREFIX: StaticHertaPrefix = { bio: "[prefix]", env: "", fewShots: [] };
+
+  /** Each turn's recap boundary, in order; the turn itself is stubbed and
+   *  records the prefix it was handed. */
+  function scriptTurns(boundaries: readonly number[]): {
+    prefixes: StaticHertaPrefix[];
+    recaps: Array<RecapRuntime | undefined>;
+  } {
+    const prefixes: StaticHertaPrefix[] = [];
+    const recaps: Array<RecapRuntime | undefined> = [];
+    let turn = 0;
+    vi.spyOn(recapRuntime, "prepareTurnRecap").mockImplementation(
+      async (_record, _prefix, rt) => {
+        recaps.push(rt);
+        const b = boundaries[turn] ?? 0;
+        turn += 1;
+        return { recapBoundaryIndex: b };
+      },
+    );
+    vi.spyOn(actorTurn, "runActorCompletionTurn").mockImplementation(
+      async (state, userText, deps) => {
+        prefixes.push(deps.staticPrefix);
+        return {
+          record: [
+            ...state.record,
+            { kind: "user", text: userText },
+            { kind: "herta", surface: "speech", text: "嗯。" },
+          ],
+        };
+      },
+    );
+    return { prefixes, recaps };
+  }
+
+  function mkStepDriver(
+    rebuild: StaticPrefixRebuilder,
+    extra: Partial<V2ActorDriverDeps> = {},
+  ): V2ActorDriver {
+    return new V2ActorDriver({
+      provider: mkProvider([]),
+      model: "test-model",
+      staticPrefix: PREFIX,
+      bus: new InMemoryEventBus<AgentEvent>(),
+      runtimeFactory: () => ({}) as unknown as CodingAgentRuntime,
+      routerProvider: mkNoopRouter(),
+      metaThinkCorpus: mkEmptyCorpusForHelper(),
+      rebuildStaticPrefix: rebuild,
+      prefixRecapBoundary: 0,
+      ...extra,
+    });
+  }
+
+  it("keeps the prefix while the recap boundary stays, and re-derives it once when a fold moves it", async () => {
+    const { prefixes } = scriptTurns([0, 0, 2, 2]);
+    const calls: Array<{ boundary: number; recordLength: number }> = [];
+    const rebuilt: StaticHertaPrefix = {
+      bio: "[prefix]",
+      env: "",
+      fewShots: ["废案 behind the fold"],
+    };
+    const driver = mkStepDriver(async ({ record, recapBoundaryIndex }) => {
+      calls.push({
+        boundary: recapBoundaryIndex,
+        recordLength: record.length,
+      });
+      return rebuilt;
+    });
+    for (const text of ["一", "二", "三", "四"]) {
+      await driver.runTurn(text, new AbortController().signal);
+    }
+    // One rebuild, at the fold — against the committed record (two turns of
+    // two blocks), not the one with this turn's user block in it.
+    expect(calls).toEqual([{ boundary: 2, recordLength: 4 }]);
+    // The fold's own turn already reads the new prefix; the turns before it
+    // read the one the session opened with.
+    expect(prefixes).toEqual([PREFIX, PREFIX, rebuilt, rebuilt]);
+  });
+
+  it("re-derives on the first turn after a dream pass, and only that turn", async () => {
+    scriptTurns([0, 0, 0]);
+    let rebuilds = 0;
+    const driver = mkStepDriver(async ({ current }) => {
+      rebuilds += 1;
+      return current;
+    });
+    await driver.runTurn("一", new AbortController().signal);
+    expect(rebuilds).toBe(0);
+    driver.markPrefixStale();
+    await driver.runTurn("二", new AbortController().signal);
+    await driver.runTurn("三", new AbortController().signal);
+    expect(rebuilds).toBe(1);
+  });
+
+  it("a failed rebuild keeps the prefix and waits for the next step rather than retrying every turn", async () => {
+    const { prefixes } = scriptTurns([2, 2, 2]);
+    let attempts = 0;
+    const driver = mkStepDriver(async () => {
+      attempts += 1;
+      throw new Error("narrative dir unreadable");
+    });
+    for (const text of ["一", "二", "三"]) {
+      await driver.runTurn(text, new AbortController().signal);
+    }
+    expect(attempts).toBe(1);
+    expect(prefixes).toEqual([PREFIX, PREFIX, PREFIX]);
+  });
+
+  it("rebindSession swaps the prefix, the recap runtime and the rebuilder together (the CLI's /resume)", async () => {
+    const { prefixes, recaps } = scriptTurns([0, 0]);
+    const recapA = { tag: "A" } as unknown as RecapRuntime;
+    const recapB = { tag: "B" } as unknown as RecapRuntime;
+    const prefixB: StaticHertaPrefix = {
+      bio: "[prefix]",
+      env: "",
+      fewShots: ["B's corpus view"],
+    };
+    const driver = mkStepDriver(async ({ current }) => current, {
+      recap: recapA,
+    });
+    await driver.runTurn("一", new AbortController().signal);
+    driver.rebindSession({ staticPrefix: prefixB, recap: recapB });
+    await driver.runTurn("二", new AbortController().signal);
+    expect(recaps).toEqual([recapA, recapB]);
+    expect(prefixes).toEqual([PREFIX, prefixB]);
   });
 });

@@ -1,10 +1,12 @@
 import type {
   ProjectCommandRuleStore,
   SessionApprovalCache,
+  TerminalRecord,
   ToolRegistry,
 } from "@herta/core";
 import {
   defaultWorkspaceFor,
+  errorMessage,
   listSessions,
   readSessionFile,
   ruleDisplay,
@@ -45,6 +47,14 @@ export interface SlashContext {
    * and returns.
    */
   driver?: V2ActorDriver;
+  /**
+   * Rebind the driver's session-scoped inputs — prefix and own-dream
+   * exclusions, recap runtime — to the session being resumed (ADR 0069 §3).
+   * Wired by main.ts. Absent → /resume swaps only the record and persister,
+   * and the loaded session reads the boot session's prefix and recap: the
+   * pre-2026-09-23 behavior, left for tests that do not wire it.
+   */
+  rebindSession?: (sessionId: string, record: TerminalRecord) => Promise<void>;
   transcriptDir?: string;
   currentWorkspaceRoot?: string;
   /**
@@ -100,7 +110,7 @@ export async function handleSlashCommand(
       handleWorkspace(ctx, parts.slice(1));
       return { action: "continue" };
     case "resume":
-      handleResume(ctx, parts[1]);
+      await handleResume(ctx, parts[1]);
       return { action: "continue" };
     case "quit":
     case "exit":
@@ -258,7 +268,10 @@ function handleWorkspace(ctx: SlashContext, args: readonly string[]): void {
   ctx.out.write(`${ctx.style.red(`unknown: /workspace ${sub}`)}\n`);
 }
 
-function handleResume(ctx: SlashContext, sub: string | undefined): void {
+async function handleResume(
+  ctx: SlashContext,
+  sub: string | undefined,
+): Promise<void> {
   if (
     ctx.driver === undefined ||
     ctx.transcriptDir === undefined ||
@@ -296,7 +309,7 @@ function handleResume(ctx: SlashContext, sub: string | undefined): void {
       ctx.out.write(`${ctx.style.dim("no sessions in this workspace yet")}\n`);
       return;
     }
-    loadSession(ctx, latestEntry);
+    await loadSession(ctx, latestEntry);
     return;
   }
   // Treat sub as an id prefix. Look across ALL workspaces so the user can
@@ -321,7 +334,7 @@ function handleResume(ctx: SlashContext, sub: string | undefined): void {
     return;
   }
   const uniqueCandidate = candidates[0];
-  if (uniqueCandidate !== undefined) loadSession(ctx, uniqueCandidate);
+  if (uniqueCandidate !== undefined) await loadSession(ctx, uniqueCandidate);
 }
 
 function renderSessionList(
@@ -357,7 +370,10 @@ function renderSessionList(
   );
 }
 
-function loadSession(ctx: SlashContext, entry: SessionListEntry): void {
+async function loadSession(
+  ctx: SlashContext,
+  entry: SessionListEntry,
+): Promise<void> {
   if (ctx.driver === undefined) {
     ctx.out.write(`${ctx.style.dim("/resume: not available in this build")}\n`);
     return;
@@ -390,6 +406,21 @@ function loadSession(ctx: SlashContext, entry: SessionListEntry): void {
       )}\n`,
     );
     return;
+  }
+  // The session's own prefix, exclusions and recap first (ADR 0069 §3): the
+  // swap used to keep the boot session's, so the loaded session's own
+  // dreams sat beside their verbatim source and the boot session's recap
+  // could be spliced into its prompt. First, so a failure leaves the REPL
+  // on the session it was on rather than half-switched.
+  if (ctx.rebindSession !== undefined) {
+    try {
+      await ctx.rebindSession(entry.sessionId, loaded.record);
+    } catch (err) {
+      ctx.out.write(
+        `${ctx.style.red(`/resume: could not prepare ${entry.sessionId.slice(0, 8)}: ${errorMessage(err)}`)}\n`,
+      );
+      return;
+    }
   }
   ctx.driver.loadRecord(loaded.record);
   const newPersister = V2RecordPersister.forResume({

@@ -561,6 +561,9 @@ export interface Session {
   /** Pictures staged in the composer and not yet sent (ADR 0048 §4) — what
    *  a reloaded window's strip is rebuilt from. Optional like the above. */
   readonly stagedImageList?: readonly StagedImageInfo[];
+  /** The dream corpus changed on disk: the next turn re-derives the static
+   *  prefix once (ADR 0069 §1b). Optional like the above. */
+  markPrefixStale?(): void;
 
   /** `stagedImageIds` sends pictures with the message (ADR 0048 §4): their
    *  blocks land right after the user block, inside this turn's span. */

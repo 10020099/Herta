@@ -68,6 +68,18 @@ export interface DreamSessionInput {
    * the CLI lab) pass it directly.
    */
   record: TerminalRecord | (() => TerminalRecord);
+  /**
+   * How far this session is dreamable, as a block index into its record:
+   * only an episode that ENDS at or before it is considered this pass
+   * (ADR 0069 §2). The rest is neither dreamed nor ledgered, so a later
+   * pass takes it up once it lies behind. Given for the session OPEN in the
+   * app — its recap boundary, so the pass dreams only what compression has
+   * already taken from the prompt. Asked when the record is loaded, so a
+   * session opened or closed during a long pass is judged as it is then.
+   * Absent, or answering undefined → every settled episode (closed
+   * sessions, the manual CLI pass).
+   */
+  dreamableEnd?: (record: TerminalRecord) => number | undefined;
 }
 
 export interface RunDreamPassOptions {
@@ -496,7 +508,16 @@ export async function runDreamPass(
         cfg,
         now().getTime(),
       );
-      const candidates = selectEpisodes(episodes, cfg);
+      // The open session dreams only behind its recap boundary (ADR 0069
+      // §2): what compression has already taken from the prompt. The same
+      // inequality the reopen filter uses (`end > boundary` is verbatim).
+      const dreamableEnd = s.dreamableEnd?.(record);
+      const candidates = selectEpisodes(
+        dreamableEnd === undefined
+          ? episodes
+          : episodes.filter((ep) => ep.endIndex <= dreamableEnd),
+        cfg,
+      );
 
       for (const ep of candidates) {
         // Skip if already processed in a prior pass (unless --reconsider

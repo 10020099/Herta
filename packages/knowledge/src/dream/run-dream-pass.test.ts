@@ -1579,6 +1579,53 @@ describe("runDreamPass hardening", () => {
     expect(second.budgetStopped).toBeUndefined();
   });
 
+  it("dreams only what ends at or before dreamableEnd — the open session's recap boundary — and leaves the rest un-ledgered (ADR 0069 §2)", async () => {
+    const two: TerminalRecord = [
+      { kind: "user", text: "阮·梅又在搞事，你怎么看" },
+      { kind: "herta", surface: "speech", text: "我看她乐在其中。" },
+      { kind: "herta", surface: "speech", text: "至于我，懒得掺和。" },
+      { kind: "user", text: "螺丝咕姆呢？他也掺和了？" },
+      { kind: "herta", surface: "speech", text: "他在算他自己的东西。" },
+      { kind: "herta", surface: "speech", text: "别去打扰，他会记仇。" },
+      { kind: "user", text: "（新话题）帮我看个 bug" },
+    ];
+    const asked: number[] = [];
+    const first = await runDreamPass({
+      workspaceRoot: ws,
+      sessions: [
+        {
+          sessionId: "open",
+          record: two,
+          dreamableEnd: (r) => {
+            asked.push(r.length);
+            return 3;
+          },
+        },
+      ],
+      client: fakeClient(),
+      runId: "open-1",
+      config: testConfig,
+      now: () => new Date("2026-06-18T09:30:00Z"),
+    });
+    // Asked with the loaded record; only the exchange behind it was taken.
+    expect(asked).toEqual([7]);
+    expect(first.considered).toBe(1);
+    const dreamDir = join(ws, ".herta", "dream");
+    expect(readManifest(dreamDir).episodes).toHaveLength(1);
+    // The boundary advanced: the next pass takes up the second exchange.
+    const second = await runDreamPass({
+      workspaceRoot: ws,
+      sessions: [{ sessionId: "open", record: two, dreamableEnd: () => 6 }],
+      client: fakeClient(),
+      runId: "open-2",
+      config: testConfig,
+      now: () => new Date("2026-06-26T09:30:00Z"),
+    });
+    expect(second.considered).toBe(1);
+    expect(second.skipped).toBe(1);
+    expect(readManifest(dreamDir).episodes).toHaveLength(2);
+  });
+
   it("aborts without consuming episodes when the LLM call itself fails", async () => {
     const failing: DeepSeekClient = {
       chatJson: vi.fn(async () => {
