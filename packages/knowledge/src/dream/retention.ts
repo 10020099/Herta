@@ -7,14 +7,16 @@ const MS_PER_DAY = 24 * 60 * 60_000;
  * (a stored value would go stale the moment the clock moved). Models the
  * forgetting curve from `docs/what-is-memory.md` §6/§7:
  *
- *   strength = salience · exp(−Δdays / halfLife) · (1 + k·ln(1 + reactivations))
+ *   strength = salience · 2^(−Δdays / halfLife) · (1 + k·ln(1 + reactivations))
  *
  * - salience: the birth voice score × (1 + w·emotionalCharge) — what got the
  *   dream kept, amplified by how much the episode moved her (affect-weighted
  *   salience / flashbulb encoding, ADR 0023). Legacy records carry no stored
  *   charge → charge 0 → pure voice, byte-identical to the pre-charge formula.
- * - exp(−Δ/halfLife): the decay curve. Δ is time since the *last reactivation*
- *   (falling back to birth), so a reactivated dream resets its clock.
+ * - 2^(−Δ/halfLife) = exp(−ln2·Δ/halfLife): the decay curve, a true half-life
+ *   (ADR 0011's e-folding form was amended 2026-09-23). Δ is time since the
+ *   *last reactivation* (falling back to birth), so a reactivated dream
+ *   resets its clock.
  * - (1 + k·ln(1+n)): usefulness bump — concave, so repeated reactivation matters
  *   with diminishing returns and never runs away.
  *

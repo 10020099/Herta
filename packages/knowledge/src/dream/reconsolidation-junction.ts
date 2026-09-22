@@ -127,8 +127,8 @@ function firstHeaderLine(text: string): string {
  *        → preservation judge (content-first: keeps OLD's substance AND
  *          contains the new facet — either false → reinforce-fallback)
  *        → pairwise swap-and-confirm on voice
- *        ├─ merged wins both orderings → reconsolidated (OLD superseded)
- *        └─ else                       → reinforce-only (keep OLD)
+ *        ├─ merged wins at least one ordering → reconsolidated (OLD superseded)
+ *        └─ OLD wins both, or unparseable     → reinforce-only (keep OLD)
  *
  * Unresolvable match (unknown/archived id, vanished file) → "archived", the
  * safe pre-junction behavior. All manifest mutations are in place; a
@@ -352,9 +352,10 @@ export async function runReconsolidationJunction(
     );
   }
 
-  // Pairwise swap-and-confirm: merged is accepted only if it beats OLD in BOTH
-  // orderings (neutralizing the judge's position bias). A split keeps OLD
-  // (conservative default).
+  // Pairwise swap-and-confirm, both orderings to neutralize the judge's
+  // position bias. OLD is kept only when it wins BOTH; a split accepts the
+  // preserving merge (ADR 0021 §9 — ADR 0011's "a split keeps OLD" was
+  // superseded, amended 2026-09-23).
   const mergedWins = await pairwiseMergedWins(ctx, oldFeian, merged);
   if (!mergedWins) {
     return reinforceOnly(`reinforce-fallback ${old.file}: pairwise kept OLD`);

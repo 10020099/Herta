@@ -23,8 +23,9 @@ export interface SegmentOptions {
  * a NEW episode; the settled tail's blocks — and therefore its episodeHash —
  * are unchanged, and the manifest dedup keeps it single-dreamed.
  *
- * A tail whose last block carries no parseable `at` cannot prove silence and
- * stays unsettled (conservative, matches the stamped-only gap rule).
+ * The silence is measured from the tail's last STAMPED block (the caller
+ * walks back past unstamped ones); only a tail with no stamped block at all
+ * cannot prove silence and stays unsettled (ADR 0024, amended 2026-09-23).
  */
 export function isTailSettled(
   lastBlockAtMs: number | undefined,

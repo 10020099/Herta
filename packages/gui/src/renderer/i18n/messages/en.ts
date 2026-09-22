@@ -164,7 +164,7 @@ export const en = {
   "dream.enableDesc":
     "Let Herta dream while you are away. Dreaming uses your DeepSeek API quota.",
   "dream.intro":
-    "Dream is Herta's downtime. While you're away, she looks back over your finished sessions and writes down the memorable moments — coming to know you a little better the longer you work together.",
+    "Dream is Herta's downtime. While you are away, she looks back over your sessions and writes down the memorable moments — coming to know you a little better the longer you work together.",
   // Punctuation rule (owner 2026-08-27): a single-clause LABEL or status
   // carries no terminal period — only prose that explains or instructs keeps
   // one. So "Couldn't save — try again." keeps its period and "Restart to
