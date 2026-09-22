@@ -281,16 +281,26 @@ export class SessionAttachments {
       ...(source === null ? [] : [source]),
       ...(sidecar === null ? [] : [sidecar]),
     ];
+    // A file already gone (manual delete, workspace switched) must not block
+    // the withdrawal — `force` answers a missing file with success. Any
+    // OTHER failure is a copy still on disk: on Windows, the document open
+    // in Word through 打开. It used to be swallowed as "already gone" and the
+    // row marked 已移除 while the file stayed where 板砖's tools still read
+    // it (UX review 2026-09-22, item 8). Refuse instead, with nothing
+    // marked: the copies removed so far are the ones a retry would remove
+    // anyway (`force` tolerates them missing), and the row keeps telling
+    // the truth until the retry succeeds.
+    let inUse = false;
     for (const rel of toRemove) {
       try {
         await rm(join(this.deps.wsHolder.current, ...rel.split("/")), {
           force: true,
         });
       } catch {
-        // Best-effort: a file already gone (manual delete, workspace
-        // switched) must not block the record from recording the withdrawal.
+        inUse = true;
       }
     }
+    if (inUse) return { ok: false, reason: "in_use" };
 
     // Guard re-check on the far side of the await — the same hole attachFiles
     // closed and this method then reintroduced: `rm` yields the event loop,

@@ -41,8 +41,15 @@ export function useRemoveAttachment(opts: {
         .removeAttachment(sessionId, path)
         .then((r) => {
           if (!r.ok) {
+            // A copy held open by another program is the one refusal the
+            // user can fix; the notice says how (UX review 2026-09-22,
+            // item 8).
             sessionStore.setComposerNotice(
-              t("activity.attachment.removeFailed"),
+              t(
+                r.message === "file in use"
+                  ? "activity.attachment.removeInUse"
+                  : "activity.attachment.removeFailed",
+              ),
             );
           }
         })

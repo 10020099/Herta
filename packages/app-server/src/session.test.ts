@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -1701,6 +1702,38 @@ describe("Session — attachFiles (ADR 0033)", () => {
     expect(block.body).toContain("已移除");
     expect(block.evidenceDetail).toBeUndefined();
     expect(JSON.stringify(session.record)).not.toContain("SECRET-BODY-LINE");
+    await cleanup();
+  });
+
+  it("a copy that cannot be deleted refuses the take-back with NOTHING marked — never 已移除 over a file still on disk (UX review 2026-09-22, item 8)", async () => {
+    const { session, backendWs, srcDir, cleanup } = await mkAttachSession();
+    writeFileSync(join(srcDir, "spec.md"), "# spec\nBODY-LINE\n");
+    const a = await session.attachFiles([join(srcDir, "spec.md")]);
+    expect(a.ok).toBe(true);
+    if (!a.ok) return;
+    const rel = a.files[0]?.path ?? "";
+    const abs = join(backendWs, ...rel.split("/"));
+    // A path `rm` cannot remove, portably: a non-empty directory where the
+    // copy was. On Windows the real case is the document open in Word.
+    rmSync(abs);
+    mkdirSync(abs);
+    writeFileSync(join(abs, "held"), "x");
+    expect(await session.removeAttachment(rel)).toEqual({
+      ok: false,
+      reason: "in_use",
+    });
+    const block = session.record.find(
+      (b) => b.kind === "system" && b.digest?.kind === "attachment",
+    );
+    if (block?.kind !== "system") throw new Error("no attachment block");
+    expect(block.digest).not.toMatchObject({ unreadable: "removed" });
+    expect(block.body).not.toContain("已移除");
+    // Released (the program closed it): the retry finishes the job.
+    rmSync(abs, { recursive: true });
+    expect(await session.removeAttachment(rel)).toEqual({
+      ok: true,
+      removed: 1,
+    });
     await cleanup();
   });
 

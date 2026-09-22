@@ -327,12 +327,14 @@ export type StageImagesResult =
     };
 
 /** Result of `removeAttachment`. `removed` counts the blocks marked, which is
- *  >1 when the same document was attached more than once. */
+ *  >1 when the same document was attached more than once. `in_use`: a stored
+ *  copy could not be deleted (on Windows, a file open in another program) —
+ *  nothing is marked, and a retry once it is closed finishes the job. */
 export type RemoveAttachmentResult =
   | { readonly ok: true; readonly removed: number }
   | {
       readonly ok: false;
-      readonly reason: "turn_in_progress" | "not_found";
+      readonly reason: "turn_in_progress" | "not_found" | "in_use";
     };
 
 // ───── Wire events (one type per AsyncIterable subscription) ─────
@@ -489,10 +491,14 @@ export interface SessionHost {
   searchSessions(query: string): Promise<SessionSearchHit[]>;
   /** Remove a session's persisted files. If it is the active session it is
    *  closed first (releasing the transcript file handle) and `activeSession`
-   *  becomes null. `wasActive` reports whether the deleted session was open. */
+   *  becomes null. `wasActive` reports whether the deleted session was open.
+   *  A remove that fails part-way resolves `ok: false` rather than throwing,
+   *  with `removed` saying whether the session itself is gone (its transcript
+   *  is removed first; a managed workspace held open by another program can
+   *  fail after it) — the caller drops the card only when it is. */
   deleteSession(
     sessionId: string,
-  ): Promise<{ ok: boolean; wasActive: boolean }>;
+  ): Promise<{ ok: boolean; wasActive: boolean; removed?: boolean }>;
   closeActiveSession(): Promise<void>;
   /** Release host-level resources (clears the idle trigger interval, if any).
    *  Call on app shutdown. Idempotent. */

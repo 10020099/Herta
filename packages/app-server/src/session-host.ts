@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { access } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import {
@@ -300,7 +301,6 @@ class SessionHostImpl implements SessionHost {
     // clock (audit finding 21: only submitText did, so a pass could fire
     // right as the user navigated in).
     this.dreamTrigger.noteActivity();
-    await this.closeActiveInner();
     const sessionId = randomUUID();
     const workspaceRoot = opts.workspaceRoot ?? this.config.workspaceRoot;
     // The effective backend (板砖) workspace: an explicit caller override, or
@@ -308,6 +308,12 @@ class SessionHostImpl implements SessionHost {
     // session. Stamped into the JSONL header so resume can recover it.
     const backendWorkspace =
       opts.backendWorkspace ?? defaultWorkspaceFor(homedir(), sessionId);
+    // The new transcript is written BEFORE the active session closes — the
+    // same contract openSessionInner keeps by validating first. A transcript
+    // directory that cannot be written (a full disk, a permission) throws
+    // here with the open session intact; closing first left the host with
+    // nothing open while the window still showed the closed session (UX
+    // review 2026-09-22, item 6).
     const persister = V2RecordPersister.forNewSession({
       sessionId,
       workspaceRoot,
@@ -318,6 +324,7 @@ class SessionHostImpl implements SessionHost {
       // can scope this session by language.
       ...(opts.lang !== undefined ? { lang: opts.lang } : {}),
     });
+    await this.closeActiveInner();
     const session = await SessionImpl.create({
       sessionId,
       workspaceRoot,
@@ -478,7 +485,7 @@ class SessionHostImpl implements SessionHost {
 
   private async deleteSessionInner(
     sessionId: string,
-  ): Promise<{ ok: boolean; wasActive: boolean }> {
+  ): Promise<{ ok: boolean; wasActive: boolean; removed?: boolean }> {
     const wasActive =
       this._active !== null && this._active.sessionId === sessionId;
     // Close FIRST so the persister releases its handle on `<id>.jsonl`
@@ -490,15 +497,33 @@ class SessionHostImpl implements SessionHost {
     // main thread), and this whole method runs inside the lifecycle
     // serializer, so nothing reopens the session until it is gone.
     if (wasActive) await this.closeActiveInner();
-    await deleteSessionFiles(
-      this.config.transcriptDir,
-      sessionId,
-      workspacesBaseDir(homedir()),
-      // Also the recap sidecar under `.herta/compaction` (audit BL8) — it
-      // lives outside transcriptDir, so it used to survive every delete.
-      this.config.workspaceRoot,
-    );
-    return { ok: true, wasActive };
+    try {
+      await deleteSessionFiles(
+        this.config.transcriptDir,
+        sessionId,
+        workspacesBaseDir(homedir()),
+        // Also the recap sidecar under `.herta/compaction` (audit BL8) — it
+        // lives outside transcriptDir, so it used to survive every delete.
+        this.config.workspaceRoot,
+      );
+    } catch (err) {
+      // The transcript goes first; what can fail after it is the managed
+      // workspace — a document in it open in Word holds the folder past the
+      // retry deadline. The session is then gone with its folder behind.
+      // A throw here used to reach the window as a rejected delete: no
+      // `deleted` event, the closed session still on screen, a composer
+      // whose sends went nowhere (UX review 2026-09-22, item 6). Report
+      // which it is instead; the caller drops the card only when the
+      // session is really gone.
+      console.warn(`[herta] deleting session ${sessionId} failed:`, err);
+      const transcript = join(this.config.transcriptDir, `${sessionId}.jsonl`);
+      const removed = await access(transcript).then(
+        () => false,
+        () => true,
+      );
+      return { ok: false, wasActive, removed };
+    }
+    return { ok: true, wasActive, removed: true };
   }
 
   closeActiveSession(): Promise<void> {

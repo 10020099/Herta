@@ -633,8 +633,23 @@ export class SessionImpl implements Session {
     } catch (err) {
       // Same reason as the success path above, and the same ordering: the
       // blocks a voiced beat gated must reach the renderer before `failed`.
-      this.sink.settleVoice();
-      hooks.onFailed?.(err);
+      //
+      // Nothing on the way to `failed` may keep it from being emitted: the
+      // hook appends the turn-end marker to disk, and a throw there (a full
+      // disk, a locked file) used to skip the event — the renderer stayed
+      // busy with a Stop that answered nothing until a session switch (UX
+      // review 2026-09-22, item 6). A secondary failure is logged; the
+      // turn's own error is the one `failed` carries.
+      try {
+        this.sink.settleVoice();
+      } catch (settleErr) {
+        console.warn("[herta] settling voice after a failed turn:", settleErr);
+      }
+      try {
+        hooks.onFailed?.(err);
+      } catch (hookErr) {
+        console.warn("[herta] turn-failure bookkeeping failed:", hookErr);
+      }
       this.projector.emitTurnLifecycle({
         kind: "failed",
         turnId,

@@ -13,7 +13,7 @@ import {
   V2RecordPersister,
   writeSessionTitle,
 } from "@herta/core";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createSessionHost,
   makeLifecycleSerializer,
@@ -190,6 +190,25 @@ describe("openSession — load pre-existing JSONL", () => {
     await host.closeActiveSession();
   });
 
+  it("a create that cannot write its transcript fails with the open session STILL open (UX review 2026-09-22, item 6)", async () => {
+    // Closing first left the host with nothing open while the window still
+    // showed the closed session: every send went nowhere.
+    const host = createSessionHost(mkConfig());
+    const first = await host.createSession({});
+    const spy = vi
+      .spyOn(V2RecordPersister, "forNewSession")
+      .mockImplementationOnce(() => {
+        throw new Error("EACCES: permission denied");
+      });
+    try {
+      await expect(host.createSession({})).rejects.toThrow(/EACCES/);
+      expect(host.activeSession).toBe(first);
+    } finally {
+      spy.mockRestore();
+    }
+    await host.closeActiveSession();
+  });
+
   it("a corrupt file fails the open but leaves the active session pointed", async () => {
     const cfg = mkConfig();
 
@@ -273,7 +292,7 @@ describe("deleteSession", () => {
 
     const r = await host.deleteSession(sessionId);
 
-    expect(r).toEqual({ ok: true, wasActive: false });
+    expect(r).toEqual({ ok: true, wasActive: false, removed: true });
     expect(existsSync(join(cfg.transcriptDir, `${sessionId}.jsonl`))).toBe(
       false,
     );
@@ -292,7 +311,7 @@ describe("deleteSession", () => {
 
     const r = await host.deleteSession(active.sessionId);
 
-    expect(r).toEqual({ ok: true, wasActive: true });
+    expect(r).toEqual({ ok: true, wasActive: true, removed: true });
     expect(host.activeSession).toBeNull();
     expect(
       existsSync(join(cfg.transcriptDir, `${active.sessionId}.jsonl`)),

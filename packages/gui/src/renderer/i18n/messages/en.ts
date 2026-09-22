@@ -425,6 +425,8 @@ export const en = {
   "activity.attachment.outline": "outline · {n} entries",
   "activity.attachment.remove": "Remove this attachment",
   "activity.attachment.removeFailed": "Removing the attachment failed",
+  "activity.attachment.removeInUse":
+    "The attachment is open in another program. Close it, then remove it again",
   "activity.file.openAria": "View file",
   "activity.commit.openAria": "View commit",
   "activity.diff.openAria": "View changes",

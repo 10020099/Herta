@@ -16,7 +16,7 @@ import {
   type SteerTextResult,
   type WorkspaceTrustState,
 } from "@herta/app-server";
-import { errorMessage, SessionFileError } from "@herta/core";
+import { errorMessage } from "@herta/core";
 import {
   canonicalWorkspaceRoot,
   isGitReadTimeout,
@@ -37,7 +37,6 @@ import {
 import { CMD, EVT } from "../preload/channels.js";
 import type {
   MiniMaxRefusalState,
-  SessionOpenFailure,
   SessionSnapshot,
 } from "../renderer/ipc/bridge-types.js";
 import { slimAgentEventForRenderer } from "../shared/agent-event-wire.js";
@@ -66,6 +65,7 @@ import {
   readWorkspaceFileBounded,
   resolveInsideWorkspace,
 } from "./read-workspace-file.js";
+import { createSessionActivation } from "./session-activation.js";
 import {
   registerSettingsHandlers,
   type SettingsHooks,
@@ -490,7 +490,6 @@ export function createSessionService(
   hooks: SessionServiceHooks = {},
 ): SessionService {
   let host: SessionHost | null = null;
-  let stopForwarders: (() => void) | null = null;
   let handlersRegistered = false;
   // Herta's synthesized voice (ADR 0042). Built once at bootstrap and shared
   // by every session; the enable flag is cached here so `available()` — read
@@ -539,12 +538,6 @@ export function createSessionService(
     if (!wc.isDestroyed()) wc.send(ch, payload);
   };
 
-  function pointAt(session: Session): void {
-    stopForwarders?.();
-    stopForwarders = startForwarders(session, send);
-    send(EVT.reset, snapshot(session));
-  }
-
   // Interaction language (slice 4): resolved FRESH here per activation (like
   // getTheme reads per call) — stored choice, else follow the UI locale.
   // Threaded into the host so the session builds its static prefix, openings,
@@ -558,70 +551,17 @@ export function createSessionService(
     return resolveInteractionLang(s, resolveInitialLocale(s, app.getLocale()));
   }
 
-  // Last-CLICK-wins activation ordering, shared by the renderer's IPC
-  // handlers AND the tray menu. Activations run concurrently, and each used
-  // to pointAt whatever it resolved — so clicking session A (slow disk load)
-  // then session B (fast) landed the UI on A when A's open resolved LAST.
-  // Only the newest activation may point the renderer; a superseded one
-  // still resolves its snapshot (harmless) but never re-points.
-  let activationSeq = 0;
-
-  async function openAndPoint(
-    id: string,
-  ): Promise<Session | SessionOpenFailure | null> {
-    const my = ++activationSeq;
-    let s: Session | undefined;
-    try {
-      s = await host?.openSession({
-        sessionId: id,
-        lang: await currentInteractionLang(),
-      });
-    } catch (err) {
-      // The host validates the session file BEFORE swapping sessions, so a
-      // failed open leaves the previously-active session pointed and the app
-      // fully usable. Report a structured failure instead of letting the
-      // renderer's invoke reject with no user-facing surface.
-      console.error(`[herta] openSession(${id}) failed:`, err);
-      return {
-        openError:
-          err instanceof SessionFileError
-            ? {
-                code: err.code,
-                ...(err.line !== undefined ? { line: err.line } : {}),
-              }
-            : { code: "unknown" },
-      };
-    }
-    if (s !== undefined && my === activationSeq) {
-      pointAt(s);
-      // D2: if last session's reply was lost to a mid-stream app-close, this
-      // session ends on an orphaned user message — regenerate the reply now
-      // (fire-and-forget; no-op when it ends on a Herta reply). Fired AFTER
-      // pointAt so the renderer is subscribed before the reply streams.
-      void s.regenerateLastReplyIfOrphaned?.();
-    }
-    return s ?? null;
-  }
-
-  async function createAndPoint(
-    opts: Parameters<SessionHost["createSession"]>[0],
-  ): Promise<Session | null> {
-    const my = ++activationSeq;
-    const s = await host?.createSession({
-      ...(opts ?? {}),
-      // Main-resolved, never renderer-supplied (sanitizeCreateOpts drops any
-      // renderer value): the per-user setting is the single source of truth.
-      lang: await currentInteractionLang(),
-    });
-    if (s !== undefined && my === activationSeq) {
-      pointAt(s);
-      // D3: stream the opening seed in like a reply (fire-and-forget; no-op
-      // when there is no opening). Fired AFTER pointAt so the renderer is
-      // subscribed before the seed streams.
-      void s.playOpening?.();
-    }
-    return s ?? null;
-  }
+  // Which session the window shows, and the open / create / delete calls
+  // that change it — last click wins, and after each settles the window
+  // follows the host (session-activation.ts).
+  const activation = createSessionActivation({
+    host: () => host,
+    send,
+    startForwarders,
+    snapshot,
+    lang: currentInteractionLang,
+  });
+  const { openAndPoint, createAndPoint } = activation;
 
   // Channels THIS service registered — dispose() removes exactly these
   // (audit T3.7): the old sweep removed every channel in the CMD map,
@@ -785,16 +725,7 @@ export function createSessionService(
     handle(CMD.deleteSession, async (_e, id: string) => {
       // Same id gate as CMD.open — deleteSession feeds rmSync path joins.
       if (!isSafeSessionId(id)) return { ok: false, wasActive: false };
-      const r = await host?.deleteSession(id);
-      if (r === undefined) return { ok: false, wasActive: false };
-      // If we deleted the OPEN session, the host already closed it — tear down
-      // its forwarders so no stale events reach the (now blank) renderer.
-      if (r.wasActive) {
-        stopForwarders?.();
-        stopForwarders = null;
-      }
-      send(EVT.sessionDeleted, { sessionId: id });
-      return r;
+      return activation.deleteAndReconcile(id);
     });
     handle(CMD.resolveApproval, (_e, opts) =>
       host?.activeSession?.resolveApproval(opts),
@@ -1064,7 +995,9 @@ export function createSessionService(
           message:
             r.reason === "turn_in_progress"
               ? "a turn is in progress"
-              : "attachment not found",
+              : r.reason === "in_use"
+                ? "file in use"
+                : "attachment not found",
         };
       },
     );
@@ -1130,8 +1063,8 @@ export function createSessionService(
       const active = host.activeSession;
       // Re-sync the reloaded renderer: re-point at the open session if any, else
       // restore the connect screen (the user reloaded while still disconnected).
-      if (active !== null) pointAt(active);
-      else send(EVT.reset, { noSession: true });
+      if (active !== null) activation.pointAt(active);
+      else activation.pointNowhere();
       return;
     }
     // Wrap the WHOLE bootstrap: a missing key (buildConfig) OR a failed
@@ -1303,8 +1236,7 @@ export function createSessionService(
   }
 
   async function dispose(): Promise<void> {
-    stopForwarders?.();
-    stopForwarders = null;
+    activation.release();
     if (handlersRegistered) {
       // Exactly the channels registered above — never the whole CMD map,
       // which also names the update / app-version / window-control channels

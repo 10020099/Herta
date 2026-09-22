@@ -28,12 +28,14 @@ export const DOM_FREE_TESTS = [
   // Main process — no DOM by construction (window-state.test.ts is the one
   // exception: it asserts on bounds objects shaped like a browser's).
   "src/main/app-global-settings.test.ts",
+  "src/main/app-menu.test.ts",
   "src/main/app-settings.test.ts",
   "src/main/attachment-protocol.test.ts",
   "src/main/csp.test.ts",
   "src/main/key-store.test.ts",
   "src/main/login-path.test.ts",
   "src/main/read-workspace-file.test.ts",
+  "src/main/session-activation.test.ts",
   "src/main/session-service.test.ts",
   "src/main/settings-ipc.test.ts",
   "src/main/tray-menu.test.ts",

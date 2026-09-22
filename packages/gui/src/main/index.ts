@@ -5,6 +5,7 @@ import {
   BrowserWindow,
   dialog,
   ipcMain,
+  Menu,
   nativeTheme,
   screen,
   session,
@@ -19,6 +20,7 @@ import {
   updateGlobalSettings,
   type WindowStateSnapshot,
 } from "./app-global-settings.js";
+import { appMenuTemplate } from "./app-menu.js";
 import {
   registerAssetProtocol,
   registerAssetScheme,
@@ -606,6 +608,18 @@ void app
         join(__dirname, "../../src/renderer/public/device-scene"),
       ]),
     );
+    // The packaged app's menu drops reload and the developer tools: the
+    // frameless window shows no menu, but the default one's shortcuts were
+    // live (app-menu.ts). Set before the window so no frame ever has them.
+    {
+      const template = appMenuTemplate({
+        platform: process.platform,
+        isPackaged: app.isPackaged,
+      });
+      if (template !== null) {
+        Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+      }
+    }
     createWindow();
     // Auto-update: created after the window so state pushes have a target.
     // The electron-updater import is deferred to here (require-time) so a dev

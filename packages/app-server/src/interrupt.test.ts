@@ -195,6 +195,36 @@ describe("Session — interrupt", () => {
     await cleanup();
   });
 
+  it("`failed` is emitted even when the turn's failure bookkeeping throws (UX review 2026-09-22, item 6)", async () => {
+    // The failure hook flushes a missing record tail and appends the turn-end
+    // marker — disk writes. A throw there used to skip the `failed` event:
+    // the window stayed busy with a Stop that answered nothing.
+    const cfg = mkConfig();
+    const { session, cleanup } = await mkSlowSession(cfg);
+    (
+      session as unknown as { reconcileRecordAfterFailure: () => void }
+    ).reconcileRecordAfterFailure = () => {
+      throw new Error("ENOSPC: no space left on device");
+    };
+    const events: { kind: string }[] = [];
+    const sub = session.subscribeTurnLifecycle();
+    const consumer = (async () => {
+      for await (const ev of sub) {
+        events.push(ev as { kind: string });
+        if (events.length >= 2) break;
+      }
+    })();
+    const turnP = session.submitText("slow turn");
+    await new Promise((r) => setTimeout(r, 50));
+    await session.interrupt();
+    await turnP.catch(() => undefined);
+    await consumer;
+    expect(events.map((e) => e.kind)).toEqual(["started", "failed"]);
+    // The session is usable again: the slot was released.
+    expect(session.turnInFlight).toBe(false);
+    await cleanup();
+  });
+
   it("interrupt with no active turn returns { ok: false }", async () => {
     const cfg = mkConfig();
     const { session, cleanup } = await mkFastSession(cfg);

@@ -410,6 +410,7 @@ export const zh = {
   "activity.attachment.outline": "目录 {n} 条",
   "activity.attachment.remove": "移除这个附件",
   "activity.attachment.removeFailed": "移除附件失败",
+  "activity.attachment.removeInUse": "附件正被其他程序占用，关闭后再移除",
   "activity.file.openAria": "查看文件",
   /** The commit tab (ADR 0059): a sha in the done marker or the repository
    *  card opens the commit beside the record. */
