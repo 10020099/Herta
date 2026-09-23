@@ -2,6 +2,7 @@ import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { type BackgroundProcess, isPathInside } from "@herta/core";
+import { childProcessEnv } from "../child-env.js";
 import { type ShellPaths, shellPathsFor } from "./shell-paths.js";
 
 /**
@@ -193,7 +194,8 @@ export class PersistentShell implements BackgroundProcess {
       : [];
     const inheritedPath = process.env.PATH ?? process.env.Path ?? "";
     const env: NodeJS.ProcessEnv = {
-      ...process.env,
+      // Minus the AppImage launcher's own entries (child-env.ts, 2026-09-23).
+      ...childProcessEnv(),
       ...(extraPath.length > 0
         ? { PATH: [...extraPath, inheritedPath].join(isWin ? ";" : ":") }
         : {}),

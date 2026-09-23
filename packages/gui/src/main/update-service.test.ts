@@ -85,6 +85,23 @@ describe("createUpdateService", () => {
     svc.dispose();
   });
 
+  it("an install that cannot update itself (Linux outside an AppImage) never checks and says so (2026-09-23)", async () => {
+    const { updater, checkForUpdates } = mkUpdater();
+    const sent: unknown[] = [];
+    const svc = createUpdateService({
+      updater,
+      isPackaged: true,
+      send: (s) => sent.push(s),
+      unsupported: true,
+    });
+    expect(svc.current()).toEqual({ phase: "idle", unsupported: true });
+    svc.start();
+    await svc.checkNow();
+    expect(checkForUpdates).not.toHaveBeenCalled();
+    expect(svc.current()).toEqual({ phase: "idle", unsupported: true });
+    svc.dispose();
+  });
+
   it("restartAndInstall fires quitAndInstall ONLY from ready", () => {
     const { updater, fire, quitAndInstall } = mkUpdater();
     const svc = createUpdateService({

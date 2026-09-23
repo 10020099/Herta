@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { abortError, errorMessage, isAbortError } from "@herta/core";
+import { childProcessEnv } from "../child-env.js";
 import { gitUsable } from "./git-usable.js";
 
 export interface SpawnGitOk {
@@ -147,7 +148,7 @@ function spawnGitProcess(
         signal,
         shell: false,
         env: {
-          ...process.env,
+          ...childProcessEnv(),
           GIT_OPTIONAL_LOCKS: "0",
           // A credential helper or an askpass dialog blocks the child forever,
           // and on Windows that is a real shape (a private remote plus the

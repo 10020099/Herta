@@ -709,6 +709,12 @@ void app
             beforeQuitAndInstall: () => {
               quitRequested = true;
             },
+            // electron-updater updates a Linux build only as an AppImage
+            // (APPIMAGE set by its runtime); elsewhere every check resolves
+            // to nothing, and the pane should say so (2026-09-23).
+            unsupported:
+              process.platform === "linux" &&
+              process.env.APPIMAGE === undefined,
           });
           registerUpdateHandlers();
           updateService.start();

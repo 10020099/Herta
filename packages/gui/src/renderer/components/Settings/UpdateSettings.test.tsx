@@ -114,6 +114,22 @@ describe("UpdateSettings", () => {
     ).toBeInTheDocument();
   });
 
+  it("a Linux install that cannot update itself says so instead of offering a check that never reports (2026-09-23)", async () => {
+    renderPane(
+      createMockHertaBridge({
+        appVersion: "0.1.0",
+        updateState: { phase: "idle", unsupported: true },
+      }),
+    );
+    expect(
+      await screen.findByText("Updates unavailable here"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Check for updates" }),
+    ).toBeNull();
+    expect(screen.queryByTestId("update-status")).not.toBeInTheDocument();
+  });
+
   it("hides the update surface on a bridge without it (website demo, fakes)", async () => {
     const mock = createMockHertaBridge();
     const stripped = Object.assign(Object.create(null), mock.bridge, {

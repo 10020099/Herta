@@ -6,6 +6,7 @@ import type {
   ToolResult,
   ToolSchema,
 } from "@herta/core";
+import { childProcessEnv } from "../child-env.js";
 import { errResult } from "../errors.js";
 import { formatInputIssues } from "../input-issues.js";
 import { resolveSafePath } from "../path-safety.js";
@@ -108,8 +109,11 @@ export function runCommandTool(): HertaTool {
           );
         }
       }
+      // childProcessEnv: minus the AppImage launcher's own entries (2026-09-23).
       const childEnv =
-        env !== undefined ? { ...process.env, ...env } : process.env;
+        env !== undefined
+          ? { ...childProcessEnv(), ...env }
+          : childProcessEnv();
 
       // Execution-time reader-argv realpath backstop (audit T3.4): the
       // permission rule already denied disguised-symlink reads, but re-check

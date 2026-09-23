@@ -282,7 +282,12 @@ linux:
   # maintainer: Herta <email@example.com>
   category: Development
   icon: build/icon.png
-  artifactName: Herta-${version}-${arch}.${ext}
+  # NO version in the Linux file name (platform review 2026-09-23), unlike
+  # Windows and macOS. electron-updater's AppImage install keeps the running
+  # file's path only when that name carries no `x.y.z`; with one, every update
+  # writes a NEW file beside it and deletes the old — and every launcher,
+  # dock pin and AppImageLauncher entry pointing at the old path breaks.
+  artifactName: Herta-${arch}.${ext}
   # The package name is scoped (@herta/gui), and electron-builder derives the
   # Linux executable name from it — "@hertagui", which the AppImage builder
   # rejects ('characters that cannot be safely used in file paths'). Windows

@@ -309,6 +309,12 @@ export interface UpdateState {
    *  network, the VPN and the netdisk instead of printing the error. Set on
    *  the automatic path too (2026-09-09). */
   readonly network?: boolean;
+  /** This install cannot update itself: a Linux build run outside an
+   *  AppImage (a distro package under /opt, an extracted AppImage), where
+   *  electron-updater answers every check with nothing at all. The pane says
+   *  "updates unavailable here" instead of offering a check that silently
+   *  never reports (platform review 2026-09-23). */
+  readonly unsupported?: boolean;
 }
 
 /** Masked DeepSeek key status for the renderer (Settings → DeepSeek). The raw

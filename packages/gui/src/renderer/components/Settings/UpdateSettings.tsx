@@ -44,7 +44,11 @@ export function UpdateSettings(): JSX.Element {
     true,
   );
   const [autoFailed, setAutoFailed] = useState(false);
-  const supported = bridge.checkForUpdate !== undefined;
+  // Unsupported also when main says this install cannot update itself (a
+  // Linux build outside an AppImage, 2026-09-23): "Check now" would never
+  // report anything there.
+  const supported =
+    bridge.checkForUpdate !== undefined && state.unsupported !== true;
   const autoSupported = bridge.setAutoUpdate !== undefined;
 
   useEffect(() => {

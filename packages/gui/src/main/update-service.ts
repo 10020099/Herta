@@ -35,6 +35,10 @@ export interface UpdateServiceDeps {
    *  no quit in progress, hid the window, and the restart never happened
    *  (platform review 2026-09-23). The app marks the quit as real here. */
   readonly beforeQuitAndInstall?: () => void;
+  /** This install cannot update itself (Linux outside an AppImage — see
+   *  `UpdateState.unsupported`). Nothing is wired or checked, and the state
+   *  says so from the start. */
+  readonly unsupported?: boolean;
 }
 
 export interface UpdateService {
@@ -76,7 +80,10 @@ export function isUnreachable(message: string): boolean {
 
 export function createUpdateService(deps: UpdateServiceDeps): UpdateService {
   const { updater, send } = deps;
-  let state: UpdateState = { phase: "idle" };
+  const unsupported = deps.unsupported === true;
+  let state: UpdateState = unsupported
+    ? { phase: "idle", unsupported: true }
+    : { phase: "idle" };
   let manualCheck = false;
   let launchTimer: NodeJS.Timeout | null = null;
   let interval: NodeJS.Timeout | null = null;
@@ -184,6 +191,9 @@ export function createUpdateService(deps: UpdateServiceDeps): UpdateService {
       // Dev runs have no app-update.yml — checking throws noise. The dry-run
       // override re-enables checks in dev against a localhost feed.
       if (!deps.isPackaged && deps.feedUrlOverride === undefined) return;
+      // An install that cannot update itself is left alone entirely: its
+      // checks resolve to nothing, and wiring them would only make noise.
+      if (unsupported) return;
       wire();
       started = true;
       // Events are wired regardless (manual checks need them); the AUTOMATIC
@@ -209,6 +219,10 @@ export function createUpdateService(deps: UpdateServiceDeps): UpdateService {
     async checkNow(): Promise<void> {
       if (!deps.isPackaged && deps.feedUrlOverride === undefined) {
         set({ phase: "error", message: "dev build (no update feed)" });
+        return;
+      }
+      if (unsupported) {
+        set({ phase: "idle", unsupported: true });
         return;
       }
       manualCheck = true;
