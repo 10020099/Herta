@@ -28,7 +28,9 @@ describe("appMenuTemplate (UX review 2026-09-22, item 7)", () => {
     );
     expect(mac).toEqual(
       expect.arrayContaining([
-        "appMenu",
+        "about",
+        "hide",
+        "quit",
         "editMenu",
         "zoomIn",
         "zoomOut",
@@ -44,6 +46,29 @@ describe("appMenuTemplate (UX review 2026-09-22, item 7)", () => {
       expect.arrayContaining(["fileMenu", "editMenu", "windowMenu"]),
     );
     expect(win).not.toContain("appMenu");
+  });
+
+  it("macOS: Settings… answers Cmd+, and the File menu carries Close Window for Cmd+W (platform review 2026-09-23)", () => {
+    let opened = 0;
+    const template = appMenuTemplate({
+      platform: "darwin",
+      isPackaged: true,
+      onOpenSettings: () => {
+        opened += 1;
+      },
+    });
+    const app = template?.[0];
+    const items = Array.isArray(app?.submenu) ? app.submenu : [];
+    const settings = items.find((i) => i.accelerator === "Cmd+,");
+    expect(settings?.label).toBe("Settings…");
+    // Electron passes (menuItem, window, event); the item ignores them.
+    (settings?.click as (() => void) | undefined)?.();
+    expect(opened).toBe(1);
+    // Cmd+W: on a Mac, Electron's `windowMenu` has no Close — `fileMenu` does.
+    expect(roles(template ?? [])).toContain("fileMenu");
+    // Windows keeps its shape: no app menu, no extra shortcut.
+    const win = appMenuTemplate({ platform: "win32", isPackaged: true }) ?? [];
+    expect(JSON.stringify(win)).not.toContain("Cmd+,");
   });
 
   it("a development build keeps Electron's default menu (null)", () => {

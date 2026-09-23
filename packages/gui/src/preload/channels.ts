@@ -75,6 +75,7 @@ export const CMD = {
   windowToggleMaximize: "window:toggleMaximize",
   windowClose: "window:close",
   windowIsMaximized: "window:isMaximized",
+  windowIsFullScreen: "window:isFullScreen",
   refreshRepo: "session:refreshRepo",
 } as const;
 
@@ -92,6 +93,8 @@ export const EVT = {
   voice: "session:voice",
   repo: "session:repo",
   windowMaximized: "window:maximized",
+  windowFullScreen: "window:fullScreen",
+  openSettings: "app:openSettings",
   update: "update:state",
   voiceModel: "voice:model",
   voiceMinimax: "voice:minimax",

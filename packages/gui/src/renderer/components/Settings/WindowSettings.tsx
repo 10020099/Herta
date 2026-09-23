@@ -27,6 +27,9 @@ export function WindowSettings(): JSX.Element {
     "window.closeToTray",
     bridge.platform !== "linux",
   );
+  // A Mac has a menu bar, not a system tray, and stays in the Dock when its
+  // window closes — "quit on close" is not what happens there (2026-09-23).
+  const isMac = bridge.platform === "darwin";
   const [failed, setFailed] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
   // Seed from the controller (already booted by App) — no async flash.
@@ -88,12 +91,16 @@ export function WindowSettings(): JSX.Element {
         }
       />
       <SettingRow
-        title={t("window.closeToTray")}
-        description={t("window.closeToTrayDesc")}
+        title={t(isMac ? "window.closeToTrayMac" : "window.closeToTray")}
+        description={t(
+          isMac ? "window.closeToTrayDescMac" : "window.closeToTrayDesc",
+        )}
         control={
           <Toggle
             checked={enabled}
-            ariaLabel={t("window.closeToTray")}
+            ariaLabel={t(
+              isMac ? "window.closeToTrayMac" : "window.closeToTray",
+            )}
             onChange={onChange}
           />
         }

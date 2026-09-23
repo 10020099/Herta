@@ -39,6 +39,11 @@ export const zh = {
   "window.closeToTray": "关闭时收进托盘",
   "window.closeToTrayDesc":
     "关闭窗口时收进系统托盘继续运行；关掉此项后，关闭即退出。",
+  // macOS (2026-09-23): the icon sits in the menu bar, and a Mac app does not
+  // quit when its window closes — it stays in the Dock until ⌘Q.
+  "window.closeToTrayMac": "关闭时收进菜单栏",
+  "window.closeToTrayDescMac":
+    "关闭窗口时收进菜单栏，会话继续运行；关掉此项后，关闭即关窗，黑塔仍留在程序坞，按 ⌘Q 退出。",
   "window.minimize": "最小化",
   "window.maximize": "最大化",
   "window.restore": "还原",
@@ -326,6 +331,8 @@ export const zh = {
   // The pill's tooltip: a bare wheel scrolls, so the zoom gesture is said
   // here (owner 2026-08-28).
   "lightbox.zoomHint": "Ctrl + 滚轮缩放，按住拖动可移动",
+  // macOS: ⌘, and the trackpad pinch a Mac user reaches for (2026-09-23).
+  "lightbox.zoomHintMac": "双指捏合或 ⌘ + 滚轮缩放，按住拖动可移动",
   "connect.button": "接入黑塔空间站",
   "connect.failed": "会话建立失败——请重试",
   "workspace.rewind": "回到此处",

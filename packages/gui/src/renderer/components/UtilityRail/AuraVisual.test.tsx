@@ -13,12 +13,20 @@ afterEach(() => {
 /** Recording WebGL-context stub — jsdom has no real WebGL. Query methods return
  *  truthy stand-ins so program/shader setup "succeeds"; everything else is a
  *  call-counting no-op (so we can assert drawArrays per frame). */
-function mockWebgl(): { calls: Record<string, number> } {
+function mockWebgl(renderer?: string): { calls: Record<string, number> } {
   const calls: Record<string, number> = {};
   const gl = new Proxy(
     {},
     {
       get(_t, prop: string) {
+        // The renderer string, when a test names one (a software rasterizer).
+        if (renderer !== undefined && prop === "getExtension")
+          return (name: string) =>
+            name === "WEBGL_debug_renderer_info"
+              ? { UNMASKED_RENDERER_WEBGL: 0x9246 }
+              : null;
+        if (renderer !== undefined && prop === "getParameter")
+          return () => renderer;
         if (prop === "getShaderParameter" || prop === "getProgramParameter")
           return () => true;
         if (
@@ -116,6 +124,23 @@ describe("AuraVisual", () => {
       vi.advanceTimersByTime(16 * 5);
     });
     expect((calls.drawArrays ?? 0) - drawn).toBeLessThanOrEqual(1);
+  });
+
+  it("a CPU rasterizer gets the static CSS aura, not a display-rate shader (platform review 2026-09-23)", () => {
+    vi.useFakeTimers();
+    mockAsyncRaf();
+    const { calls } = mockWebgl(
+      "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero)))",
+    );
+    const { container } = renderAura();
+    act(() => {
+      vi.advanceTimersByTime(16 * 5);
+    });
+    const canvas = container.querySelector(
+      "canvas.aura-canvas",
+    ) as HTMLCanvasElement;
+    expect(canvas.dataset.fallback).toBe("true");
+    expect(calls.drawArrays ?? 0).toBe(0);
   });
 
   it("stops + reveals the fallback on context loss, rebuilds + resumes on restore (audit 2026-07-13 T2.1)", () => {

@@ -192,6 +192,11 @@ export function LogView(): JSX.Element {
               spellCheck={false}
               onChange={(e) => setTyped(e.target.value)}
               onKeyDown={(e) => {
+                // Mid-composition (Pinyin), Enter picks the candidate and
+                // Escape cancels it — neither is the search's (platform
+                // review 2026-09-23; the composer's guard). keyCode 229
+                // covers engines whose keydown lands after compositionend.
+                if (e.nativeEvent.isComposing || e.keyCode === 229) return;
                 if (e.key === "Enter") setQuery(typed.trim());
                 // Escape answers here, not by closing the viewer: a typed
                 // query clears first; an empty box hands focus to the panel,

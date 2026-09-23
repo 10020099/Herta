@@ -3,7 +3,11 @@ import { describe, expect, it } from "vitest";
 import { HertaBridgeProvider } from "../../context/HertaBridgeContext.js";
 import { renderWithLocale } from "../../i18n/test-util.js";
 import { createMockHertaBridge } from "../../ipc/mock-bridge.js";
-import { LightboxProvider, useLightbox } from "./ImageLightbox.js";
+import {
+  LightboxProvider,
+  useLightbox,
+  wheelZoomFactor,
+} from "./ImageLightbox.js";
 import { UserBubble } from "./UserBubble.js";
 
 const IMG = {
@@ -123,6 +127,42 @@ describe("ImageLightbox", () => {
     });
     fireEvent(viewport, down);
     expect(label()).toBe("100%");
+  });
+
+  it("a trackpad PINCH (small ctrlKey wheel events) zooms in proportion, not a full step per event (2026-09-23)", () => {
+    // A mouse notch keeps its full ×1.25; a pinch's few-pixel events used
+    // to take that same full step each and the picture leapt.
+    expect(wheelZoomFactor(-100)).toBeCloseTo(1.25);
+    expect(wheelZoomFactor(100)).toBeCloseTo(0.8);
+    expect(wheelZoomFactor(-240)).toBeCloseTo(1.25); // never past one step
+    expect(wheelZoomFactor(-10)).toBeCloseTo(1.25 ** 0.1);
+
+    renderLightbox();
+    fireEvent.click(screen.getByText("trigger"));
+    const viewport = document.querySelector(".lightbox-viewport") as Element;
+    for (let i = 0; i < 3; i += 1) {
+      fireEvent(
+        viewport,
+        new WheelEvent("wheel", {
+          deltaY: -4,
+          ctrlKey: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    }
+    // Three pinch events: about 103%, where they used to reach 195%.
+    expect(document.querySelector(".lightbox-zoom__label")?.textContent).toBe(
+      "103%",
+    );
+  });
+
+  it("the zoom hint names ⌘ and the pinch on a Mac, Ctrl elsewhere (2026-09-23)", () => {
+    renderLightbox(createMockHertaBridge({ platform: "darwin" }));
+    fireEvent.click(screen.getByText("trigger"));
+    expect(
+      document.querySelector(".lightbox-zoom")?.getAttribute("title"),
+    ).toBe("Pinch or ⌘ + wheel to zoom, drag to pan");
   });
 
   it("a BARE wheel is left to the browser — it scrolls the pane, it does not zoom", () => {

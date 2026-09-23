@@ -17,7 +17,11 @@ import {
   DEVICE_GLOW_LOOK,
   DEVICE_SHADER_SOURCE,
 } from "./deviceShader.js";
-import { createProgram, QUAD_VERTEX_SOURCE } from "./webgl.js";
+import {
+  createProgram,
+  isSoftwareRenderer,
+  QUAD_VERTEX_SOURCE,
+} from "./webgl.js";
 
 const MAX_FRAME_DT_S = 0.05;
 /* Idle frame governor (perf 2026-07-13, mirrors AuraVisual): the LED's
@@ -100,7 +104,11 @@ export function DeviceGlow(props: DeviceGlowProps): JSX.Element {
       antialias: true,
       premultipliedAlpha: true,
     });
-    if (gl === null) {
+    // No WebGL, or only a CPU rasterizer: the CSS ring/spill fallback (a
+    // software context redrew this at display rate on the CPU; platform
+    // review 2026-09-23).
+    if (gl === null || isSoftwareRenderer(gl)) {
+      gl?.getExtension("WEBGL_lose_context")?.loseContext();
       canvas.dataset.fallback = "true";
       return;
     }

@@ -10,6 +10,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { attachmentImageUrl } from "../../../shared/attachment-image.js";
+import { useHertaBridge } from "../../context/HertaBridgeContext.js";
 import { useSessionScoped } from "../../hooks/useSessionScoped.js";
 import { useT } from "../../i18n/LocaleProvider.js";
 import { OVERLAY_Z, useModalOverlay } from "../../lib/overlay-stack.js";
@@ -71,6 +72,22 @@ export function LightboxProvider({
 const ZOOM_MIN = 0.1;
 const ZOOM_MAX = 5;
 const ZOOM_STEP = 1.25;
+/** One mouse-wheel notch, in the pixels Chromium reports for it. A wheel
+ *  event this large (or larger) is one full ZOOM_STEP. */
+const NOTCH_PX = 100;
+
+/**
+ * The zoom factor one Ctrl/⌘ + wheel event asks for. A mouse notch is a full
+ * step, as before. A trackpad PINCH arrives as a stream of ctrlKey wheel
+ * events a few pixels each, and taking a full ×1.25 step per event made the
+ * picture leap on the lightest pinch (platform review 2026-09-23); each
+ * event now moves in proportion to its distance, so a pinch zooms smoothly.
+ */
+export function wheelZoomFactor(deltaY: number): number {
+  const steps = Math.min(1, Math.abs(deltaY) / NOTCH_PX);
+  const factor = ZOOM_STEP ** steps;
+  return deltaY < 0 ? factor : 1 / factor;
+}
 /** The viewport's CSS padding (keep in sync with .lightbox-viewport). The
  *  fit must subtract it: padding sits INSIDE clientWidth/Height, so a fit
  *  computed against the raw client box overflows by exactly the padding
@@ -94,6 +111,7 @@ function ImageLightbox({
   readonly onClose: () => void;
 }): JSX.Element {
   const t = useT();
+  const isMac = useHertaBridge().bridge.platform === "darwin";
   // Topmost-overlay coordination (the H1/H2 lesson): Escape here must not
   // reach — or be eaten by — the approval panel / settings underneath.
   const isTop = useModalOverlay("lightbox", true, OVERLAY_Z.lightbox);
@@ -200,6 +218,12 @@ function ImageLightbox({
       // A bare wheel is the browser's to handle — do not preventDefault, or
       // the pane stops scrolling and the picture is stuck again.
       if (!e.ctrlKey && !e.metaKey) return;
+      if (e.deltaY === 0) {
+        // A sideways swipe with the modifier held: nothing to zoom, but the
+        // pane must not scroll under a held Ctrl either.
+        e.preventDefault();
+        return;
+      }
       const nat = naturalRef.current;
       const img = imgRef.current;
       if (nat === null || img === null) return;
@@ -212,9 +236,7 @@ function ImageLightbox({
       // divide to 0 and clamp the picture to ZOOM_MIN.
       const current =
         zoomRef.current ?? (rect.width > 0 ? rect.width / nat.w : 1);
-      const next = clampZoom(
-        e.deltaY < 0 ? current * ZOOM_STEP : current / ZOOM_STEP,
-      );
+      const next = clampZoom(current * wheelZoomFactor(e.deltaY));
       if (next === current) return;
       // Keep the point under the cursor under the cursor: remember where it
       // sits in the image (0..1), then correct the scroll once the new size
@@ -394,8 +416,11 @@ function ImageLightbox({
         </svg>
       </button>
       {/* The pill is where zoom is discoverable — a bare wheel scrolls now,
-          so the Ctrl gesture needs saying somewhere. */}
-      <div className="lightbox-zoom" title={t("lightbox.zoomHint")}>
+          so the Ctrl gesture needs saying somewhere (⌘ and pinch on a Mac). */}
+      <div
+        className="lightbox-zoom"
+        title={t(isMac ? "lightbox.zoomHintMac" : "lightbox.zoomHint")}
+      >
         <button
           type="button"
           className="lightbox-zoom__btn"

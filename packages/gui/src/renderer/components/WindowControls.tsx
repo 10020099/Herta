@@ -55,6 +55,34 @@ const CloseIcon = (): JSX.Element => (
 );
 
 /**
+ * The caption's close button for the one screen that has no bridge: the
+ * preload failed, so there is no IPC to minimize or maximize with, and the
+ * frameless window on Windows and Linux had no way to close at all but Alt+F4
+ * or the taskbar (platform review 2026-09-23). `window.close()` needs no
+ * bridge; Electron closes the window at once, skipping close-to-tray, which
+ * is right for an app that cannot run. A Mac keeps its native traffic lights
+ * and needs nothing here.
+ */
+export function ErrorWindowControls(props: {
+  readonly closeLabel: string;
+}): JSX.Element | null {
+  if (typeof navigator !== "undefined" && /Macintosh/.test(navigator.userAgent))
+    return null;
+  return (
+    <div className="window-controls">
+      <button
+        type="button"
+        className="window-controls__btn is-close"
+        aria-label={props.closeLabel}
+        onClick={() => window.close()}
+      >
+        <CloseIcon />
+      </button>
+    </div>
+  );
+}
+
+/**
  * Custom caption buttons (user 2026-07-06): the native titleBarOverlay was
  * dropped because its Chromium-drawn buttons show hover tooltips that
  * cannot be disabled — doubled on Windows. These carry aria-labels for

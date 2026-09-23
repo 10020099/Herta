@@ -18,7 +18,11 @@ import {
 import { AURA_SHADER_SOURCE } from "./auraShader.js";
 import { useSpeechEnvelope } from "./useSpeechEnvelope.js";
 import { initialEnvelope, stepEnvelope } from "./wave-engine.js";
-import { createProgram, QUAD_VERTEX_SOURCE } from "./webgl.js";
+import {
+  createProgram,
+  isSoftwareRenderer,
+  QUAD_VERTEX_SOURCE,
+} from "./webgl.js";
 
 const AURA_COLOR = "#3c5a62"; // cool graphite glass tint (tunable)
 const AURA_COLOR_SHIFT = 0.1; // fixed subtle layered-hue variation
@@ -135,7 +139,11 @@ export function AuraVisual(): JSX.Element {
       antialias: true,
       premultipliedAlpha: false,
     });
-    if (gl === null) {
+    // No WebGL, or only a CPU rasterizer: the static CSS aura. A software
+    // context would redraw this decoration at display rate on the CPU
+    // (platform review 2026-09-23).
+    if (gl === null || isSoftwareRenderer(gl)) {
+      gl?.getExtension("WEBGL_lose_context")?.loseContext();
       canvas.dataset.fallback = "true";
       return;
     }

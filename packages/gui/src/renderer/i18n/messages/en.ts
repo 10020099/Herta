@@ -43,6 +43,11 @@ export const en = {
   "window.closeToTray": "Close to tray",
   "window.closeToTrayDesc":
     "Closing the window hides Herta to the system tray and keeps her running; turn this off to quit on close.",
+  // macOS (2026-09-23): the icon sits in the menu bar, and a Mac app does not
+  // quit when its window closes — it stays in the Dock until ⌘Q.
+  "window.closeToTrayMac": "Close to menu bar",
+  "window.closeToTrayDescMac":
+    "Closing the window hides Herta to the menu bar and keeps her session running; turn this off to close the window instead. Herta stays in the Dock until you quit with ⌘Q.",
   "window.minimize": "Minimize",
   "window.maximize": "Maximize",
   "window.restore": "Restore",
@@ -348,6 +353,8 @@ export const en = {
   // The pill's tooltip: a bare wheel scrolls, so the zoom gesture is said
   // here (owner 2026-08-28).
   "lightbox.zoomHint": "Ctrl + wheel to zoom, drag to pan",
+  // macOS: ⌘, and the trackpad pinch a Mac user reaches for (2026-09-23).
+  "lightbox.zoomHintMac": "Pinch or ⌘ + wheel to zoom, drag to pan",
   "connect.button": "Connect to Herta",
   "connect.failed": "Session start failed — try again",
   "workspace.rewind": "Rewind to here",

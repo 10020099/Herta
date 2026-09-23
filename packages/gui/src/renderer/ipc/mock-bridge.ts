@@ -125,6 +125,8 @@ export interface MockHertaBridgeOpts {
   readonly platform?: string;
   /** Seed for windowIsMaximized. Default false. */
   readonly windowIsMaximizedResult?: boolean;
+  /** Seed for windowIsFullScreen. Default false. */
+  readonly windowIsFullScreenResult?: boolean;
   /** Seed for getUpdateState (Settings → Update). Default idle. */
   readonly updateState?: UpdateState;
   /** Seed for getAppVersion. Default "0.1.0". */
@@ -234,6 +236,9 @@ export interface MockHertaBridge {
     windowClose: number;
   };
   emitWindowMaximized(maximized: boolean): void;
+  emitWindowFullScreen(fullScreen: boolean): void;
+  /** The application menu's Settings… item. */
+  emitOpenSettings(): void;
   emitRecord(e: RecordEvent): void;
   emitOverlay(e: OverlayEvent): void;
   emitSpeech(e: SpeechControlEvent): void;
@@ -479,6 +484,8 @@ export function createMockHertaBridge(
   }
 
   const windowMaximizedCbs = new Set<(maximized: boolean) => void>();
+  const windowFullScreenCbs = new Set<(fullScreen: boolean) => void>();
+  const openSettingsCbs = new Set<() => void>();
 
   const bridge: HertaBridge = {
     platform: opts.platform ?? "win32",
@@ -496,6 +503,9 @@ export function createMockHertaBridge(
       windowMaximizedCbs.add(cb);
       return () => windowMaximizedCbs.delete(cb);
     },
+    windowIsFullScreen: async () => opts.windowIsFullScreenResult ?? false,
+    onWindowFullScreen: (cb) => sub(windowFullScreenCbs, cb),
+    onOpenSettings: (cb) => sub(openSettingsCbs, cb),
     submitText: async (text, stagedImageIds) => {
       calls.submitText.push(text);
       calls.submitTextStaged.push(stagedImageIds);
@@ -929,6 +939,12 @@ export function createMockHertaBridge(
     },
     emitWindowMaximized: (maximized) => {
       for (const cb of windowMaximizedCbs) cb(maximized);
+    },
+    emitWindowFullScreen: (fullScreen) => {
+      for (const cb of windowFullScreenCbs) cb(fullScreen);
+    },
+    emitOpenSettings: () => {
+      for (const cb of openSettingsCbs) cb();
     },
   };
 }

@@ -1,3 +1,5 @@
+import { SOFTWARE_RENDERER } from "../webgl.js";
+
 /**
  * Which GPU path the 3D device card can take on this machine (ADR 0057 §4).
  *
@@ -12,9 +14,6 @@
  * mid-session, and the probe itself is not free (it asks the GPU process).
  */
 export type DeviceSceneBackend = "webgpu" | "webgl2";
-
-const SOFTWARE_RENDERER =
-  /swiftshader|llvmpipe|software|microsoft basic render/i;
 
 interface GpuLike {
   requestAdapter(): Promise<{
@@ -47,6 +46,9 @@ export async function probeDeviceSceneBackend(
     const canvas = env.createCanvas();
     const gl = canvas.getContext("webgl2");
     if (gl === null) return null;
+    // Read here rather than through `isSoftwareRenderer`: a query that throws
+    // lands in the catch below and keeps the flat card — the stricter answer
+    // the 3D scene has always had.
     const ext = gl.getExtension("WEBGL_debug_renderer_info");
     const renderer = String(
       ext !== null

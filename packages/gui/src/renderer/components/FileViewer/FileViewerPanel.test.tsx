@@ -805,6 +805,39 @@ describe("FileViewerPanel — UX review 2026-09-22", () => {
     expect(screen.queryByTestId("file-viewer")).toBeNull();
   });
 
+  it("mid-composition (Pinyin), Escape cancels the candidate and nothing else — the typed search stays (2026-09-23)", async () => {
+    const mock = createMockHertaBridge();
+    Object.assign(mock.bridge, {
+      readWorkspaceFile: vi.fn(async () => ({
+        ok: false as const,
+        reason: "not_found" as const,
+      })),
+      readWorkspaceLog: vi.fn(async (_s: string, opts: { skip: number }) => ({
+        ok: true as const,
+        page: {
+          entries: [logEntry(1)],
+          skip: opts.skip,
+          hasMore: false,
+          upstream: null,
+        },
+      })),
+    });
+    const h = renderWithSession(ui(), { mock });
+    h.openSession("s1");
+    fireEvent.click(screen.getByTestId("probe-log"));
+    await screen.findByTestId("file-viewer");
+    const search = screen.getByLabelText(
+      "Search commit messages",
+    ) as HTMLInputElement;
+    search.focus();
+    fireEvent.change(search, { target: { value: "修复 xiu" } });
+    fireEvent.keyDown(search, { key: "Escape", isComposing: true });
+    fireEvent.keyDown(search, { key: "Escape", keyCode: 229 });
+    expect(search.value).toBe("修复 xiu");
+    expect(document.activeElement).toBe(search);
+    expect(screen.queryByTestId("file-viewer")).not.toBeNull();
+  });
+
   it("a file tab and its diff tab are two tabs: the Markdown source toggle survives opening the diff (item 19)", async () => {
     const mock = createMockHertaBridge();
     Object.assign(mock.bridge, {

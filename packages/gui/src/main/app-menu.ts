@@ -22,15 +22,48 @@ export const DEV_ONLY_ROLES: ReadonlySet<string> = new Set([
  * what makes Cmd+C / Cmd+V work in a text field at all, and a user's zoom
  * or Ctrl+W close is not the bug. A development build keeps the default
  * (reload and the tools are how the app is worked on).
+ *
+ * macOS (platform review 2026-09-23): the app menu carries Settings… on
+ * Cmd+, — the shortcut every Mac app answers — and the File menu is there,
+ * because on a Mac Close Window (Cmd+W) lives in File, not in Window. The
+ * `appMenu` role alone left Cmd+W doing nothing. The labels stay English
+ * like the role menus around them, which Electron does not translate.
  */
 export function appMenuTemplate(opts: {
   readonly platform: NodeJS.Platform;
   readonly isPackaged: boolean;
+  /** The Settings… item's action (macOS). */
+  readonly onOpenSettings?: () => void;
 }): MenuItemConstructorOptions[] | null {
   if (!opts.isPackaged) return null;
   const mac = opts.platform === "darwin";
+  const head: MenuItemConstructorOptions[] = mac
+    ? [
+        {
+          label: "Herta",
+          submenu: [
+            { role: "about" },
+            { type: "separator" },
+            {
+              label: "Settings…",
+              accelerator: "Cmd+,",
+              click: () => opts.onOpenSettings?.(),
+            },
+            { type: "separator" },
+            { role: "services" },
+            { type: "separator" },
+            { role: "hide" },
+            { role: "hideOthers" },
+            { role: "unhide" },
+            { type: "separator" },
+            { role: "quit" },
+          ],
+        },
+        { role: "fileMenu" },
+      ]
+    : [{ role: "fileMenu" }];
   return [
-    mac ? { role: "appMenu" } : { role: "fileMenu" },
+    ...head,
     { role: "editMenu" },
     {
       label: "View",

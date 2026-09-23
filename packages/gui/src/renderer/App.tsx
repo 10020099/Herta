@@ -9,7 +9,10 @@ import { SettingsModal } from "./components/Settings/SettingsModal.js";
 import { Sidebar } from "./components/Sidebar/Sidebar.js";
 import { TopBar } from "./components/TopBar/TopBar.js";
 import { UtilityRail } from "./components/UtilityRail/UtilityRail.js";
-import { WindowControls } from "./components/WindowControls.js";
+import {
+  ErrorWindowControls,
+  WindowControls,
+} from "./components/WindowControls.js";
 import { Workspace } from "./components/Workspace/Workspace.js";
 import {
   HertaBridgeProvider,
@@ -19,6 +22,7 @@ import { useDisconnected } from "./hooks/useDisconnected.js";
 import { useSessionSelector } from "./hooks/useSessionSelector.js";
 import { useSidebarCollapsed } from "./hooks/useSidebarCollapsed.js";
 import { useVoiceCues } from "./hooks/useVoiceCues.js";
+import { useWindowFullScreen } from "./hooks/useWindowFullScreen.js";
 import { useWindowHidden } from "./hooks/useWindowHidden.js";
 import { useWindowSnap } from "./hooks/useWindowSnap.js";
 import { LocaleProvider, useT } from "./i18n/LocaleProvider.js";
@@ -103,7 +107,10 @@ function Workbench({ booting }: { readonly booting: boolean }): JSX.Element {
   // web contents without the OS chrome). WindowControls already returns null
   // on darwin, but that only drops OUR buttons on the right; nothing was
   // reserving the left. See .app.is-mac .topbar in reference-ux.css.
-  const isMac = useHertaBridge().bridge.platform === "darwin";
+  const { bridge } = useHertaBridge();
+  const isMac = bridge.platform === "darwin";
+  // …except in full screen, where macOS hides the lights (2026-09-23).
+  const fullScreen = useWindowFullScreen();
   // Pauses the ambient infinite animations (device aura/ring, shimmers,
   // carets) while the window is hidden/tray'd — see the is-window-hidden
   // block in reference-ux.css (2026-07-11).
@@ -118,6 +125,11 @@ function Workbench({ booting }: { readonly booting: boolean }): JSX.Element {
   const [query, setQuery] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const searchButtonRef = useRef<HTMLButtonElement>(null);
+  // The application menu's Settings… (Cmd+, on macOS; 2026-09-23).
+  useEffect(
+    () => bridge.onOpenSettings?.(() => setSettingsOpen(true)),
+    [bridge],
+  );
 
   const closeSearch = (): void => {
     setSearchOpen(false);
@@ -148,7 +160,7 @@ function Workbench({ booting }: { readonly booting: boolean }): JSX.Element {
   }
   return (
     <div
-      className={`app${collapsed ? " sidebar-collapsed" : ""}${disconnected ? " is-disconnected" : ""}${launchStatic ? " is-launch-static" : ""}${booting ? " is-booting" : ""}${windowHidden ? " is-window-hidden" : ""}${windowSnap ? " is-window-snap" : ""}${isMac ? " is-mac" : ""}`}
+      className={`app${collapsed ? " sidebar-collapsed" : ""}${disconnected ? " is-disconnected" : ""}${launchStatic ? " is-launch-static" : ""}${booting ? " is-booting" : ""}${windowHidden ? " is-window-hidden" : ""}${windowSnap ? " is-window-snap" : ""}${isMac ? " is-mac" : ""}${fullScreen ? " is-fullscreen" : ""}`}
     >
       <TopBar
         collapsed={collapsed}
@@ -278,6 +290,9 @@ export function App(props: AppProps = {}): JSX.Element {
           </p>
           <p>{m["app.bridgeUnavailableBody"]}</p>
         </ErrorScreen>
+        {/* Last, like WindowControls below: its no-drag rect must come after
+            the drag strip's. */}
+        <ErrorWindowControls closeLabel={m["window.closeBtn"]} />
       </>
     );
   }

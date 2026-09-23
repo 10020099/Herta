@@ -786,6 +786,13 @@ export interface HertaBridge {
   windowIsMaximized(): Promise<boolean>;
   /** Fires on the window's maximize/unmaximize — drives the glyph swap. */
   onWindowMaximized(cb: (maximized: boolean) => void): () => void;
+  /** Current full-screen state, and its changes (2026-09-23): macOS hides
+   *  the traffic lights in full screen, so the top bar stops reserving room
+   *  for them. OPTIONAL — fakes and the website demo omit the pair. */
+  windowIsFullScreen?(): Promise<boolean>;
+  onWindowFullScreen?(cb: (fullScreen: boolean) => void): () => void;
+  /** The application menu's Settings… item (Cmd+, on macOS). OPTIONAL. */
+  onOpenSettings?(cb: () => void): () => void;
   onWorkspace(cb: (e: WorkspaceEvent) => void): () => void;
   /** The workspace's repository state (ADR 0058) — the rail's repository
    *  card. OPTIONAL: fakes and the website demo omit the pair, and the card

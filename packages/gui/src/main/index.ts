@@ -34,6 +34,7 @@ import {
   registerAttachmentScheme,
 } from "./attachment-protocol.js";
 import { buildCsp } from "./csp.js";
+import { hideToTray } from "./hide-to-tray.js";
 import { applyLoginPath, launchLocaleEnv } from "./login-path.js";
 import { installChromiumFetch } from "./net-transport.js";
 import { quitDisposals, quitsWhenAllWindowsClosed } from "./quit-policy.js";
@@ -432,7 +433,8 @@ function createWindow(): BrowserWindow {
     persistWindowState();
     if (!quitRequested && closeToTray) {
       event.preventDefault();
-      win.hide();
+      // Out of macOS full screen first, or its Space stays black (hide-to-tray.ts).
+      hideToTray(win, process.platform);
       // The tray is the app's face from here on. On Linux its menu is whatever
       // was last ATTACHED (the host draws it), so re-attach as the window goes
       // — the Recent list is then current for the next time it is opened.
@@ -458,6 +460,15 @@ function createWindow(): BrowserWindow {
       win.webContents.send(EVT.windowMaximized, false);
     }
   });
+  // Full-screen state → renderer: macOS hides the traffic lights in full
+  // screen, and the top bar's room for them became an empty gap (2026-09-23).
+  const sendFullScreen = (fullScreen: boolean): void => {
+    if (!win.webContents.isDestroyed()) {
+      win.webContents.send(EVT.windowFullScreen, fullScreen);
+    }
+  };
+  win.on("enter-full-screen", () => sendFullScreen(true));
+  win.on("leave-full-screen", () => sendFullScreen(false));
 
   registerWindowControlHandlers();
   registerUpdateHandlers();
@@ -511,6 +522,7 @@ function registerWindowControlHandlers(): void {
   ipcMain.removeAllListeners(CMD.windowToggleMaximize);
   ipcMain.removeAllListeners(CMD.windowClose);
   ipcMain.removeHandler(CMD.windowIsMaximized);
+  ipcMain.removeHandler(CMD.windowIsFullScreen);
   ipcMain.on(CMD.windowMinimize, () => {
     const win = mainWindow;
     if (win !== null && !win.isDestroyed()) win.minimize();
@@ -529,6 +541,23 @@ function registerWindowControlHandlers(): void {
     const win = mainWindow;
     return win !== null && !win.isDestroyed() && win.isMaximized();
   });
+  ipcMain.handle(CMD.windowIsFullScreen, () => {
+    const win = mainWindow;
+    return win !== null && !win.isDestroyed() && win.isFullScreen();
+  });
+}
+
+/** The application menu's Settings… (Cmd+, on macOS): bring the window
+ *  forward and ask its renderer to open Settings. With no window at all (a
+ *  Mac with every window closed) it only brings one back. */
+function openSettingsFromMenu(): void {
+  const win = mainWindow;
+  if (win === null || win.isDestroyed()) {
+    createWindow();
+    return;
+  }
+  showMainWindow();
+  if (!win.webContents.isDestroyed()) win.webContents.send(EVT.openSettings);
 }
 
 /** The most recent window's in-flight dispose — awaited by before-quit. */
@@ -663,6 +692,7 @@ void app
       const template = appMenuTemplate({
         platform: process.platform,
         isPackaged: app.isPackaged,
+        onOpenSettings: openSettingsFromMenu,
       });
       if (template !== null) {
         Menu.setApplicationMenu(Menu.buildFromTemplate(template));
