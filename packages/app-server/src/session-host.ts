@@ -225,6 +225,13 @@ class SessionHostImpl implements SessionHost {
         return;
       }
       const dreamCfg = resolveDreamConfig(this.config.dream);
+      // The pass steps aside between episodes once the user is back — any
+      // action since it started, or a turn in flight (finding 12). It used
+      // to run to completion beside the live turn on the same key.
+      const activityAtStart = this.dreamTrigger.activityCount;
+      const shouldYield = (): boolean =>
+        this._active?.turnInFlight === true ||
+        this.dreamTrigger.activityCount !== activityAtStart;
       const client = new RealDeepSeekClient({
         apiKey: key,
         model: dreamCfg.model,
@@ -303,6 +310,7 @@ class SessionHostImpl implements SessionHost {
           lang,
           // The automatic pass's spend ceiling (finding 3); the rest waits.
           maxEpisodes: dreamCfg.autoPassMaxEpisodes,
+          shouldYield,
         });
         // The corpus may have moved: the open session's next turn re-derives
         // its prefix once (ADR 0069 §1b) — new dreams from any session
@@ -311,6 +319,8 @@ class SessionHostImpl implements SessionHost {
         // episodes): a rebuild that finds nothing new yields the same bytes,
         // so the prompt cache does not notice.
         if (result.lockBusy !== true) this._active?.markPrefixStale?.();
+        // The user is back: the other language's pass waits too.
+        if (result.yielded === true) break;
       }
     } catch {
       // Swallow all errors — this is a background pass and must never
@@ -320,6 +330,14 @@ class SessionHostImpl implements SessionHost {
 
   get activeSession(): Session | null {
     return this._active;
+  }
+
+  /** Something the user did in the window that is not a turn — a rewind, an
+   *  attachment, a search, a file opened in the viewer. It resets the dream
+   *  trigger's idle clock, and a pass already running steps aside at its
+   *  next episode (dream review 2026-09-22, finding 12). */
+  noteUserActivity(): void {
+    this.dreamTrigger.noteActivity();
   }
 
   /** Update the live DeepSeek key. The active session (and any later one) reads

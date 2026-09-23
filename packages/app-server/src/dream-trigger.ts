@@ -27,6 +27,7 @@ export interface DreamTriggerOptions {
 
 export class DreamTrigger {
   private lastActivity: number;
+  private activitySeq = 0;
   private lastAttempt = Number.NEGATIVE_INFINITY;
   private running = false;
   constructor(private readonly opts: DreamTriggerOptions) {
@@ -34,6 +35,14 @@ export class DreamTrigger {
   }
   noteActivity(): void {
     this.lastActivity = this.opts.now();
+    this.activitySeq += 1;
+  }
+  /** Counts every `noteActivity` — a running pass steps aside once it moves
+   *  past the value it started with (dream review 2026-09-22, finding 12).
+   *  A counter, not a timestamp: an action in the same millisecond the pass
+   *  started still counts. */
+  get activityCount(): number {
+    return this.activitySeq;
   }
   /** Call on a coarse timer (e.g. every few minutes) and on session-end. The gates run
    *  cheapest-first; the material scan only runs after idle + cooldown pass, so

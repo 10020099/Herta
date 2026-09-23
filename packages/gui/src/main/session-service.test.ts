@@ -9,8 +9,10 @@ import { tmpdir } from "node:os";
 import { join, parse } from "node:path";
 import type { Session, SessionMetadata } from "@herta/app-server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { CMD } from "../preload/channels.js";
 import {
   buildConfig,
+  countsAsUserActivity,
   findProjectRoot,
   handleSetWorkspace,
   isSafeSessionId,
@@ -22,6 +24,41 @@ import {
   snapshot,
   startForwarders,
 } from "./session-service.js";
+
+describe("countsAsUserActivity — what tells a running dream pass the user is back (dream review 2026-09-22, finding 12)", () => {
+  it("counts what the user does outside a turn", () => {
+    for (const channel of [
+      CMD.rewindLastTurn,
+      CMD.steerText,
+      CMD.interrupt,
+      CMD.search,
+      CMD.attachFiles,
+      CMD.stageImages,
+      CMD.readWorkspaceFile,
+      CMD.readWorkspaceLog,
+      CMD.recordSlice,
+      CMD.setDreamConfig,
+      CMD.setLocale,
+    ]) {
+      expect(countsAsUserActivity(channel), channel).toBe(true);
+    }
+  });
+
+  it("does not count what the window does on its own", () => {
+    for (const channel of [
+      CMD.list,
+      CMD.resyncRecord,
+      CMD.requestSync,
+      CMD.refreshRepo,
+      CMD.maybePlayEasterEgg,
+      CMD.getDreamConfig,
+      CMD.getDeepSeekKeyStatus,
+      CMD.windowIsMaximized,
+    ]) {
+      expect(countsAsUserActivity(channel), channel).toBe(false);
+    }
+  });
+});
 
 describe("snapshot — the reset payload (UX review 2026-09-22, item 7)", () => {
   const base = {

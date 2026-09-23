@@ -18,6 +18,12 @@ import type { AppServerConfig } from "./types.js";
 const pass = vi.hoisted(() => ({
   inputs: [] as DreamSessionInput[],
   lockBusy: false,
+  /** The languages the pass was run for, in order. */
+  langs: [] as string[],
+  /** What the host's step-aside check said, asked at the pass's start. */
+  yieldAtStart: [] as boolean[],
+  /** Stands in for the user coming back while the pass runs. */
+  duringPass: undefined as (() => void) | undefined,
 }));
 
 vi.mock("@herta/knowledge", async (importOriginal) => {
@@ -27,8 +33,14 @@ vi.mock("@herta/knowledge", async (importOriginal) => {
     runDreamPass: vi.fn(
       async (opts: {
         sessions: readonly DreamSessionInput[];
+        lang?: string;
+        shouldYield?: () => boolean;
       }): Promise<RunDreamPassResult> => {
         pass.inputs.push(...opts.sessions);
+        pass.langs.push(opts.lang ?? "zh");
+        pass.yieldAtStart.push(opts.shouldYield?.() ?? false);
+        pass.duringPass?.();
+        const yielded = opts.shouldYield?.() === true;
         return {
           promoted: 0,
           archived: 0,
@@ -39,6 +51,7 @@ vi.mock("@herta/knowledge", async (importOriginal) => {
           echoReinforced: 0,
           seedsEvicted: 0,
           ...(pass.lockBusy ? { lockBusy: true } : {}),
+          ...(yielded ? { yielded: true } : {}),
         };
       },
     ),
@@ -50,6 +63,9 @@ afterEach(async () => {
   vi.restoreAllMocks();
   pass.inputs = [];
   pass.lockBusy = false;
+  pass.langs = [];
+  pass.yieldAtStart = [];
+  pass.duringPass = undefined;
   for (const d of tmpDirs.splice(0)) await removeTmpDir(d);
 });
 
@@ -72,12 +88,17 @@ function mkConfig(): AppServerConfig {
 }
 
 /** Three exchanges: user blocks at 0, 2 and 4. */
-function writeSession(cfg: AppServerConfig, sessionId: string): void {
+function writeSession(
+  cfg: AppServerConfig,
+  sessionId: string,
+  lang?: "zh" | "en",
+): void {
   const persister = V2RecordPersister.forNewSession({
     sessionId,
     workspaceRoot: cfg.workspaceRoot,
     startedAt: new Date(),
     transcriptDir: cfg.transcriptDir,
+    ...(lang !== undefined ? { lang } : {}),
   });
   const blocks: TerminalRecordBlock[] = [
     { kind: "user", text: "一" },
@@ -139,6 +160,20 @@ describe("the host's dream pass and the open session (ADR 0069)", () => {
       0,
     );
     await host.closeActiveSession();
+    host.dispose();
+  });
+
+  it("steps the pass aside once the user acts in the window, and skips the other language's pass (finding 12)", async () => {
+    const cfg = mkConfig();
+    writeSession(cfg, "zh-1", "zh");
+    writeSession(cfg, "en-1", "en");
+    const host = createSessionHost(cfg);
+    // A rewind, a search, a file opened in the viewer — the window reports
+    // it while the zh pass is running.
+    pass.duringPass = () => host.noteUserActivity?.();
+    await runPass(host);
+    expect(pass.yieldAtStart[0]).toBe(false);
+    expect(pass.langs).toHaveLength(1);
     host.dispose();
   });
 

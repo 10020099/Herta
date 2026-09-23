@@ -160,6 +160,49 @@ export function findProjectRoot(start: string): string | undefined {
   }
 }
 
+/** Window commands that are the user doing something outside a turn (dream
+ *  review 2026-09-22, finding 12). Each resets the dream trigger's idle
+ *  clock, and a pass already running steps aside at its next episode: a
+ *  user rewinding, attaching, searching or reading a file in the viewer is
+ *  back, however long ago they last sent a message. Turns are counted by
+ *  the host itself; reads the window makes on its own (the list refresh,
+ *  a resync, the repo watcher, settings panes loading their values) are
+ *  not the user and stay out. */
+const USER_ACTION_CHANNELS: ReadonlySet<string> = new Set([
+  CMD.interrupt,
+  CMD.steerText,
+  CMD.rewindLastTurn,
+  CMD.search,
+  CMD.recordSlice,
+  CMD.deleteSession,
+  CMD.resolveApproval,
+  CMD.removeCommandRule,
+  CMD.setWorkspaceTrust,
+  CMD.pickWorkspace,
+  CMD.setWorkspace,
+  CMD.resetWorkspace,
+  CMD.pickAttachments,
+  CMD.attachFiles,
+  CMD.removeAttachment,
+  CMD.stageImages,
+  CMD.unstageImage,
+  CMD.readWorkspaceFile,
+  CMD.readWorkspaceBytes,
+  CMD.readWorkspaceCommit,
+  CMD.readWorkspaceDiff,
+  CMD.readWorkspaceLog,
+  CMD.readWorkspaceBranches,
+  CMD.openWorkspaceFile,
+]);
+
+export function countsAsUserActivity(channel: string): boolean {
+  // Every settings WRITE is a choice the user just made; the reads are the
+  // panes loading and are not.
+  return (
+    USER_ACTION_CHANNELS.has(channel) || channel.startsWith("settings:set")
+  );
+}
+
 /** The workspace the session serves. Resolution order:
  *   1. HERTA_WORKSPACE_ROOT (explicit override),
  *   2. `packagedUserDataDir` when provided — an INSTALLED app anchors its
@@ -584,7 +627,15 @@ export function createSessionService(
   // index.ts owns whenever a session service was disposed.
   const ownedChannels: string[] = [];
   const handle: typeof ipcMain.handle = (channel, listener) => {
-    ipcMain.handle(channel, listener);
+    ipcMain.handle(
+      channel,
+      countsAsUserActivity(channel)
+        ? (event, ...args) => {
+            host?.noteUserActivity?.();
+            return listener(event, ...args);
+          }
+        : listener,
+    );
     ownedChannels.push(channel);
   };
 

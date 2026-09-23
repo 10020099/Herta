@@ -1626,6 +1626,52 @@ describe("runDreamPass hardening", () => {
     expect(readManifest(dreamDir).episodes).toHaveLength(2);
   });
 
+  it("steps aside between episodes when the user comes back, and resumes at the next idle window instead of a week later (dream review 2026-09-22, finding 12)", async () => {
+    const sessions = ["a", "b", "c"].map((id) => ({
+      sessionId: id,
+      record: record.map((b) =>
+        b.kind === "user" ? { ...b, text: `${b.text}（${id}）` } : b,
+      ),
+    }));
+    const dreamDir = join(ws, ".herta", "dream");
+    let asked = 0;
+    const client = fakeClient();
+    const first = await runDreamPass({
+      workspaceRoot: ws,
+      sessions,
+      client,
+      runId: "yield-1",
+      config: testConfig,
+      now: () => new Date("2026-06-18T09:30:00Z"),
+      // The user returns while the first episode is being dreamed.
+      shouldYield: () => {
+        asked += 1;
+        return asked > 1;
+      },
+    });
+    expect(first.yielded).toBe(true);
+    expect(first.considered).toBe(1);
+    expect(first.aborted).toBeUndefined();
+    const after = readManifest(dreamDir);
+    expect(after.episodes).toHaveLength(1);
+    // Not a completed pass: the weekly anchor stays where it was.
+    expect(after.lastRunAt).toBeUndefined();
+    // The next idle window takes up the rest, and completes.
+    const second = await runDreamPass({
+      workspaceRoot: ws,
+      sessions,
+      client: fakeClient(),
+      runId: "yield-2",
+      config: testConfig,
+      now: () => new Date("2026-06-18T11:30:00Z"),
+      shouldYield: () => false,
+    });
+    expect(second.yielded).toBeUndefined();
+    expect(second.skipped).toBe(1);
+    expect(second.considered).toBe(2);
+    expect(readManifest(dreamDir).lastRunAt).toBe("2026-06-18T11:30:00.000Z");
+  });
+
   it("records the verdict cut's cutover at the first pass that runs with it, and never moves it (ADR 0069 §4)", async () => {
     const dreamDir = join(ws, ".herta", "dream");
     await runDreamPass({

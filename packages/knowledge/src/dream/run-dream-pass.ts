@@ -104,6 +104,17 @@ export interface RunDreamPassOptions {
    *  runs as usual. Undefined = no limit (the manual CLI pass, which has its
    *  own cost cap); the automatic pass passes `autoPassMaxEpisodes`. */
   maxEpisodes?: number;
+  /**
+   * The user came back (dream review 2026-09-22, finding 12): asked before
+   * each episode and before the end-of-pass model calls. On true the pass
+   * steps aside — the episode in hand has finished, so nothing paid for is
+   * thrown away; the rest stay undreamed and un-ledgered, the gist fold and
+   * the notes audit wait (the fold's pending list is durable), and
+   * `lastRunAt` does not advance, so the next idle window resumes where
+   * this one stopped rather than a week later. Absent → never yields (the
+   * manual CLI pass).
+   */
+  shouldYield?: () => boolean;
 }
 
 export interface RunDreamPassResult {
@@ -144,6 +155,9 @@ export interface RunDreamPassResult {
   lockBusy?: boolean;
   /** True when the pass reached `maxEpisodes` and left the rest for later. */
   budgetStopped?: boolean;
+  /** True when `shouldYield` said the user came back and the pass stepped
+   *  aside; `lastRunAt` did not advance. */
+  yielded?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -541,6 +555,12 @@ export async function runDreamPass(
         ) {
           res.skipped++;
           continue;
+        }
+        // The user came back (finding 12): step aside between episodes,
+        // before this one is marked seen.
+        if (opts.shouldYield?.() === true) {
+          res.yielded = true;
+          break;
         }
         // The spend ceiling (dream review 2026-09-22, finding 3): checked
         // before the episode is marked seen, so what the pass leaves is
@@ -1053,7 +1073,18 @@ export async function runDreamPass(
         }
         if (res.aborted !== undefined) break;
       }
-      if (res.aborted !== undefined || res.budgetStopped === true) break;
+      if (
+        res.aborted !== undefined ||
+        res.budgetStopped === true ||
+        res.yielded === true
+      ) {
+        break;
+      }
+    }
+    // The end-of-pass work below is model calls too: a user who came back
+    // during the last episode is not kept waiting behind them.
+    if (res.yielded !== true && opts.shouldYield?.() === true) {
+      res.yielded = true;
     }
 
     // Living-memory semanticization sources (ADR 0023 — consolidation
@@ -1108,7 +1139,10 @@ export async function runDreamPass(
     // notes page (this pass's per-language narrativeDir + notesFileFor/
     // notesHeaderFor selected by `lang`); the `### 记录` prefix stays CN in
     // both so the static-prefix loader still matches.
-    if (evictedForNotes.length > 0 || stabilizedTexts.length > 0) {
+    if (
+      res.yielded !== true &&
+      (evictedForNotes.length > 0 || stabilizedTexts.length > 0)
+    ) {
       const outcome = await semanticizeEvictions({
         narrativeDir,
         // Enables the pre-overwrite backup of the notes page — the one corpus
@@ -1144,34 +1178,40 @@ export async function runDreamPass(
     // BOTH languages now (ADR 0017 follow-up); auditTrailblazerNotes no-ops
     // (returns "none") while the page is still empty, so a fresh EN corpus with
     // no notes page yet costs nothing.
-    const living = [...liveDreamRecords(manifest)]
-      .sort(
-        (a, b) =>
-          computeStrength(b, now().getTime(), cfg) -
-          computeStrength(a, now().getTime(), cfg),
-      )
-      .slice(0, cfg.notesAuditMaxRecords)
-      .map((r) => {
-        const body = readTextFile(narrativeDir, r.file);
-        return body === undefined ? undefined : { file: r.file, body };
-      })
-      .filter((t): t is EvictedFeianText => t !== undefined);
-    const audit = await auditTrailblazerNotes({
-      narrativeDir,
-      dreamDir,
-      client: opts.client,
-      cfg,
-      living,
-      guide,
-      runId: opts.runId,
-      lang,
-    });
-    if (audit !== "none") res.notesAudit = audit;
+    if (res.yielded !== true && opts.shouldYield?.() === true) {
+      res.yielded = true;
+    }
+    if (res.yielded !== true) {
+      const living = [...liveDreamRecords(manifest)]
+        .sort(
+          (a, b) =>
+            computeStrength(b, now().getTime(), cfg) -
+            computeStrength(a, now().getTime(), cfg),
+        )
+        .slice(0, cfg.notesAuditMaxRecords)
+        .map((r) => {
+          const body = readTextFile(narrativeDir, r.file);
+          return body === undefined ? undefined : { file: r.file, body };
+        })
+        .filter((t): t is EvictedFeianText => t !== undefined);
+      const audit = await auditTrailblazerNotes({
+        narrativeDir,
+        dreamDir,
+        client: opts.client,
+        cfg,
+        living,
+        guide,
+        runId: opts.runId,
+        lang,
+      });
+      if (audit !== "none") res.notesAudit = audit;
+    }
 
     // Mark the pass complete: lastRunAt advances only on a FULL pass, so a
     // crashed or transport-aborted pass does not reset the weekly cadence — the
     // trigger retries and resumes (dedup skips the episodes already flushed).
-    if (res.aborted === undefined) {
+    // A pass that stepped aside for the user resumes the same way.
+    if (res.aborted === undefined && res.yielded !== true) {
       manifest.lastRunAt = now().toISOString();
     }
     writeManifest(dreamDir, manifest);
