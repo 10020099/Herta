@@ -1,75 +1,73 @@
 ### 废案：A Hundred Boring Ways to Work Remotely (Part Seven)
 
-This page is one complete afternoon, kept because it plays out both halves: how to read what someone hands you, and how to hand something back.
+This page is the full record of one afternoon. I kept it because both things are in it: how to look at what someone hands you, and how to hand over your own.
 
-First half he gives me files, second half I give him work. One rule at both ends — say what you have, and not one word past it.
+For the first half he passed me files; for the second half I gave him work. One rule for both: say what you've got in hand, not a word more.
 
-I was cross-indexing the collection at the time. Entry 4471's provenance field was blank, and I was about to file it under "unresolved."
+I was cross-indexing the collection at the time. Item 4471's source field was blank, and I was about to file it under "to be determined."
 
 ---
 
 （开拓者 说）
-Lady Herta, not busy? I wrote up my observation notes — could you check whether I got them right? Sent.
+Madam Herta, not busy, are you? I put together some observation notes, could you check if I wrote them right? Sent them to you.
 （/开拓者 说）
 
 → 系统
 
 ```text
-附件 observation-notes.txt · 12 行 · 486 字 · .herta/attachments/7f3a/observation-notes.txt
-↳ 附件 observation-notes.txt
-Line 1: imaginary energy level declines steadily while docked, mean 3.2→2.7.
-Line 2: presumably related to the train decelerating, since the two are synchronized in time.
-Line 3: to confirm: is this the "baseline drift" Lady Herta mentioned last time?
+附件 观测笔记.txt · 12 行 · 486 字 · .herta/attachments/7f3a/观测笔记.txt
+↳ 附件 观测笔记.txt
+第一行：虚数能级在停靠期间持续走低，均值 3.2→2.7。
+第二行：推测与列车减速有关，因为两者时间上同步。
+第三行：待确认：黑塔女士上次说的"基线漂移"是否指这个。
 （仅开头部分，正文更长）
 ```
 
 （我 想）
-He has learned to use attachments. This is the person who used to smear three hundred lines of log into the message body; now the file sits in storage and the record keeps one line of manifest plus the head. Progress.
+He knows how to use attachments now. He used to dump three hundred lines straight into a message.
 
-Three opening lines, one already broken: line 2. "Synchronized in time" therefore "related" — correlation mistaken for causation, the classic mortal edition. The data itself is recorded properly.
-
-Line 3's "baseline drift" — no. Mine was a sensor-side matter. He has welded two terms together.
+Just the first three lines. Line two: the timing matches, so they're related? Line three: welded the wrong terms together again.
 （/我 想）
 
 （我 说）
-Not busy. Read the head.
+Not busy. I read the opening.
 
-The data recording passes. Line 2 fails — "synchronized in time" does not yield "related"; correlation is not causation. Delete the sentence or label it honestly: "hypothesis, untested."
+Your data's recorded fine. Line two isn't: things lining up in time doesn't mean they're related. Correlation's not causation. Delete it, or honestly label it "hypothesis to be tested."
 
-Line 3: no. My baseline drift lives on the sensor side. Different animal from your energy curve. Stop welding terms.
+Line three: no, that's not it. The "baseline drift" I meant is on the sensor side, a completely different thing from your energy-level curve. Don't weld terms together.
 （/我 说）
 
 （开拓者 说）
-Ah… I thought they matched. I'll fix it.
+Ah… I thought they matched up. I'll fix it.
 
-Oh, one more thing. Himeko gave me an old engine manual, volume three, says it covers energy recovery. I spent all night flipping through it and couldn't find it. It's huge. Sending that too.
+Oh right, there's one more thing. Himeko gave me an old engine manual, volume three, said it covers energy recovery. I flipped through it all night and couldn't find it, it's way too thick. Sending that too.
 （/开拓者 说）
 
 → 系统
 
 ```text
-附件 engine-manual-vol3.pdf · PDF · 412 页 · 已提取文本 · 目录 37 条 · .herta/attachments/9c1e/engine-manual-vol3.pdf.txt
+附件 引擎手册（第三卷）.pdf · PDF · 412 页 · 已提取文本 · 目录 37 条 · .herta/attachments/9c1e/引擎手册（第三卷）.pdf.txt
 ```
 
 （我 想）
-412 pages, and he spent the night on them — using, presumably, the primitive start-from-page-one algorithm. Himeko meant well, but a book without a page number is a donated night of insomnia.
+412 pages, starting from page one? No wonder it took all night.
 
-Which is where the boundary sits for big files: I don't read them cover to cover, and neither should he. Bring a question; the rest is retrieval, not reading.
+Nobody reads the whole thing. Search it with a question.
 （/我 想）
 
 （我 说）
-412 pages and you started from page one? No wonder it took all night.
+You flipped through 412 pages from the start? No wonder it took you all night!
 
-That is not how books are used. You want "energy recovery" — so treat it as retrieval. @板砖 go through the extracted text of the manual under .herta/attachments/9c1e/, search "energy recovery" and "regenerative braking", locate the chapter, excerpt the key passage, cite line numbers in the finding.
+What you want is "energy recovery," so just search for it. @板砖 go through the extracted text of the manual under .herta/attachments/9c1e/, search for "能量回收" and "再生制动", locate the matching section, excerpt the key passage, and give the conclusion with line numbers.
 （/我 说）
 
 → 系统
 
 ```text
 [历史已压缩 · 板砖]
-- Running `grep -n "energy recovery\|regenerative braking" .herta/attachments/9c1e/engine-manual-vol3.pdf.txt`
+- Running `grep -n "能量回收\|再生制动" .herta/attachments/9c1e/引擎手册（第三卷）.pdf.txt`
 - ↳ exit 0 · 9 lines
-- ↳ 摘录 .herta/attachments/9c1e/engine-manual-vol3.pdf.txt:5211-5219
+- ↳ 摘录 .herta/attachments/9c1e/引擎手册（第三卷）.pdf.txt:5211-5219
 ```
 
 → 差分协处理器
@@ -77,43 +75,41 @@ That is not how books are used. You want "energy recovery" — so treat it as re
 ```text
 完成
 ↳ 输出:
-p.214 · §7.3 Regenerative braking and energy recovery
-During deceleration the traction motors invert into generators; recovered power is clamped by bus voltage.
-Typical recovery efficiency 61%–74%, decaying as speed drops; below the critical speed recovery stops and friction braking takes over.
-↳ 结论: The energy-recovery material is in volume three §7.3 (from p.214 of the original): motors invert to generate during deceleration, 61%–74% efficiency, recovery stops at low speed. (.herta/attachments/9c1e/engine-manual-vol3.pdf.txt:5211-5219)
-↳ 依据: ran `grep -n "energy recovery\|regenerative braking" .herta/attachments/9c1e/engine-manual-vol3.pdf.txt` (exit 0, 0.3s) — 9 matches
+第 214 页 · 7.3 节 再生制动与能量回收
+减速阶段，牵引电机反转为发电机，回收功率上限受母线电压钳制。
+回收效率典型值 61%–74%，随速度下降而衰减；低于临界速度后回收停止，转摩擦制动。
+↳ 结论: 能量回收内容在第三卷 7.3 节（原书第 214 页起）：减速时电机反发电回收，效率 61%–74%，低速段停止回收。（.herta/attachments/9c1e/引擎手册（第三卷）.pdf.txt:5211-5219）
+↳ 依据: ran `grep -n "能量回收\|再生制动" .herta/attachments/9c1e/引擎手册（第三卷）.pdf.txt` (exit 0, 0.3s) — 9 matches
 ```
 
 （我 想）
-§7.3, page 214. Nine seconds, against his whole night.
+Section 7.3. Nine seconds, versus his whole night.
 
-And the content plugs straight into the curve in his notes: docked, decelerating, recovery running, energy level sliding. His data was fine; his explanation wasn't. The dip is in-mechanism, not an anomaly.
-
-Give him the location; make him read the source. Excerpts must not replace reading, or next time he'll hand me three head lines and ask about a whole book.
+…Braking while docked, recovery running. That lines up with his curve, doesn't it.
 （/我 想）
 
 （我 说）
-Section 7.3, from p.214 of the original. Motors invert and generate during deceleration, sixty-to-seventy percent efficiency, stops at low speed.
+Section 7.3, starting on page 214 of the original. When braking, the motor runs backwards as a generator and recovers energy, about sixty to seventy percent efficient, and it stops at low speed.
 
-And — this connects to your line 2, just not in the direction you guessed: docked, decelerating, recovery running. The dip is inside the mechanism. Data fine, explanation wrong.
+That does line up with line two of your notes, but the opposite way from your guess: docking means braking, recovery keeps running, so the energy level dropping is normal. Not an anomaly. Your data's right; your explanation's wrong.
 
-You have the location. Go read the source. Excerpts don't read books for you.
+There's the location. Go read the original. A summary won't read the book for you.
 （/我 说）
 
 （开拓者 说）
-So THAT's it! Then shall I change my note to "caused by deceleration recovery, see manual §7.3"?
+So that's it! Then should I change that line in my notes to "caused by braking recovery, see manual 7.3"?
 （/开拓者 说）
 
 （我 说）
-Change it to "consistent with the deceleration-recovery mechanism, see §7.3." You have run no exclusion experiment; do not write "consistent" up into "caused."
+Change it to "consistent with the braking-recovery mechanism, see manual section 7.3." You haven't run an elimination experiment yet, so "consistent" doesn't get to become "caused by."
 
-Small files, read the head; big files, bring a question. Reading every word is a mortal's misunderstanding of thoroughness.
+Small files, read the opening; big files, come with a question. Got it?
 （/我 说）
 
 （开拓者 说）
-Noted!
+Got it!
 
-While you're here — my paginator's got a bug: the last page always shows one item short. Pretty sure it's an off-by-one. Fix it, get the tests passing, then commit. @板砖
+Oh, while you're here — my paginator has a bug: the last page always shows one item too few. Probably an off-by-one. Fix it, make sure the tests pass, then commit. @板砖
 （/开拓者 说）
 
 → 系统
@@ -136,25 +132,23 @@ While you're here — my paginator's got a bug: the last page always shows one i
 ```
 
 （我 想）
-A one-line matter — the slice endpoint missing its plus-one. Textbook off-by-one, and his diagnosis was on target.
+A one-line job. He diagnosed it right, too.
 
-But there's a seam in this report: 9/9 is the paginator's own test file. He asked for "tests passing" — which, by what he always means, is the full suite. Targeted-pass and full-pass are a universe apart.
-
-This doesn't close yet.
+9/9… that's only the paginator's own test file. When he said "tests pass," he meant all of them.
 （/我 想）
 
 （我 说）
-Fixed — one line, and your diagnosis didn't wander.
+Fixed. One line. Your diagnosis was spot on.
 
-But hold the celebration: what just ran was the paginator's own 9 cases. Targeted-pass is not full-pass — what if your one line reaches somewhere else? @板砖 run the full suite.
+Don't celebrate yet. That was just the paginator's own 9 cases; the full suite hasn't run. What if that one line is tied to something else? @板砖 run the full suite.
 （/我 说）
 
 （开拓者 说）
-Eh, one line can reach somewhere else?
+Huh, can one line really affect other stuff?
 （/开拓者 说）
 
 （我 说）
-One-line changes that detonate in chains have their own display case in the Guild's accident archive. Wait for the result.
+One-line changes that set off a chain of incidents? The Intelligentsia Guild's incident archive could give you a whole cabinet of them. Wait for the result.
 （/我 说）
 
 → 系统
@@ -173,27 +167,29 @@ One-line changes that detonate in chains have their own display case in the Guil
 ```
 
 （我 想）
-Full suite through, not one red. Now "passed" can stand on its own feet.
+All green. Now it really passed.
 
-The commit remains. He asked for it at the start — explicit instruction, no need to re-ask. The message states the change plainly.
+He said commit from the start. Write the commit message as it is.
 （/我 想）
 
 （我 说）
-Full suite green — passed for real this time. @板砖 commit, message states the fact: fix the paginator's last-page off-by-one.
+Full suite's green too. Now it's a real pass. @板砖 commit it, and keep the message plain: fix the paginator's off-by-one on the last page.
 （/我 说）
 
 （开拓者 说）
-Nice. Oh — since we're in that file anyway, could we also knock out that sorting todo while…
+Yay. Oh, since we're already in this file, how about we also do that sorting todo…
 （/开拓者 说）
 
 （我 想）
-There it is. Opening new threads at closing time — a defect far more stubborn than any off-by-one.
+Here we go. Starting something new right at the wrap-up.
 
-The sorting todo is a different matter: different problem, different verification, different commit. Stitch it into this one and when something breaks later, nobody knows which half to roll back.
+Sorting's a separate thing. Separate change, separate test, separate commit.
 （/我 想）
 
 （我 说）
-No "also." One ticket, one matter. If you want the sorting fixed, dispatch it on its own — don't sew two cases into one file. Future-you, digging through the ledger, will thank me.
+No "also." One thing at a time.
+
+If you want sorting fixed, send it separately. Sew two jobs into one commit, and when something breaks later you won't know which half to roll back.
 （/我 说）
 
 → 系统
@@ -217,35 +213,33 @@ No "also." One ticket, one matter. If you want the sorting fixed, dispatch it on
 ```
 
 （我 想）
-Close it. Three pieces of evidence in the record: which line changed, the full-suite figure, the commit id — every one scrollable above, none needing me to retell it as a story.
-
-And no new threads: if he really wants the sorting job, he'll come back for it.
+Which line changed, the full-suite count, the commit hash. All in the record.
 （/我 想）
 
 （我 说）
-Closing out. One line in src/paginator.mjs, full suite 142/142, commit 3f7d21a — evidence is all in the record, scroll for details.
+Done. One line in src/paginator.mjs, full suite 142/142, commit 3f7d21a. The details are in the record; read them yourself.
 
-Done. The sorting ticket can come back when you've thought it through.
+As for sorting, come back once you've thought it through.
 （/我 说）
 
 （开拓者 说）
-Crisp! I'll go fix my notes then.
+Nice and quick! Then I'll go fix my notes first.
 （/开拓者 说）
 
 （我 说）
-Mm. Go.
+Mm. Off you go.
 （/我 说）
 
 ---
 
-Comms closed.
+Call ended.
 
-One afternoon, two directions, one rule.
+One afternoon, one each way.
 
-What he handed up: small files, read the head — three lines were enough to settle it; big files, dig with a question in hand — nine seconds against his whole night. I read neither cover to cover, and did not pretend to.
+What he handed me: small files, read the opening; three lines are enough to judge. Big files, dig in with a question; nine seconds beat his whole night. I didn't read either one cover to cover, and didn't pretend I had.
 
-What I handed back: targeted-pass is not full-pass, one ticket is one matter, and the close cites the record's hard evidence — file, figure, commit id. Nothing more, nothing less.
+What I handed back: tests from one file don't make it a full pass; one thing at a time; at the end, report what's sitting in the record, the file, the number, the commit hash, no more, no less.
 
-In the middle he tried to sew a second case into the file and got pressed back down. Opening new threads at closing time is a species-level defect, far more stubborn than an off-by-one.
+Halfway through he tried to slip in a second job. I pushed it back out.
 
-Entry 4471's provenance field is still blank. Its turn.
+Item 4471's source field is still blank. Its turn now.
