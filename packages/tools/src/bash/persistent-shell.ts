@@ -87,6 +87,9 @@ export class PersistentShell implements BackgroundProcess {
   /** Set while a spawned shell still owes its workspace line. */
   private wsMarker: string | null = null;
   private child: ChildProcess | null = null;
+  /** POSIX process groups (= pids) of shells that have exited; a job they
+   *  backgrounded may still run in one. See `isRunning`. */
+  private readonly exitedGroups = new Set<number>();
   private buf = "";
   /** The last `MARKER_LEN − 1` characters received — what a marker split
    *  across chunks would have left behind. */
@@ -123,13 +126,51 @@ export class PersistentShell implements BackgroundProcess {
     return this.shellWs ?? this.paths.toShell(this.opts.workspaceRoot);
   }
 
-  isRunning(): boolean {
+  /** The shell process itself — what decides whether the next command needs
+   *  a fresh one. */
+  private shellAlive(): boolean {
     return this.child !== null && this.child.exitCode === null;
+  }
+
+  /**
+   * Whether anything this shell started may still be running — the
+   * BackgroundHost's question at brief end, not "is the shell up".
+   *
+   * POSIX (platform review 2026-09-23): the shell runs in its own process
+   * group, and a job it backgrounded (`npm run dev > log &`) stays in that
+   * group after the SHELL exits — `set -e` plus a failing command, or a
+   * plain `exit`. The old answer looked at the shell alone, so `stopAll`
+   * skipped the entry and the dev server outlived the brief and the app,
+   * holding its port. Exited shells' groups are remembered and count here
+   * while any member lives. (A job that made its OWN group — `set -m` — is
+   * out of reach of a group kill, as it always was.)
+   */
+  isRunning(): boolean {
+    if (this.shellAlive()) return true;
+    this.pruneGroups();
+    return this.exitedGroups.size > 0;
+  }
+
+  /** Forget every remembered group with no member left, so an id is never
+   *  held past its group's end for a later group to reuse. */
+  private pruneGroups(): void {
+    for (const group of this.exitedGroups) {
+      if (!groupAlive(group)) this.exitedGroups.delete(group);
+    }
   }
 
   async kill(): Promise<void> {
     const child = this.child;
     this.child = null;
+    // What exited shells left behind first — including when no shell is up.
+    for (const group of this.exitedGroups) {
+      try {
+        process.kill(-group, "SIGKILL");
+      } catch {
+        // already empty
+      }
+    }
+    this.exitedGroups.clear();
     if (child === null) return;
     await killTree(child);
     // Only a waiter still bound to THIS child fails; a fresh shell may
@@ -193,7 +234,23 @@ export class PersistentShell implements BackgroundProcess {
     // timeout the old process may exit late, while a fresh shell is already
     // serving the next command.
     child.on("exit", () => {
-      if (this.child === child) this.child = null;
+      // `kill()` lets go of the child before killing its whole group, so
+      // only a shell that exited ON ITS OWN is still `this.child` here.
+      const ownExit = this.child === child;
+      if (ownExit) this.child = null;
+      // Its process group outlives it while a backgrounded job runs there
+      // (see isRunning). Remembered only if a member is alive right now: a
+      // group that is already empty, or one kill() just felled, would be a
+      // stale id that a later, unrelated group could take over (review
+      // 2026-09-23). POSIX only: Windows has no process groups to kill.
+      if (
+        ownExit &&
+        !isWin &&
+        child.pid !== undefined &&
+        groupAlive(child.pid)
+      ) {
+        this.exitedGroups.add(child.pid);
+      }
       if (this.waiter?.child === child)
         this.failWaiter({ shellExited: true, timedOut: false });
     });
@@ -377,8 +434,9 @@ export class PersistentShell implements BackgroundProcess {
       await new Promise((r) => setTimeout(r, 25));
     }
     const t0 = Date.now();
+    this.pruneGroups();
     let fresh = false;
-    if (!this.isRunning()) {
+    if (!this.shellAlive()) {
       this.spawnShell();
       fresh = true;
     }
@@ -476,6 +534,19 @@ export class PersistentShell implements BackgroundProcess {
   /** For tests / diagnostics. */
   get spawns(): number {
     return this.spawnCount;
+  }
+}
+
+/** Whether a POSIX process group still has a member: signal 0 delivers
+ *  nothing and only checks. Any error — ESRCH (empty), EPERM (the id now
+ *  belongs to someone else's processes) — means there is nothing of ours
+ *  left to kill. */
+function groupAlive(group: number): boolean {
+  try {
+    process.kill(-group, 0);
+    return true;
+  } catch {
+    return false;
   }
 }
 

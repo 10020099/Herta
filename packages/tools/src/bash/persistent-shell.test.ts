@@ -26,6 +26,53 @@ afterEach(async () => {
 });
 
 d("PersistentShell (real bash)", () => {
+  it.skipIf(process.platform === "win32")(
+    "a job backgrounded before the shell EXITED is still counted and killed at brief end (2026-09-23)",
+    async () => {
+      // The dev-server shape: background it, then a later call ends the
+      // shell (`set -e` + a failure, or a plain `exit`).
+      const r = await shell.run("sleep 60 >/dev/null 2>&1 & echo $!", {
+        timeoutMs: 10_000,
+      });
+      const jobPid = Number(r.output.trim());
+      expect(jobPid).toBeGreaterThan(0);
+      const exited = await shell.run("exit 1", { timeoutMs: 10_000 });
+      expect(exited.shellExited).toBe(true);
+      const alive = (pid: number): boolean => {
+        try {
+          process.kill(pid, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      expect(alive(jobPid)).toBe(true);
+      // The shell is gone, but what it started is not: the BackgroundHost
+      // must still see this entry as running, or stopAll skips it.
+      expect(shell.isRunning()).toBe(true);
+      await shell.kill();
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(alive(jobPid)).toBe(false);
+      expect(shell.isRunning()).toBe(false);
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "a shell that exits with nothing behind it, or that kill() ended, leaves no group id to reuse (review 2026-09-23)",
+    async () => {
+      const exited = await shell.run("exit 1", { timeoutMs: 10_000 });
+      expect(exited.shellExited).toBe(true);
+      // Nothing was backgrounded: the empty group is not remembered, so no
+      // stale id sits there for a later, unrelated group to take over.
+      expect(shell.isRunning()).toBe(false);
+      await shell.run("true", { timeoutMs: 10_000 });
+      expect(shell.isRunning()).toBe(true);
+      await shell.kill();
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(shell.isRunning()).toBe(false);
+    },
+  );
+
   it("runs a command, merges stderr in order, reports the exit code", async () => {
     // Natural output — the command's own trailing newline is kept. `(exit 3)`
     // in a subshell: a top-level `exit` really exits the shell (bash
