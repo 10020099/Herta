@@ -1,7 +1,28 @@
 import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { mkTmpWorkspace } from "../testing/tmp-workspace.js";
-import { spawnGit } from "./spawn-git.js";
+import { gitChildEnv, spawnGit } from "./spawn-git.js";
+
+describe("gitChildEnv (platform review 2026-09-23)", () => {
+  it("forces git's MESSAGES to English, so 'not a git repository' is still recognised under a Chinese locale — and only its messages", () => {
+    const env = gitChildEnv({
+      PATH: "/usr/bin",
+      LANG: "zh_CN.UTF-8",
+      LC_ALL: "zh_CN.UTF-8",
+    });
+    // LC_MESSAGES wins over LANG; LANGUAGE is what gettext reads when LC_ALL
+    // pins a non-C locale (and "en" has no catalogue: the English original).
+    expect(env.LC_MESSAGES).toBe("C");
+    expect(env.LANGUAGE).toBe("en");
+    // The character set stays the user's: paths and commit messages decode
+    // exactly as before.
+    expect(env.LANG).toBe("zh_CN.UTF-8");
+    expect(env.LC_ALL).toBe("zh_CN.UTF-8");
+    // …and the prompts stay off.
+    expect(env.GIT_TERMINAL_PROMPT).toBe("0");
+    expect(env.GIT_ASKPASS).toBe("");
+  });
+});
 
 const GIT_AVAILABLE = (() => {
   try {

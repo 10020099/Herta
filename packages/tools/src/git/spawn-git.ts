@@ -126,6 +126,38 @@ export async function spawnGit(
   return spawnGitProcess(cwd, args, signal, opts);
 }
 
+/**
+ * The environment every harness git call runs with.
+ *
+ * git's MESSAGES are forced to English (platform review 2026-09-23): the
+ * harness reads git's stderr — "not a git repository" is how a folder
+ * without a repository is told from a failure — and a git localized by the
+ * user's locale (`LANG=zh_CN.UTF-8`, or Git for Windows following a
+ * Chinese Windows) said 不是 git 仓库, so the repository card read a plain
+ * folder as a transient failure. Only messages: `LC_MESSAGES` for a locale
+ * without `LC_ALL`, `LANGUAGE` for one with it (gettext honours LANGUAGE
+ * whenever the locale is not C). The character set, and therefore how paths
+ * and commit messages decode, stays the user's. `run_command` git is the
+ * user's own and keeps their language.
+ */
+export function gitChildEnv(
+  base: NodeJS.ProcessEnv = childProcessEnv(),
+): NodeJS.ProcessEnv {
+  return {
+    ...base,
+    LC_MESSAGES: "C",
+    LANGUAGE: "en",
+    GIT_OPTIONAL_LOCKS: "0",
+    // A credential helper or an askpass dialog blocks the child forever, and
+    // on Windows that is a real shape (a private remote plus the manager
+    // helper). With the timeout below this bounds the wait; on its own it
+    // usually avoids one entirely.
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_ASKPASS: "",
+    SSH_ASKPASS: "",
+  };
+}
+
 function spawnGitProcess(
   cwd: string,
   args: readonly string[],
@@ -147,17 +179,7 @@ function spawnGitProcess(
         cwd,
         signal,
         shell: false,
-        env: {
-          ...childProcessEnv(),
-          GIT_OPTIONAL_LOCKS: "0",
-          // A credential helper or an askpass dialog blocks the child forever,
-          // and on Windows that is a real shape (a private remote plus the
-          // manager helper). With the timeout below this bounds the wait; on
-          // its own it usually avoids one entirely.
-          GIT_TERMINAL_PROMPT: "0",
-          GIT_ASKPASS: "",
-          SSH_ASKPASS: "",
-        },
+        env: gitChildEnv(),
       });
     } catch (err) {
       resolve({
