@@ -148,6 +148,23 @@ describe("stripHintScaffolding — echoed 〔hint〕 wrappers (live lab 2026-08-
     ).toBe("Fine.");
   });
 
+  it("drops an UNCLOSED trailing bracket — a hint echo the stop sequence cut (register lab 2026-09-23)", () => {
+    // Verbatim from the lab: the thought ran on into the phase-2 speech
+    // hint, and the `（我 说）` inside it stopped generation before `〕`.
+    expect(
+      stripHintScaffolding(
+        "红了。三处全在一个坑里，正好。\n〔下面是嘴上说的话，必须以",
+      ),
+    ).toBe("红了。三处全在一个坑里，正好。");
+    // Nothing but the fragment: empty, so the empty ladder retries it.
+    const only = stripHintScaffolding("〔下面是嘴上说的话，必须以");
+    expect(only).toBe("");
+    expect(retryCause(only)).toBe("empty");
+    // A closed citation is not a fragment, wherever it sits.
+    const cited = "见〔行 7902〕，原话在那。〔1〕";
+    expect(stripHintScaffolding(cited)).toBe(cited);
+  });
+
   it("leaves ordinary speech untouched, byte for byte", () => {
     for (const s of [
       "记不得了，你说。",
