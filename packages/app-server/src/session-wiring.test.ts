@@ -8,6 +8,7 @@ import {
   BACKEND_PROVIDER_MAX_RETRIES,
   createBackendProvider,
   createBackendStack,
+  hostNoteFor,
   isVisionModel,
 } from "./session-wiring.js";
 
@@ -265,13 +266,41 @@ describe("createBackendStack", () => {
       ).not.toContain("# 主机环境");
     });
 
-    it("non-Windows platforms: no note", () => {
-      for (const platform of ["linux", "darwin"] as const) {
-        const stack = mkStack(platform, false, mkWorkspace());
-        expect(
-          stack.backendBuilder.build(buildInput).backendSystem,
-        ).not.toContain("# 主机环境");
+    it("linux: no note — the GNU userland is what the backend expects", () => {
+      const stack = mkStack("linux", false, mkWorkspace());
+      expect(
+        stack.backendBuilder.build(buildInput).backendSystem,
+      ).not.toContain("# 主机环境");
+    });
+
+    it("darwin: BOTH contracts carry the macOS note — its shell is the BSD userland (2026-09-23)", () => {
+      const standard = mkStack("darwin", false, mkWorkspace());
+      expect(standard.contract).toBe("standard");
+      const root = mkWorkspace();
+      process.env.HERTA_BASH = root; // any existing path (see above)
+      const minimal = mkStack("darwin", true, root);
+      expect(minimal.contract).toBe("minimal");
+      for (const stack of [standard, minimal]) {
+        const sys = stack.backendBuilder.build(buildInput).backendSystem;
+        expect(sys).toContain("# 主机环境");
+        expect(sys).toContain("macOS");
+        expect(sys).not.toContain("Windows"); // not the Windows note
       }
+    });
+
+    it("hostNoteFor: the whole decision table", () => {
+      expect(hostNoteFor("win32", "standard", "en").hostNote).toContain(
+        "Windows",
+      );
+      expect(hostNoteFor("win32", "minimal", "en")).toEqual({});
+      expect(hostNoteFor("darwin", "standard", "en").hostNote).toContain(
+        "macOS",
+      );
+      expect(hostNoteFor("darwin", "minimal", "en").hostNote).toContain(
+        "macOS",
+      );
+      expect(hostNoteFor("linux", "standard", "en")).toEqual({});
+      expect(hostNoteFor("linux", "minimal", "en")).toEqual({});
     });
   });
 

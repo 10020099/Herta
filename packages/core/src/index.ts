@@ -18,6 +18,7 @@ export {
   BackendContextBuilder,
   type BackendContextBuilderDeps,
   type BackendContract,
+  darwinBackendHostNote,
   minimalBackendContract,
   type RepoContextDirtyFile,
   type RepoContextSnapshot,

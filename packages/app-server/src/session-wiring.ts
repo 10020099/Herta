@@ -32,6 +32,7 @@ import {
   type BackendContract,
   CodingAgentRuntime,
   type CompletionProviderAdapter,
+  darwinBackendHostNote,
   dreamDirFor,
   type EventBus,
   errorMessage,
@@ -325,6 +326,20 @@ export function prepareBackendStack(opts: {
   return opts.wantMinimal ? primeShellPaths(findBash()) : Promise.resolve();
 }
 
+/** Which host note a session's backend frame carries (ADR 0044, amended
+ *  2026-09-23), as a spreadable deps fragment. Exported for its tests. */
+export function hostNoteFor(
+  platform: NodeJS.Platform,
+  contract: BackendContract,
+  lang: "zh" | "en",
+): { hostNote?: string } {
+  if (platform === "win32" && contract === "standard") {
+    return { hostNote: windowsBackendHostNote(lang) };
+  }
+  if (platform === "darwin") return { hostNote: darwinBackendHostNote(lang) };
+  return {};
+}
+
 export function createBackendStack(opts: BackendStackOpts): BackendStack {
   const { wsHolder, lang } = opts;
 
@@ -416,11 +431,12 @@ export function createBackendStack(opts: BackendStackOpts): BackendStack {
     // ADR 0044: the standard contract on Windows says what the host is —
     // without it the backend's Unix habits (grep/sed/ls) are a not_found
     // each, which is what a bash-less machine's user reads as "很多命令
-    // 执行不了". win32-only, standard-only; the note text lives in core.
-    ...((opts.platform ?? process.platform) === "win32" &&
-    contract === "standard"
-      ? { hostNote: windowsBackendHostNote(lang) }
-      : {}),
+    // 执行不了". win32 standard only. macOS (amended 2026-09-23): BOTH
+    // contracts, because the GNU habits (`sed -i`, `grep -P`, bash-4 syntax)
+    // fail in the Mac's BSD shell as much as through run_command. Per
+    // SESSION, like the toolset (ADR 0067) — never a per-turn prompt change.
+    // The note texts live in core.
+    ...hostNoteFor(opts.platform ?? process.platform, contract, lang),
   });
 
   // Permission rules attach to the shared engine.

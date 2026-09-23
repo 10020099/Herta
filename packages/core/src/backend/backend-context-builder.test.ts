@@ -5,6 +5,7 @@ import {
   BACKEND_EXECUTION_CONTRACT,
   BACKEND_EXECUTION_CONTRACT_EN,
   BackendContextBuilder,
+  darwinBackendHostNote,
   minimalBackendContract,
   RECENT_DIALOGUE_HEADER,
   RECENT_DIALOGUE_HEADER_EN,
@@ -652,14 +653,35 @@ describe("host note (ADR 0044)", () => {
     );
   });
 
-  it("the minimal contract never carries it (bash exists there by construction)", () => {
+  it("the minimal contract carries a note it is given — WHICH note is the wiring's call (2026-09-23)", () => {
+    // The Windows note never reaches minimal (the wiring gives it to the
+    // standard contract only); the macOS note does, because the Mac's shell
+    // is the BSD userland the note describes.
     const tools = new InMemoryToolRegistry();
     const builder = new BackendContextBuilder({
       tools,
       contract: "minimal",
-      hostNote: windowsBackendHostNote("zh"),
+      hostNote: darwinBackendHostNote("zh"),
     });
-    expect(builder.build(common).backendSystem).not.toContain("# 主机环境");
+    const sys = builder.build(common).backendSystem;
+    expect(sys).toContain("# 主机环境");
+    expect(sys).toContain("macOS");
+    const bare = new BackendContextBuilder({ tools, contract: "minimal" });
+    expect(bare.build(common).backendSystem).not.toContain("# 主机环境");
+  });
+
+  it("darwinBackendHostNote names the BSD differences that fail GNU habits, both languages", () => {
+    for (const note of [
+      darwinBackendHostNote("zh"),
+      darwinBackendHostNote("en"),
+    ]) {
+      expect(note).toContain("macOS");
+      expect(note).toContain("sed -i ''");
+      expect(note).toContain("3.2");
+      expect(note).toContain("declare -A");
+    }
+    expect(darwinBackendHostNote("en")).toContain("# Host environment");
+    expect(darwinBackendHostNote("zh")).toContain("# 主机环境");
   });
 });
 

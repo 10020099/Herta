@@ -436,6 +436,38 @@ edit_file / write_new_file；要跑的命令（node、npm test 等）直接给 a
 不要试 Unix 工具，也不要拼管道。`;
 }
 
+/**
+ * Host-environment note for macOS, BOTH contracts (ADR 0044 amended —
+ * platform review 2026-09-23).
+ *
+ * The backend's training bias is GNU/Linux, and a Mac's command line is BSD:
+ * `sed -i 's/a/b/' f` is an error there (and `sed -i -e …` leaves `f-e`
+ * backup files behind), `grep -P`, `date -d`, `stat -c`, `find -printf` and
+ * `timeout` are missing or different, and Apple's /bin/bash is 3.2 — no
+ * associative arrays, `mapfile`, `${x,,}` or `globstar`. Each of those is a
+ * failed command and a retry the user watches, so the note says what the host
+ * is. Unlike the Windows note it applies to the minimal contract too: that
+ * shell IS the BSD userland. Text only; the wiring decides when it applies.
+ */
+export function darwinBackendHostNote(lang: "zh" | "en"): string {
+  return lang === "en"
+    ? `# Host environment
+
+This machine runs macOS. Its command-line tools are the BSD versions, not
+GNU: \`sed -i\` needs an explicit empty suffix (\`sed -i '' 's/a/b/' file\`),
+and \`grep -P\`, \`date -d\`, \`stat -c\`, \`find -printf\` and \`timeout\` are
+missing or behave differently. Apple's /bin/bash is version 3.2 (check
+\`echo $BASH_VERSION\`): no \`declare -A\`, \`mapfile\`, \`\${var,,}\` or
+\`globstar\`. Prefer portable POSIX forms.`
+    : `# 主机环境
+
+这台机器是 macOS，命令行工具是 BSD 版本，不是 GNU：\`sed -i\` 必须带一个空后缀
+（\`sed -i '' 's/a/b/' file\`）；\`grep -P\`、\`date -d\`、\`stat -c\`、\`find -printf\`
+和 \`timeout\` 不存在或行为不同。苹果自带的 /bin/bash 是 3.2 版（\`echo $BASH_VERSION\`
+可查）：没有 \`declare -A\`、\`mapfile\`、\`\${var,,}\` 和 \`globstar\`。优先用可移植的
+POSIX 写法。`;
+}
+
 /** A repo operation the working tree is in the middle of (ADR 0049 §1). */
 export type RepoInProgressState =
   | "merge"
@@ -666,11 +698,12 @@ export interface BackendContextBuilderDeps {
    */
   workspaceHint?: () => string | undefined;
   /**
-   * Host-environment section appended to the STANDARD contract (ADR 0044) —
-   * the wiring passes `windowsBackendHostNote(lang)` on win32 and nothing
-   * elsewhere. Ignored under the minimal contract (bash exists there by
-   * construction). Undefined / "" → the section is omitted and the frame is
-   * byte-identical to before.
+   * Host-environment section appended to the contract (ADR 0044). The WIRING
+   * decides who gets one: `windowsBackendHostNote` on win32 under the
+   * standard contract only (the minimal one has bash there), and
+   * `darwinBackendHostNote` on macOS under both (2026-09-23 — that shell IS
+   * the BSD userland). Undefined / "" → the section is omitted and the frame
+   * is byte-identical to before.
    */
   hostNote?: string;
 }
@@ -744,12 +777,14 @@ export class BackendContextBuilder {
       lang === "en"
         ? BACKEND_EXECUTION_CONTRACT_EN
         : BACKEND_EXECUTION_CONTRACT;
-    const contract =
+    const base =
       this.contractKind === "minimal"
         ? minimalBackendContract(lang, this.workspaceHint?.())
-        : this.hostNote !== undefined && this.hostNote.length > 0
-          ? `${standardBase}\n\n${this.hostNote}`
-          : standardBase;
+        : standardBase;
+    const contract =
+      this.hostNote !== undefined && this.hostNote.length > 0
+        ? `${base}\n\n${this.hostNote}`
+        : base;
     const workingHeader =
       lang === "en" ? WORKING_HISTORY_HEADER_EN : WORKING_HISTORY_HEADER;
     const recentHeader =
