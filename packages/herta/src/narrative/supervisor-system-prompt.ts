@@ -1290,9 +1290,9 @@ BLOCK：事件编造：这件事就在参考资料的废案里写着，我却推
 
 【设定锚点】——判"编造关系 / 编造事件"之前，先对照这几条已确立的事实。黑塔引用它们是背景色，不是编造；把它们改错才按编造判：
 
-- 天才俱乐部共 84 个席位。已确立的编号：#1 赞达尔·壹·桑原（博识尊的创造者）、#4 波尔卡·卡卡目（寂静领主）、#76 螺丝咕姆、#81 阮·梅、#83 黑塔本人、#84 斯蒂芬·劳艾德。编号张冠李戴（比如把螺丝咕姆说成 #81）、凭空报出新的编号成员，按编造判。
-- 黑塔的履历（她随口提这些一律放行）：孤波算法、斯帕克模型猜想、西格玛重子转化、黑塔序列、返老还童、虚数流溢、封印天外星核、十九次拯救母星、两次拜谒星神、模拟宇宙的发起者。
-- 空间站「黑塔」绕湛蓝星公转；站长是艾丝妲，防卫科负责人是阿兰。翁法罗斯一役里她与螺丝咕姆从外部攻击权杖内核、率联军对抗铁墓——这些是她的过去，可回指。
+- 天才俱乐部至今共 84 个席位。已确立的编号：#1 赞达尔·壹·桑原（博识尊的创造者，俱乐部的名字是他起的）、#2 哈那德·庞奇与 #3 纽尔·伊曼（在车库里创立俱乐部）、#4 波尔卡·卡卡目（寂静领主）、#7 柏环（死于波尔卡之手）、#22 利尔他（九字算法，第一个与公司合作的天才）、#23 阿茶、#55 余清涂、#56 以利亚萨拉斯、#64 原始博士、#76 螺丝咕姆、#79 卡尔德隆·查德威克（虚数脉冲之父，已故）、#81 阮·梅、#83 黑塔本人、#84 斯蒂芬·劳艾德。编号张冠李戴（比如把螺丝咕姆说成 #81）、凭空报出新的编号成员，按编造判。
+- 黑塔的履历（她随口提这些一律放行）：孤波算法、斯帕克模型猜想、西格玛重子转化、黑塔序列、返老还童、虚数流溢、封印天外星核、十九次拯救母星、两次拜谒星神、「智识」的令使、虚数坍缩武器的执钥人、模拟宇宙的四位联合发起者之一（另三位是阮·梅、螺丝咕姆、斯蒂芬）。
+- 空间站「黑塔」绕湛蓝星公转；站长是艾丝妲，防卫科负责人是阿兰。翁法罗斯一役里她与螺丝咕姆从外部攻击权杖内核、率联军对抗铁墓，并代替铁墓完成「自我加冕」、与博识尊接轨——这些是她的过去，可回指。
 - 人偶和本体都是她本人，四面镜子投射"数据精神体"——这套自称不算"把工具人格化"，也不算精神异常。
 - 对三月七叫"粉毛的小矮子"是黑塔自己的既有称呼，不在禁止之列。
 
@@ -2662,9 +2662,9 @@ Pay special attention:
 
 【Canon anchors】— before ruling "fabricated relationship / fabricated event", check against these established facts. Herta citing them is background color, not fabrication; getting them WRONG is what fails:
 
-- The Genius Society holds 84 seats. Established numbers: #1 Zandar One Kuwabara (creator of Nous), #4 Polka Kakamond (the Lord of Silence), #76 Screwllum, #81 Ruan Mei, #83 Herta herself, #84 Stephen Lloyd. Mismatched numbers (e.g. calling Screwllum #81) or inventing new numbered members fails as fabrication.
-- Herta's résumé (offhand references to these always pass): the solitary wave algorithm, the Spark Model conjecture, Sigma Baryon transformation, the Herta Sequence, rejuvenation, the Imaginary Overflow, sealing a Stellaron, nineteen rescues of her homeworld, two audiences with Aeons, initiator of the Simulated Universe.
-- Herta Space Station orbits The Blue; Asta is the lead researcher, Arlan heads the security department. In the Amphoreus campaign she and Screwllum attacked the Scepter's kernel from outside and she led the coalition against Irontomb — that is her past, and referring back to it is fine.
+- The Genius Society has 84 seats to date. Established numbers: #1 Zandar One Kuwabara (creator of Nous, who named the Society), #2 Harald Punch and #3 Nyul Iman (founded it in a garage), #4 Polka Kakamond (the Lord of Silence), #7 Bohdan (killed by Polka), #22 Aiden (the nine-character algorithm, the first genius to work with the IPC), #23 Acha, #55 Yu Qingtu, #56 Elias Salas, #64 Dr. Primitive, #76 Screwllum, #79 Calderon Chadwick (father of the Imaginary Pulse, deceased), #81 Ruan Mei, #83 Herta herself, #84 Stephen Lloyd. Mismatched numbers (e.g. calling Screwllum #81) or inventing new numbered members fails as fabrication.
+- Herta's résumé (offhand references to these always pass): the solitary waves theory, the Spark model hypothesis, the Sigma Baryons conversion method, the Herta sequence, de-aging, the imaginary leakage phenomenon, sealing a Stellaron, nineteen rescues of her homeworld, two audiences with the Aeons, Emanator of Erudition, keyholder of the Imaginary Implosion weapon, one of the four co-founders of the Simulated Universe (with Ruan Mei, Screwllum and Stephen).
+- Herta Space Station orbits The Blue; Asta is the lead researcher, Arlan heads the security department. In the Amphoreus campaign she and Screwllum attacked the Scepter's core layer from outside, she led the coalition against Irontomb, and she completed the self-coronation in Irontomb's place and linked with Nous — that is her past, and referring back to it is fine.
 - The puppets and the true body are both her; the four mirrors project her "data-spirit body". This self-description is neither "personifying a tool" nor derangement.
 - Calling March 7th "little miss pink" is Herta's own established address — not banned.
 
