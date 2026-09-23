@@ -1,6 +1,11 @@
 import type { SystemBlock, TerminalRecordBlock } from "@herta/core";
 import { describe, expect, it } from "vitest";
-import { buildEpisodeDigest, dreamRelevantSystemBody } from "./digest.js";
+import {
+  buildEpisodeDigest,
+  DIGEST_EVIDENCE_BUDGET,
+  DIGEST_MAX_SYSTEM_ROWS,
+  dreamRelevantSystemBody,
+} from "./digest.js";
 
 const blocks: TerminalRecordBlock[] = [
   { kind: "user", text: "加个 --verbose" },
@@ -281,6 +286,64 @@ describe("buildEpisodeDigest", () => {
     ]);
     expect(fromStore).toContain("background bg-1: exited (1)");
     expect(fromStore).not.toContain("CONFIDENTIAL");
+  });
+
+  it("bounds a long run: its first and last rows, every marker, and a line saying how many were left out (ADR 0069 §7)", () => {
+    const op = (i: number): TerminalRecordBlock => ({
+      kind: "system",
+      label: "差分协处理器",
+      body: `Reading src/f${i}.ts`,
+      digest: { kind: "op", verb: "Reading", arg: `src/f${i}.ts` },
+    });
+    const run: TerminalRecordBlock[] = [
+      { kind: "user", text: "修 parser" },
+      ...Array.from({ length: 50 }, (_, i) => op(i)),
+      {
+        kind: "system",
+        label: "差分协处理器",
+        body: "受阻 · 缺依赖",
+        role: "done-marker",
+      },
+      ...Array.from({ length: 50 }, (_, i) => op(50 + i)),
+      { kind: "herta", surface: "speech", text: "修好了。" },
+    ];
+    const d = buildEpisodeDigest(run);
+    // The limit counts 板砖's rows; the marker stays on top of it.
+    const kept = (d.match(/Reading src\/f\d+\.ts/g) ?? []).length;
+    expect(kept).toBe(DIGEST_MAX_SYSTEM_ROWS);
+    expect(d).toContain("Reading src/f0.ts");
+    expect(d).toContain("Reading src/f99.ts");
+    expect(d).toContain("受阻 · 缺依赖");
+    expect(d).toContain(`此处略去 ${100 - kept} 条板砖操作记录`);
+    expect(d).toContain("修好了。");
+  });
+
+  it("keeps run evidence within a budget, nearest the verdict first, and always the marker's own detail (ADR 0069 §7)", () => {
+    const out = (i: number): TerminalRecordBlock => ({
+      kind: "system",
+      label: "差分协处理器",
+      body: `↳ exit 0 · 40 lines (#${i})`,
+      digest: { kind: "text", text: `↳ exit 0 · 40 lines (#${i})` },
+      evidenceDetail: `↳ 输出:\nOUT${i} ${"x".repeat(1000)}`,
+    });
+    const d = buildEpisodeDigest([
+      ...Array.from({ length: 12 }, (_, i) => out(i)),
+      {
+        kind: "system",
+        label: "差分协处理器",
+        body: "完成 · 1 个文件",
+        role: "done-marker",
+        evidenceDetail: "↳ 改动文件: a.ts",
+      },
+    ]);
+    // Every body stays; only the last rows' outputs fit the budget.
+    expect(d).toContain("(#0)");
+    expect(d).not.toContain("OUT0 ");
+    expect(d).toContain("OUT11 ");
+    const outputs = (d.match(/OUT\d+ /g) ?? []).length;
+    expect(outputs).toBeGreaterThan(0);
+    expect(outputs * 1000).toBeLessThanOrEqual(DIGEST_EVIDENCE_BUDGET);
+    expect(d).toContain("改动文件: a.ts");
   });
 
   it("drops a patch preview in the shape the projector has emitted since 2026-08-25 — digest `patch`, the full diff in the body (dream review 2026-09-22, finding 1)", () => {

@@ -1682,7 +1682,7 @@ describe("runDreamPass hardening", () => {
       config: testConfig,
       now: () => new Date("2026-09-24T00:00:00Z"),
     });
-    expect(readManifest(dreamDir).verdictCutSince).toBe(
+    expect(readManifest(dreamDir).segmentationV2Since).toBe(
       "2026-09-24T00:00:00.000Z",
     );
     await runDreamPass({
@@ -1693,7 +1693,7 @@ describe("runDreamPass hardening", () => {
       config: testConfig,
       now: () => new Date("2026-10-02T00:00:00Z"),
     });
-    expect(readManifest(dreamDir).verdictCutSince).toBe(
+    expect(readManifest(dreamDir).segmentationV2Since).toBe(
       "2026-09-24T00:00:00.000Z",
     );
   });

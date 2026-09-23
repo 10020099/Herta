@@ -73,7 +73,7 @@ describe("segmentSession", () => {
     it("keeps Herta's verdict in the episode with the run's evidence once the cutover has passed", () => {
       const eps = segmentSession("s1", commission(t), {
         ...OPTS,
-        verdictCutSinceMs: CUT,
+        segmentationV2SinceMs: CUT,
       });
       expect(eps.map((e) => [e.startIndex, e.endIndex])).toEqual([
         [0, 5],
@@ -91,7 +91,7 @@ describe("segmentSession", () => {
       const legacy = segmentSession("s1", rec, OPTS);
       const now = segmentSession("s1", rec, {
         ...OPTS,
-        verdictCutSinceMs: CUT,
+        segmentationV2SinceMs: CUT,
       });
       expect(legacy[0]?.endIndex).toBe(3);
       expect(now.map((e) => e.episodeHash)).toEqual(
@@ -101,7 +101,10 @@ describe("segmentSession", () => {
 
     it("an unstamped marker cannot prove it is past the cutover and keeps the marker cut", () => {
       const rec = [u("fix it"), h("@板砖"), done(), h("verdict"), u("next")];
-      const eps = segmentSession("s1", rec, { ...OPTS, verdictCutSinceMs: 0 });
+      const eps = segmentSession("s1", rec, {
+        ...OPTS,
+        segmentationV2SinceMs: 0,
+      });
       expect(eps[0]?.endIndex).toBe(3);
     });
 
@@ -110,14 +113,14 @@ describe("segmentSession", () => {
       const open = segmentSession(
         "s1",
         rec,
-        { ...OPTS, verdictCutSinceMs: CUT },
+        { ...OPTS, segmentationV2SinceMs: CUT },
         CUT + 10 * 60_000,
       );
       expect(open.at(-1)?.settled).toBe(false);
       const quiet = segmentSession(
         "s1",
         rec,
-        { ...OPTS, verdictCutSinceMs: CUT },
+        { ...OPTS, segmentationV2SinceMs: CUT },
         CUT + 60 * 60_000,
       );
       expect(quiet.at(-1)?.settled).toBe(true);
@@ -126,9 +129,71 @@ describe("segmentSession", () => {
       const grown = segmentSession(
         "s1",
         [...rec, u("still there?", t(90)), h("在。", t(91))],
-        { ...OPTS, verdictCutSinceMs: CUT },
+        { ...OPTS, segmentationV2SinceMs: CUT },
       );
       expect(grown[0]?.episodeHash).toBe(quiet.at(-1)?.episodeHash);
+    });
+  });
+
+  // ── v2's block cap (ADR 0069 §7; dream review 2026-09-22, finding 16) ────
+  describe("the block cap counts only the conversation after the v2 cutover", () => {
+    const CUT = Date.parse("2026-09-24T00:00:00Z");
+    // 10 s apart: a 70-row run spans under 45 minutes, so only the block cap
+    // could cut it.
+    const at = (i: number): string => new Date(CUT + i * 10_000).toISOString();
+    const op = (i: number): TerminalRecordBlock => ({
+      kind: "system",
+      label: "差分协处理器",
+      body: `Reading src/f${i}.ts`,
+      digest: { kind: "op", verb: "Reading", arg: `src/f${i}.ts` },
+      at: at(i),
+    });
+    const longRun = (): TerminalRecordBlock[] => {
+      const rows = Array.from({ length: 70 }, (_, i) => op(i + 2));
+      return [
+        u("fix the parser", at(0)),
+        h("@板砖 去修。", at(1)),
+        ...rows,
+        { ...done(at(72)) },
+        h("修好了，只跑了定向测试。", at(73)),
+        u("next", at(74)),
+      ];
+    };
+
+    it("keeps a long 板砖 run one episode from the ask to the verdict", () => {
+      const eps = segmentSession("s1", longRun(), {
+        ...OPTS,
+        segmentationV2SinceMs: CUT,
+      });
+      expect(eps[0]?.startIndex).toBe(0);
+      expect(eps[0]?.blocks[0]).toMatchObject({ text: "fix the parser" });
+      expect(eps[0]?.blocks.at(-1)).toMatchObject({
+        text: "修好了，只跑了定向测试。",
+      });
+    });
+
+    it("before the cutover the same run is chopped at 60 blocks, exactly as ledgered", () => {
+      const eps = segmentSession("s1", longRun(), {
+        ...OPTS,
+        segmentationV2SinceMs: CUT + 24 * 60 * 60_000,
+      });
+      const legacy = segmentSession("s1", longRun(), OPTS);
+      expect(eps[0]?.endIndex).toBe(60);
+      expect(eps.map((e) => e.episodeHash)).toEqual(
+        legacy.map((e) => e.episodeHash),
+      );
+    });
+
+    it("still caps the conversation itself at maxEpisodeBlocks", () => {
+      const chat: TerminalRecordBlock[] = Array.from({ length: 8 }, (_, i) =>
+        i % 2 === 0 ? u(`q${i}`, at(i)) : h(`a${i}`, at(i)),
+      );
+      const eps = segmentSession("s1", chat, {
+        ...OPTS,
+        maxEpisodeBlocks: 4,
+        segmentationV2SinceMs: CUT,
+      });
+      expect(eps.map((e) => e.blocks.length)).toEqual([4, 4]);
     });
   });
 

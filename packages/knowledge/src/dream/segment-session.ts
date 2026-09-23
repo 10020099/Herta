@@ -7,17 +7,22 @@ export interface SegmentOptions {
   readonly maxEpisodeBlocks: number;
   readonly maxEpisodeMs: number;
   /**
-   * The verdict cut's cutover (ADR 0069 §4), ms epoch. A done/noop-marker
-   * stamped at or after it no longer ends its episode: the cut moves to the
-   * next user block, so Herta's verdict on the run — the speech right after
-   * the marker — stays in the episode that holds the run's evidence. A
-   * marker stamped before it, or unstamped, cuts where it always did, so
-   * every episode dreamed before the cutover keeps its hash. The dream
-   * manifest records the cutover the first time a pass runs with this rule
-   * (`DreamManifest.verdictCutSince`); every segmenter that must agree with
-   * the ledger reads it from there. Absent → the marker cut everywhere.
+   * The cutover of segmentation v2 (ADR 0069 §4 and §7), ms epoch. Two rules
+   * apply to blocks stamped at or after it:
+   *  - a done/noop-marker no longer ends its episode: the cut moves to the
+   *    next user block, so Herta's verdict on the run stays in the episode
+   *    that holds the run's evidence;
+   *  - 板砖's rows no longer count toward `maxEpisodeBlocks`: only the
+   *    conversation does, so a long run is one episode from the ask to the
+   *    verdict (bounded in time by `maxEpisodeMs`) instead of being chopped
+   *    into chunks that separate the verdict from the ask.
+   * A block stamped before it, or unstamped, follows the old rules, so every
+   * episode dreamed before the cutover keeps its hash. The dream manifest
+   * records the cutover the first time a pass runs with these rules
+   * (`DreamManifest.segmentationV2Since`); every segmenter that must agree
+   * with the ledger reads it from there. Absent → the old rules everywhere.
    */
-  readonly verdictCutSinceMs?: number;
+  readonly segmentationV2SinceMs?: number;
 }
 
 /**
@@ -77,15 +82,31 @@ function isMarker(b: TerminalRecordBlock): boolean {
   );
 }
 
+/** A block stamped at or after the segmentation-v2 cutover; see
+ *  `SegmentOptions.segmentationV2SinceMs`. An unstamped block never is. */
+function pastV2Cutover(b: TerminalRecordBlock, opts: SegmentOptions): boolean {
+  if (opts.segmentationV2SinceMs === undefined) return false;
+  const at = parseAt(b);
+  return at !== undefined && at >= opts.segmentationV2SinceMs;
+}
+
 /** A marker past the cutover defers its cut to the next user block
- *  (ADR 0069 §4); see `SegmentOptions.verdictCutSinceMs`. */
+ *  (ADR 0069 §4). */
 function defersToVerdict(
   marker: TerminalRecordBlock,
   opts: SegmentOptions,
 ): boolean {
-  if (opts.verdictCutSinceMs === undefined) return false;
-  const at = parseAt(marker);
-  return at !== undefined && at >= opts.verdictCutSinceMs;
+  return pastV2Cutover(marker, opts);
+}
+
+/** Whether a block counts toward `maxEpisodeBlocks`: every block before
+ *  the cutover, and only the conversation after it (ADR 0069 §7). Shared
+ *  with the tests that check the cap. */
+export function countsTowardBlockCap(
+  b: TerminalRecordBlock,
+  opts: SegmentOptions,
+): boolean {
+  return b.kind !== "system" || !pastV2Cutover(b, opts);
 }
 
 /**
@@ -184,12 +205,17 @@ export function segmentSession(
     // the first stamped block encountered in the loop below.
   };
 
-  // A marker past the verdict cutover was seen in the current episode: the
+  // A marker past the v2 cutover was seen in the current episode: the
   // episode ends at the next user block instead, after Herta's verdict on
   // the run (ADR 0069 §4). The review found the old cut stranding it: the
   // run's evidence closed one episode, and the verdict opened the next as
   // an ungrounded claim over a digest with no evidence in it.
   let verdictPending = false;
+  // Blocks in [start, i) that count toward the block cap — every block
+  // before the v2 cutover (so this equals `i - start` there), only the
+  // conversation after it (ADR 0069 §7).
+  let counted =
+    firstBlock !== undefined && countsTowardBlockCap(firstBlock, opts) ? 1 : 0;
   for (let i = 1; i < record.length; i++) {
     const cur = record[i];
     const prev = record[i - 1];
@@ -206,11 +232,13 @@ export function segmentSession(
     if (
       isBoundary(prev, cur, episodeStartMs, opts) ||
       (verdictPending && cur.kind === "user") ||
-      i - start >= opts.maxEpisodeBlocks
+      counted >= opts.maxEpisodeBlocks
     ) {
       flush(i);
       verdictPending = false;
+      counted = 0;
     }
+    if (countsTowardBlockCap(cur, opts)) counted += 1;
   }
   flush(record.length);
   return episodes;

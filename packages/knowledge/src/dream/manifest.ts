@@ -97,18 +97,18 @@ function parseManifest(raw: string): DreamManifest | null {
     ...(Array.isArray(parsed.pendingFold) && parsed.pendingFold.length > 0
       ? { pendingFold: parsed.pendingFold }
       : {}),
-    ...(typeof parsed.verdictCutSince === "string"
-      ? { verdictCutSince: parsed.verdictCutSince }
+    ...(typeof parsed.segmentationV2Since === "string"
+      ? { segmentationV2Since: parsed.segmentationV2Since }
       : {}),
   };
 }
 
-/** The segmenter options that agree with this manifest's ledger: the
- *  verdict cut applies from the cutover the manifest recorded, and not at
- *  all when it recorded none (ADR 0069 §4). */
-export function verdictCutSinceMs(m: DreamManifest): number | undefined {
-  if (m.verdictCutSince === undefined) return undefined;
-  const t = Date.parse(m.verdictCutSince);
+/** The segmenter option that agrees with this manifest's ledger:
+ *  segmentation v2 applies from the cutover the manifest recorded, and not
+ *  at all when it recorded none (ADR 0069 §4 and §7). */
+export function segmentationV2SinceMs(m: DreamManifest): number | undefined {
+  if (m.segmentationV2Since === undefined) return undefined;
+  const t = Date.parse(m.segmentationV2Since);
   return Number.isNaN(t) ? undefined : t;
 }
 

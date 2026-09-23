@@ -102,29 +102,105 @@ export function dreamRelevantEvidenceDetail(
   return detail;
 }
 
+/**
+ * At most this many of 板砖's rows reach one episode's digest — the most an
+ * episode could carry before segmentation v2 let a long run stay whole
+ * (ADR 0069 §7). Past it the digest keeps the run's first rows (what it set
+ * out to do) and its last (how it ended), every marker, and a line saying
+ * how many were left out.
+ */
+export const DIGEST_MAX_SYSTEM_ROWS = 60;
+const DIGEST_HEAD_ROWS = 15;
+
+/**
+ * Characters of run evidence — excerpts, outputs, hit lists — one digest
+ * carries, filled from the end: the rows nearest the verdict first. A
+ * marker's own detail (files, risks, tests) always stays. Past the budget a
+ * row keeps its body and loses its detail.
+ */
+export const DIGEST_EVIDENCE_BUDGET = 6000;
+
+interface SystemRow {
+  readonly body: string;
+  readonly evidence: string;
+  readonly marker: boolean;
+}
+
 export function buildEpisodeDigest(
   blocks: readonly TerminalRecordBlock[],
 ): string {
-  const parts: string[] = [];
+  // Pass 1 — every system row the dream keeps, with its evidence, in order.
   // The latest `Running …` row named the attachment store: the output row
   // that follows carries that command's output (ADR 0069 §5). A command
   // started in the background answers much later, after other rows — its
   // id is remembered from the row that reported it running.
+  const rows = new Map<number, SystemRow>();
   let afterAttachmentCommand = false;
   const attachmentBackgroundIds = new Set<string>();
-  for (const b of blocks) {
-    if (b.kind === "system" && b.digest?.kind === "op") {
+  blocks.forEach((b, i) => {
+    if (b.kind !== "system") return;
+    if (b.digest?.kind === "op") {
       afterAttachmentCommand =
         b.digest.verb === "Running" && mentionsAttachmentStore(b.digest.arg);
     }
     if (
-      b.kind === "system" &&
       b.digest?.kind === "bg" &&
       b.digest.state === "running" &&
       afterAttachmentCommand
     ) {
       attachmentBackgroundIds.add(b.digest.id);
     }
+    const body = dreamRelevantSystemBody(b);
+    if (body === null) return;
+    const fromStore =
+      b.digest?.kind === "bg"
+        ? attachmentBackgroundIds.has(b.digest.id)
+        : afterAttachmentCommand;
+    const detail = dreamRelevantEvidenceDetail(b, fromStore);
+    // The ↳ 待办 roll-up line is dropped: open work items are operational
+    // residue, not part of what happened.
+    const evidence =
+      detail === null
+        ? ""
+        : detail
+            .split("\n")
+            .filter((l) => !l.startsWith("↳ 待办"))
+            .join("\n");
+    rows.set(i, {
+      body,
+      evidence,
+      marker: b.role === "done-marker" || b.role === "noop-marker",
+    });
+  });
+
+  // Pass 2 — the bounds (ADR 0069 §7): which rows are left out, and which
+  // keep their evidence.
+  const order = [...rows.keys()];
+  const elided = new Set<number>();
+  if (order.length > DIGEST_MAX_SYSTEM_ROWS) {
+    const tailFrom = order.length - (DIGEST_MAX_SYSTEM_ROWS - DIGEST_HEAD_ROWS);
+    order.forEach((i, n) => {
+      if (n >= DIGEST_HEAD_ROWS && n < tailFrom && rows.get(i)?.marker !== true)
+        elided.add(i);
+    });
+  }
+  const withEvidence = new Set<number>();
+  let spent = 0;
+  for (const i of [...order].reverse()) {
+    const row = rows.get(i);
+    if (row === undefined || elided.has(i) || row.evidence.length === 0) {
+      continue;
+    }
+    if (row.marker || spent + row.evidence.length <= DIGEST_EVIDENCE_BUDGET) {
+      withEvidence.add(i);
+      if (!row.marker) spent += row.evidence.length;
+    }
+  }
+
+  // Pass 3 — the digest.
+  const parts: string[] = [];
+  let noted = false;
+  blocks.forEach((b, i) => {
     if (b.kind === "user") {
       parts.push(`开拓者：${b.text}`);
     } else if (b.kind === "herta") {
@@ -143,28 +219,22 @@ export function buildEpisodeDigest(
         `${b.surface === "thought" ? "我（内心独白）" : "我"}：${b.text}`,
       );
     } else {
-      const body = dreamRelevantSystemBody(b);
-      if (body === null) continue;
+      const row = rows.get(i);
+      if (row === undefined) return;
+      if (elided.has(i)) {
+        if (!noted) {
+          parts.push(`〔……此处略去 ${elided.size} 条板砖操作记录〕`);
+          noted = true;
+        }
+        return;
+      }
       // Verified backend/system evidence — the outcome spine. Keep it clearly
       // labeled so the model grounds the verdict in what actually happened.
-      // The ↳ 待办 roll-up line is dropped: open work items are operational
-      // residue, not part of what happened.
-      const fromStore =
-        b.digest?.kind === "bg"
-          ? attachmentBackgroundIds.has(b.digest.id)
-          : afterAttachmentCommand;
-      const detail = dreamRelevantEvidenceDetail(b, fromStore);
-      const evidence =
-        detail === null
-          ? ""
-          : detail
-              .split("\n")
-              .filter((l) => !l.startsWith("↳ 待办"))
-              .join("\n");
+      const evidence = withEvidence.has(i) ? row.evidence : "";
       parts.push(
-        `〔${b.label}（已核实）：${body}${evidence.length > 0 ? `\n${evidence}` : ""}〕`,
+        `〔${b.label}（已核实）：${row.body}${evidence.length > 0 ? `\n${evidence}` : ""}〕`,
       );
     }
-  }
+  });
   return parts.join("\n");
 }

@@ -100,7 +100,7 @@ describe("selectPromptExclusions", () => {
     // The pass dreamed the commission as the verdict cut makes it: [0, 4).
     const [commission] = segmentSession("s1", record, {
       ...OPTS,
-      verdictCutSinceMs: Date.parse(CUT),
+      segmentationV2SinceMs: Date.parse(CUT),
     });
     expect(commission?.endIndex).toBe(4);
     const manifest: DreamManifest = {
@@ -108,7 +108,7 @@ describe("selectPromptExclusions", () => {
         withCreated(mkCreated("1", [commission?.episodeHash ?? ""])),
         [[commission?.episodeHash ?? "", "s1"]],
       ),
-      verdictCutSince: CUT,
+      segmentationV2Since: CUT,
     };
     // A fold put the commission behind the boundary: its 废案 is recovered
     // memory and loads. A filter cutting at the marker would not find the

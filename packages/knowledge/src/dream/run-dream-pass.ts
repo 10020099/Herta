@@ -31,8 +31,8 @@ import {
   pickEvictionTarget,
   readManifestStrict,
   reinforceRecord,
+  segmentationV2SinceMs,
   staleLiveRecords,
-  verdictCutSinceMs,
   writeManifest,
 } from "./manifest.js";
 import { titleNoveltyOk } from "./novelty.js";
@@ -422,16 +422,16 @@ export async function runDreamPass(
       return res;
     }
     const manifest = read.manifest;
-    // The verdict cut (ADR 0069 §4) starts with the first pass that runs
-    // with it: every marker in a record today predates this moment, so it
-    // cuts where it always did and every ledgered episode keeps its hash.
+    // Segmentation v2 (ADR 0069 §4 and §7) starts with the first pass that
+    // runs with it: every block in a record today predates this moment, so
+    // it is cut as it always was and every ledgered episode keeps its hash.
     // Recorded with the manifest's next flush, and never moved after.
-    if (manifest.verdictCutSince === undefined) {
-      manifest.verdictCutSince = now().toISOString();
+    if (manifest.segmentationV2Since === undefined) {
+      manifest.segmentationV2Since = now().toISOString();
     }
     const segmentOpts = {
       ...cfg,
-      verdictCutSinceMs: verdictCutSinceMs(manifest),
+      segmentationV2SinceMs: segmentationV2SinceMs(manifest),
     };
 
     // Crash recovery: make the on-disk state and the ledger consistent before
