@@ -1037,7 +1037,6 @@ export async function runDreamPass(
             summary: opening,
             critiqueScores: scoresResult,
             validateFeianPassed: true,
-            estimatedPrefixTokens: gen.feian.length,
             reactivationCount: 0,
             // The worthiness-extracted occasion (ADR 0021) — the record's
             // stable real-life identity for future reactivation. Optional:

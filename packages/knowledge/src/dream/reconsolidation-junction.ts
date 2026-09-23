@@ -422,7 +422,6 @@ export async function runReconsolidationJunction(
       ? { emotionalCharge: old.emotionalCharge }
       : {}),
     validateFeianPassed: true,
-    estimatedPrefixTokens: merged.length,
     reactivationCount: old.reactivationCount + 1,
     lastReactivatedAt: now().toISOString(),
     supersedes: old.id,

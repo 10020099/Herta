@@ -42,7 +42,6 @@ const mkCreated = (
   summary: "这是一段叙事开篇摘要。",
   critiqueScores: { voice: 0.9, format: 1, novelty: 1 },
   validateFeianPassed: true,
-  estimatedPrefixTokens: 100,
   reactivationCount: 0,
   ...extra,
 });

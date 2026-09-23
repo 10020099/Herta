@@ -18,17 +18,26 @@ export function emptyManifest(): DreamManifest {
 /** Back-fill fields added after a record may have been written: `sourceEpisodes`
  *  (was singular `sourceEpisodeHash`) and `reactivationCount` (dormant until
  *  slice 2). Defensive read, matching the `episodes ?? []` pattern — no
- *  destructive migration. */
-function normalizeCreated(r: DreamCreatedRecord): DreamCreatedRecord {
+ *  destructive migration.
+ *
+ *  The one field it drops is `estimatedPrefixTokens`, removed 2026-09-23
+ *  (ADR 0069 §12). Despite the name it held the page's CHAR count, and
+ *  nothing ever read it. Every write re-spreads a loaded record, so a
+ *  record written before then would carry that number in the file forever
+ *  under a name that says tokens; dropped here, the next write sheds it. */
+function normalizeCreated(
+  r: DreamCreatedRecord & { readonly estimatedPrefixTokens?: unknown },
+): DreamCreatedRecord {
+  const { estimatedPrefixTokens: _chars, ...rest } = r;
   const sourceEpisodes =
-    Array.isArray(r.sourceEpisodes) && r.sourceEpisodes.length > 0
-      ? r.sourceEpisodes
-      : [r.sourceEpisodeHash];
+    Array.isArray(rest.sourceEpisodes) && rest.sourceEpisodes.length > 0
+      ? rest.sourceEpisodes
+      : [rest.sourceEpisodeHash];
   return {
-    ...r,
+    ...rest,
     sourceEpisodes,
     reactivationCount:
-      typeof r.reactivationCount === "number" ? r.reactivationCount : 0,
+      typeof rest.reactivationCount === "number" ? rest.reactivationCount : 0,
   };
 }
 

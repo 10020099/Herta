@@ -580,7 +580,6 @@ describe("runDreamPass", () => {
       summary: "既有正文。",
       critiqueScores: { voice: 0.9, format: 1, novelty: 1 },
       validateFeianPassed: true,
-      estimatedPrefixTokens: 100,
       reactivationCount: 0,
     });
     manifestModule.writeManifest(join(ws, ".herta", "dream"), seeded);
@@ -711,7 +710,6 @@ describe("runDreamPass", () => {
       summary: "既有正文。",
       critiqueScores: { voice: 0.9, format: 1, novelty: 1 },
       validateFeianPassed: true,
-      estimatedPrefixTokens: 100,
       reactivationCount: 0,
     });
     manifestModule.writeManifest(join(ws, ".herta", "dream"), seeded);
@@ -821,7 +819,6 @@ describe("runDreamPass", () => {
       summary: "既有梦境正文。",
       critiqueScores: { voice: 0.9, format: 1, novelty: 1 },
       validateFeianPassed: true,
-      estimatedPrefixTokens: 100,
       reactivationCount: 0,
     });
     manifestModule.writeManifest(join(ws, ".herta", "dream"), seededManifest);
@@ -928,7 +925,6 @@ describe("runDreamPass", () => {
       summary: "陈旧正文。",
       critiqueScores: { voice: 0.9, format: 1, novelty: 1 },
       validateFeianPassed: true,
-      estimatedPrefixTokens: 100,
       reactivationCount: 0,
     });
     manifestModule.writeManifest(join(ws, ".herta", "dream"), seeded);
@@ -980,7 +976,6 @@ describe("runDreamPass", () => {
       summary: "正文。",
       critiqueScores: { voice: 0.9, format: 1, novelty: 1 },
       validateFeianPassed: true,
-      estimatedPrefixTokens: 100,
       reactivationCount: 0,
     });
     manifestModule.writeManifest(join(ws, ".herta", "dream"), seeded);
@@ -1035,7 +1030,6 @@ describe("runDreamPass reconsolidation junction", () => {
       summary: "阮·梅又来了。",
       critiqueScores: { voice: 0.85, format: 1, novelty: 1 },
       validateFeianPassed: true,
-      estimatedPrefixTokens: 100,
       reactivationCount: 2,
     });
     manifestModule.writeManifest(join(ws, ".herta", "dream"), m);
@@ -1219,7 +1213,6 @@ describe("runDreamPass reconsolidation junction", () => {
       summary: "同名的另一版本。",
       critiqueScores: { voice: 0.8, format: 1, novelty: 1 },
       validateFeianPassed: true,
-      estimatedPrefixTokens: 100,
       reactivationCount: 0,
     });
     manifestModule.writeManifest(join(ws, ".herta", "dream"), m0);
@@ -1558,7 +1551,6 @@ describe("runDreamPass reconsolidation junction", () => {
       summary: "在世正文。",
       critiqueScores: { voice: 0.85, format: 1, novelty: 1 },
       validateFeianPassed: true,
-      estimatedPrefixTokens: 100,
       reactivationCount: 0,
     });
     manifestModule.writeManifest(join(ws, ".herta", "dream"), m0);
@@ -1892,7 +1884,6 @@ describe("runDreamPass hardening", () => {
         summary: "正文甲。",
         critiqueScores: { voice: 0.9, format: 1, novelty: 1 },
         validateFeianPassed: true,
-        estimatedPrefixTokens: 100,
         reactivationCount: 0,
         occasion: "开拓者讲过的那次真实事故。",
       },
@@ -1911,7 +1902,6 @@ describe("runDreamPass hardening", () => {
         summary: "旧梦的开篇摘要。",
         critiqueScores: { voice: 0.9, format: 1, novelty: 1 },
         validateFeianPassed: true,
-        estimatedPrefixTokens: 100,
         reactivationCount: 0,
       },
     );
@@ -2015,7 +2005,6 @@ describe("runDreamPass semanticization (forgetting feeds the 开拓者 page)", (
           summary: "全量与侥幸",
           critiqueScores: { voice: 0.9, format: 1, novelty: 1 },
           validateFeianPassed: true,
-          estimatedPrefixTokens: 100,
           reactivationCount: 0,
         },
       ],
@@ -2082,7 +2071,6 @@ describe("runDreamPass semanticization (forgetting feeds the 开拓者 page)", (
           summary: "s",
           critiqueScores: { voice: 0.9, format: 1, novelty: 1 },
           validateFeianPassed: true,
-          estimatedPrefixTokens: 100,
           reactivationCount: 0,
         },
       ],
@@ -2145,7 +2133,6 @@ describe("runDreamPass semanticization (forgetting feeds the 开拓者 page)", (
           summary: "s",
           critiqueScores: { voice: 0.9, format: 1, novelty: 1 },
           validateFeianPassed: true,
-          estimatedPrefixTokens: 100,
           reactivationCount: 0,
         },
       ],
@@ -2222,7 +2209,6 @@ describe("runDreamPass retrieval-echo reinforcement (ADR 0023)", () => {
       summary: "开篇叙事。",
       critiqueScores: { voice: 0.9, format: 1, novelty: 1 },
       validateFeianPassed: true,
-      estimatedPrefixTokens: 100,
       reactivationCount: 0,
       ...over,
     });
@@ -2464,7 +2450,6 @@ describe("runDreamPass living-memory semanticization (ADR 0023)", () => {
       summary: "他一次次证明了同一件事。",
       critiqueScores: { voice: 0.9, format: 1, novelty: 1 },
       validateFeianPassed: true,
-      estimatedPrefixTokens: 100,
       reactivationCount: 3, // == the default semanticizeReactivationThreshold
       lastReactivatedAt: "2026-06-30T00:00:00Z",
       ...over,
@@ -2635,7 +2620,6 @@ describe("runDreamPass default forgetting floor (ADR 0023)", () => {
       summary: "那晚的细节。",
       critiqueScores: { voice: 0.9, format: 1, novelty: 1 },
       validateFeianPassed: true,
-      estimatedPrefixTokens: 100,
       reactivationCount: 0,
     });
     manifestModule.writeManifest(dreamDir, m0);
@@ -2726,7 +2710,6 @@ describe("runDreamPass durability (dream review 2026-09-22, findings 7, 8, 14)",
       summary: "那晚的细节。",
       critiqueScores: { voice: 0.9, format: 1, novelty: 1 },
       validateFeianPassed: true,
-      estimatedPrefixTokens: 100,
       reactivationCount: 0,
     });
     manifestModule.writeManifest(dreamDir, m0);

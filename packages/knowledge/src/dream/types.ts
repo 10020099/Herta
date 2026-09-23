@@ -65,7 +65,6 @@ export interface DreamCreatedRecord {
   readonly summary: string;
   readonly critiqueScores: CritiqueScores;
   readonly validateFeianPassed: boolean;
-  readonly estimatedPrefixTokens: number;
   /** How many times a same-move/same-scenario episode has reactivated this
    *  dream. Feeds the retention curve's usefulness term. Dormant (stays 0) until
    *  the slice-2 reconsolidation junction populates it. */

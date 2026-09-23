@@ -72,7 +72,6 @@ function writeDreamManifest(
     summary: "摘要",
     critiqueScores: { voice: 0.9, format: 1, novelty: 1 },
     validateFeianPassed: true,
-    estimatedPrefixTokens: 100,
     reactivationCount: 0,
   }));
   writeFileSync(
