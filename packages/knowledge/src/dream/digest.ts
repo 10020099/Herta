@@ -6,8 +6,11 @@ import type { SystemBlock, TerminalRecordBlock } from "@herta/core";
  * noise it then has to reject (consumer audit 2026-07-23).
  *
  * Skipped, by digest kind:
- *  - "bg"   — background-command lifecycle rows: transient run state,
- *             not an outcome.
+ *  - "bg"   — a background command's start, its polls while running and
+ *             an explicit stop: transient run state. Its EXIT row stays —
+ *             that is an outcome, and a background test run's verdict used
+ *             to reach the dream only through the marker's tail (dream
+ *             review 2026-09-22, finding 17).
  *  - "todo" — the plan layout block: working state (same rationale as
  *             the live compaction's Planning/todo skip).
  *  - "patch" / "skip" — patch previews, i.e. the FULL diff body. The
@@ -24,14 +27,13 @@ import type { SystemBlock, TerminalRecordBlock } from "@herta/core";
  * plain text — returns its body verbatim: that is what actually
  * happened, which is exactly what the dream should ground in.
  *
- * Also used by `selectEpisodes` so the char-floor eligibility counts
- * only text the digest would actually contain.
  */
 export function dreamRelevantSystemBody(b: SystemBlock): string | null {
   const kind = b.digest?.kind;
-  if (kind === "bg" || kind === "todo" || kind === "skip" || kind === "patch") {
+  if (kind === "todo" || kind === "skip" || kind === "patch") {
     return null;
   }
+  if (b.digest?.kind === "bg" && b.digest.state !== "exited") return null;
   if (b.digest === undefined && b.body.startsWith("patch preview")) return null;
   return b.body;
 }
@@ -63,12 +65,13 @@ export function mentionsAttachmentStore(text: string): boolean {
  * back to the document through 板砖, and an excerpt of it, a search hit in
  * it or a `cat` of it carried the same text the attachment row withholds.
  * The rule is keyed on where the text came from, not on the row's kind.
- * `afterAttachmentCommand` says the command whose output this row carries
- * named the store — an output row does not carry its command.
+ * `outputFromAttachmentStore` says the command whose output this row
+ * carries named the store — an output row does not carry its command, so
+ * the caller tracks it (`buildEpisodeDigest`).
  */
 export function dreamRelevantEvidenceDetail(
   b: SystemBlock,
-  afterAttachmentCommand = false,
+  outputFromAttachmentStore = false,
 ): string | null {
   if (b.digest?.kind === "attachment") return null;
   // A document digest's overview (ADR 0043) is the same document's contents
@@ -90,7 +93,12 @@ export function dreamRelevantEvidenceDetail(
     );
     return hits.length === 0 ? null : kept.join("\n");
   }
-  if (afterAttachmentCommand && b.digest?.kind === "text") return null;
+  if (
+    outputFromAttachmentStore &&
+    (b.digest?.kind === "text" || b.digest?.kind === "bg")
+  ) {
+    return null;
+  }
   return detail;
 }
 
@@ -99,12 +107,23 @@ export function buildEpisodeDigest(
 ): string {
   const parts: string[] = [];
   // The latest `Running …` row named the attachment store: the output row
-  // that follows carries that command's output (ADR 0069 §5).
+  // that follows carries that command's output (ADR 0069 §5). A command
+  // started in the background answers much later, after other rows — its
+  // id is remembered from the row that reported it running.
   let afterAttachmentCommand = false;
+  const attachmentBackgroundIds = new Set<string>();
   for (const b of blocks) {
     if (b.kind === "system" && b.digest?.kind === "op") {
       afterAttachmentCommand =
         b.digest.verb === "Running" && mentionsAttachmentStore(b.digest.arg);
+    }
+    if (
+      b.kind === "system" &&
+      b.digest?.kind === "bg" &&
+      b.digest.state === "running" &&
+      afterAttachmentCommand
+    ) {
+      attachmentBackgroundIds.add(b.digest.id);
     }
     if (b.kind === "user") {
       parts.push(`开拓者：${b.text}`);
@@ -130,7 +149,11 @@ export function buildEpisodeDigest(
       // labeled so the model grounds the verdict in what actually happened.
       // The ↳ 待办 roll-up line is dropped: open work items are operational
       // residue, not part of what happened.
-      const detail = dreamRelevantEvidenceDetail(b, afterAttachmentCommand);
+      const fromStore =
+        b.digest?.kind === "bg"
+          ? attachmentBackgroundIds.has(b.digest.id)
+          : afterAttachmentCommand;
+      const detail = dreamRelevantEvidenceDetail(b, fromStore);
       const evidence =
         detail === null
           ? ""

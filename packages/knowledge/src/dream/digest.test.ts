@@ -1,4 +1,4 @@
-import type { TerminalRecordBlock } from "@herta/core";
+import type { SystemBlock, TerminalRecordBlock } from "@herta/core";
 import { describe, expect, it } from "vitest";
 import { buildEpisodeDigest, dreamRelevantSystemBody } from "./digest.js";
 
@@ -225,6 +225,64 @@ describe("buildEpisodeDigest", () => {
     expect(d).toContain("完成 · 1 个文件");
     expect(d).toContain("改动文件: a.ts");
   });
+  it("keeps a background command's exit and its output — the verdict of a background test run — and drops its start, polls and stop (dream review 2026-09-22, finding 17)", () => {
+    const bg = (
+      state: "running" | "stopped" | "exited",
+      extra: Pick<SystemBlock, "evidenceDetail"> = {},
+    ): TerminalRecordBlock => ({
+      kind: "system",
+      label: "差分协处理器",
+      body: `↳ background bg-1: ${state === "exited" ? "exited (1)" : state}`,
+      digest: {
+        kind: "bg",
+        id: "bg-1",
+        state,
+        ...(state === "exited" ? { exitCode: 1 } : {}),
+      },
+      ...extra,
+    });
+    const run: TerminalRecordBlock[] = [
+      {
+        kind: "system",
+        label: "差分协处理器",
+        body: "Running npm test &",
+        digest: { kind: "op", verb: "Running", arg: "npm test &" },
+      },
+      bg("running"),
+      bg("running", { evidenceDetail: "↳ 输出:\nRUNS 12 suites" }),
+      bg("exited", { evidenceDetail: "↳ 输出:\nFAIL parser.test.ts" }),
+    ];
+    const d = buildEpisodeDigest(run);
+    expect(d).toContain("background bg-1: exited (1)");
+    expect(d).toContain("FAIL parser.test.ts");
+    expect(d).not.toContain("background bg-1: running");
+    expect(d).not.toContain("RUNS 12 suites");
+    // A background command that read the attachment store keeps its exit
+    // row and loses the text (ADR 0069 §5).
+    const fromStore = buildEpisodeDigest([
+      {
+        kind: "system",
+        label: "差分协处理器",
+        body: "Running cat .herta/attachments/s1/spec.md &",
+        digest: {
+          kind: "op",
+          verb: "Running",
+          arg: "cat .herta/attachments/s1/spec.md &",
+        },
+      },
+      bg("running"),
+      {
+        kind: "system",
+        label: "差分协处理器",
+        body: "Reading bg-1 output",
+        digest: { kind: "op", verb: "Reading", arg: "bg-1 output" },
+      },
+      bg("exited", { evidenceDetail: "↳ 输出:\nCONFIDENTIAL" }),
+    ]);
+    expect(fromStore).toContain("background bg-1: exited (1)");
+    expect(fromStore).not.toContain("CONFIDENTIAL");
+  });
+
   it("drops a patch preview in the shape the projector has emitted since 2026-08-25 — digest `patch`, the full diff in the body (dream review 2026-09-22, finding 1)", () => {
     const current: TerminalRecordBlock[] = [
       { kind: "herta", surface: "speech", text: "改。" },
