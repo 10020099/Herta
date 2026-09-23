@@ -52,7 +52,7 @@ export const en = {
   "settings.sectionsAria": "Settings sections",
   "settings.dialogAria": "Settings",
   "settings.loadFailed":
-    "Couldn't load this setting — reopen Settings to retry",
+    "Could not load this setting — reopen Settings to retry",
   "language.rowLabel": "Display language",
   "language.intro": "Herta's own voice is unaffected.",
   "language.interactionRowLabel": "Interaction language",
@@ -85,7 +85,7 @@ export const en = {
   "voice.realtimeMissing":
     "This install lacks the voice runtime — she can only type for now.",
   "voice.realtimeFailed":
-    "The voice process failed repeatedly; it's off for this run. Restart Herta to retry.",
+    "The voice process failed repeatedly; it is off for this run. Restart Herta to retry.",
   "voice.model": "Voice model",
   "voice.modelAbsent": "About {size} MB; available once downloaded.",
   "voice.modelDev": "Using the model in the workspace's data/tts.",
@@ -174,7 +174,7 @@ export const en = {
   "deepseek.intro":
     "The API key is stored encrypted on this device. Get one at platform.deepseek.com.",
   "deepseek.checking": "Checking…",
-  "deepseek.statusFailed": "Couldn't check the key status",
+  "deepseek.statusFailed": "Could not check the key status",
   "deepseek.connected": "Connected",
   "deepseek.noKey": "No key set",
   "deepseek.replaceKey": "Replace key…",
@@ -186,7 +186,7 @@ export const en = {
   "deepseek.rejected": "DeepSeek rejected that key — check it and try again.",
   "deepseek.busy": "Finish the current turn first",
   "deepseek.unverified":
-    "Saved, but couldn't reach DeepSeek to verify it — check your connection if Herta doesn't respond.",
+    "Saved, but could not reach DeepSeek to verify it — check your connection if Herta does not respond.",
   "deepseek.unencrypted":
     "Stored unencrypted — this device has no secure keychain available.",
   "deepseek.models.intro":
@@ -204,7 +204,7 @@ export const en = {
   // The honest per-state string (deepseek.unencrypted) exists and is used in
   // Settings once the key is saved.
   "keyprompt.body":
-    "Herta needs a DeepSeek API key to think. It's stored in your OS keychain on this device and never leaves your machine except to call DeepSeek.",
+    "Herta needs a DeepSeek API key to think. It is stored in your OS keychain on this device and never leaves your machine except to call DeepSeek.",
   // Where to get one (audit BL19) — platform.deepseek.com appeared in exactly
   // one pane of the app and in neither the README nor the website, so a user
   // met with a key prompt on first launch had nowhere to go.
@@ -226,6 +226,8 @@ export const en = {
   "banzhuan.legend.waitingApproval": "it needs your approval to continue",
   "banzhuan.legend.succeeded": "finished cleanly — a green beat",
   "banzhuan.legend.failed": "the task errored",
+  // Herta's own first-person voice (zh: 板砖替我处理代码的活), so the UI
+  // formal-register rule — no contractions — does not apply to it.
   "banzhuan.intro":
     "The Brick handles the coding for me. To delegate, write the full @板砖 — that @ is the real trigger. The ring on its face shows what it's doing right now:",
   "banzhuan.thinking": "Thinking effort",
@@ -365,7 +367,7 @@ export const en = {
   "workspace.sending": "Message is crossing the galaxy…",
   "workspace.gammaStorm": "Message caught in a gamma storm…",
   "workspace.gammaStormLong":
-    "The storm hasn't passed — message still en route…",
+    "The storm has not passed — message still en route…",
   "workspace.jumpToLatest": "Back to bottom",
   "workspace.loadEarlier": "Load {n} earlier entries",
   "workspace.topicRailAria": "Topic guide",
@@ -439,16 +441,16 @@ export const en = {
   "viewer.notFound": "File no longer exists or was moved",
   "viewer.binary": "Binary file — open with the default app",
   "viewer.outside": "This path is outside the workspace",
-  "viewer.unreadable": "Couldn't read this file",
+  "viewer.unreadable": "Could not read this file",
   "viewer.truncatedNote":
     "Long file — showing the head; open externally for the rest",
   "viewer.tooLarge": "Too large to view here — open with the default app",
   "viewer.renderFailed":
-    "Couldn't render this file — open with the default app",
+    "Could not render this file — open with the default app",
   "viewer.showSource": "View source",
   "viewer.showRendered": "View rendered",
   "viewer.rendering": "Rendering…",
-  "viewer.diagramFailed": "The diagram didn't render — its source is below",
+  "viewer.diagramFailed": "The diagram did not render — its source is below",
   "viewer.imageFit": "Fit to panel",
   "viewer.imageActual": "Actual size",
   "viewer.pdfPages": "{n} pages",
@@ -472,11 +474,11 @@ export const en = {
   "viewer.diff.against": "Changes against HEAD",
   "viewer.diff.none": "No changes against HEAD",
   "viewer.diff.truncated": "Long diff — showing the head",
-  "viewer.diff.notFound": "Couldn't read the changes for this path",
+  "viewer.diff.notFound": "Could not read the changes for this path",
   "viewer.log.tab": "History",
   "viewer.log.more": "Load more",
   "viewer.log.end": "Beginning of history",
-  "viewer.log.notFound": "Couldn't read the history",
+  "viewer.log.notFound": "Could not read the history",
   "viewer.log.branch": "Branch",
   "viewer.log.search": "Search commit messages",
   "viewer.log.noMatch": "No matching commits",
@@ -583,7 +585,7 @@ export const en = {
     "running, waiting for approval, etc.).",
   "time.justNow": "just now",
   "time.minAgo": "{n} min ago",
-  "app.cantStart": "Herta couldn't start",
+  "app.cantStart": "Herta could not start",
   "app.cantStartBody":
     "Restart the app. If this keeps happening, check the logs. (Your DeepSeek key is set in Settings → DeepSeek — a missing key no longer blocks startup.)",
   "app.bridgeUnavailable":

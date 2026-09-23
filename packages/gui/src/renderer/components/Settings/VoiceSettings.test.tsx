@@ -155,7 +155,7 @@ describe("VoiceSettings", () => {
     });
     expect(
       await findByText(
-        "The voice process failed repeatedly; it's off for this run. Restart Herta to retry.",
+        "The voice process failed repeatedly; it is off for this run. Restart Herta to retry.",
       ),
     ).toBeTruthy();
   });

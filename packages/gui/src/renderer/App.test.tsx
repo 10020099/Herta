@@ -57,7 +57,7 @@ describe("App", () => {
     expect(screen.getByTestId("app-error")).toBeInTheDocument();
     expect(screen.getByText("DeepSeek API key not found")).toBeInTheDocument();
     // Localized heading renders in English under the default en locale.
-    expect(screen.getByText("Herta couldn't start")).toBeInTheDocument();
+    expect(screen.getByText("Herta could not start")).toBeInTheDocument();
     expect(screen.queryByTestId("workspace")).not.toBeInTheDocument();
   });
 

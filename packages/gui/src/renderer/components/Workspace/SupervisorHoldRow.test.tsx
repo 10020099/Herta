@@ -36,7 +36,7 @@ describe("SupervisorHoldRow", () => {
       vi.advanceTimersByTime(HINT_ROTATE_MS + 100);
     });
     expect(container.querySelector(".transfer-text")?.textContent).toBe(
-      "The storm hasn't passed — message still en route…",
+      "The storm has not passed — message still en route…",
     );
   });
 });

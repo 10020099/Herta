@@ -36,7 +36,7 @@ function isReferenceMode(): boolean {
   );
 }
 
-/** Centered "Herta couldn't start" panel shared by the bootstrap-error
+/** Centered "Herta could not start" panel shared by the bootstrap-error
  *  and missing-bridge paths. */
 function ErrorScreen(props: { readonly children: ReactNode }): JSX.Element {
   return (
