@@ -4,6 +4,7 @@
  *   node scripts/stage-tts.mjs                 # this machine's platform
  *   node scripts/stage-tts.mjs --mac           # both macOS arches
  *   node scripts/stage-tts.mjs --win           # windows x64
+ *   node scripts/stage-tts.mjs --linux         # linux x64 (the AppImage)
  *   node scripts/stage-tts.mjs --check         # report, stage nothing
  *
  * WHY A STAGING STEP. `sherpa-onnx-node` is the one NATIVE dependency the app
@@ -60,6 +61,10 @@ function targets() {
     return ["sherpa-onnx-darwin-arm64", "sherpa-onnx-darwin-x64"];
   }
   if (argv.includes("--win")) return ["sherpa-onnx-win-x64"];
+  // Explicit, like --win/--mac (platform review 2026-09-23): the Linux build
+  // used to stage "this machine's platform", so running it on the wrong host
+  // packed a Windows or macOS addon into the AppImage and every gate passed.
+  if (argv.includes("--linux")) return ["sherpa-onnx-linux-x64"];
   const map = {
     win32: `sherpa-onnx-win-${process.arch}`,
     darwin: `sherpa-onnx-darwin-${process.arch}`,

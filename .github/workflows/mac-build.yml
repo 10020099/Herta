@@ -222,7 +222,7 @@ jobs:
       - name: stage the neural-voice runtime
         run: node packages/gui/scripts/stage-tts.mjs --mac
       - name: assert the voice runtime is staged (and the model is not)
-        run: node packages/gui/scripts/check-tts-payload.mjs --strict
+        run: node packages/gui/scripts/check-tts-payload.mjs --strict --expect sherpa-onnx-darwin-arm64,sherpa-onnx-darwin-x64
 
       - name: build the mac app
         # Measured, not guessed (run 31069865459): packaging plus the entire

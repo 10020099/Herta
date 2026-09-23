@@ -4,6 +4,13 @@
  *
  *   node scripts/check-tts-payload.mjs            # report; never fails
  *   node scripts/check-tts-payload.mjs --strict   # missing runtime = failure
+ *   … --expect sherpa-onnx-linux-x64[,…]          # EXACTLY these addons
+ *
+ * `--expect` fails in every mode (platform review 2026-09-23): a runtime for
+ * the WRONG platform is not "no voice, degrade quietly" — it is a build that
+ * says it has a voice and cannot load it. The Linux build staged the host's
+ * platform, so a build run after `pnpm dist` on the same tree packed the
+ * win-x64 addon into the AppImage and every check passed.
  *
  * WHY (the B3 lesson, applied ahead of time). `extraResources` entries whose
  * source does not exist make electron-builder log one line and exit 0 — so a
@@ -27,6 +34,11 @@ const GUI_ROOT = resolve(HERE, "..");
 const STAGE_DIR = join(GUI_ROOT, "tts-runtime");
 const BUILDER_CONFIG = join(GUI_ROOT, "electron-builder.yml");
 const STRICT = process.argv.includes("--strict");
+const expectIx = process.argv.indexOf("--expect");
+const EXPECT =
+  expectIx >= 0
+    ? (process.argv[expectIx + 1] ?? "").split(",").filter(Boolean).sort()
+    : null;
 
 function dirBytes(dir) {
   let total = 0;
@@ -69,6 +81,15 @@ if (!existsSync(STAGE_DIR)) {
   );
   if (addons.length === 0) {
     problems.push("staged runtime has no platform addon (sherpa-onnx.node)");
+  }
+  if (EXPECT !== null && addons.sort().join(",") !== EXPECT.join(",")) {
+    console.error(
+      `\n[tts-payload] ERROR: the staged addons are [${addons.join(", ")}] but ` +
+        `this build needs exactly [${EXPECT.join(", ")}] — a runtime for another ` +
+        "platform cannot load. Re-stage with the matching flag " +
+        "(node scripts/stage-tts.mjs --win | --mac | --linux).\n",
+    );
+    process.exit(1);
   }
 }
 
