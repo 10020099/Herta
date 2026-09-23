@@ -153,7 +153,7 @@ export const zh = {
   "common.couldntSave": "保存失败，请重试。",
   "common.restartToApply": "重启后生效",
   "deepseek.intro":
-    "API 密钥以加密形式存储在本机。可在 platform.deepseek.com 获取。",
+    "API 密钥存储在本机；系统密钥链可用时，由其加密保存。可在 platform.deepseek.com 获取。",
   "deepseek.checking": "检查中…",
   "deepseek.statusFailed": "密钥状态读取失败",
   "deepseek.connected": "已连接",
@@ -183,7 +183,7 @@ export const zh = {
   "deepseek.model.flash": "Flash",
   "keyprompt.title": "将黑塔接入 DeepSeek",
   "keyprompt.body":
-    "黑塔需要一个 DeepSeek API 密钥才能思考。它存放在本机的系统密钥链里，除了调用 DeepSeek 绝不外传。",
+    "黑塔需要一个 DeepSeek API 密钥才能思考。它存放在本机（系统密钥链可用时存入密钥链），除了调用 DeepSeek 绝不外传。",
   "keyprompt.where": "在 platform.deepseek.com 获取密钥",
   "keyprompt.notNow": "暂不",
   "keyprompt.saveSend": "保存并发送",

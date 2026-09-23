@@ -1,4 +1,10 @@
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { app, safeStorage } from "electron";
 
@@ -17,8 +23,9 @@ import { app, safeStorage } from "electron";
  *  - `minimax-plan-key.enc` / `.txt` — the MiniMax token-plan (`sk-cp-…`)
  *    key (ADR 0062 §1.8): speaks under the plan; cannot clone.
  * `.enc` is the `safeStorage`-encrypted form (preferred); `.txt` the
- * plaintext fallback when encryption is unavailable (still better than the
- * repo file; flagged `encrypted: false` so the UI can warn).
+ * plaintext fallback when encryption is unavailable — or, on Linux, only
+ * nominal (`basic_text`, see `encryptionProtects`). The fallback is
+ * owner-only (0600) and flagged `encrypted: false` so the UI can warn.
  *
  * All reads are best-effort: a missing / corrupt / undecryptable store resolves
  * to `null` rather than throwing — a bad store must never wedge the app.
@@ -41,6 +48,48 @@ function clearFiles(name: SecretName): void {
     } catch {
       // Best effort: a locked/absent file must not block a key change.
     }
+  }
+}
+
+/**
+ * Whether `safeStorage` really protects a secret on this machine.
+ *
+ * On Linux without a keyring — a tiling window manager, a minimal distro, no
+ * gnome-keyring / KWallet running — Electron picks its `basic_text` backend,
+ * which "encrypts" with a password hard-coded into Chromium. The ciphertext
+ * is then no protection at all, yet the store used to write it as `.enc` and
+ * report `encrypted: true`, and Settings told the user the key was stored
+ * encrypted (platform review 2026-09-23). That backend now counts as NOT
+ * encrypted: the key goes to the owner-only plaintext file and the UI says so.
+ */
+function encryptionProtects(): boolean {
+  if (!safeStorage.isEncryptionAvailable()) return false;
+  if (process.platform === "linux") {
+    try {
+      return safeStorage.getSelectedStorageBackend() !== "basic_text";
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Owner-only on POSIX (the default 0644 let any local account read a
+ *  plaintext key); `mode` only applies when the file is CREATED, so an
+ *  existing file is tightened too. Best-effort: Windows ignores POSIX modes,
+ *  and a failed chmod must not fail the save. */
+function writeOwnerOnly(path: string, data: string | Buffer): void {
+  writeFileSync(
+    path,
+    data,
+    typeof data === "string"
+      ? { encoding: "utf-8", mode: 0o600 }
+      : { mode: 0o600 },
+  );
+  try {
+    chmodSync(path, 0o600);
+  } catch {
+    /* best effort */
   }
 }
 
@@ -78,12 +127,12 @@ export function setSecret(
   //
   // Clearing the OTHER file afterwards still keeps the two from coexisting and
   // shadowing each other, which is what clearFiles was here for.
-  if (safeStorage.isEncryptionAvailable()) {
-    writeFileSync(encPath(name), safeStorage.encryptString(trimmed));
+  if (encryptionProtects()) {
+    writeOwnerOnly(encPath(name), safeStorage.encryptString(trimmed));
     rmIfExists(txtPath(name));
     return { encrypted: true };
   }
-  writeFileSync(txtPath(name), trimmed, "utf-8");
+  writeOwnerOnly(txtPath(name), trimmed);
   rmIfExists(encPath(name));
   return { encrypted: false };
 }
@@ -125,8 +174,10 @@ export function readSecretPlain(name: SecretName): string | null {
 export function getSecretStatus(name: SecretName): KeyStatus {
   const key = readSecretPlain(name);
   if (key === null) return { set: false, hint: null, encrypted: false };
-  const encrypted =
-    existsSync(encPath(name)) && safeStorage.isEncryptionAvailable();
+  // A `.enc` written under `basic_text` still DECRYPTS (readSecretPlain uses
+  // the plain availability check, so a key saved before 2026-09-23 keeps
+  // working) — but it is not reported as encrypted, because it is not.
+  const encrypted = existsSync(encPath(name)) && encryptionProtects();
   // Last 4 only — never echo a whole (short) key back across IPC.
   const hint = key.length >= 4 ? key.slice(-4) : null;
   return { set: true, hint, encrypted };

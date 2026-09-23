@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,15 +6,34 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // Electron is a path string under Node, so the real `app`/`safeStorage` are
 // absent in tests. Mock them: `app.getPath` points at a per-test temp dir, and
 // `safeStorage` does a reversible toy "encryption" so the round-trip is real.
-const state = vi.hoisted(() => ({ userData: "", encAvailable: true }));
+const state = vi.hoisted(() => ({
+  userData: "",
+  encAvailable: true,
+  backend: "gnome_libsecret",
+}));
 vi.mock("electron", () => ({
   app: { getPath: () => state.userData },
   safeStorage: {
     isEncryptionAvailable: () => state.encAvailable,
+    getSelectedStorageBackend: () => state.backend,
     encryptString: (s: string) => Buffer.from(`enc:${s}`, "utf-8"),
     decryptString: (b: Buffer) => b.toString("utf-8").replace(/^enc:/, ""),
   },
 }));
+
+/** Run `fn` as if on `platform` (the store reads process.platform). */
+function onPlatform<T>(platform: NodeJS.Platform, fn: () => T): T {
+  const real = Object.getOwnPropertyDescriptor(process, "platform");
+  Object.defineProperty(process, "platform", {
+    value: platform,
+    configurable: true,
+  });
+  try {
+    return fn();
+  } finally {
+    if (real !== undefined) Object.defineProperty(process, "platform", real);
+  }
+}
 
 import {
   clearDeepSeekKey,
@@ -35,6 +54,7 @@ describe("key-store", () => {
   beforeEach(() => {
     state.userData = mkdtempSync(join(tmpdir(), "herta-key-store-"));
     state.encAvailable = true;
+    state.backend = "gnome_libsecret";
   });
   afterEach(() => {
     vi.clearAllMocks();
@@ -101,6 +121,53 @@ describe("key-store", () => {
     expect(readDeepSeekKeyPlain()).toBe("sk-enc-second99");
     expect(getDeepSeekKeyStatus().encrypted).toBe(true);
   });
+
+  // ── Linux without a keyring (platform review 2026-09-23) ──────────────────
+
+  it("Linux `basic_text` is not encryption: the key goes to the plaintext file and is reported unencrypted", () => {
+    state.backend = "basic_text"; // available, but a hard-coded password
+    const r = onPlatform("linux", () => setDeepSeekKey("sk-basic-9999"));
+    expect(r.encrypted).toBe(false);
+    expect(existsSync(join(state.userData, "deepseek-key.txt"))).toBe(true);
+    expect(existsSync(join(state.userData, "deepseek-key.enc"))).toBe(false);
+    expect(onPlatform("linux", () => getDeepSeekKeyStatus())).toEqual({
+      set: true,
+      hint: "9999",
+      encrypted: false,
+    });
+  });
+
+  it("a key saved as `.enc` under `basic_text` before the fix still reads — but is not called encrypted", () => {
+    // Written by the old store: libsecret-less Linux, `.enc` via basic_text.
+    writeFileSync(
+      join(state.userData, "deepseek-key.enc"),
+      Buffer.from("enc:sk-legacy-7777", "utf-8"),
+    );
+    state.backend = "basic_text";
+    expect(onPlatform("linux", () => readDeepSeekKeyPlain())).toBe(
+      "sk-legacy-7777",
+    );
+    expect(onPlatform("linux", () => getDeepSeekKeyStatus().encrypted)).toBe(
+      false,
+    );
+  });
+
+  it("a real Linux keyring still encrypts", () => {
+    state.backend = "gnome_libsecret";
+    const r = onPlatform("linux", () => setDeepSeekKey("sk-keyring-5555"));
+    expect(r.encrypted).toBe(true);
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "the plaintext fallback is owner-only (0600), even over an existing 0644 file",
+    () => {
+      state.encAvailable = false;
+      const txt = join(state.userData, "deepseek-key.txt");
+      writeFileSync(txt, "old", { mode: 0o644 });
+      setDeepSeekKey("sk-private-4444");
+      expect(statSync(txt).mode & 0o777).toBe(0o600);
+    },
+  );
 
   // ── the MiniMax key (ADR 0062) ────────────────────────────────────────────
 

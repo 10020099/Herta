@@ -171,8 +171,11 @@ export const en = {
   // apply" does not. (No contraction: UI copy is formal register.)
   "common.couldntSave": "Could not save — try again.",
   "common.restartToApply": "Restart to apply",
+  // Not "stored encrypted" unconditionally (platform review 2026-09-23): on a
+  // Linux desktop without a keyring the key is a plaintext, owner-only file,
+  // and deepseek.unencrypted says so under this line.
   "deepseek.intro":
-    "The API key is stored encrypted on this device. Get one at platform.deepseek.com.",
+    "The API key is stored on this device, encrypted by the OS keychain when one is available. Get one at platform.deepseek.com.",
   "deepseek.checking": "Checking…",
   "deepseek.statusFailed": "Could not check the key status",
   "deepseek.connected": "Connected",
@@ -204,7 +207,7 @@ export const en = {
   // The honest per-state string (deepseek.unencrypted) exists and is used in
   // Settings once the key is saved.
   "keyprompt.body":
-    "Herta needs a DeepSeek API key to think. It is stored in your OS keychain on this device and never leaves your machine except to call DeepSeek.",
+    "Herta needs a DeepSeek API key to think. It is stored on this device — in your OS keychain when one is available — and never leaves your machine except to call DeepSeek.",
   // Where to get one (audit BL19) — platform.deepseek.com appeared in exactly
   // one pane of the app and in neither the README nor the website, so a user
   // met with a key prompt on first launch had nowhere to go.
