@@ -346,6 +346,60 @@ describe("buildEpisodeDigest", () => {
     expect(d).toContain("改动文件: a.ts");
   });
 
+  it("tags each row by what it is — a failed call, a run that failed, stopped or stalled — instead of calling everything verified (dream review 2026-09-22, finding 17)", () => {
+    const marker = (
+      body: string,
+      state?: "completed" | "failed" | "interrupted" | "blocked" | "partial",
+    ): TerminalRecordBlock => ({
+      kind: "system",
+      label: "差分协处理器",
+      body,
+      role: "done-marker",
+      ...(state !== undefined
+        ? {
+            markerSummary: {
+              kind: "done" as const,
+              state,
+              fileCount: 0,
+              riskCount: 0,
+            },
+          }
+        : {}),
+    });
+    const d = buildEpisodeDigest([
+      {
+        kind: "system",
+        label: "系统",
+        body: "↳ edit_file failed: stale_read: file changed since read",
+        digest: {
+          kind: "tool-fail",
+          tool: "edit_file",
+          code: "stale_read",
+        },
+      },
+      marker("中断 · 0 个文件", "interrupted"),
+      marker("失败 · 运行异常中止", "failed"),
+      marker("部分完成 · 1 个文件", "partial"),
+      // Persisted before markerSummary existed: the body's state word.
+      marker("受阻 · 缺依赖"),
+      marker("完成 · 1 个文件", "completed"),
+      {
+        kind: "system",
+        label: "差分协处理器",
+        body: "↳ tests: 3 failed",
+        digest: { kind: "tests", status: "failed", summary: "3 failed" },
+      },
+    ]);
+    expect(d).toContain("〔系统（失败）：↳ edit_file failed");
+    expect(d).toContain("〔差分协处理器（中断）：中断");
+    expect(d).toContain("〔差分协处理器（失败）：失败 · 运行异常中止");
+    expect(d).toContain("〔差分协处理器（部分完成）：部分完成");
+    expect(d).toContain("〔差分协处理器（受阻）：受阻");
+    expect(d).toContain("〔差分协处理器（已核实）：完成 · 1 个文件");
+    // A failing test is a verified fact about the code, not a failed run.
+    expect(d).toContain("〔差分协处理器（已核实）：↳ tests: 3 failed");
+  });
+
   it("drops a patch preview in the shape the projector has emitted since 2026-08-25 — digest `patch`, the full diff in the body (dream review 2026-09-22, finding 1)", () => {
     const current: TerminalRecordBlock[] = [
       { kind: "herta", surface: "speech", text: "改。" },

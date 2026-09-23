@@ -847,6 +847,62 @@ describe("runDreamPass", () => {
     expect(payload).toContain("既有梦境正文");
   });
 
+  it("an excerpt the gate calls mixed is written and judged about the one event it named (dream review 2026-09-22, finding 22)", async () => {
+    const base = fakeClient();
+    const client: DeepSeekClient = {
+      chatJson: vi.fn(async (input) => {
+        if (input.systemPrompt.includes("是否值得被收录")) {
+          return {
+            rawJsonText: JSON.stringify({
+              worthy: true,
+              reason: "dry",
+              occasion: FAKE_OCCASION,
+              mixedTopics: true,
+            }),
+            model: "deepseek-v4-pro",
+          };
+        }
+        return base.chatJson(input);
+      }) as DeepSeekClient["chatJson"],
+    };
+    await runDreamPass({
+      workspaceRoot: ws,
+      sessions: [{ sessionId: "s1", record }],
+      client,
+      runId: "mixed",
+      config: testConfig,
+      now: () => new Date("2026-06-18T09:30:00Z"),
+    });
+    const calls = (client.chatJson as ReturnType<typeof vi.fn>).mock.calls;
+    const gen = calls.find(([a]) =>
+      a.systemPrompt.includes("黑塔人物与说话指南"),
+    )?.[0].systemPrompt;
+    const critique = calls.find(([a]) => a.systemPrompt.includes("逐行"))?.[0]
+      .systemPrompt;
+    expect(gen).toContain("本则废案的取材范围");
+    expect(gen).toContain(FAKE_OCCASION);
+    expect(critique).toContain("这则废案只取其中一件");
+    expect(critique).toContain(FAKE_OCCASION);
+  });
+
+  it("an excerpt about one thing gets no focus section", async () => {
+    const client = fakeClient();
+    await runDreamPass({
+      workspaceRoot: ws,
+      sessions: [{ sessionId: "s1", record }],
+      client,
+      runId: "single",
+      config: testConfig,
+      now: () => new Date("2026-06-18T09:30:00Z"),
+    });
+    const calls = (client.chatJson as ReturnType<typeof vi.fn>).mock.calls;
+    const gen = calls.find(([a]) =>
+      a.systemPrompt.includes("黑塔人物与说话指南"),
+    )?.[0].systemPrompt;
+    expect(gen).toBeDefined();
+    expect(gen).not.toContain("本则废案的取材范围");
+  });
+
   it("stale-floor forgets a decayed dream at pass start when the floor is set", async () => {
     const narr = join(ws, ".herta", "narrative");
     const staleFile = "### 废案_01：陈旧梦境.txt";

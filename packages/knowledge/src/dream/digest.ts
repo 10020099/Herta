@@ -126,6 +126,38 @@ interface SystemRow {
   readonly marker: boolean;
 }
 
+/** The outcome word a marker's state maps to (ExecutionStatus). */
+const MARKER_OUTCOME: Readonly<Record<string, string>> = {
+  failed: "失败",
+  interrupted: "中断",
+  blocked: "受阻",
+  partial: "部分完成",
+};
+
+/**
+ * The tag a system row carries in the digest: what the row IS (dream review
+ * 2026-09-22, finding 17). Every row used to say 已核实 — verified — so an
+ * interrupted run's marker and a raw error read as confirmed evidence of
+ * the same kind as a passing test, and a dream could retell the run as
+ * finished. A failed tool call is 失败; a run's marker says how the run
+ * ended — 失败 / 中断 / 受阻 / 部分完成 — and only a completed run, and every
+ * other record of what happened, stays 已核实.
+ */
+export function outcomeTag(b: SystemBlock): string {
+  if (b.digest?.kind === "tool-fail") return "失败";
+  if (b.role === "done-marker") {
+    if (b.markerSummary !== undefined) {
+      return MARKER_OUTCOME[b.markerSummary.state] ?? "已核实";
+    }
+    // A marker persisted before `markerSummary`: its body leads with the
+    // state word.
+    for (const word of ["失败", "中断", "受阻", "部分完成"]) {
+      if (b.body.startsWith(word)) return word;
+    }
+  }
+  return "已核实";
+}
+
 export function buildEpisodeDigest(
   blocks: readonly TerminalRecordBlock[],
 ): string {
@@ -228,11 +260,11 @@ export function buildEpisodeDigest(
         }
         return;
       }
-      // Verified backend/system evidence — the outcome spine. Keep it clearly
-      // labeled so the model grounds the verdict in what actually happened.
+      // Backend/system evidence — the outcome spine. Labeled by what it is,
+      // so the model grounds the verdict in what actually happened.
       const evidence = withEvidence.has(i) ? row.evidence : "";
       parts.push(
-        `〔${b.label}（已核实）：${row.body}${evidence.length > 0 ? `\n${evidence}` : ""}〕`,
+        `〔${b.label}（${outcomeTag(b)}）：${row.body}${evidence.length > 0 ? `\n${evidence}` : ""}〕`,
       );
     }
   });

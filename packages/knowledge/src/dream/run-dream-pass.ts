@@ -611,6 +611,7 @@ export async function runDreamPass(
             reason?: string;
             occasion?: string;
             retellsKnownEvent?: boolean;
+            mixedTopics?: boolean;
           }>(
             opts.client,
             buildWorthinessPrompt(digest, steerSummaries(), env, lang),
@@ -711,6 +712,12 @@ export async function runDreamPass(
             continue;
           }
 
+          // An excerpt that strings together unrelated topics (finding 22):
+          // the gate judged the most memorable one and named it; the page
+          // tells that one, and the critique judges faithfulness against it.
+          const focus =
+            worthyResult.mixedTopics === true ? epOccasion : undefined;
+
           // ── 2. Generate + refine-on-validator-error ───────────────────────
           const genResult = await jsonCall<{
             feian: string;
@@ -724,6 +731,7 @@ export async function runDreamPass(
               guide,
               env,
               lang,
+              focus,
             ),
             cfg.model,
             cfg.generationEffort,
@@ -931,7 +939,7 @@ export async function runDreamPass(
           // occasion retold as unrelated fiction).
           const scoresResult = await jsonCall<CritiqueScores>(
             opts.client,
-            buildCritiquePrompt(gen.feian, guide, lang, digest),
+            buildCritiquePrompt(gen.feian, guide, lang, digest, focus),
             cfg.model,
             cfg.gateEffort,
           );
