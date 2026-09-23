@@ -115,7 +115,8 @@ pnpm --filter @herta/website dev # run the website locally
 ```
 
 At runtime the app needs a DeepSeek API key, configured in-app on first run
-and stored encrypted on your machine. Nothing is uploaded anywhere else.
+and stored on your machine — encrypted by the OS keychain when one is
+available. Nothing is uploaded anywhere else.
 
 Behind a corporate proxy: the desktop app needs no configuration — it uses
 Chromium's network stack, so it picks up your system proxy settings and your
