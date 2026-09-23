@@ -59,6 +59,227 @@ describe("classifyCommand — block phase", () => {
   });
 });
 
+describe("classifyCommand — the macOS / Linux block tier (platform review 2026-09-23)", () => {
+  const kind = (argv: string[]) => classifyCommand(argv).kind;
+
+  it("rm's recursive + force is read from any flag cluster, and $HOME is home", () => {
+    for (const argv of [
+      ["rm", "-rfv", "/"],
+      ["rm", "-Rfi", "~"],
+      ["rm", "-vfr", "/*"],
+      ["rm", "-rf", "$HOME"],
+      ["rm", "-rf", "${HOME}/"],
+      ["rm", "-r", "-f", "$HOME/*"],
+    ]) {
+      expect(kind(argv), argv.join(" ")).toBe("block");
+    }
+    // Option parsing ends at `--`: a FILE named -f is not the force flag.
+    expect(kind(["rm", "-r", "--", "-f", "/"])).not.toBe("block");
+  });
+
+  it("an extra slash, a trailing /. or another user's ~ is still root or home (adversarial review)", () => {
+    for (const argv of [
+      ["rm", "-rf", "//*"],
+      ["rm", "-rf", "~//"],
+      ["rm", "-rf", "$HOME//"],
+      ["rm", "-rf", "$HOME/."],
+    ]) {
+      expect(kind(argv), argv.join(" ")).toBe("block");
+    }
+    // Ordinary directories stay asks — and so does `~name`: cmd and
+    // PowerShell never expand it, so on Windows it is a literal file name.
+    for (const argv of [
+      ["rm", "-rf", "~-"],
+      ["rm", "-rf", "~bob"],
+      ["rm", "-rf", "~/build"],
+      ["rm", "-rf", "./"],
+      ["rm", "-rf", "dist/"],
+      ["del", "~WRL0001.tmp"],
+      ["Remove-Item", "-Recurse", "-Force", "~backup"],
+    ]) {
+      expect(kind(argv), argv.join(" ")).toBe("ask");
+    }
+  });
+
+  it("blocks the macOS and Linux spellings of disk destruction", () => {
+    for (const argv of [
+      ["diskutil", "eraseDisk", "APFS", "X", "disk2"],
+      ["diskutil", "zeroDisk", "disk2"],
+      ["diskutil", "partitionDisk", "disk2", "GPT", "APFS", "X", "100%"],
+      ["diskutil", "apfs", "deleteContainer", "disk3"],
+      ["newfs_apfs", "/dev/disk2s1"],
+      ["wipefs", "-a", "/dev/sdb"],
+      ["wipefs", "--all", "/dev/sdb"],
+      ["blkdiscard", "/dev/nvme0n1"],
+      ["sgdisk", "--zap-all", "/dev/sdb"],
+      ["shred", "-n", "1", "/dev/sda"],
+    ]) {
+      expect(kind(argv), argv.join(" ")).toBe("block");
+    }
+  });
+
+  it("…while the look-only forms of the same tools are not blocked", () => {
+    for (const argv of [
+      ["diskutil", "list"],
+      ["diskutil", "info", "disk0"],
+      ["wipefs", "/dev/sdb"], // lists signatures only
+      ["shred", "-u", "secret.txt"], // a file, not a device
+      // An image file is not a device (review 2026-09-23).
+      ["wipefs", "-a", "build/disk.img"],
+      ["sgdisk", "--zap-all", "build/disk.img"],
+      ["blkdiscard", "--help"],
+    ]) {
+      expect(kind(argv), argv.join(" ")).not.toBe("block");
+    }
+  });
+
+  it("blocks systemctl / loginctl power verbs — AS the verb", () => {
+    expect(kind(["systemctl", "poweroff"])).toBe("block");
+    expect(kind(["systemctl", "--no-wall", "reboot"])).toBe("block");
+    expect(kind(["systemctl", "-H", "box", "reboot"])).toBe("block");
+    expect(kind(["loginctl", "poweroff"])).toBe("block");
+    // A unit, a host or prose named `reboot` is not the verb.
+    expect(kind(["systemctl", "status", "reboot"])).not.toBe("block");
+    expect(kind(["systemctl", "can", "reboot", "the", "box"])).not.toBe(
+      "block",
+    );
+  });
+
+  it("blocks reading keychain SECRETS (credential exfiltration), not keychain metadata", () => {
+    for (const argv of [
+      ["security", "find-generic-password", "-s", "github", "-w"],
+      ["security", "find-internet-password", "-g", "-s", "x.com"],
+      ["security", "dump-keychain", "-d"],
+      [
+        "security",
+        "export",
+        "-k",
+        "login.keychain",
+        "-t",
+        "privKeys",
+        "-o",
+        "k.p12",
+      ],
+    ]) {
+      expect(kind(argv), argv.join(" ")).toBe("block");
+    }
+    expect(kind(["security", "find-certificate", "-a"])).not.toBe("block");
+  });
+
+  it("finds the subcommand past the options in front of it (adversarial review)", () => {
+    for (const argv of [
+      ["security", "-q", "dump-keychain"],
+      ["security", "-v", "find-generic-password", "-s", "x", "-w"],
+      ["security", "-p", "prompt", "export", "-k", "login.keychain"],
+      ["security", "-qp", "prompt", "dump-keychain"],
+      ["security", "--", "dump-keychain"],
+      ["diskutil", "quiet", "eraseDisk", "APFS", "X", "disk2"],
+      ["diskutil", "quiet", "apfs", "deleteContainer", "disk3"],
+      ["diskutil", "splitPartition", "disk2s1", "2", "APFS", "A", "50%"],
+    ]) {
+      expect(kind(argv), argv.join(" ")).toBe("block");
+    }
+  });
+
+  it("a wipefs dry run (-n / --no-act) erases nothing and is not blocked", () => {
+    expect(kind(["wipefs", "-n", "-a", "/dev/sdb"])).not.toBe("block");
+    expect(kind(["wipefs", "--no-act", "--all", "/dev/sdb"])).not.toBe("block");
+    expect(kind(["wipefs", "-an", "/dev/sdb"])).not.toBe("block");
+  });
+
+  it("blocks inside a shell body too", () => {
+    expect(
+      kind(["bash", "-c", "cd /tmp && diskutil eraseDisk APFS X disk2"]),
+    ).toBe("block");
+    expect(kind(["sh", "-c", "rm -rfv $HOME"])).toBe("block");
+  });
+});
+
+describe("classifyCommand — command_ask_system: machine-level changes, asked every time (2026-09-23)", () => {
+  const code = (argv: string[]) => {
+    const r = classifyCommand(argv);
+    return r.kind === "ask" ? r.code : r.kind;
+  };
+
+  it("routes the macOS / Linux system changers to their own never-remembered class", () => {
+    for (const argv of [
+      ["osascript", "-e", 'tell application "System Events" to keystroke "x"'],
+      ["launchctl", "load", "~/Library/LaunchAgents/x.plist"],
+      ["defaults", "write", "com.apple.dock", "autohide", "-bool", "true"],
+      ["crontab", "-r"],
+      ["crontab", "jobs.txt"],
+      ["spctl", "--master-disable"],
+      ["xattr", "-d", "com.apple.quarantine", "App.app"],
+      ["tccutil", "reset", "All"],
+      ["systemctl", "--user", "enable", "x.service"],
+      ["security", "add-generic-password", "-s", "x", "-w", "y"],
+    ]) {
+      expect(code(argv), argv.join(" ")).toBe("command_ask_system");
+    }
+    const r = classifyCommand(["osascript", "-e", "x"]);
+    if (r.kind === "ask") expect(r.risk).toBe("workspace_destructive");
+  });
+
+  it("sees through exec-wrappers (adversarial review)", () => {
+    for (const argv of [
+      ["sudo", "defaults", "write", "com.apple.x", "k", "v"],
+      ["env", "osascript", "-e", "x"],
+      ["sudo", "-u", "root", "launchctl", "bootout", "system/x"],
+    ]) {
+      expect(code(argv), argv.join(" ")).toBe("command_ask_system");
+    }
+    // A wrapper around a look-only form stays whatever the wrapper was.
+    expect(code(["sudo", "defaults", "read", "x"])).not.toBe(
+      "command_ask_system",
+    );
+  });
+
+  it("leaves the look-only forms where they were", () => {
+    for (const argv of [
+      ["defaults", "read", "com.apple.dock"],
+      ["crontab", "-l"],
+      ["crontab", "-l", "-u", "bob"],
+      ["spctl", "--status"],
+      ["launchctl", "list"],
+      ["launchctl", "print-disabled", "system"],
+      ["launchctl", "getenv", "PATH"],
+      ["launchctl", "procinfo", "1"],
+      ["systemctl", "status", "nginx"],
+      ["xattr", "-l", "App.app"],
+      ["csrutil", "status"],
+      ["security", "-v", "list-keychains"],
+      // Review 2026-09-23: an option's value is not the verb, and the rest
+      // of these only look.
+      ["systemctl", "-t", "service", "--state=running"],
+      ["systemctl", "--state", "failed"],
+      ["systemctl", "-p", "ActiveState", "show", "nginx"],
+      ["systemctl", "get-default"],
+      ["security", "cms", "-D", "-i", "x.mobileprovision"],
+      ["security", "find-generic-password", "-s", "github"],
+      ["security", "default-keychain"],
+    ]) {
+      expect(code(argv), argv.join(" ")).not.toBe("command_ask_system");
+    }
+  });
+
+  it("running the user's own services is an ordinary ask; enabling one is not", () => {
+    expect(code(["systemctl", "--user", "restart", "myapp"])).toBe(
+      "command_ask_unknown",
+    );
+    expect(code(["systemctl", "--user", "daemon-reload"])).toBe(
+      "command_ask_unknown",
+    );
+    for (const argv of [
+      ["systemctl", "--user", "enable", "myapp"],
+      ["systemctl", "restart", "nginx"], // a SYSTEM service
+      ["security", "default-keychain", "-s", "other.keychain"],
+      ["defaults", "-host", "mac", "write", "com.x", "k", "v"],
+    ]) {
+      expect(code(argv), argv.join(" ")).toBe("command_ask_system");
+    }
+  });
+});
+
 describe("classifyCommand — ask destructive", () => {
   it("asks for rm -rf inside repo", () => {
     const r = classifyCommand(["rm", "-rf", "build/"]);

@@ -84,6 +84,28 @@ describe("isCredentialPath", () => {
     expect(isCredentialPath(".gnupg/secring.gpg")).toBe(true);
   });
 
+  it("a keychain folder counts only where a home or the system keeps it (review 2026-09-23)", () => {
+    for (const p of [
+      "/Users/bob/Library/Keychains/login.keychain-db",
+      "~/Library/Keychains/login.keychain-db",
+      "$HOME/Library/Keychains/x",
+      "/Library/Keychains/System.keychain",
+      "/var/root/Library/Keychains/x",
+      "/home/bob/.local/share/keyrings/login.keyring",
+      "~/.config/gh/hosts.yml",
+      "~/.config/gcloud/legacy_credentials/me@x.com/adc.json",
+    ]) {
+      expect(isCredentialPath(p), p).toBe(true);
+    }
+    for (const p of [
+      "Sources/Library/Keychains/KeychainStore.swift",
+      "~/.config/gh/config.yml",
+      "~/.config/gcloud/configurations/config_default",
+    ]) {
+      expect(isCredentialPath(p), p).toBe(false);
+    }
+  });
+
   it("does not flag ordinary paths", () => {
     expect(isCredentialPath("src/main.ts")).toBe(false);
     expect(isCredentialPath("packages/tools/credentials.ts")).toBe(false);

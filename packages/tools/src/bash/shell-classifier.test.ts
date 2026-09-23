@@ -89,6 +89,21 @@ describe("classifyShellCommand — block tier (no override)", () => {
     expect(kind('echo "rm -rf /"')).toBe("allow");
   });
 
+  it("the persistent shell gets the macOS / Linux tiers too (platform review 2026-09-23)", () => {
+    // Block: the rm cluster and the $HOME spelling, a keychain secret, a
+    // wiped disk — in the shell the minimal contract actually runs.
+    expect(kind("rm -rfv $HOME")).toBe("block");
+    expect(kind("security find-generic-password -s github -w")).toBe("block");
+    expect(kind("ls && diskutil eraseDisk APFS X disk2")).toBe("block");
+    // Ask, every time: the machine-level class.
+    expect(ask("osascript -e 'display dialog \"hi\"'").code).toBe(
+      "command_ask_system",
+    );
+    expect(ask("defaults write com.apple.dock autohide -bool true").code).toBe(
+      "command_ask_system",
+    );
+  });
+
   it("empty command is a block, not an allow", () => {
     expect(kind("   ")).toBe("block");
   });

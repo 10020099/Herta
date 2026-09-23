@@ -386,6 +386,88 @@ describe("resolveSafePath", () => {
   );
 });
 
+/** Run `fn` as if on `platform` (path-safety reads process.platform per call). */
+async function onPlatform<T>(
+  platform: NodeJS.Platform,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const real = Object.getOwnPropertyDescriptor(process, "platform");
+  Object.defineProperty(process, "platform", {
+    value: platform,
+    configurable: true,
+  });
+  try {
+    return await fn();
+  } finally {
+    if (real !== undefined) Object.defineProperty(process, "platform", real);
+  }
+}
+
+describe("resolveSafePath — POSIX tool credentials (platform review 2026-09-23)", () => {
+  beforeEach(async () => {
+    ws = await mkTmpWorkspace({ "src/a.ts": "x" });
+  });
+
+  it("denies the credential FILE of a home layout, wherever the workspace holds one", async () => {
+    for (const p of [
+      ".docker/config.json",
+      ".kube/config",
+      ".config/gh/hosts.yml",
+      ".config/gcloud/credentials.db",
+      ".local/share/keyrings/login.keyring",
+      "Library/Keychains/login.keychain-db",
+      ".pypirc",
+      ".dockercfg",
+    ]) {
+      const r = await resolveSafePath(ws.root, p);
+      expect(r.ok, `expected ${p} denied`).toBe(false);
+      if (!r.ok) expect(r.code).toBe("path_denied");
+    }
+  });
+
+  it("leaves the look-alikes that are ordinary repo content alone", async () => {
+    for (const p of [
+      ".docker/Dockerfile",
+      ".kube/deploy.yaml",
+      "debian/usr/share/keyrings/archive.gpg", // a package's PUBLIC keys
+      "config/gh.ts",
+      // Review 2026-09-23: the tool's settings, not its secret, and code
+      // that merely shares the keychain folder's name.
+      "dotfiles/.config/gh/config.yml",
+      "dotfiles/.config/gcloud/configurations/config_default",
+      "Sources/Library/Keychains/KeychainStore.swift",
+    ]) {
+      const r = await resolveSafePath(ws.root, p);
+      expect(r.ok, `expected ${p} allowed`).toBe(true);
+    }
+  });
+});
+
+describe("resolveSafePath — macOS folds case like the filesystem (platform review 2026-09-23)", () => {
+  it("a new `.GIT` directory is a `.git` on macOS, and an unrelated name on Linux", async () => {
+    ws = await mkTmpWorkspace({ "sub/.keep": "" });
+    const target = "sub/.GIT/hooks/pre-commit";
+    const mac = await onPlatform("darwin", () =>
+      resolveSafePath(ws.root, target, { mutation: true }),
+    );
+    expect(mac.ok).toBe(false);
+    if (!mac.ok) expect(mac.code).toBe("path_denied");
+    const linux = await onPlatform("linux", () =>
+      resolveSafePath(ws.root, target, { mutation: true }),
+    );
+    expect(linux.ok).toBe(true);
+  });
+
+  it("a `Head` file completes the bare-repo shape on macOS", async () => {
+    ws = await mkTmpWorkspace({ "objects/.keep": "", "refs/.keep": "" });
+    const mac = await onPlatform("darwin", () =>
+      resolveSafePath(ws.root, "Head", { mutation: true }),
+    );
+    expect(mac.ok).toBe(false);
+    if (!mac.ok) expect(mac.message).toContain("bare-repository");
+  });
+});
+
 describe("resolveSafePath — bare-repo shape guard (ADR 0049 §6)", () => {
   // The vector: git treats any directory holding HEAD + objects/ + refs/ as
   // a BARE REPO and runs hooks from it. No segment is `.git`, so the

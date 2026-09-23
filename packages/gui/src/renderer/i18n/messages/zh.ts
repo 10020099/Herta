@@ -246,6 +246,7 @@ export const zh = {
   "approval.reason.commandCwdEscape":
     "该命令会切到工作区之外，之后的相对路径不受工作区保护",
   "approval.reason.commandUnresolved": "这条命令有未解析部分",
+  "approval.reason.commandSystem": "会改动系统设置或操控其他应用，每次都需确认",
   // A chained line with more than one ask class: the other classes, named.
   "approval.alsoClasses": "另含：{list}",
   // Consequence notes (ADR 0049 §5) — one sentence on what the command will

@@ -11,6 +11,7 @@ import {
 } from "node:path";
 import { isPathInside } from "@herta/core";
 import {
+  hasCredentialSequence,
   isCredentialBasename,
   isSensitiveSegment,
 } from "./credential-denylist.js";
@@ -164,8 +165,18 @@ async function realpathViaExistingAncestor(candidate: string): Promise<string> {
   }
 }
 
+/**
+ * Fold the case the FILESYSTEM folds. Windows always; macOS too (platform
+ * review 2026-09-23): APFS and HFS+ are case-insensitive by default, so there
+ * `.GIT/hooks/…` IS `.git/hooks/…` and a `Head` file completes a bare-repo
+ * shape git will run hooks from — while the old Windows-only fold compared
+ * them case-sensitively and let both through. A case-SENSITIVE APFS volume
+ * (a rare, deliberate format) makes this stricter than needed: an unrelated
+ * `.GIT` directory is denied there, which is the fail-closed direction.
+ * Linux filesystems are case-sensitive, so nothing folds.
+ */
 function caseNormalize(s: string): string {
-  return isWindows() ? s.toLowerCase() : s;
+  return isWindows() || process.platform === "darwin" ? s.toLowerCase() : s;
 }
 
 /** The name Win32 will ACTUALLY open for a path component (audit T3.4 review):
@@ -390,11 +401,12 @@ export async function resolveSafePath(
       const seg = segments[i] as string;
       const segLower = caseNormalize(seg);
 
-      // `.git` / `.herta` are STRUCTURAL tree denials kept case-sensitive on
-      // POSIX (a repo could hold an unrelated `.GIT` dir, and denying it would
-      // break legit work) — caseNormalize only folds on Windows. Either read
-      // carve-out (see above) skips exactly this check; credential denials
-      // below are never skipped, for either.
+      // `.git` / `.herta` are STRUCTURAL tree denials, matched with the
+      // filesystem's own case policy: folded on Windows and macOS (where
+      // `.GIT` IS `.git`), exact on Linux (where a repo could hold an
+      // unrelated `.GIT` dir, and denying it would break legit work). Either
+      // read carve-out (see above) skips exactly this check; credential
+      // denials below are never skipped, for either.
       if (!inReadCarveOut) {
         for (const denied of DENY_SEGMENTS_EXACT) {
           if (caseNormalize(denied) === segLower) {
@@ -427,6 +439,15 @@ export async function resolveSafePath(
         ok: false,
         code: "path_denied",
         message: `denied credential basename: ${base}`,
+      };
+    }
+    // Tool credentials that are only credentials in their home layout
+    // (`.docker/config.json`, `.kube/config`, `.config/gh`, …) — shared list.
+    if (hasCredentialSequence(segments)) {
+      return {
+        ok: false,
+        code: "path_denied",
+        message: `denied credential location: ${canonicalRel}`,
       };
     }
 

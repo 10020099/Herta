@@ -280,6 +280,8 @@ export const en = {
   "approval.reason.commandCwdEscape":
     "This command leaves the workspace directory — later relative paths are unguarded",
   "approval.reason.commandUnresolved": "This command has unresolved parts",
+  "approval.reason.commandSystem":
+    "Changes system settings or drives other apps — asked every time",
   "approval.alsoClasses": "Also: {list}",
   "approval.consequence.discardsUncommitted":
     "Note: discards uncommitted changes — they cannot be recovered.",

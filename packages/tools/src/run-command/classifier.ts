@@ -19,27 +19,61 @@ export type Verdict =
     }
   | { kind: "block"; reason: string; code: "command_blocked" };
 
-const ROOT_PATHS = new Set(["/", "//", "/*"]);
-const HOME_PATHS = new Set(["~", "~/", "~/*"]);
+/** Home, every way a shell spells it (platform review 2026-09-23: the `$HOME`
+ *  spellings of `rm -rf ~` dropped from block to an ordinary ask). Compared
+ *  after `rootForm`, so the trailing `/`, `/*` spellings need no entries. */
+const HOME_PATHS = new Set(["~", "$HOME", "${HOME}"]);
+
+/**
+ * A root or home spelling reduced to its bare form: runs of `/` collapsed and
+ * every trailing `/`, `/.` and `/*` stripped, so `/`, `//*`, `~//` and
+ * `$HOME/.` compare as ``, ``, `~` and `$HOME`. Matching exact strings let
+ * each extra slash walk `rm -rf` from the block tier down to an ask (probe
+ * 2026-09-23).
+ *
+ * `~name` (another user's home) is deliberately NOT here: cmd and PowerShell
+ * never expand it, so on Windows `del ~WRL0001.tmp` names Word's temp file —
+ * and a block has no override. `rm -rf ~bob` stays a destructive ask, asked
+ * every time.
+ */
+function rootForm(a: string): string {
+  let s = a.replace(/\/{2,}/g, "/");
+  for (;;) {
+    const next = s.replace(/\/(?:\.|\*)?$/, "");
+    if (next === s) return s;
+    s = next;
+  }
+}
 
 /** System-root-ish paths across platforms. Windows shells name roots as
  *  `C:\` / `C:/` / bare `\`, never `/` — the decoded shell bodies below hand
  *  these to the catastrophic check, so the POSIX-only set was a blind spot. */
 function isSystemRootPath(a: string): boolean {
-  if (ROOT_PATHS.has(a) || HOME_PATHS.has(a)) return true;
+  const bare = rootForm(a);
+  if (a !== "" && (bare === "" || HOME_PATHS.has(bare))) return true;
   if (/^[A-Za-z]:[\\/]?\*?$/.test(a)) return true;
   return a === "\\" || a === "\\*" || a === "\\\\";
 }
 
+/**
+ * `rm`'s recursive + force, however the flags are clustered (platform review
+ * 2026-09-23): only the exact `-rf` / `-fr` / `-Rf` / `-fR` tokens and the
+ * separate `-r -f` used to count, so `rm -rfv /` and `rm -Rfi ~` dropped from
+ * the block tier to an ordinary ask (and past the destructive ask, which
+ * shares this helper). A short-option cluster carries every letter in it;
+ * option parsing ends at `--`.
+ */
 function hasRecursiveForce(argv: readonly string[]): boolean {
-  for (const a of argv) {
-    if (a === "-rf" || a === "-fr" || a === "-Rf" || a === "-fR") return true;
-  }
   let r = false;
   let f = false;
-  for (const a of argv) {
-    if (a === "-r" || a === "-R" || a === "--recursive") r = true;
-    if (a === "-f" || a === "--force") f = true;
+  for (const a of argv.slice(1)) {
+    if (a === "--") break;
+    if (a === "--recursive") r = true;
+    else if (a === "--force") f = true;
+    else if (/^-[A-Za-z]+$/.test(a)) {
+      if (/[rR]/.test(a)) r = true;
+      if (a.includes("f")) f = true;
+    }
   }
   return r && f;
 }
@@ -767,7 +801,192 @@ function isCatastrophic(argv: readonly string[]): {
   if (a0 === "init" && (argv[1] === "0" || argv[1] === "6")) {
     return { hit: true, reason: `init runlevel: ${argv[1]}` };
   }
+  const posix = posixCatastrophe(a0, argv);
+  if (posix !== null) return { hit: true, reason: posix };
   return { hit: false, reason: "" };
+}
+
+/** `diskutil` verbs that destroy data or a partition map. Lowercased. */
+const DISKUTIL_DESTROY = new Set([
+  "erasedisk",
+  "erasevolume",
+  "zerodisk",
+  "randomdisk",
+  "secureerase",
+  "partitiondisk",
+  "splitpartition",
+  "mergepartitions",
+  "reformat",
+]);
+/** `diskutil apfs …` verbs that destroy a container or volume. */
+const DISKUTIL_APFS_DESTROY = new Set([
+  "deletecontainer",
+  "deletevolume",
+  "deletevolumegroup",
+  "erasevolume",
+]);
+
+/**
+ * Where a program's SUBCOMMAND sits, past the options it takes in front of it:
+ * `security [-hilqv] [-p prompt] <command>` and `diskutil [quiet] <verb>`.
+ * Reading `args[0]` let `security -q dump-keychain` and `diskutil quiet
+ * eraseDisk …` out of the block tier (probe 2026-09-23).
+ */
+function subcommandAt(id: string, args: readonly string[]): number {
+  let i = 0;
+  if (id === "security") {
+    while (i < args.length) {
+      const t = args[i] as string;
+      if (t === "--") return i + 1;
+      if (!t.startsWith("-")) break;
+      // `-p` takes the prompt as the next word, clustered or not (`-qp x`).
+      i += /^-[A-Za-z]*p$/.test(t) ? 2 : 1;
+    }
+  } else if (id === "diskutil" && (args[0] ?? "").toLowerCase() === "quiet") {
+    i = 1;
+  }
+  return i;
+}
+/** `systemctl` / `loginctl` verbs that stop or restart the machine. */
+const POWER_VERBS = new Set(["poweroff", "reboot", "halt", "kexec"]);
+/** `systemctl` / `loginctl` options that take the NEXT word as their value —
+ *  only those whose value is required, so a flag is never mistaken for one
+ *  and allowed to hide the verb behind it. */
+const SYSTEMCTL_VALUE_OPTS = new Set([
+  "-t",
+  "--type",
+  "-p",
+  "--property",
+  "-P",
+  "-H",
+  "--host",
+  "-M",
+  "--machine",
+  "-n",
+  "--lines",
+  "-o",
+  "--output",
+  "-s",
+  "--signal",
+  "--state",
+  "--root",
+  "--image",
+  "--kill-whom",
+  "--kill-value",
+  "--job-mode",
+  "--what",
+  "--timestamp",
+  "--message",
+  "--when",
+  "--boot-loader-entry",
+  "--boot-loader-menu",
+  "--reboot-argument",
+  "--check-inhibitors",
+  "--preset-mode",
+  "--drop-in",
+]);
+
+/**
+ * The verb: the first word that is neither an option nor an option's value,
+ * lowercased (review 2026-09-23). Taking any argument as the verb blocked
+ * `systemctl status reboot` and a heredoc line of prose; taking the first
+ * non-dash word read `systemctl -t service …`'s `service` as the verb.
+ */
+function firstOperand(
+  args: readonly string[],
+  valueOpts: ReadonlySet<string>,
+): string {
+  for (let i = 0; i < args.length; i += 1) {
+    const a = args[i] as string;
+    if (a === "--") return (args[i + 1] ?? "").toLowerCase();
+    if (a.startsWith("-") && a.length > 1) {
+      if (valueOpts.has(a)) i += 1;
+      continue;
+    }
+    return a.toLowerCase();
+  }
+  return "";
+}
+
+/**
+ * The macOS and Linux members of the block tier (platform review 2026-09-23).
+ * The tier named `mkfs`, `dd of=/dev/…` and `shutdown`, and everything below
+ * fell through to `command_ask_unknown` — an ordinary, cacheable,
+ * rule-eligible approval card, one click from an erased disk or a leaked
+ * keychain. CLAUDE.md's Block list ("mkfs, raw block-device writes …,
+ * credential exfiltration, shutdown/reboot") is the policy; these are its
+ * spellings on the other two platforms:
+ *
+ *   - disk destruction: `diskutil erase*|zeroDisk|partitionDisk…` and its
+ *     `apfs delete*`, `newfs_*` (macOS's mkfs), and on a `/dev/` device:
+ *     `wipefs` that erases, `blkdiscard`, `sgdisk --zap*`, `shred`;
+ *   - power: `systemctl|loginctl poweroff|reboot|halt|kexec` as the verb;
+ *   - keychain secrets: `security find-*-password -w|-g` (prints the
+ *     password), `security dump-keychain`, `security export` (exports keys).
+ */
+function posixCatastrophe(a0: string, argv: readonly string[]): string | null {
+  const args = argv.slice(1);
+  const at = subcommandAt(a0, args);
+  const sub = (args[at] ?? "").toLowerCase();
+  if (a0 === "diskutil") {
+    if (DISKUTIL_DESTROY.has(sub)) return `diskutil ${args[at]}: erases a disk`;
+    if (
+      sub === "apfs" &&
+      DISKUTIL_APFS_DESTROY.has((args[at + 1] ?? "").toLowerCase())
+    ) {
+      return `diskutil apfs ${args[at + 1]}: deletes a container or volume`;
+    }
+  }
+  if (a0.startsWith("newfs")) return `newfs variant: ${argv[0]}`;
+  // The block-device tools block on a DEVICE, as `dd of=/dev/…` and `shred`
+  // always did: `wipefs -a build/disk.img` and `sgdisk --zap-all disk.img`
+  // are routine in an image-build repo (review 2026-09-23) and stay asks.
+  const onDevice = args.some((a) => a.startsWith("/dev/"));
+  if (a0 === "wipefs" && onDevice) {
+    // `wipefs /dev/x` alone only LISTS signatures; -a / -o erase them — unless
+    // `-n` / `--no-act` makes the whole run a dry run.
+    const short = (letters: RegExp): boolean =>
+      args.some((a) => /^-[A-Za-z]+$/.test(a) && letters.test(a));
+    const erases =
+      args.some(
+        (a) => a === "--all" || a === "--offset" || a.startsWith("--offset="),
+      ) || short(/[ao]/);
+    const dryRun = args.includes("--no-act") || short(/n/);
+    if (erases && !dryRun) return "wipefs erasing filesystem signatures";
+  }
+  if (a0 === "blkdiscard" && onDevice) {
+    return "blkdiscard discards every block on a device";
+  }
+  if (
+    a0 === "sgdisk" &&
+    onDevice &&
+    args.some(
+      (a) =>
+        a === "--zap" ||
+        a === "--zap-all" ||
+        (/^-[A-Za-z]+$/.test(a) && /[zZ]/.test(a)),
+    )
+  ) {
+    return "sgdisk --zap destroys a partition table";
+  }
+  if (a0 === "shred" && onDevice) return "shred on a raw device";
+  if (a0 === "systemctl" || a0 === "loginctl") {
+    const verb = firstOperand(args, SYSTEMCTL_VALUE_OPTS);
+    if (POWER_VERBS.has(verb)) return `system control: ${a0} ${verb}`;
+  }
+  if (a0 === "security") {
+    if (
+      (sub === "find-generic-password" || sub === "find-internet-password") &&
+      args.some(
+        (a) => a === "-w" || a === "-g" || /^-[A-Za-z]*[wg][A-Za-z]*$/.test(a),
+      )
+    ) {
+      return `security ${args[at]} prints a keychain password`;
+    }
+    if (sub === "dump-keychain") return "security dump-keychain";
+    if (sub === "export") return "security export writes keychain items out";
+  }
+  return null;
 }
 
 /**
@@ -880,6 +1099,188 @@ function hasShortFlag(args: readonly string[], letter: string): boolean {
       /^-[A-Za-z]+$/.test(a) &&
       a.includes(letter),
   );
+}
+
+/** `systemctl` verbs that only look. */
+const SYSTEMCTL_READ = new Set([
+  "status",
+  "show",
+  "cat",
+  "help",
+  "list-units",
+  "list-unit-files",
+  "list-timers",
+  "list-sockets",
+  "list-dependencies",
+  "list-jobs",
+  "is-active",
+  "is-enabled",
+  "is-failed",
+  "is-system-running",
+  "get-default",
+  "show-environment",
+  "list-machines",
+  "list-paths",
+  "list-automounts",
+]);
+/** `systemctl --user` verbs that run, stop or reload the user's OWN services
+ *  — everyday dev on Linux, left an ordinary ask (review 2026-09-23).
+ *  Enabling, masking, editing or linking a unit is autostart and persistence,
+ *  and stays a system change even under `--user`. */
+const SYSTEMCTL_USER_RUN = new Set([
+  "start",
+  "stop",
+  "restart",
+  "reload",
+  "try-restart",
+  "reload-or-restart",
+  "try-reload-or-restart",
+  "kill",
+  "reset-failed",
+  "daemon-reload",
+]);
+/** `launchctl` subcommands that only look. */
+const LAUNCHCTL_READ = new Set([
+  "list",
+  "print",
+  "print-cache",
+  "print-disabled",
+  "version",
+  "help",
+  "blame",
+  "getenv",
+  "error",
+  "managerpid",
+  "manageruid",
+  "managername",
+  "procinfo",
+  "hostinfo",
+]);
+/** `security` subcommands that only look. The password lookups are here
+ *  because the secret-printing forms (`-w` / `-g`) never get this far — they
+ *  are blocked in `posixCatastrophe`; what remains prints metadata. */
+const SECURITY_READ = new Set([
+  "find-certificate",
+  "find-identity",
+  "find-key",
+  "find-generic-password",
+  "find-internet-password",
+  "list-keychains",
+  "list-smartcards",
+  "show-keychain-info",
+  "verify-cert",
+  "dump-trust-settings",
+  "help",
+]);
+
+/** Whether a `security` subcommand only looks (review 2026-09-23). */
+function securityOnlyLooks(sub: string, rest: readonly string[]): boolean {
+  if (SECURITY_READ.has(sub)) return true;
+  // `default-keychain` / `login-keychain` PRINT unless `-s` sets one.
+  if (sub === "default-keychain" || sub === "login-keychain") {
+    return !rest.some((a) => /^-[A-Za-z]*s[A-Za-z]*$/.test(a));
+  }
+  // `security cms -D -i x.mobileprovision` decodes a provisioning profile —
+  // the standard iOS step. Signing or encrypting uses a keychain identity.
+  if (sub === "cms") {
+    return rest.includes("-D") && !rest.some((a) => /^-[SEC]$/.test(a));
+  }
+  if (sub === "authorizationdb") return (rest[0] ?? "") === "read";
+  return false;
+}
+/** `defaults` options that take the next word as their value. */
+const DEFAULTS_VALUE_OPTS = new Set(["-host"]);
+/** `spctl` flags that change Gatekeeper's policy. */
+const SPCTL_WRITE = new Set([
+  "--master-disable",
+  "--master-enable",
+  "--global-disable",
+  "--global-enable",
+  "--add",
+  "--remove",
+  "--enable",
+  "--disable",
+  "--reset-default",
+]);
+
+/**
+ * Commands that change the MACHINE rather than the workspace — Gatekeeper,
+ * launch agents, the keychain, cron, other apps (platform review 2026-09-23).
+ * They landed on `command_ask_unknown`, which is cacheable and rule-eligible:
+ * the task cache keys on the PROGRAM, so approving a harmless `defaults read`
+ * waved every later `defaults write` in that brief through with no card, and
+ * one "always allow" on a `defaults write` saved `defaults write:*`, which
+ * covered every domain for good. Their own class
+ * (`command_ask_system`, danger styling) is asked every time — it is absent
+ * from RULE_ELIGIBLE_ASK_CODES, and the session cache only keeps
+ * `workspace_write`. `osascript` in particular can type into and drive any
+ * app the user has granted automation, including a keychain prompt.
+ *
+ * The look-only forms (`defaults read`, `crontab -l`, `spctl --status`,
+ * `systemctl status`, `security find-certificate`, `xattr -l`) stay where
+ * they were. Returns the card's reason, or null.
+ */
+function systemAlteringShape(
+  id: string,
+  argv: readonly string[],
+): string | null {
+  const args = argv.slice(1);
+  const verb = (args.find((a) => !a.startsWith("-")) ?? "").toLowerCase();
+  const cluster = (letters: RegExp): boolean =>
+    args.some((a) => /^-[A-Za-z]+$/.test(a) && letters.test(a));
+  switch (id) {
+    case "osascript":
+      return "osascript drives other apps (AppleScript / JXA)";
+    case "tccutil":
+      return "tccutil resets privacy permissions";
+    case "csrutil":
+      return verb === "status" ? null : `csrutil ${verb || args.join(" ")}`;
+    case "launchctl":
+      return LAUNCHCTL_READ.has(verb) ? null : `launchctl ${args.join(" ")}`;
+    case "defaults": {
+      // `defaults -host <name> write …`: the host is not the verb.
+      const v = firstOperand(args, DEFAULTS_VALUE_OPTS);
+      return v === "write" || v === "delete" || v === "import" || v === "rename"
+        ? `defaults ${v} changes app or system preferences`
+        : null;
+    }
+    case "crontab": {
+      // `crontab -l` (optionally `-u <user>`) only lists. Anything else —
+      // -e, -r, -i, a file operand, or bare `crontab` reading stdin —
+      // replaces the table.
+      const rest = args.filter(
+        (a, i) => a !== "-l" && a !== "-u" && args[i - 1] !== "-u",
+      );
+      return args.includes("-l") && rest.length === 0
+        ? null
+        : `crontab ${args.join(" ")}`.trim();
+    }
+    case "spctl":
+      return args.some((a) => SPCTL_WRITE.has(a))
+        ? `spctl ${args.join(" ")} changes Gatekeeper policy`
+        : null;
+    case "xattr":
+      return cluster(/[dcw]/)
+        ? `xattr ${args.join(" ")} (e.g. removing the quarantine flag)`
+        : null;
+    case "systemctl": {
+      const v = firstOperand(args, SYSTEMCTL_VALUE_OPTS);
+      if (v === "" || SYSTEMCTL_READ.has(v)) return null;
+      if (args.includes("--user") && SYSTEMCTL_USER_RUN.has(v)) return null;
+      return `systemctl ${args.join(" ")}`;
+    }
+    case "security": {
+      const at = subcommandAt(id, args);
+      return securityOnlyLooks(
+        (args[at] ?? "").toLowerCase(),
+        args.slice(at + 1),
+      )
+        ? null
+        : `security ${args[at] ?? ""} changes the keychain or trust settings`.trim();
+    }
+    default:
+      return null;
+  }
 }
 
 /**
@@ -1469,6 +1870,22 @@ export function classifyCommand(
       risk: "workspace_destructive",
       code: "command_ask_destructive",
       reason: `chmod: ${argv.slice(1).join(" ")}`,
+    };
+  }
+  // Through exec-wrappers too (`sudo defaults write …`, `env osascript …`):
+  // this class is never remembered, so peeling can only escalate the card.
+  const peeled = peelExecWrappers(argv);
+  const system =
+    systemAlteringShape(id, argv) ??
+    (peeled === null || peeled.length === 0
+      ? null
+      : systemAlteringShape(commandIdentity(peeled[0] as string), peeled));
+  if (system !== null) {
+    return {
+      kind: "ask",
+      risk: "workspace_destructive",
+      code: "command_ask_system",
+      reason: system,
     };
   }
 
