@@ -8,15 +8,17 @@ import { type ActorPrompt, serializeActorPrompt } from "./actor-prompt.js";
 import type { ActorTurnDeps } from "./actor-turn-deps.js";
 import { resolveHints } from "./actor-turn-prompts.js";
 import {
-  firstStopIndex,
+  firstStopIndexAtLineStart,
   STOP_CLOSER_USER,
   STOP_OPENER_USER,
+  STOP_PAGE_HEADING,
+  STOP_PAGE_RULE,
+  safeEmitBoundaryAtLineStart,
 } from "./actor-turn-stream.js";
 import type { BeatFirer } from "./backend-bridge.js";
 import { isPlaceholderOnly, stripHintScaffolding } from "./block-shape.js";
 import { sanitizeActorText } from "./escape.js";
 import { neutralizeBanzhuanTrigger } from "./parse.js";
-import { safeEmitBoundary, stripDanglingStopPrefix } from "./streaming-sink.js";
 import { FORCED_SPEECH_OPEN_TAG, STOP_SPEECH_CLOSE } from "./thought-hint.js";
 
 /**
@@ -94,6 +96,10 @@ export function makeFireBeat(
       STOP_SPEECH_CLOSE,
       STOP_OPENER_USER,
       STOP_CLOSER_USER,
+      // A beat can turn the page too (ADR 0070); its token cap only bounds
+      // how much of the page it writes.
+      STOP_PAGE_HEADING,
+      STOP_PAGE_RULE,
     ] as const;
 
     try {
@@ -117,7 +123,7 @@ export function makeFireBeat(
           // (2026-06-28) so a slightly longer beat (e.g. a fuller take on a
           // diff) finishes its sentence AND the close marker instead of being
           // cut at finish_reason=length and leaking a dangling `（/`
-          // (stripDanglingStopPrefix below still cleans that residual case).
+          // (the dangling-prefix strip below still cleans that residual case).
           // History: 60 was too tight (truncated the marker), then 100. Kept as
           // a guard so a misbehaving beat can't run to DeepSeek's ~4096 default
           // mid-backend-work — beats stay short by design, not just by hint.
@@ -131,8 +137,8 @@ export function makeFireBeat(
             // firstStopIndex caps the emit at any COMPLETE stop marker a
             // misbehaving provider streamed past (fence-fuzz, 2026-07-09).
             const safeEnd = Math.min(
-              safeEmitBoundary(beatBuffered, beatStops),
-              firstStopIndex(beatBuffered, beatStops),
+              safeEmitBoundaryAtLineStart(beatBuffered, beatStops),
+              firstStopIndexAtLineStart(beatBuffered, beatStops),
             );
             if (safeEnd > beatEmittedTail) {
               // Defer beginHertaStream until just before the first emit so
@@ -190,11 +196,14 @@ export function makeFireBeat(
     // partial prefix (a trailing `（/` from a beat truncated mid-marker —
     // still possible even at `maxTokens: 220`; the `.trim()` at commit
     // removes only whitespace, not the leaked prefix).
-    const beatStopIdx = firstStopIndex(beatBuffered, beatStops);
+    const beatStopIdx = firstStopIndexAtLineStart(beatBuffered, beatStops);
     let beatText =
       beatStopIdx < beatBuffered.length
         ? beatBuffered.slice(0, beatStopIdx)
-        : stripDanglingStopPrefix(beatBuffered, beatStops);
+        : beatBuffered.slice(
+            0,
+            safeEmitBoundaryAtLineStart(beatBuffered, beatStops),
+          );
     deps.onPrompt?.("beat-out", `${beatPrompt}${beatText}`);
 
     // Beats carry bracketed hints too (beat_verification / beat_patch_preview

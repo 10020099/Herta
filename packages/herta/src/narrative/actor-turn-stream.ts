@@ -24,7 +24,7 @@ import {
   stripHintScaffolding,
 } from "./block-shape.js";
 import type { SlowStreamController } from "./streaming-sink.js";
-import { safeEmitBoundary, stripDanglingStopPrefix } from "./streaming-sink.js";
+import { safeEmitBoundary } from "./streaming-sink.js";
 import {
   buildSupervisorVetoHint,
   FINAL_RETRY_BODY_SEED,
@@ -60,11 +60,33 @@ export const STOP_OPENER_USER = "（开拓者 说）";
 export const STOP_CLOSER_USER = "（/开拓者 说）";
 
 /**
+ * Page breaks in the prompt's OWN grammar (voice register lab 2026-09-23,
+ * ADR 0070). The static prefix is one book of pages — `### 废案_NN：…`,
+ * `### 记录：…`, `### 此刻`, EnvSet's `---` + `### 关于…` sections — and a
+ * block that has run out of things to say sometimes turns the page instead
+ * of closing its tag: 「### 关于这台终端」「### 关于#0988」「### 关于我的
+ * 房间…」, thousands of characters of invented autobiography, in thoughts
+ * AND speeches (5 blocks of ~900 across 9 runs, older than the seeds and
+ * hints of that day). A bare `---` rule turned up only inside such pages.
+ * No block of hers contains either — no seed 说 / 想 block does — so a line
+ * that opens a page ends the block, exactly like a close tag.
+ *
+ * Line-anchored on purpose: `#### `, a mid-line `### `, a diff's
+ * `--- a/x` and a `- item` list line are left alone. Matched as if the body
+ * began a line (`firstStopIndexAtLineStart`), because a page heading can be
+ * the block's very FIRST line — the `\n` before it is the prompt's, not the
+ * model's (1 of the 5).
+ */
+export const STOP_PAGE_HEADING = "\n### ";
+export const STOP_PAGE_RULE = "\n---\n";
+
+/**
  * Stop sequences passed to the LLM provider. The two surface close
  * tags terminate Herta's own surface as expected; `（开拓者 说）` and
  * `（/开拓者 说）` catch the runaway cases where the model skips its own
  * close tag and emits the user's next-turn envelope, with or without
- * its open tag.
+ * its open tag; the two page breaks catch the runaway into a new page.
+ * DeepSeek accepts at most 16 (a 17th is a 400, probed 2026-09-23).
  *
  * History note: an earlier revision also watched mid-stream for
  * inline `read_file("…")` / `list_files("…")` calls and aborted the
@@ -79,6 +101,8 @@ const STOP_SEQS = [
   STOP_THOUGHT_CLOSE,
   STOP_OPENER_USER,
   STOP_CLOSER_USER,
+  STOP_PAGE_HEADING,
+  STOP_PAGE_RULE,
 ] as const;
 
 /** Stray duplicate open tags the model sometimes re-emits mid-body. The
@@ -169,6 +193,31 @@ export function firstStopIndex(
     if (i >= 0 && i < min) min = i;
   }
   return min;
+}
+
+/**
+ * `firstStopIndex` with the body read as the start of a line — which it is:
+ * every actor prompt ends in a complete open tag plus `\n`. Only a stop that
+ * begins with `\n` (the page breaks) can tell the difference; for every
+ * other stop this is `firstStopIndex` exactly. A body that OPENS with a
+ * page heading gets 0 — nothing of it is hers.
+ */
+export function firstStopIndexAtLineStart(
+  buffered: string,
+  stops: readonly string[],
+): number {
+  return Math.max(0, firstStopIndex(`\n${buffered}`, stops) - 1);
+}
+
+/** `safeEmitBoundary` read the same way, so a body that has so far written
+ *  only `#`, `##` or `###` is held from its first character until the next
+ *  delta says whether a page is opening. Its end-of-stream use is the
+ *  dangling-prefix strip (`buffered.slice(0, …)`). */
+export function safeEmitBoundaryAtLineStart(
+  buffered: string,
+  stops: readonly string[],
+): number {
+  return Math.max(0, safeEmitBoundary(`\n${buffered}`, stops) - 1);
 }
 
 /** Strip stray duplicate open tags the model sometimes re-emits mid-body
@@ -945,11 +994,13 @@ async function consumePhaseTwoStream(opts: {
       buffered += ev.text;
       // LIVE_EMIT_HOLD_SEQS also holds partial STRAY tags (slice 4).
       // firstStopIndex caps the emit at any COMPLETE stop marker a
-      // misbehaving provider streamed past (fence-fuzz, 2026-07-09).
+      // misbehaving provider streamed past (fence-fuzz, 2026-07-09). Both
+      // read the body as a line start, so a page heading on its first line
+      // never types on screen either (ADR 0070).
       flushToSink(
         Math.min(
-          safeEmitBoundary(buffered, LIVE_EMIT_HOLD_SEQS),
-          firstStopIndex(buffered, STOP_SEQS),
+          safeEmitBoundaryAtLineStart(buffered, LIVE_EMIT_HOLD_SEQS),
+          firstStopIndexAtLineStart(buffered, STOP_SEQS),
         ),
       );
     } else if (ev.type === "finish") {
@@ -961,11 +1012,11 @@ async function consumePhaseTwoStream(opts: {
   // when one exists (matching the live emit cap, so streamed == committed;
   // prose ending in `（` right before the marker survives), else strip a
   // dangling partial marker prefix left by a stream that ended mid-marker.
-  const phase2StopIdx = firstStopIndex(buffered, STOP_SEQS);
+  const phase2StopIdx = firstStopIndexAtLineStart(buffered, STOP_SEQS);
   const withoutClose =
     phase2StopIdx < buffered.length
       ? buffered.slice(0, phase2StopIdx)
-      : stripDanglingStopPrefix(buffered, STOP_SEQS);
+      : buffered.slice(0, safeEmitBoundaryAtLineStart(buffered, STOP_SEQS));
   // Trim the committed body so the record matches what reached the
   // sink (the streaming-time skip + hold-back) char-for-char.
   const cleanText = withoutClose.trim();

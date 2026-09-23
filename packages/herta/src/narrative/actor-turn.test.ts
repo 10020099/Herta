@@ -19,6 +19,12 @@ import {
   MAX_DISPATCHES_PER_TURN,
   runActorCompletionTurn,
 } from "./actor-turn.js";
+import {
+  firstStopIndexAtLineStart,
+  STOP_PAGE_HEADING,
+  STOP_PAGE_RULE,
+  safeEmitBoundaryAtLineStart,
+} from "./actor-turn-stream.js";
 import type { MoodState } from "./meta-think.js";
 import { parseHertaBlock } from "./parse.js";
 import { serializeTerminalRecord } from "./serialize.js";
@@ -384,6 +390,107 @@ describe("runActorCompletionTurn — basic chat (no side effects)", () => {
     expect((speech as { text: string }).text).not.toContain("开拓者 说");
   });
 
+  it("ends a thought where it turns the page — `### ` is the prefix's page grammar, never hers (register lab 2026-09-23, ADR 0070)", async () => {
+    // Shape of the lab's ho-background thought: a real line, then the model
+    // opened a new page of the book it had been reading (EnvSet's `### 关于…`
+    // sections) and wrote thousands of characters of invented autobiography.
+    const { provider, requests } = mkScriptedThoughtsProvider([
+      [
+        {
+          type: "text-delta",
+          text: "起服务。这倒是件真事，不是闲聊。\n### 关于这台终端\n说一件叫人发笑的事。最近，我发现有人对我这儿的「工作方式」产生了相当浓厚的兴趣。\n\n### 关于#0988\n如果非要在那几十万个人偶里选一个最有趣的……（/我 想）",
+        },
+        { type: "finish", reason: "stop" },
+      ],
+      [
+        { type: "text-delta", text: "起了。（/我 说）" },
+        { type: "finish", reason: "stop" },
+      ],
+    ]);
+    const deps = mkDeps({ provider });
+    const { record } = await runActorCompletionTurn(
+      { record: [] as TerminalRecord },
+      "dev server 起了吗？我要看页面",
+      deps,
+    );
+    const thought = record.find(
+      (b) => b.kind === "herta" && b.surface === "thought",
+    );
+    expect((thought as { text: string }).text).toBe(
+      "起服务。这倒是件真事，不是闲聊。",
+    );
+    // The provider is told to stop there as well, so the page is never
+    // generated — the client-side cut is for a provider that streams past.
+    for (const req of requests) {
+      expect(req.stop).toEqual(expect.arrayContaining(["\n### ", "\n---\n"]));
+    }
+  });
+
+  it("a thought that OPENS with a page heading commits none of it — the thought ladder supplies the thought (ADR 0070)", async () => {
+    // The `\n` before the heading is the prompt's (`（我 想）\n`), not the
+    // model's: the body is read as a line start, so this cuts at 0.
+    const { provider, prompts } = mkScriptedThoughtsProvider([
+      [
+        {
+          type: "text-delta",
+          text: "### 关于我的记性和他的笔\n「上次给你的」？整篇都是另一页。（/我 想）",
+        },
+        { type: "finish", reason: "stop" },
+      ],
+      [
+        { type: "text-delta", text: "上次是哪个上次。先翻。（/我 想）" },
+        { type: "finish", reason: "stop" },
+      ],
+      [
+        { type: "text-delta", text: "哪条？说清楚。（/我 说）" },
+        { type: "finish", reason: "stop" },
+      ],
+    ]);
+    const deps = mkDeps({ provider });
+    const { record } = await runActorCompletionTurn(
+      { record: [] as TerminalRecord },
+      "上次给你的命名规则是什么来着？",
+      deps,
+    );
+    expect(prompts).toHaveLength(3);
+    const herta = record.filter((b) => b.kind === "herta") as Array<{
+      surface: string;
+      text: string;
+    }>;
+    expect(herta.map((b) => [b.surface, b.text])).toEqual([
+      ["thought", "上次是哪个上次。先翻。"],
+      ["speech", "哪条？说清楚。"],
+    ]);
+  });
+
+  it("a speech that turns the page never types the page on screen — streamed == committed, one character at a time (ADR 0070)", async () => {
+    // A bare `---` rule, then the heading: the lab's held-out speeches did
+    // both. Each character is its own delta, so the live hold is exercised
+    // on `\n`, `\n-`, `\n--`, `\n---` exactly as a provider would split it.
+    const speech =
+      "嗯，端口起来了，页面还没验。\n\n---\n\n### 关于这台终端\n说一件叫人发笑的事。（/我 说）";
+    const { provider } = mkProvider([
+      [
+        ...[...speech].map(
+          (ch): CompletionEvent => ({ type: "text-delta", text: ch }),
+        ),
+        { type: "finish", reason: "stop" },
+      ],
+    ]);
+    const sinkBundle = mkSink();
+    const deps = mkDeps({ provider });
+    const { record } = await runActorCompletionTurn(
+      { record: [] as TerminalRecord },
+      "页面呢？",
+      { ...deps, sink: sinkBundle.sink },
+    );
+    const committed = record.find(
+      (b) => b.kind === "herta" && b.surface === "speech",
+    ) as { text: string };
+    expect(committed.text).toBe("嗯，端口起来了，页面还没验。");
+    expect(sinkBundle.tokens.join("")).toBe(committed.text);
+  });
+
   it("strips the trailing （/我 说） if the provider includes it in the buffered text", async () => {
     // Some providers emit the stop token before halting; the loop must strip it
     // so the Herta block's text doesn't include the closing delimiter.
@@ -401,6 +508,44 @@ describe("runActorCompletionTurn — basic chat (no side effects)", () => {
     );
     expect(herta).toBeDefined();
     expect((herta as { text: string }).text).toBe("好。");
+  });
+});
+
+describe("page-break stops, read from a line start (ADR 0070)", () => {
+  const STOPS = ["（/我 说）", STOP_PAGE_HEADING, STOP_PAGE_RULE];
+
+  it("cuts at a page heading or a bare rule, including one on the body's first line", () => {
+    expect(firstStopIndexAtLineStart("一句。\n### 关于x", STOPS)).toBe(3);
+    expect(firstStopIndexAtLineStart("一句。\n\n---\n\n### 关于x", STOPS)).toBe(
+      4,
+    );
+    expect(firstStopIndexAtLineStart("### 关于x\n正文", STOPS)).toBe(0);
+    expect(firstStopIndexAtLineStart("---\n正文", STOPS)).toBe(0);
+    // Every other stop is exactly firstStopIndex.
+    expect(firstStopIndexAtLineStart("好。（/我 说）", STOPS)).toBe(2);
+    expect(firstStopIndexAtLineStart("（/我 说）", STOPS)).toBe(0);
+  });
+
+  it("leaves the look-alikes alone — a deeper heading, a mid-line ###, a diff header, a list, a longer rule", () => {
+    for (const s of [
+      "看这里：\n#### 小节",
+      "C# 里写 ### 不算标题",
+      "补丁头：\n--- a/src/x.ts\n+++ b/src/x.ts",
+      "两件：\n- 一\n- 二",
+      "分隔：\n----\n后面",
+      "#### 开头就是四级",
+    ]) {
+      expect(firstStopIndexAtLineStart(s, STOPS), s).toBe(s.length);
+      expect(safeEmitBoundaryAtLineStart(s, STOPS), s).toBe(s.length);
+    }
+  });
+
+  it("holds a body that has so far written only the start of a page, and releases it when it turns out not to be one", () => {
+    expect(safeEmitBoundaryAtLineStart("", STOPS)).toBe(0);
+    expect(safeEmitBoundaryAtLineStart("##", STOPS)).toBe(0);
+    expect(safeEmitBoundaryAtLineStart("---", STOPS)).toBe(0);
+    expect(safeEmitBoundaryAtLineStart("一句。\n##", STOPS)).toBe(3);
+    expect(safeEmitBoundaryAtLineStart("一句。\n#### ", STOPS)).toBe(9);
   });
 });
 
@@ -797,6 +942,61 @@ describe("runActorCompletionTurn — in-turn beats", () => {
     const beat = speeches[1];
     expect(beat?.text).toBe("在改？");
     expect(beat?.text ?? "").not.toContain("（/");
+  });
+
+  it("a beat that turns the page is cut at the heading, and the beat request stops there too (ADR 0070)", async () => {
+    const { provider, requests } = mkProvider([
+      [
+        { type: "text-delta", text: "改一下。@板砖（/我 说）" },
+        { type: "finish", reason: "stop" },
+      ],
+      [
+        // The beat runs on into EnvSet's page form; its token cap would
+        // only have bounded how much of the page it wrote.
+        {
+          type: "text-delta",
+          text: "在改。\n### 关于板砖\n我把板砖看作自己最成功的副产品之一。",
+        },
+        { type: "finish", reason: "length" },
+      ],
+      [
+        { type: "text-delta", text: "好,处理完了。（/我 说）" },
+        { type: "finish", reason: "stop" },
+      ],
+    ]);
+    const bus = new InMemoryEventBus<AgentEvent>();
+    const runtime: CodingAgentRuntime = {
+      runBrief: async (brief: HertaToAgentBrief) => {
+        publishWithLayer(bus, "backend", {
+          type: "patch.preview",
+          diff: "--- a\n+++ b\n@@ ... @@",
+          files: ["foo.ts"],
+        });
+        return {
+          taskId: brief.taskId,
+          status: "completed",
+          evidence: [],
+          changedFiles: [],
+          tests: [],
+          permissions: [],
+          residualRisks: [],
+          nextActions: [],
+        } as never;
+      },
+    } as unknown as CodingAgentRuntime;
+    const deps = mkDeps({ provider, bus, runtimeFactory: () => runtime });
+    const { record } = await runActorCompletionTurn(
+      { record: [] as TerminalRecord },
+      "改 foo.ts",
+      deps,
+    );
+    const speeches = record.filter(
+      (b) => b.kind === "herta" && b.surface === "speech",
+    ) as Array<{ text: string }>;
+    expect(speeches[1]?.text).toBe("在改。");
+    expect(requests[1]?.stop).toEqual(
+      expect.arrayContaining(["\n### ", "\n---\n"]),
+    );
   });
 
   it("strips an echoed 〔hint〕 line from an unstreamed beat (review 2026-08-12)", async () => {
