@@ -109,14 +109,24 @@ describe("validateFeian — what the prefix would drop is never promoted (dream 
     if (!r.ok) expect(r.errors.join(" ")).toContain("prefix load gate");
   });
 
-  it("rejects an all-CJK page under the char cap but over the gate's token cap", () => {
-    // 15 500 Han characters: inside the old 16 000-char cap, above the
-    // gate's 10 000 estimated tokens (Han ≈ 0.65 tokens a character).
+  it("rejects an all-CJK page over the gate's token cap", () => {
+    // 15 500 Han characters: above the gate's 10 000 estimated tokens (Han
+    // ≈ 0.65 tokens a character), and under the retired 16 000-char cap that
+    // this validator used to keep beside it.
     const long = GOOD.replace("阮·梅难得主动联系我。", "黑".repeat(15_500));
-    expect(long.length).toBeLessThan(16_000);
     const r = validateFeian(long);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.errors.join(" ")).toContain("prefix load gate");
+  });
+
+  it("the gate's token cap is the only ceiling, so an EN-length page validates (ADR 0014 §6, amended 2026-09-23)", () => {
+    // ~28k ASCII chars is ~7k estimated tokens, the size of the EN 00
+    // anchor. The retired 16 000-char cap rejected it while a zh page of
+    // the same token size passed.
+    const prose = "the same content runs three times the chars in english. ";
+    const long = GOOD.replace("阮·梅难得主动联系我。", prose.repeat(500));
+    expect(long.length).toBeGreaterThan(16_000);
+    expect(validateFeian(long)).toEqual({ ok: true });
   });
 });
 
@@ -320,21 +330,21 @@ describe("validateFeian — real seed corpus", () => {
     }
   });
 
-  // The compiled bundles are what materializes into a workspace. Only the
-  // digest-marker check is pinned for them: the EN 00 and 02 anchors run
-  // past the 16 000-char cap (27k / 21k chars — the load gate counts tokens,
-  // this validator chars), which is older than this check.
-  it("the digest-marker check rejects no compiled seed, zh or en", () => {
+  // The compiled bundles are what materializes into a workspace, in both
+  // languages. The EN 00 and 02 anchors (27k / 21k chars, 7.6k / 6.5k
+  // estimated tokens) failed the retired 16 000-char ceiling; the length
+  // cap is the load gate's estimated tokens now (ADR 0014 §6, amended
+  // 2026-09-23), so every seed passes the whole validator, the digest-marker
+  // check included. A dream page the size of an anchor is promotable in
+  // either language.
+  it("accepts every compiled seed, zh and en", () => {
     for (const lang of ["zh", "en"] as const) {
       const seeds = promptAssetsFor(lang).feianSeeds;
       expect(Object.keys(seeds).length).toBeGreaterThan(0);
       for (const [name, body] of Object.entries(seeds)) {
-        const r = validateFeian(body);
-        const errors = r.ok ? [] : r.errors;
-        expect(
-          errors.filter((e) => e.includes("digest marker")),
-          `${lang} seed: ${name}`,
-        ).toEqual([]);
+        expect(validateFeian(body), `${lang} seed: ${name}`).toEqual({
+          ok: true,
+        });
       }
     }
   });

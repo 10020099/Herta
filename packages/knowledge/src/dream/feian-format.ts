@@ -20,8 +20,12 @@ export function extractNarrativeOpening(text: string, maxChars = 300): string {
 }
 
 const HEADER_RE = /^### 废案(?:_(\d{2,}))?：(.+)$/;
+// A floor against an empty shell, not a budget: header + `---` + one
+// （我 说） block is ~35 chars, and the smallest seed runs 1 200 zh / 3 700
+// EN chars, so no real page is near it in either script. There is no char
+// CEILING — the page's only length cap is the prefix load gate's estimated-
+// token cap, applied below (ADR 0014 §6, amended 2026-09-23).
 const MIN_CHARS = 60;
-const MAX_CHARS = 16_000;
 // English structural markers that must never leak into a 废案 body. Case-
 // insensitive and whitespace-tolerant before the colon (2026-07-09): the
 // prior `:`-adjacent Titlecase-only form let `verdict:` / `Verdict :` slip
@@ -160,7 +164,6 @@ export function validateFeian(text: string): ValidateResult {
     errors.push("invalid codepoint: invisible/control character in body");
   }
   if (text.length < MIN_CHARS) errors.push(`too short (<${MIN_CHARS} chars)`);
-  if (text.length > MAX_CHARS) errors.push(`too long (>${MAX_CHARS} chars)`);
 
   const lines = text.split("\n");
   const firstNonBlank = lines.find((l) => l.trim().length > 0) ?? "";
@@ -196,12 +199,18 @@ export function validateFeian(text: string): ValidateResult {
 
   // The page must also pass the gate that loads it into the prefix
   // (`checkFewShot`): one-deep fences, no truncated tail, the estimated-token
-  // cap. This validator allowed nested fences and 16 000 chars, the load
-  // gate allows neither nesting nor more than 10 000 estimated tokens (an
-  // all-CJK page above ~15 400 chars), so a page could be promoted, take a
-  // slot, and then be dropped at every load with only a console warning —
-  // the failure shape of 2026-08-06 (dream review 2026-09-22, finding 15).
-  // Only its verdict is added: the reasons above already cover the rest.
+  // cap. This validator allowed nested fences, the load gate does not, so a
+  // page could be promoted, take a slot, and then be dropped at every load
+  // with only a console warning — the failure shape of 2026-08-06 (dream
+  // review 2026-09-22, finding 15). Only its verdict is added: the reasons
+  // above already cover the rest.
+  //
+  // The gate's cap is also the page's ONLY length ceiling. This validator
+  // had its own at 16 000 chars, which measured the same prefix cost in the
+  // wrong unit: the EN corpus runs ~3.5 chars per estimated token, zh 1.4–
+  // 2.1, so it rejected the EN 00/02 anchors (27k / 21k chars, 7.6k / 6.5k
+  // tokens) while zh pages of that token size passed — the script bias the
+  // gate itself shed in ADR 0051 §3 (ADR 0014 §6, amended 2026-09-23).
   const guard = checkFewShot("dream candidate", text);
   if (!guard.ok) errors.push(`fails the prefix load gate: ${guard.reason}`);
 

@@ -35,8 +35,10 @@
  *        parse-failure (undefined) and transport-failure (throw) paths stay
  *        distinct.
  *   J2a. ok:true ⟹ no invisible/control codepoint anywhere (BAD_RANGES).
- *   J2b. ok:true ⟹ MIN_CHARS ≤ length ≤ MAX_CHARS; both caps exact at the
- *        boundary (59↔60, 16000↔16001).
+ *   J2b. ok:true ⟹ MIN_CHARS ≤ length and estimated tokens ≤ the load
+ *        gate's cap; both exact at the boundary (59↔60 chars, 10000↔10001
+ *        estimated tokens). The ceiling is in tokens, not chars (ADR 0014
+ *        §6, amended 2026-09-23).
  *   J2c. ok:true ⟹ no leaked English structural marker (Verdict:/Changed:/…).
  *   J2d. ok:true ⟹ line-1 header parses AND its title carries no western
  *        digit-run / file-ext token / multi-segment path (one-off identifiers).
@@ -48,6 +50,7 @@
  *        codepoint, or a line-anchored English marker) into a valid 废案 always
  *        forces ok:false — the checks scan the whole text, no position escapes.
  */
+import { estimatePromptTokens, stripDisplayUnsafe } from "@herta/core";
 import { describe, expect, it } from "vitest";
 import type { DeepSeekChatResponse, DeepSeekClient } from "../llm/types.js";
 import { validateFeian } from "./feian-format.js";
@@ -73,7 +76,12 @@ function mulberry32(seed: number): () => number {
 
 const HEADER_RE = /^### 废案(?:_(\d{2,}))?：(.+)$/;
 const MIN_CHARS = 60;
-const MAX_CHARS = 16_000;
+// The page's only length ceiling: `checkFewShot`'s MAX_BODY_TOKENS
+// (few-shot-guard.ts), which validateFeian runs — measured as the gate
+// measures it, over the display-safe text.
+const MAX_EST_TOKENS = 10_000;
+const estTokens = (text: string): number =>
+  estimatePromptTokens(stripDisplayUnsafe(text));
 // Mirrors of the source constants, kept in sync so the test's internal
 // predictions match validateFeian. (The INDEPENDENT allow-set oracle below
 // is what actually guards against an incomplete blacklist — this mirror is
@@ -188,8 +196,8 @@ function assertOkImpliesClean(text: string, label: string): void {
   ).toBeNull();
   // J2b
   expect(
-    text.length >= MIN_CHARS && text.length <= MAX_CHARS,
-    `${label} :: ok:true but length ${text.length} out of [${MIN_CHARS},${MAX_CHARS}]`,
+    text.length >= MIN_CHARS && estTokens(text) <= MAX_EST_TOKENS,
+    `${label} :: ok:true but ${text.length} chars / ~${estTokens(text)} tokens is out of [${MIN_CHARS} chars, ${MAX_EST_TOKENS} tokens]`,
   ).toBe(true);
   // J2c
   expect(
@@ -475,7 +483,7 @@ describe("validateFeian — property fuzz", () => {
     }
   });
 
-  it("J2b — length caps are exact at the boundary (59↔60, 16000↔16001)", () => {
+  it("J2b — length caps are exact at the boundary (59↔60 chars, 10000↔10001 estimated tokens)", () => {
     // Build bodies whose ONLY defect can be length: valid structure, padded in
     // the narrative paragraph with plain ASCII so no other rule fires.
     const mk = (len: number): string => {
@@ -503,24 +511,32 @@ describe("validateFeian — property fuzz", () => {
     }
     expect(r60.ok, "60-char well-formed body should validate").toBe(true);
 
-    const at16000 = mk(16_000);
-    expect(at16000.length, "at16000 length").toBe(16_000);
-    const rMax = validateFeian(at16000);
-    if (!rMax.ok) {
-      expect(
-        rMax.errors.some((e) => e.includes("too long")),
-        "16000-char body wrongly flagged too long",
-      ).toBe(false);
-    }
+    // The ceiling is the load gate's estimated-token cap. The ASCII pad
+    // costs a token per four chars, so walk the length to the longest body
+    // that estimates AT the cap; one more char crosses it.
+    let len = 4 * MAX_EST_TOKENS;
+    while (estTokens(mk(len)) > MAX_EST_TOKENS) len--;
+    while (estTokens(mk(len + 1)) <= MAX_EST_TOKENS) len++;
+    const atCap = mk(len);
+    expect(estTokens(atCap), "atCap tokens").toBe(MAX_EST_TOKENS);
+    // ~40k ASCII chars. The retired 16 000-char ceiling cut an ASCII body
+    // off at ~4k tokens while an all-Han page ran on to the token cap.
+    expect(atCap.length).toBeGreaterThan(16_000);
+    expect(
+      validateFeian(atCap),
+      "a body at the token cap should validate",
+    ).toEqual({ ok: true });
 
-    const at16001 = mk(16_001);
-    expect(at16001.length, "at16001 length").toBe(16_001);
-    const rOver = validateFeian(at16001);
-    expect(rOver.ok, "16001-char body must be too long").toBe(false);
+    const overCap = mk(len + 1);
+    expect(estTokens(overCap), "overCap tokens").toBe(MAX_EST_TOKENS + 1);
+    const rOver = validateFeian(overCap);
+    expect(rOver.ok, "a body one token over the cap must be too long").toBe(
+      false,
+    );
     if (!rOver.ok) {
       expect(
         rOver.errors.some((e) => e.includes("too long")),
-        "16001-char body rejected but not for length",
+        "over-cap body rejected but not for length",
       ).toBe(true);
     }
   });
