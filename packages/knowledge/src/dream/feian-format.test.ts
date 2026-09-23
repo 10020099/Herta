@@ -1,7 +1,10 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { TerminalRecordBlock } from "@herta/core";
+import { promptAssetsFor } from "@herta/herta";
 import { describe, expect, it } from "vitest";
+import { buildEpisodeDigest, DIGEST_MAX_SYSTEM_ROWS } from "./digest.js";
 import {
   countFeianFiles,
   extractNarrativeOpening,
@@ -117,6 +120,160 @@ describe("validateFeian — what the prefix would drop is never promoted (dream 
   });
 });
 
+describe("validateFeian — the session digest's notation is not record grammar (ADR 0069, lab for §8 and §9)", () => {
+  // Every 〔…〕 line comes from `buildEpisodeDigest` itself, so a marker
+  // shape the digest learns later is caught here, not by a live lab.
+  const marker = (
+    body: string,
+    state?: "completed" | "failed" | "interrupted" | "blocked" | "partial",
+  ): TerminalRecordBlock => ({
+    kind: "system",
+    label: "差分协处理器",
+    body,
+    role: "done-marker",
+    ...(state !== undefined
+      ? {
+          markerSummary: {
+            kind: "done" as const,
+            state,
+            fileCount: 0,
+            riskCount: 0,
+          },
+        }
+      : {}),
+  });
+  const digest = buildEpisodeDigest([
+    { kind: "user", text: "把 parser 修了" },
+    {
+      kind: "herta",
+      surface: "speech",
+      text: "@板砖 修 parser。",
+      selfCorrection: "把 lexer 说成了 parser，已更正",
+    },
+    {
+      kind: "system",
+      label: "系统",
+      body: "↳ edit_file failed: stale_read: file changed since read",
+      digest: { kind: "tool-fail", tool: "edit_file", code: "stale_read" },
+    },
+    {
+      kind: "system",
+      label: "差分协处理器",
+      body: "Writing a.ts ↳ +2 −1",
+      digest: { kind: "op", verb: "Writing", arg: "a.ts" },
+    },
+    ...Array.from(
+      { length: DIGEST_MAX_SYSTEM_ROWS },
+      (_, i): TerminalRecordBlock => ({
+        kind: "system",
+        label: "差分协处理器",
+        body: `Reading src/f${i}.ts`,
+        digest: { kind: "op", verb: "Reading", arg: `src/f${i}.ts` },
+      }),
+    ),
+    marker("中断 · 0 个文件", "interrupted"),
+    marker("失败 · 运行异常中止", "failed"),
+    marker("部分完成 · 1 个文件", "partial"),
+    marker("受阻 · 缺依赖"),
+    marker("完成 · 1 个文件", "completed"),
+    { kind: "herta", surface: "speech", text: "只修了一半。" },
+  ]);
+  // One line per shape: the label-and-tag head (the elision line has no
+  // colon, so it is its own key).
+  const markerLines = [
+    ...new Map(
+      digest
+        .split("\n")
+        .filter((l) => l.startsWith("〔"))
+        .map((l) => [l.split("：")[0], l]),
+    ).values(),
+  ];
+  const inDialogue = (line: string) =>
+    GOOD.replace("（我 说）\n在。说吧。", `${line}\n\n（我 说）\n在。说吧。`);
+
+  it("the fixture carries every marker the digest writes", () => {
+    for (const needle of [
+      "〔黑塔的自我更正：",
+      "〔……此处略去",
+      "〔系统（失败）：",
+      "〔差分协处理器（已核实）：",
+      "〔差分协处理器（中断）：",
+      "〔差分协处理器（失败）：",
+      "〔差分协处理器（受阻）：",
+      "〔差分协处理器（部分完成）：",
+    ]) {
+      expect(
+        markerLines.some((l) => l.startsWith(needle)),
+        needle,
+      ).toBe(true);
+    }
+  });
+
+  it.each(
+    markerLines.map((l) => [l]),
+  )("rejects a page that copies the digest line %s", (line) => {
+    const r = validateFeian(inDialogue(line));
+    expect(r.ok).toBe(false);
+    // The copied line is the page's only fault: nothing else caught it.
+    if (!r.ok) {
+      expect(r.errors).toHaveLength(1);
+      expect(r.errors[0]).toContain("digest marker");
+    }
+  });
+
+  it("rejects a marker copied into the middle of a narrative line", () => {
+    const r = validateFeian(
+      GOOD.replace(
+        "阮·梅难得主动联系我。",
+        "阮·梅难得主动联系我。板砖回了一句〔差分协处理器（已核实）：完成 · 1 个文件〕。",
+      ),
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.errors.join(" ")).toContain("digest marker");
+  });
+
+  it("rejects a tag the digest never writes — the shape is the leak", () =>
+    expect(
+      validateFeian(inDialogue("〔差分协处理器（已完成）：Writing a.ts〕")).ok,
+    ).toBe(false));
+
+  it("names the line, so the refine step knows what to rewrite", () => {
+    const r = validateFeian(inDialogue("〔系统（失败）：↳ edit_file failed〕"));
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.errors[0]).toContain("〔系统（失败）：↳ edit_file failed〕");
+      expect(r.errors[0]).toContain("→ 差分协处理器");
+    }
+  });
+
+  it("still accepts the record's own furniture — → 系统 / → 差分协处理器 rows", () => {
+    const withRows = inDialogue(
+      [
+        "→ 系统",
+        "",
+        "```text",
+        "Writing a.ts ↳ +2 −1",
+        "```",
+        "",
+        "→ 差分协处理器",
+        "",
+        "```text",
+        "中断 · 0 个文件",
+        "```",
+      ].join("\n"),
+    );
+    expect(validateFeian(withRows)).toEqual({ ok: true });
+  });
+
+  it("accepts a self-correction told in her own words, the way the prompt asks", () => {
+    expect(
+      validateFeian(
+        GOOD.replace("在。说吧。", "是 lexer，不是 parser——刚才说错了。说吧。"),
+      ),
+    ).toEqual({ ok: true });
+  });
+});
+
 describe("validateFeian — exemptions", () => {
   it("allows CJK numerals and the （其N）series suffix in the title", () => {
     expect(
@@ -160,6 +317,25 @@ describe("validateFeian — real seed corpus", () => {
     for (const f of files) {
       const text = readFileSync(join(root, f), "utf8");
       expect(validateFeian(text), `seed: ${f}`).toEqual({ ok: true });
+    }
+  });
+
+  // The compiled bundles are what materializes into a workspace. Only the
+  // digest-marker check is pinned for them: the EN 00 and 02 anchors run
+  // past the 16 000-char cap (27k / 21k chars — the load gate counts tokens,
+  // this validator chars), which is older than this check.
+  it("the digest-marker check rejects no compiled seed, zh or en", () => {
+    for (const lang of ["zh", "en"] as const) {
+      const seeds = promptAssetsFor(lang).feianSeeds;
+      expect(Object.keys(seeds).length).toBeGreaterThan(0);
+      for (const [name, body] of Object.entries(seeds)) {
+        const r = validateFeian(body);
+        const errors = r.ok ? [] : r.errors;
+        expect(
+          errors.filter((e) => e.includes("digest marker")),
+          `${lang} seed: ${name}`,
+        ).toEqual([]);
+      }
     }
   });
 });

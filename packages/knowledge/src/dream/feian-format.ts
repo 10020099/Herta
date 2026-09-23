@@ -36,6 +36,19 @@ const MAX_CHARS = 16_000;
 // check — both texts load verbatim into the same static prefix.
 export const LEAK_MARKERS =
   /\b(Verdict|Changed|Evidence|Summary|Risks?|Plan)\s*[:：]/i;
+// The episode digest's own notation (`buildEpisodeDigest`, digest.ts): a
+// backend row as `〔差分协处理器（已核实）：…〕` / `〔系统（失败）：…〕`, the
+// elision line `〔……此处略去 N 条板砖操作记录〕`, and a supervisor veto as
+// `〔黑塔的自我更正：…〕`. None of it is record grammar — the record shows a
+// backend row as `→ 系统` / `→ 差分协处理器` (allowed, and the seeds use it)
+// and a self-correction as a `——…` aside before her line (serialize.ts) —
+// so a page that copies these lines would teach the actor a format it never
+// sees in its own record. The generation prompt asks for a correction to be
+// kept as dialogue and for a body with no structural metadata; a live lab
+// page copied the markers verbatim anyway (ADR 0069, lab for §8 and §9).
+// Any tag in the parentheses: a model inventing （已完成） is the same leak.
+const DIGEST_MARKER =
+  /〔(?:(?:差分协处理器|系统)（[^）\n]*）：|……此处略去|黑塔的自我更正：)/;
 // Title-only one-off identifiers: 2+ western digits (covers ISO dates too),
 // file-ext tokens, drive/abs path fragments. CJK numerals are not matched
 // (\d is ASCII). ISO dates are caught by TITLE_DIGITS (digit-run rule).
@@ -165,6 +178,17 @@ export function validateFeian(text: string): ValidateResult {
   if (!/^\s*---\s*$/m.test(text)) errors.push("missing `---` separator");
   if (LEAK_MARKERS.test(text))
     errors.push("leaked English structural marker (Verdict:/Changed:/…)");
+  const digestLines = lines.filter((l) => DIGEST_MARKER.test(l));
+  if (digestLines.length > 0) {
+    const first = (digestLines[0] ?? "").trim();
+    errors.push(
+      `copied session-digest marker (${digestLines.length} line(s), first: ` +
+        `"${first.length > 60 ? `${first.slice(0, 60)}…` : first}") — the ` +
+        "〔…〕 lines are the digest's notation, not the record: retell that " +
+        "work in the dialogue or narrative (or as a → 系统 / → 差分协处理器 " +
+        "row), and a self-correction in her own words",
+    );
+  }
 
   const fenceErr = checkFences(text);
   if (fenceErr !== null) errors.push(fenceErr);
