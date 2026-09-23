@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { abortError, errorMessage, isAbortError } from "@herta/core";
+import { gitUsable } from "./git-usable.js";
 
 export interface SpawnGitOk {
   ok: true;
@@ -106,6 +107,29 @@ export async function spawnGit(
   args: readonly string[],
   signal: AbortSignal,
   opts: SpawnGitOpts = {},
+): Promise<SpawnGitOk | SpawnGitErr> {
+  // Already cancelled before we spawn — never report that as a git problem.
+  if (signal.aborted) throw abortError();
+  // On a Mac without the developer tools, `/usr/bin/git` is a dialog, not a
+  // git (see git-usable.ts): answer "no git" instead of opening it. Every
+  // harness git call comes through here, so this is the one place it holds.
+  const usable = await gitUsable();
+  if (!usable.ok) {
+    return {
+      ok: false,
+      code: "spawn_failed",
+      cause: "git_not_found",
+      message: usable.message,
+    };
+  }
+  return spawnGitProcess(cwd, args, signal, opts);
+}
+
+function spawnGitProcess(
+  cwd: string,
+  args: readonly string[],
+  signal: AbortSignal,
+  opts: SpawnGitOpts,
 ): Promise<SpawnGitOk | SpawnGitErr> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const allowed = new Set([0, ...(opts.allowExitCodes ?? [])]);
