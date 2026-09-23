@@ -36,6 +36,10 @@ import { basename } from "node:path";
  * entries after launchd's, so `/usr/bin/python3` (Apple's) shadowed the
  * user's Homebrew one. Now an interactive login shell is asked too, its answer
  * is read between markers, and the shell's order leads.
+ *
+ * Linux too (the same day, the first AppImage): a desktop launch gets the
+ * session's environment, built from `.profile`, and misses what `.bashrc`
+ * sets up. Same probe; the terminal test there is stdin being a TTY.
  */
 
 /** The non-interactive ask: fast, reads the login files only. */
@@ -63,7 +67,8 @@ const PRINT_PATH = `printf '%s\\n' '${BEGIN}' "$PATH" '${END}'`;
 
 /** Shells that understand `-l`, `-i`, `-c` and the command above. Anything
  *  else (nushell, xonsh, elvish, tcsh…) is not asked in its own syntax: the
- *  system zsh is, which still reads the user's `.zprofile` / `.zshrc`. */
+ *  platform's default shell is (zsh on macOS, bash on Linux), which still
+ *  reads the user's own rc files for that shell. */
 const PROBEABLE_SHELLS = new Set(["zsh", "bash", "sh", "dash", "ksh", "fish"]);
 
 export type ProbeMode = "login" | "interactive";
@@ -71,6 +76,11 @@ export type ProbeMode = "login" | "interactive";
 export interface LoginPathDeps {
   readonly platform: NodeJS.Platform;
   readonly env: Readonly<Record<string, string | undefined>>;
+  /** Started from a terminal (stdin is a TTY): the PATH is already the
+   *  shell's and nothing needs recovering. The only reliable signal on
+   *  Linux, where a desktop launch's PATH is not launchd's tell-tale four
+   *  entries; macOS also keeps its PATH-shape check. */
+  readonly launchedFromTerminal?: boolean;
   /** Injected for tests; defaults to spawning the real shell. Returns the
    *  RAW stdout (markers included) or null on failure/timeout. */
   readonly probe?: (shell: string, mode: ProbeMode) => Promise<string | null>;
@@ -139,15 +149,16 @@ export function mergePath(
 }
 
 /** The shell to ask: the user's own when it speaks the probe's syntax, else
- *  the system zsh. */
+ *  the platform's default one (zsh on macOS, bash on Linux). */
 export function probeShell(
   env: Readonly<Record<string, string | undefined>>,
+  platform: NodeJS.Platform = "darwin",
 ): string {
   const shell = env.SHELL;
   if (shell !== undefined && PROBEABLE_SHELLS.has(basename(shell))) {
     return shell;
   }
-  return "/bin/zsh";
+  return platform === "linux" ? "/bin/bash" : "/bin/zsh";
 }
 
 /**
@@ -157,23 +168,31 @@ export function probeShell(
 export async function resolveLoginPath(
   deps: LoginPathDeps,
 ): Promise<string | null> {
-  if (deps.platform !== "darwin") return null;
+  const darwin = deps.platform === "darwin";
+  // Linux too since 2026-09-23 (the first AppImage): a desktop launcher or a
+  // file-manager double-click hands the app the SESSION's environment, which
+  // `.profile` built — and `.bashrc`, where nvm, pyenv, conda and cargo put
+  // themselves, is not part of it.
+  if (!darwin && deps.platform !== "linux") return null;
+  if (deps.launchedFromTerminal === true) return null;
   const current = deps.env.PATH;
-  // Launched from a terminal (or already repaired): a PATH carrying anything
-  // beyond the launchd defaults needs no help.
-  const looksInherited = current?.split(":").some((p) => {
-    const e = p.trim();
-    return (
-      e.length > 0 &&
-      e !== "/usr/bin" &&
-      e !== "/bin" &&
-      e !== "/usr/sbin" &&
-      e !== "/sbin"
-    );
-  });
+  // macOS: a PATH carrying anything beyond the launchd defaults was
+  // inherited from a shell (or already repaired) and needs no help.
+  const looksInherited =
+    darwin &&
+    current?.split(":").some((p) => {
+      const e = p.trim();
+      return (
+        e.length > 0 &&
+        e !== "/usr/bin" &&
+        e !== "/bin" &&
+        e !== "/usr/sbin" &&
+        e !== "/sbin"
+      );
+    });
   if (looksInherited === true) return null;
 
-  const shell = probeShell(deps.env);
+  const shell = probeShell(deps.env, deps.platform);
   const probe = deps.probe ?? runShellProbe;
   const ask = (mode: ProbeMode): Promise<string | null> =>
     probe(shell, mode)
@@ -186,16 +205,20 @@ export async function resolveLoginPath(
     ask("login"),
   ]);
   const fromShell = interactive ?? login;
+  const inherited = (current ?? "").split(":");
+  // Linux has no well-known prefix to fall back on: without an answer, the
+  // session's PATH stands as it is.
+  if (!darwin && fromShell === null) return null;
   // The shell's order LEADS — it is the order the user's terminal resolves
-  // commands in — and launchd's entries it lacks follow. The Homebrew
-  // prefixes lead when the shell never answered, as `brew shellenv` would.
+  // commands in — and the inherited entries it lacks follow (on Linux these
+  // include the AppImage's own `$APPDIR` entries, now at the back where they
+  // shadow nothing). On macOS the Homebrew prefixes lead when the shell never
+  // answered, as `brew shellenv` would.
+  const fallback = darwin ? DARWIN_FALLBACK : [];
   const merged =
     fromShell !== null
-      ? mergePath(fromShell, [
-          ...(current ?? "").split(":"),
-          ...DARWIN_FALLBACK,
-        ])
-      : mergePath(DARWIN_FALLBACK.join(":"), (current ?? "").split(":"));
+      ? mergePath(fromShell, [...inherited, ...fallback])
+      : mergePath(fallback.join(":"), inherited);
   return merged === (current ?? "") ? null : merged;
 }
 

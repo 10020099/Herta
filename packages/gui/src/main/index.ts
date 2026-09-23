@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { isatty } from "node:tty";
 import { pathToFileURL } from "node:url";
 import {
   app,
@@ -15,6 +16,7 @@ import hertaIcon from "../../resources/herta-icon.png?asset";
 import { CMD, EVT } from "../preload/channels.js";
 import { isAllowedExternalUrl } from "../shared/links.js";
 import {
+  defaultCloseToTray,
   osLocale,
   readGlobalSettings,
   resolveInitialLocale,
@@ -145,7 +147,7 @@ let quitRequested = false;
  *  the original behavior) or actually quits. Seeded from the persisted
  *  global settings at ready; live-updated via the session service's
  *  onCloseToTrayChanged hook, so a toggle applies to the very next close. */
-let closeToTray = true;
+let closeToTray = defaultCloseToTray(process.platform);
 
 /** Restore + focus the main window (recreating it if it was destroyed). */
 function showMainWindow(): void {
@@ -171,6 +173,19 @@ function requestExit(): void {
   const win = mainWindow;
   if (win !== null && !win.isDestroyed()) win.close();
   else app.quit();
+}
+
+// Linux input methods under Wayland (platform review 2026-09-23). Electron runs
+// as a native Wayland client on GNOME/KDE Wayland sessions, and Chromium there
+// hands keystrokes to fcitx5 / ibus ONLY with `--enable-wayland-ime` — without
+// it, Pinyin never reaches the composer and a Chinese user cannot type at all.
+// Text-input v3 is the protocol GNOME's Mutter speaks (KWin speaks it too);
+// Chromium's default is v1. Both switches are ignored under X11. Must run
+// before `ready`. UNTESTED on a real desktop: verify on Ubuntu GNOME Wayland
+// with ibus-libpinyin and on KDE Plasma with fcitx5 before trusting it.
+if (process.platform === "linux") {
+  app.commandLine.appendSwitch("enable-wayland-ime");
+  app.commandLine.appendSwitch("wayland-text-input-version", "3");
 }
 
 // Single-instance lock: two processes would write the same workspace .herta
@@ -585,9 +600,16 @@ void app
     // they first spawn, and detectRg() caches its answer for the process
     // lifetime. A Finder-launched .app otherwise has only launchd's minimal
     // PATH, so run_command cannot find node/npm/cargo and search silently
-    // downgrades to the JS walker. No-op off darwin and when launched from a
+    // downgrades to the JS walker. The Linux AppImage has the same gap for
+    // `.bashrc` tools (2026-09-23). No-op on Windows and when launched from a
     // terminal; bounded so a slow rc file cannot delay startup.
-    await applyLoginPath({ platform: process.platform, env: process.env });
+    await applyLoginPath({
+      platform: process.platform,
+      env: process.env,
+      // isatty on the fd, not process.stdin: reading that property would
+      // construct a stream on the app's stdin just to ask.
+      launchedFromTerminal: process.platform !== "win32" && isatty(0),
+    });
     // …and the encoding launchd leaves unset (ADR 0032, amended 2026-09-23):
     // without it CocoaPods refuses to run and byte-counting tools miscount
     // Chinese. Only when no locale variable is set at all.
@@ -598,7 +620,7 @@ void app
     // registry's machine+user PATH entries; never removes or reorders what was
     // inherited. No-op off win32; bounded by the reg-query timeouts.
     await applyWindowsPath({ platform: process.platform, env: process.env });
-    closeToTray = s.closeToTray ?? true;
+    closeToTray = s.closeToTray ?? defaultCloseToTray(process.platform);
     lastTheme = s.theme ?? "system";
     // Native surfaces (tray context menu, system dialogs) follow Chromium's
     // theme source, not the renderer's CSS — without this, a dark app on a

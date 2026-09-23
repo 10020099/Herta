@@ -25,6 +25,7 @@ import type {
 import { DEVICE_SCENE_DEFAULT } from "../shared/device-scene.js";
 import type { VoiceEngine } from "./app-global-settings.js";
 import {
+  defaultCloseToTray,
   type Locale,
   osLocale,
   readGlobalSettings,
@@ -260,7 +261,7 @@ export function registerSettingsHandlers(deps: SettingsIpcDeps): void {
   // LIVE: the hook updates main's cached close-handler flag immediately.
   handle(CMD.getCloseToTray, async () => {
     const s = await readGlobalSettings(app.getPath("userData"));
-    return s.closeToTray ?? true;
+    return s.closeToTray ?? defaultCloseToTray(process.platform);
   });
   handle(CMD.setCloseToTray, async (_e, enabled: boolean) => {
     await updateGlobalSettings(app.getPath("userData"), (s) => ({

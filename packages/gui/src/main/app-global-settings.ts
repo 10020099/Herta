@@ -240,6 +240,20 @@ export function updateGlobalSettings(
 }
 
 /**
+ * Whether the close button hides to the tray when the user has not chosen
+ * (Settings → Window). On by default — except on Linux (platform review
+ * 2026-09-23): stock GNOME (Fedora, Debian, Arch) shows NO tray icon without
+ * the AppIndicator extension, so a hidden window was an app that seemed to
+ * quit while its session kept running, with no icon to bring it back —
+ * relaunching even a newer AppImage just surfaced the old instance. Nothing
+ * can tell whether a tray host is present, so Linux closes like a normal
+ * app, and a user whose desktop shows the tray can turn it on.
+ */
+export function defaultCloseToTray(platform: NodeJS.Platform): boolean {
+  return platform !== "linux";
+}
+
+/**
  * The OS language the boot locale is resolved from. `app.getLocale()` is
  * Chromium's UI locale, and on macOS that is limited to the localizations the
  * app BUNDLE carries — a packaging step that drops `zh_CN.lproj` makes a

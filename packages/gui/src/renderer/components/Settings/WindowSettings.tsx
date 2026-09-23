@@ -18,12 +18,14 @@ import { Toggle } from "./Toggle.js";
 export function WindowSettings(): JSX.Element {
   const t = useT();
   const { bridge } = useHertaBridge();
-  // The last-known value on the first frame (settings-snapshot.ts); ON —
-  // the default — only when nothing has been read yet.
+  // The last-known value on the first frame (settings-snapshot.ts); the
+  // platform's default only when nothing has been read yet — ON, except on
+  // Linux, where main defaults it OFF (app-global-settings.ts,
+  // defaultCloseToTray: stock GNOME shows no tray icon).
   const [enabled, setEnabled] = useRememberedSetting(
     bridge,
     "window.closeToTray",
-    true,
+    bridge.platform !== "linux",
   );
   const [failed, setFailed] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);

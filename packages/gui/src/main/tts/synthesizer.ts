@@ -265,7 +265,7 @@ export function createTtsSynthesizer(opts: TtsSynthesizerOpts): TtsSynthesizer {
           // normal case; these are the documented fallback for builds where
           // it does not (see sherpa-onnx-node/addon.js's error text).
           ...(opts.sherpaPath !== null
-            ? libraryPathEnv(dirname(opts.sherpaPath))
+            ? libraryPathEnv(nativeLibraryDir(opts.sherpaPath))
             : {}),
         },
       });
@@ -451,10 +451,29 @@ export function createTtsSynthesizer(opts: TtsSynthesizerOpts): TtsSynthesizer {
   };
 }
 
+/**
+ * Where the addon's shared libraries live: the PLATFORM package staged beside
+ * the wrapper (`tts-runtime/sherpa-onnx-<platform>-<arch>/`, stage-tts.mjs),
+ * which is the directory upstream `addon.js` names in its own error text. The
+ * fallback used to point at the wrapper's directory (`sherpa-onnx-node/`),
+ * which holds no library at all, so it could never help (platform review
+ * 2026-09-23). Exported for its test.
+ */
+export function nativeLibraryDir(
+  sherpaPath: string,
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch,
+): string {
+  const os = platform === "win32" ? "win" : platform;
+  return join(dirname(dirname(sherpaPath)), `sherpa-onnx-${os}-${arch}`);
+}
+
 /** `DYLD_LIBRARY_PATH` / `LD_LIBRARY_PATH` pointing at the runtime's own
  *  directory — the documented fallback for prebuilts whose `.node` does not
  *  carry an rpath to its co-located shared libraries. No-op on Windows,
- *  where the loader searches the module's own directory already. */
+ *  where the loader searches the module's own directory already. On a
+ *  hardened, signed macOS build `DYLD_*` is stripped anyway; there the
+ *  addon's own `@loader_path` rpath is what loads it. */
 function libraryPathEnv(dir: string): NodeJS.ProcessEnv {
   const key =
     process.platform === "darwin"

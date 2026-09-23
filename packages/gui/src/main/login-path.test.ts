@@ -70,10 +70,12 @@ describe("probeShell", () => {
     expect(probeShell({ SHELL: "/bin/bash" })).toBe("/bin/bash");
   });
 
-  it("asks the system zsh for a shell with another syntax, or none", () => {
+  it("asks the platform's default shell for a shell with another syntax, or none", () => {
     expect(probeShell({ SHELL: "/opt/homebrew/bin/nu" })).toBe("/bin/zsh");
     expect(probeShell({ SHELL: "/bin/tcsh" })).toBe("/bin/zsh");
     expect(probeShell({})).toBe("/bin/zsh");
+    expect(probeShell({ SHELL: "/usr/bin/nu" }, "linux")).toBe("/bin/bash");
+    expect(probeShell({}, "linux")).toBe("/bin/bash");
   });
 });
 
@@ -137,7 +139,7 @@ describe("resolveLoginPath", () => {
     expect(execd).toBe(`${SHELL_PATH}:/usr/local/bin`);
   });
 
-  it("does nothing off darwin", async () => {
+  it("does nothing on Windows (ADR 0044 has its own repair)", async () => {
     expect(
       await resolveLoginPath({
         platform: "win32",
@@ -145,13 +147,53 @@ describe("resolveLoginPath", () => {
         probe: async () => "should-not-be-called",
       }),
     ).toBeNull();
+  });
+
+  it("Linux: a desktop launch gets `.bashrc`'s tools, the shell's order first and the AppImage's own entries last (2026-09-23)", async () => {
+    // What AppRun + a GNOME session hand the app: the AppImage's dirs first,
+    // then the session PATH `.profile` built — no nvm, no cargo.
+    const session =
+      "/tmp/.mount_Herta/:/tmp/.mount_Herta/usr/sbin:/usr/local/bin:/usr/bin:/bin";
+    const shellPath =
+      "/home/u/.nvm/versions/node/v22/bin:/home/u/.cargo/bin:/usr/local/bin:/usr/bin:/bin";
+    let asked = "";
+    const got = await resolveLoginPath({
+      platform: "linux",
+      env: { PATH: session, SHELL: "/bin/bash" },
+      probe: async (shell, mode) => {
+        asked = shell;
+        return mode === "interactive" ? shellOut(shellPath) : null;
+      },
+    });
+    expect(asked).toBe("/bin/bash");
+    expect(got).toBe(
+      `${shellPath}:/tmp/.mount_Herta/:/tmp/.mount_Herta/usr/sbin`,
+    );
+  });
+
+  it("Linux: leaves the session PATH alone when no shell answers — there is no well-known prefix to guess", async () => {
     expect(
       await resolveLoginPath({
         platform: "linux",
-        env: { PATH: LAUNCHD_PATH },
-        probe: probeOf({ login: shellOut(SHELL_PATH) }),
+        env: { PATH: "/usr/bin:/bin", SHELL: "/bin/bash" },
+        probe: async () => null,
       }),
     ).toBeNull();
+  });
+
+  it("does nothing when started from a terminal (stdin is a TTY), on either platform", async () => {
+    for (const platform of ["linux", "darwin"] as const) {
+      expect(
+        await resolveLoginPath({
+          platform,
+          env: { PATH: LAUNCHD_PATH, SHELL: "/bin/bash" },
+          launchedFromTerminal: true,
+          probe: async () => {
+            throw new Error("probe must not run from a terminal");
+          },
+        }),
+      ).toBeNull();
+    }
   });
 
   it("does nothing when launched from a terminal (PATH already real)", async () => {

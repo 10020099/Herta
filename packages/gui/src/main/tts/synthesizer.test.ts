@@ -50,9 +50,8 @@ vi.mock("electron", () => ({
   },
 }));
 
-const { createTtsSynthesizer, resolveSherpaEntry } = await import(
-  "./synthesizer.js"
-);
+const { createTtsSynthesizer, nativeLibraryDir, resolveSherpaEntry } =
+  await import("./synthesizer.js");
 
 const dirs: string[] = [];
 function tmp(): string {
@@ -447,6 +446,26 @@ describe("createTtsSynthesizer", () => {
     expect(synth.available()).toBe(false);
     synth.dispose(); // idempotent
     await expect(synth.synthesize(REQ)).resolves.toBeNull();
+  });
+});
+
+describe("nativeLibraryDir", () => {
+  it("names the staged PLATFORM package beside the wrapper, where the shared libraries are (2026-09-23)", () => {
+    const entry = join(
+      "/res",
+      "tts-runtime",
+      "sherpa-onnx-node",
+      "sherpa-onnx.js",
+    );
+    expect(nativeLibraryDir(entry, "linux", "x64")).toBe(
+      join("/res", "tts-runtime", "sherpa-onnx-linux-x64"),
+    );
+    expect(nativeLibraryDir(entry, "darwin", "arm64")).toBe(
+      join("/res", "tts-runtime", "sherpa-onnx-darwin-arm64"),
+    );
+    expect(nativeLibraryDir(entry, "win32", "x64")).toBe(
+      join("/res", "tts-runtime", "sherpa-onnx-win-x64"),
+    );
   });
 });
 

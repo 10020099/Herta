@@ -91,7 +91,12 @@ function stripPrivatePrefix(p: string): string {
  * system files in it. Refusing it there while accepting `/tmp` on Linux was
  * an accident of the list, not a decision.
  */
-const SCRATCH_EXCEPTIONS = ["/var/folders"];
+const SCRATCH_EXCEPTIONS = [
+  "/var/folders",
+  // Where web projects conventionally live on Linux (platform review
+  // 2026-09-23) — user content under the `/var` entry, like the one above.
+  "/var/www",
+];
 
 function eqOrInside(child: string, parent: string): boolean {
   const c = child.toLowerCase();
@@ -108,10 +113,41 @@ function eqOrInsideSlash(child: string, parent: string): boolean {
 }
 
 /**
+ * The system-directory decision, on slash-normalized strings (`canonical` and
+ * `home` with macOS's `/private` already stripped). Exported for its tests:
+ * the layouts it exists for cannot be built on a test machine.
+ *
+ * Inside the user's home is never a system directory, wherever the OS mounts
+ * home (platform review 2026-09-23). Fedora's atomic desktops — Silverblue,
+ * Kinoite, Bazzite, Bluefin — make `/home` a link to `/var/home`, so every
+ * project canonicalized to `/var/home/<user>/…`, matched the `/var` entry, and
+ * was refused: on those systems not one folder could be opened. `home` is
+ * empty when the caller has none, and then nothing is exempt.
+ */
+export function isRefusedSystemDir(
+  canonical: string,
+  raw: string,
+  home: string,
+): boolean {
+  if (home.length > 0 && eqOrInsideSlash(canonical, home)) return false;
+  const isScratch = SCRATCH_EXCEPTIONS.some(
+    (p) => eqOrInsideSlash(canonical, p) || eqOrInsideSlash(raw, p),
+  );
+  if (isScratch) return false;
+  return SYSTEM_DIRS.some((dir) => {
+    const dirSlash = dir.replace(/\\/g, "/");
+    return (
+      eqOrInsideSlash(canonical, dirSlash) || eqOrInsideSlash(raw, dirSlash)
+    );
+  });
+}
+
+/**
  * Validate a USER-SUPPLIED backend-workspace root (deterministic, D4). Rejects
- * a drive/filesystem root, the home root itself, OS/system dirs, and anything
- * at or under `<home>/.herta`. The managed default (under ~/.herta/workspaces)
- * is set by trusted internal code paths and must NOT pass through here.
+ * a drive/filesystem root, the home root itself, a directory that contains
+ * the home root, OS/system dirs, and anything at or under `<home>/.herta`.
+ * The managed default (under ~/.herta/workspaces) is set by trusted internal
+ * code paths and must NOT pass through here.
  */
 export function validateWorkspaceRoot(
   input: string,
@@ -140,6 +176,17 @@ export function validateWorkspaceRoot(
       message: `refusing the home directory: ${resolved}`,
     };
   }
+  // A directory CONTAINING home (platform review 2026-09-23): `/home`,
+  // `/Users`, `C:\Users`. With one of those as the root, every profile and
+  // credential file in the user's home is "inside the workspace", and the
+  // only thing left between them and 板砖 is the credential basename list.
+  if (opts.home.length > 0 && eqOrInside(home, resolved)) {
+    return {
+      ok: false,
+      code: "ws_forbidden_root",
+      message: `refusing a directory that contains the home directory: ${resolved}`,
+    };
+  }
   if (eqOrInside(resolved, resolve(home, ".herta"))) {
     return {
       ok: false,
@@ -156,21 +203,14 @@ export function validateWorkspaceRoot(
   // a POSIX system path typed on Windows, where resolve() would rewrite "/etc"
   // onto the current drive (C:\etc) and lose the intent.
   const canonical = stripPrivatePrefix(resolved.replace(/\\/g, "/"));
-  const isScratch = SCRATCH_EXCEPTIONS.some(
-    (p) => eqOrInsideSlash(canonical, p) || eqOrInsideSlash(rawNormalized, p),
-  );
-  for (const dir of isScratch ? [] : SYSTEM_DIRS) {
-    const dirSlash = dir.replace(/\\/g, "/");
-    if (
-      eqOrInsideSlash(canonical, dirSlash) ||
-      eqOrInsideSlash(rawNormalized, dirSlash)
-    ) {
-      return {
-        ok: false,
-        code: "ws_forbidden_root",
-        message: `refusing a system directory: ${resolved}`,
-      };
-    }
+  const homeSlash =
+    opts.home.length > 0 ? stripPrivatePrefix(home.replace(/\\/g, "/")) : "";
+  if (isRefusedSystemDir(canonical, rawNormalized, homeSlash)) {
+    return {
+      ok: false,
+      code: "ws_forbidden_root",
+      message: `refusing a system directory: ${resolved}`,
+    };
   }
   if (resolved.toLowerCase().split(sep).includes("system32")) {
     return {
