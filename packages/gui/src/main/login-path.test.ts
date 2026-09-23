@@ -1,11 +1,36 @@
+import { existsSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { applyLoginPath, mergePath, resolveLoginPath } from "./login-path.js";
+import {
+  applyLoginPath,
+  launchLocaleEnv,
+  mergePath,
+  type ProbeMode,
+  parseProbeOutput,
+  probeShell,
+  resolveLoginPath,
+  runShellProbe,
+} from "./login-path.js";
 
 /** launchd's environment for a Finder-launched .app — the S7 starting point. */
 const LAUNCHD_PATH = "/usr/bin:/bin:/usr/sbin:/sbin";
 /** What a real login shell answers on a dev Mac. */
 const SHELL_PATH =
   "/opt/homebrew/bin:/Users/x/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+/** …and what an INTERACTIVE one adds: `.zshrc` is where nvm puts node. */
+const INTERACTIVE_PATH = `/Users/x/.nvm/versions/node/v22.9.0/bin:${SHELL_PATH}`;
+
+/** A shell's raw stdout: the markers around the PATH, rc-file noise around
+ *  them, exactly as `runShellProbe` returns it. */
+function shellOut(path: string, noise = ""): string {
+  return `${noise}__HERTA_PATH_BEGIN__\n${path}\n__HERTA_PATH_END__\n`;
+}
+
+/** A probe answering per mode. */
+function probeOf(
+  answers: Partial<Record<ProbeMode, string | null>>,
+): (shell: string, mode: ProbeMode) => Promise<string | null> {
+  return async (_shell, mode) => answers[mode] ?? null;
+}
 
 describe("mergePath", () => {
   it("keeps base order, appends new entries, drops duplicates and blanks", () => {
@@ -19,20 +44,97 @@ describe("mergePath", () => {
   });
 });
 
+describe("parseProbeOutput", () => {
+  it("reads the PATH between the markers, whatever an rc file printed around them", () => {
+    expect(
+      parseProbeOutput(
+        shellOut(SHELL_PATH, "Last login: Tue\n[oh-my-zsh] update? [Y/n]\n"),
+      ),
+    ).toBe(SHELL_PATH);
+  });
+
+  it("is null when the markers are missing or broken — never a guessed PATH", () => {
+    expect(parseProbeOutput(SHELL_PATH)).toBeNull();
+    expect(parseProbeOutput("__HERTA_PATH_BEGIN__\n/a\n")).toBeNull();
+    expect(
+      parseProbeOutput("__HERTA_PATH_BEGIN__\n\n__HERTA_PATH_END__\n"),
+    ).toBeNull();
+  });
+});
+
+describe("probeShell", () => {
+  it("asks the user's own shell when it speaks the probe's syntax", () => {
+    expect(probeShell({ SHELL: "/opt/homebrew/bin/fish" })).toBe(
+      "/opt/homebrew/bin/fish",
+    );
+    expect(probeShell({ SHELL: "/bin/bash" })).toBe("/bin/bash");
+  });
+
+  it("asks the system zsh for a shell with another syntax, or none", () => {
+    expect(probeShell({ SHELL: "/opt/homebrew/bin/nu" })).toBe("/bin/zsh");
+    expect(probeShell({ SHELL: "/bin/tcsh" })).toBe("/bin/zsh");
+    expect(probeShell({})).toBe("/bin/zsh");
+  });
+});
+
 describe("resolveLoginPath", () => {
   it("recovers the login shell's PATH for a Finder-launched .app", async () => {
     const got = await resolveLoginPath({
       platform: "darwin",
       env: { PATH: LAUNCHD_PATH, SHELL: "/bin/zsh" },
-      probe: async () => SHELL_PATH,
+      probe: probeOf({ login: shellOut(SHELL_PATH) }),
     });
     expect(got).not.toBeNull();
     // The tools that were unreachable are now on it…
     expect(got).toContain("/opt/homebrew/bin");
     expect(got).toContain("/Users/x/.cargo/bin");
     // …and the system entries are still there, exactly once.
-    expect(got).toContain("/usr/bin");
     expect(got?.split(":").filter((p) => p === "/usr/bin")).toHaveLength(1);
+  });
+
+  it("puts the shell's order first, so Homebrew's python3 wins over Apple's (2026-09-23)", async () => {
+    const got = await resolveLoginPath({
+      platform: "darwin",
+      env: { PATH: LAUNCHD_PATH, SHELL: "/bin/zsh" },
+      probe: probeOf({ login: shellOut(SHELL_PATH) }),
+    });
+    const entries = got?.split(":") ?? [];
+    expect(entries.indexOf("/opt/homebrew/bin")).toBeLessThan(
+      entries.indexOf("/usr/bin"),
+    );
+    // Exactly the shell's PATH, then the Homebrew prefix it lacked.
+    expect(got).toBe(`${SHELL_PATH}:/usr/local/bin`);
+  });
+
+  it("prefers the interactive answer — `.zshrc` is where nvm, fnm and conda put their tools (2026-09-23)", async () => {
+    const got = await resolveLoginPath({
+      platform: "darwin",
+      env: { PATH: LAUNCHD_PATH, SHELL: "/bin/zsh" },
+      probe: probeOf({
+        interactive: shellOut(INTERACTIVE_PATH, "p10k instant prompt\n"),
+        login: shellOut(SHELL_PATH),
+      }),
+    });
+    expect(got?.split(":")[0]).toBe("/Users/x/.nvm/versions/node/v22.9.0/bin");
+  });
+
+  it("falls back to the login answer when the interactive shell hangs or exits early", async () => {
+    const got = await resolveLoginPath({
+      platform: "darwin",
+      env: { PATH: LAUNCHD_PATH, SHELL: "/bin/zsh" },
+      probe: probeOf({ interactive: null, login: shellOut(SHELL_PATH) }),
+    });
+    expect(got).toBe(`${SHELL_PATH}:/usr/local/bin`);
+    // An interactive shell that `exec`s into another one prints no markers.
+    const execd = await resolveLoginPath({
+      platform: "darwin",
+      env: { PATH: LAUNCHD_PATH, SHELL: "/bin/zsh" },
+      probe: probeOf({
+        interactive: "Welcome to fish!\n",
+        login: shellOut(SHELL_PATH),
+      }),
+    });
+    expect(execd).toBe(`${SHELL_PATH}:/usr/local/bin`);
   });
 
   it("does nothing off darwin", async () => {
@@ -47,7 +149,7 @@ describe("resolveLoginPath", () => {
       await resolveLoginPath({
         platform: "linux",
         env: { PATH: LAUNCHD_PATH },
-        probe: async () => SHELL_PATH,
+        probe: probeOf({ login: shellOut(SHELL_PATH) }),
       }),
     ).toBeNull();
   });
@@ -66,16 +168,20 @@ describe("resolveLoginPath", () => {
     ).toBeNull();
   });
 
-  it("still adds the Homebrew fallbacks when the login shell fails", async () => {
+  it("still adds the Homebrew fallbacks — ahead of /usr/bin — when no shell answers", async () => {
     // A broken/hanging rc file must not leave the app with launchd's PATH.
     const got = await resolveLoginPath({
       platform: "darwin",
       env: { PATH: LAUNCHD_PATH, SHELL: "/bin/zsh" },
       probe: async () => null,
     });
-    expect(got).toContain("/opt/homebrew/bin");
-    expect(got).toContain("/usr/local/bin");
-    expect(got).toContain("/usr/bin");
+    const entries = got?.split(":") ?? [];
+    expect(entries).toContain("/opt/homebrew/bin");
+    expect(entries).toContain("/usr/local/bin");
+    expect(entries).toContain("/usr/bin");
+    expect(entries.indexOf("/opt/homebrew/bin")).toBeLessThan(
+      entries.indexOf("/usr/bin"),
+    );
   });
 
   it("survives a probe that throws", async () => {
@@ -90,17 +196,55 @@ describe("resolveLoginPath", () => {
     expect(got).toContain("/opt/homebrew/bin");
   });
 
-  it("defaults to zsh when SHELL is unset (launchd often omits it)", async () => {
-    let asked: string | null = null;
+  it("defaults to zsh when SHELL is unset (launchd often omits it), and asks both modes", async () => {
+    const asked: string[] = [];
     await resolveLoginPath({
       platform: "darwin",
       env: { PATH: LAUNCHD_PATH },
-      probe: async (shell) => {
-        asked = shell;
-        return SHELL_PATH;
+      probe: async (shell, mode) => {
+        asked.push(`${shell} ${mode}`);
+        return shellOut(SHELL_PATH);
       },
     });
-    expect(asked).toBe("/bin/zsh");
+    expect(asked.sort()).toEqual(["/bin/zsh interactive", "/bin/zsh login"]);
+  });
+});
+
+describe("runShellProbe — the real command through a real shell", () => {
+  // The quoting is the part a fake probe cannot check. POSIX only; the
+  // ubuntu CI job runs these with its own bash and sh.
+  for (const shell of ["/bin/bash", "/bin/sh"]) {
+    it.skipIf(process.platform === "win32" || !existsSync(shell))(
+      `${shell}: both modes print a PATH the parser reads`,
+      async () => {
+        for (const mode of ["login", "interactive"] as const) {
+          const out = await runShellProbe(shell, mode);
+          const path = out === null ? null : parseProbeOutput(out);
+          expect(path, `${shell} ${mode}: ${out}`).not.toBeNull();
+          expect(path).toContain("/");
+        }
+      },
+      15_000,
+    );
+  }
+});
+
+describe("launchLocaleEnv", () => {
+  it("gives a Finder-launched app the UTF-8 encoding and nothing else", () => {
+    expect(launchLocaleEnv("darwin", { PATH: LAUNCHD_PATH })).toEqual({
+      LC_CTYPE: "UTF-8",
+    });
+  });
+
+  it("leaves any locale the environment already has", () => {
+    expect(launchLocaleEnv("darwin", { LANG: "zh_CN.UTF-8" })).toEqual({});
+    expect(launchLocaleEnv("darwin", { LC_ALL: "en_US.UTF-8" })).toEqual({});
+    expect(launchLocaleEnv("darwin", { LC_CTYPE: "UTF-8" })).toEqual({});
+  });
+
+  it("is darwin-only — glibc has no locale named UTF-8", () => {
+    expect(launchLocaleEnv("linux", {})).toEqual({});
+    expect(launchLocaleEnv("win32", {})).toEqual({});
   });
 });
 
@@ -111,7 +255,7 @@ describe("applyLoginPath", () => {
       {
         platform: "darwin",
         env: { PATH: LAUNCHD_PATH, SHELL: "/bin/zsh" },
-        probe: async () => SHELL_PATH,
+        probe: probeOf({ login: shellOut(SHELL_PATH) }),
       },
       (v) => {
         written = v;

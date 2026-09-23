@@ -200,6 +200,20 @@ mac:
   # electron-builder generates the .icns from build/icon.png (1024x1024).
   icon: build/icon.png
   category: public.app-category.developer-tools
+  # The top-level list names Chromium's .pak locales (Windows/Linux: `zh-CN`).
+  # On macOS the same filter runs over `.lproj` folders, which Chromium names
+  # with UNDERSCORES — `zh_CN.lproj`, `zh_TW.lproj`, `en.lproj` — and the
+  # filter compares lowercased names exactly (`zh-cn` ≠ `zh_cn`), so every
+  # Chinese folder was deleted and only `en.lproj` survived through its
+  # prefix rule. macOS then offered the app English only: app.getLocale()
+  # answered `en` on a Chinese Mac, and the first launch came up in English
+  # UI AND English interaction language (platform review 2026-09-23; CI never
+  # showed it — its runners are English). mac-build.yml asserts the folder
+  # reached every .app.
+  electronLanguages:
+    - en
+    - zh_CN
+    - zh_TW
   # ── Signing (audit 2026-08-05, S6) ───────────────────────────────────────
   # `identity: null` WAS set here while there was no Apple membership. It is
   # removed, and must not come back: electron-builder short-circuits on it

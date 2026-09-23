@@ -26,6 +26,7 @@ import { DEVICE_SCENE_DEFAULT } from "../shared/device-scene.js";
 import type { VoiceEngine } from "./app-global-settings.js";
 import {
   type Locale,
+  osLocale,
   readGlobalSettings,
   resolveInitialLocale,
   type ThemePref,
@@ -218,7 +219,7 @@ export function registerSettingsHandlers(deps: SettingsIpcDeps): void {
   // choice, else maps the OS locale.
   handle(CMD.getLocale, async () => {
     const s = await readGlobalSettings(app.getPath("userData"));
-    return resolveInitialLocale(s, app.getLocale());
+    return resolveInitialLocale(s, osLocale(process.platform, app));
   });
   handle(CMD.setLocale, async (_e, locale: Locale) => {
     // Validate like setTheme: an off-enum value would fail the read-side

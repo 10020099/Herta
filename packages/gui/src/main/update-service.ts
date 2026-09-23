@@ -28,6 +28,13 @@ export interface UpdateServiceDeps {
    *  (Settings → Update, persisted; default true). Manual checks are
    *  unaffected. Live-toggled via setAutoEnabled. */
   readonly autoEnabled?: boolean;
+  /** Runs right before `quitAndInstall` hands over, and only when it does.
+   *  On macOS the native updater CLOSES THE WINDOWS FIRST and emits
+   *  `before-quit` only afterwards (Electron's documented order for
+   *  `autoUpdater.quitAndInstall`), so the window's close-to-tray guard saw
+   *  no quit in progress, hid the window, and the restart never happened
+   *  (platform review 2026-09-23). The app marks the quit as real here. */
+  readonly beforeQuitAndInstall?: () => void;
 }
 
 export interface UpdateService {
@@ -216,6 +223,7 @@ export function createUpdateService(deps: UpdateServiceDeps): UpdateService {
       // (audit 2026-07-10, finding 7). before-quit now starts the session
       // dispose eagerly for exactly this shape (main/index.ts), so the
       // mid-turn transcript lands before the installer takes over.
+      deps.beforeQuitAndInstall?.();
       updater.quitAndInstall();
     },
     current: () => state,

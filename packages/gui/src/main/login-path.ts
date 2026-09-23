@@ -1,7 +1,9 @@
 import { execFile } from "node:child_process";
+import { basename } from "node:path";
 
 /**
- * macOS login-shell PATH recovery (audit 2026-08-05, S7).
+ * macOS login-shell PATH recovery (audit 2026-08-05, S7; ADR 0032, amended
+ * 2026-09-23).
  *
  * A `.app` launched from Finder, Spotlight, or the Dock inherits launchd's
  * environment, not a shell's — PATH is roughly
@@ -27,41 +29,94 @@ import { execFile } from "node:child_process";
  *
  * Explicitly NOT fixed by running commands through a login shell: that would
  * reopen the shell-body classification class (audit S4) for every command.
+ *
+ * The 2026-09-23 amendment (the pre-release platform review): the first cut
+ * asked `-lc` only, which reads `.zprofile` but not `.zshrc` — where nvm,
+ * fnm, conda, pyenv and bun install themselves — and it APPENDED the shell's
+ * entries after launchd's, so `/usr/bin/python3` (Apple's) shadowed the
+ * user's Homebrew one. Now an interactive login shell is asked too, its answer
+ * is read between markers, and the shell's order leads.
  */
 
-/** Where a login shell is asked for its PATH, bounded so a slow or broken
- *  rc file cannot delay startup. */
-const PATH_PROBE_TIMEOUT_MS = 2000;
+/** The non-interactive ask: fast, reads the login files only. */
+const LOGIN_PROBE_TIMEOUT_MS = 2000;
+/** The interactive ask: slower (a `.zshrc` loading nvm takes ~1 s), bounded
+ *  so a hanging rc file cannot hold startup past this. Runs in PARALLEL with
+ *  the login ask, so this is the whole worst case. */
+const INTERACTIVE_PROBE_TIMEOUT_MS = 3000;
 
 /** Entries worth keeping even if the login shell never answers — the common
  *  Homebrew prefixes, which is where `rg`/`node` usually live on a Mac. */
 const DARWIN_FALLBACK = ["/opt/homebrew/bin", "/usr/local/bin"];
 
+/** The PATH is printed between these, so whatever an rc file prints (a motd,
+ *  a prompt theme's instant-prompt, "[oh-my-zsh] Would you like to update?")
+ *  never glues itself onto an entry. */
+const BEGIN = "__HERTA_PATH_BEGIN__";
+const END = "__HERTA_PATH_END__";
+
+/** One command every probed shell reads the same way: `printf` repeats its
+ *  format per argument, so the markers and PATH land on lines of their own.
+ *  fish 3 joins a path variable with `:` inside double quotes, like POSIX
+ *  shells, so `"$PATH"` is the same string there. */
+const PRINT_PATH = `printf '%s\\n' '${BEGIN}' "$PATH" '${END}'`;
+
+/** Shells that understand `-l`, `-i`, `-c` and the command above. Anything
+ *  else (nushell, xonsh, elvish, tcsh…) is not asked in its own syntax: the
+ *  system zsh is, which still reads the user's `.zprofile` / `.zshrc`. */
+const PROBEABLE_SHELLS = new Set(["zsh", "bash", "sh", "dash", "ksh", "fish"]);
+
+export type ProbeMode = "login" | "interactive";
+
 export interface LoginPathDeps {
   readonly platform: NodeJS.Platform;
   readonly env: Readonly<Record<string, string | undefined>>;
-  /** Injected for tests; defaults to spawning the real login shell. */
-  readonly probe?: (shell: string) => Promise<string | null>;
+  /** Injected for tests; defaults to spawning the real shell. Returns the
+   *  RAW stdout (markers included) or null on failure/timeout. */
+  readonly probe?: (shell: string, mode: ProbeMode) => Promise<string | null>;
 }
 
-function realProbe(shell: string): Promise<string | null> {
+/** The PATH between the markers, or null when the output does not carry
+ *  both (a shell that died in its rc file, an `exec` into another shell). */
+export function parseProbeOutput(stdout: string): string | null {
+  const lines = stdout.split(/\r?\n/);
+  const begin = lines.lastIndexOf(BEGIN);
+  if (begin < 0 || lines[begin + 2] !== END) return null;
+  const path = (lines[begin + 1] ?? "").trim();
+  return path.length > 0 ? path : null;
+}
+
+/** Ask a real shell. Exported so a POSIX test can run the exact command
+ *  through a real bash / sh — the quoting is the part a fake cannot check. */
+export function runShellProbe(
+  shell: string,
+  mode: ProbeMode,
+): Promise<string | null> {
   return new Promise((resolve) => {
-    // -i (interactive) is deliberately omitted: it makes zsh source rc files
-    // that may print, prompt, or hang. -l (login) picks up .zprofile /
-    // .bash_profile, which is where PATH is normally set on macOS.
     const child = execFile(
       shell,
-      ["-lc", 'printf %s "$PATH"'],
-      { timeout: PATH_PROBE_TIMEOUT_MS, windowsHide: true },
+      [mode === "interactive" ? "-ilc" : "-lc", PRINT_PATH],
+      {
+        timeout:
+          mode === "interactive"
+            ? INTERACTIVE_PROBE_TIMEOUT_MS
+            : LOGIN_PROBE_TIMEOUT_MS,
+        windowsHide: true,
+      },
       (err, stdout) => {
-        if (err !== null) {
+        // A non-zero exit can still have printed the PATH (an rc file whose
+        // LAST command failed) — the markers decide, not the exit code. A
+        // timeout kills the shell, and whatever it printed is discarded.
+        if (err !== null && err.killed === true) {
           resolve(null);
           return;
         }
-        const out = stdout.trim();
-        resolve(out.length > 0 ? out : null);
+        resolve(typeof stdout === "string" ? stdout : null);
       },
     );
+    // An rc file that prompts ("update oh-my-zsh? [Y/n]") reads EOF and moves
+    // on instead of waiting out the timeout.
+    child.stdin?.end();
     child.once("error", () => resolve(null));
   });
 }
@@ -83,9 +138,21 @@ export function mergePath(
   return out.join(":");
 }
 
+/** The shell to ask: the user's own when it speaks the probe's syntax, else
+ *  the system zsh. */
+export function probeShell(
+  env: Readonly<Record<string, string | undefined>>,
+): string {
+  const shell = env.SHELL;
+  if (shell !== undefined && PROBEABLE_SHELLS.has(basename(shell))) {
+    return shell;
+  }
+  return "/bin/zsh";
+}
+
 /**
  * The PATH the app should run with, or null when nothing should change.
- * Never throws and never blocks longer than the probe timeout.
+ * Never throws and never blocks longer than the interactive probe's timeout.
  */
 export async function resolveLoginPath(
   deps: LoginPathDeps,
@@ -106,13 +173,29 @@ export async function resolveLoginPath(
   });
   if (looksInherited === true) return null;
 
-  const shell = deps.env.SHELL ?? "/bin/zsh";
-  const probe = deps.probe ?? realProbe;
-  const fromShell = await probe(shell).catch(() => null);
-  const merged = mergePath(current, [
-    ...(fromShell === null ? [] : fromShell.split(":")),
-    ...DARWIN_FALLBACK,
+  const shell = probeShell(deps.env);
+  const probe = deps.probe ?? runShellProbe;
+  const ask = (mode: ProbeMode): Promise<string | null> =>
+    probe(shell, mode)
+      .then((out) => (out === null ? null : parseProbeOutput(out)))
+      .catch(() => null);
+  // Both at once: the interactive answer is the complete one (it has read
+  // `.zshrc`), the login answer is the floor when an rc file hangs or exits.
+  const [interactive, login] = await Promise.all([
+    ask("interactive"),
+    ask("login"),
   ]);
+  const fromShell = interactive ?? login;
+  // The shell's order LEADS — it is the order the user's terminal resolves
+  // commands in — and launchd's entries it lacks follow. The Homebrew
+  // prefixes lead when the shell never answered, as `brew shellenv` would.
+  const merged =
+    fromShell !== null
+      ? mergePath(fromShell, [
+          ...(current ?? "").split(":"),
+          ...DARWIN_FALLBACK,
+        ])
+      : mergePath(DARWIN_FALLBACK.join(":"), (current ?? "").split(":"));
   return merged === (current ?? "") ? null : merged;
 }
 
@@ -131,4 +214,29 @@ export async function applyLoginPath(
   const next = await resolveLoginPath(deps);
   if (next !== null) setPath(next);
   return next;
+}
+
+/**
+ * The character encoding a Finder-launched child needs (2026-09-23). launchd
+ * gives the app no `LANG` / `LC_*` at all, so every child 板砖 runs — Ruby
+ * (CocoaPods, fastlane), Perl, `sort`, `wc -m` — falls back to the C locale:
+ * CocoaPods refuses to run ("requires your terminal to be using UTF-8") and
+ * byte-counting tools miscount Chinese. Terminal.app sets a locale for its
+ * shells, which is why none of this shows from a terminal.
+ *
+ * `LC_CTYPE=UTF-8` is the least that fixes it: the encoding only, no claim
+ * about language or region (a guessed `zh_CN.UTF-8` would change messages
+ * and collation). It is the value Terminal itself uses when its "set locale
+ * environment variables" option is off, and macOS ships that locale. Darwin
+ * only — glibc has no locale named `UTF-8`. Returns the variables to set,
+ * empty when any locale variable is already present.
+ */
+export function launchLocaleEnv(
+  platform: NodeJS.Platform,
+  env: Readonly<Record<string, string | undefined>>,
+): Record<string, string> {
+  if (platform !== "darwin") return {};
+  const present = (k: string): boolean => (env[k] ?? "").length > 0;
+  if (present("LANG") || present("LC_ALL") || present("LC_CTYPE")) return {};
+  return { LC_CTYPE: "UTF-8" };
 }

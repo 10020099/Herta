@@ -367,6 +367,32 @@ jobs:
           done
           if [ "$FOUND" -eq 0 ]; then echo "::error::no .app produced"; exit 1; fi
 
+      # The Chinese localization must survive packaging (platform review
+      # 2026-09-23): electron-builder's locale filter compares `.lproj` names,
+      # and with the Windows-style `zh-CN` it deleted `zh_CN.lproj`, so a
+      # Chinese Mac got an English app. The framework's folder holds
+      # Chromium's own strings; the app's decides which languages macOS
+      # offers it. The app-level check only fires when that directory has
+      # .lproj folders at all, so a layout change reports instead of lying.
+      - name: assert the Chinese localization reached the .app
+        run: |
+          FOUND=0
+          for APP in $(find packages/gui/release -maxdepth 3 -name "Herta.app" -type d); do
+            FOUND=$((FOUND + 1))
+            FW="$APP/Contents/Frameworks/Electron Framework.framework/Resources"
+            echo "lproj in $APP/Contents/Resources: $(ls -d "$APP"/Contents/Resources/*.lproj 2>/dev/null | xargs -n1 basename 2>/dev/null | tr '\n' ' ')"
+            echo "lproj in the framework: $(ls -d "$FW"/*.lproj 2>/dev/null | xargs -n1 basename 2>/dev/null | tr '\n' ' ')"
+            if [ ! -d "$FW/zh_CN.lproj" ]; then
+              echo "::error::$APP: Electron Framework has no zh_CN.lproj — Chinese Macs would get English Chromium strings"
+              exit 1
+            fi
+            if ls -d "$APP"/Contents/Resources/*.lproj >/dev/null 2>&1 && [ ! -d "$APP/Contents/Resources/zh_CN.lproj" ]; then
+              echo "::error::$APP: Contents/Resources carries .lproj folders but not zh_CN.lproj — macOS would offer the app English only"
+              exit 1
+            fi
+          done
+          if [ "$FOUND" -eq 0 ]; then echo "::error::no .app produced"; exit 1; fi
+
       # Signature verification (audit 2026-08-05, S6). A green build is NOT
       # evidence of a valid signature: electron-builder exits 0 when signing
       # is skipped. These are the checks a user's machine actually performs,

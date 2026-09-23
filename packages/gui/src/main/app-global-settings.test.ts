@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  osLocale,
   readGlobalSettings,
   resolveInitialLocale,
   resolveInteractionLang,
@@ -54,6 +55,33 @@ describe("app-global-settings", () => {
     expect(resolveInitialLocale({}, "zh-CN")).toBe("zh");
     expect(resolveInitialLocale({}, "en-US")).toBe("en");
     expect(resolveInitialLocale({}, "fr-FR")).toBe("en");
+  });
+
+  it("osLocale: a Chinese Mac reads its own language list, not the bundle-limited Chromium locale (2026-09-23)", () => {
+    // What a Chinese Mac answered while the packaged app carried en.lproj
+    // only: Chromium said `en-US`, the user's list said Chinese.
+    const chineseMac = {
+      getLocale: () => "en-US",
+      getPreferredSystemLanguages: () => ["zh-Hans-CN", "en-CN"],
+    };
+    expect(osLocale("darwin", chineseMac)).toBe("zh-Hans-CN");
+    expect(resolveInitialLocale({}, osLocale("darwin", chineseMac))).toBe("zh");
+    // An empty list falls back to Chromium's answer.
+    expect(
+      osLocale("darwin", {
+        getLocale: () => "zh-CN",
+        getPreferredSystemLanguages: () => [],
+      }),
+    ).toBe("zh-CN");
+  });
+
+  it("osLocale: Windows and Linux keep Chromium's locale, which already follows the OS", () => {
+    const src = {
+      getLocale: () => "zh-CN",
+      getPreferredSystemLanguages: () => ["en-US"],
+    };
+    expect(osLocale("win32", src)).toBe("zh-CN");
+    expect(osLocale("linux", src)).toBe("zh-CN");
   });
 
   it("round-trips closeToTray alongside locale (Settings → Window)", async () => {

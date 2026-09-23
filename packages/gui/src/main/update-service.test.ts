@@ -63,6 +63,28 @@ describe("createUpdateService", () => {
     svc.dispose();
   });
 
+  it("marks the quit as real BEFORE quitAndInstall hands over, and only when it does (macOS closes windows first, 2026-09-23)", () => {
+    const { updater, fire, quitAndInstall } = mkUpdater();
+    const order: string[] = [];
+    quitAndInstall.mockImplementation(() => order.push("quitAndInstall"));
+    const beforeQuitAndInstall = vi.fn(() => order.push("beforeQuit"));
+    const svc = createUpdateService({
+      updater,
+      isPackaged: true,
+      send: () => undefined,
+      beforeQuitAndInstall,
+    });
+    svc.start();
+    // Not ready: nothing hands over, so the quit must NOT be marked — a
+    // stuck flag would make the next × close for real instead of hiding.
+    svc.restartAndInstall();
+    expect(beforeQuitAndInstall).not.toHaveBeenCalled();
+    fire("update-downloaded", { version: "0.2.0" });
+    svc.restartAndInstall();
+    expect(order).toEqual(["beforeQuit", "quitAndInstall"]);
+    svc.dispose();
+  });
+
   it("restartAndInstall fires quitAndInstall ONLY from ready", () => {
     const { updater, fire, quitAndInstall } = mkUpdater();
     const svc = createUpdateService({

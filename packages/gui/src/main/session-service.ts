@@ -43,6 +43,7 @@ import { slimAgentEventForRenderer } from "../shared/agent-event-wire.js";
 import type { VoiceEngine } from "./app-global-settings.js";
 import {
   type InteractionLang,
+  osLocale,
   readGlobalSettings,
   resolveInitialLocale,
   resolveInteractionLang,
@@ -606,7 +607,10 @@ export function createSessionService(
   // global EN/CN toggle changes NEW sessions without retro-flipping old ones.
   async function currentInteractionLang(): Promise<InteractionLang> {
     const s = await readGlobalSettings(app.getPath("userData"));
-    return resolveInteractionLang(s, resolveInitialLocale(s, app.getLocale()));
+    return resolveInteractionLang(
+      s,
+      resolveInitialLocale(s, osLocale(process.platform, app)),
+    );
   }
 
   // Which session the window shows, and the open / create / delete calls

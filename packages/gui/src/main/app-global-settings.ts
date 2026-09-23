@@ -239,8 +239,31 @@ export function updateGlobalSettings(
   return run;
 }
 
+/**
+ * The OS language the boot locale is resolved from. `app.getLocale()` is
+ * Chromium's UI locale, and on macOS that is limited to the localizations the
+ * app BUNDLE carries — a packaging step that drops `zh_CN.lproj` makes a
+ * Chinese Mac answer `en` (platform review 2026-09-23; electron-builder.yml
+ * now keeps the folder). The user's own language list is the truth there, so
+ * darwin reads it first and falls back to the Chromium locale only when it is
+ * empty. Windows and Linux keep `getLocale()`, which already follows the OS.
+ */
+export function osLocale(
+  platform: NodeJS.Platform,
+  source: {
+    getLocale(): string;
+    getPreferredSystemLanguages(): string[];
+  },
+): string {
+  if (platform === "darwin") {
+    const first = source.getPreferredSystemLanguages()[0];
+    if (first !== undefined && first.length > 0) return first;
+  }
+  return source.getLocale();
+}
+
 /** Resolve the boot locale: a stored choice wins; else map the OS locale
- *  (`app.getLocale()`), zh* -> zh, everything else -> en. */
+ *  (`osLocale`), zh* -> zh, everything else -> en. */
 export function resolveInitialLocale(
   settings: GlobalSettings,
   osLocale: string,

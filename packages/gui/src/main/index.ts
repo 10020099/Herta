@@ -15,6 +15,7 @@ import hertaIcon from "../../resources/herta-icon.png?asset";
 import { CMD, EVT } from "../preload/channels.js";
 import { isAllowedExternalUrl } from "../shared/links.js";
 import {
+  osLocale,
   readGlobalSettings,
   resolveInitialLocale,
   updateGlobalSettings,
@@ -31,8 +32,9 @@ import {
   registerAttachmentScheme,
 } from "./attachment-protocol.js";
 import { buildCsp } from "./csp.js";
-import { applyLoginPath } from "./login-path.js";
+import { applyLoginPath, launchLocaleEnv } from "./login-path.js";
 import { installChromiumFetch } from "./net-transport.js";
+import { quitDisposals, quitsWhenAllWindowsClosed } from "./quit-policy.js";
 import { shouldReloadAfterCrash } from "./renderer-recovery.js";
 import {
   appWorkspaceRoot,
@@ -586,6 +588,10 @@ void app
     // downgrades to the JS walker. No-op off darwin and when launched from a
     // terminal; bounded so a slow rc file cannot delay startup.
     await applyLoginPath({ platform: process.platform, env: process.env });
+    // …and the encoding launchd leaves unset (ADR 0032, amended 2026-09-23):
+    // without it CocoaPods refuses to run and byte-counting tools miscount
+    // Chinese. Only when no locale variable is set at all.
+    Object.assign(process.env, launchLocaleEnv(process.platform, process.env));
     // Windows PATH recovery (ADR 0044) — same seam, same reason: the app
     // inherits Explorer's PATH snapshot, so a node/git installed after that
     // snapshot resolves in every fresh terminal but not here. Appends the
@@ -675,6 +681,12 @@ void app
                 win.webContents.send(EVT.update, state);
               }
             },
+            // macOS closes the windows BEFORE before-quit on this path, so
+            // the close-to-tray guard must already know a quit is under way
+            // or it hides the window and the restart never happens.
+            beforeQuitAndInstall: () => {
+              quitRequested = true;
+            },
           });
           registerUpdateHandlers();
           updateService.start();
@@ -697,7 +709,7 @@ void app
       requestExit,
       getLocale: async () => {
         const s = await readGlobalSettings(app.getPath("userData"));
-        return resolveInitialLocale(s, app.getLocale());
+        return resolveInitialLocale(s, osLocale(process.platform, app));
       },
     });
     app.on("activate", () => {
@@ -724,7 +736,9 @@ void app
   });
 
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
+  // A macOS app stays in the Dock with no window — unless a quit closed it
+  // (the tray's Exit closes the window first; see quit-policy.ts).
+  if (quitsWhenAllWindowsClosed(process.platform, quitRequested)) app.quit();
 });
 
 // Hold quit until the closing session's dispose settles (bounded — a hung
@@ -746,9 +760,15 @@ app.on("before-quit", (event) => {
   // Start the dispose eagerly; the closed-handler's later dispose() call
   // is an idempotent no-op, and requestExit's window-close route is
   // unaffected (its dispose is already pending by the time quit begins).
-  if (pendingDispose === null && mainService !== null) {
+  // The LIVE session is disposed even when an older dispose is pending — on
+  // macOS that one can belong to a window the Dock has since replaced
+  // (quit-policy.ts, 2026-09-23).
+  if (mainService !== null) {
     const service = mainService;
-    pendingDispose = service.dispose().catch(() => undefined);
+    pendingDispose = quitDisposals(
+      pendingDispose,
+      service.dispose().catch(() => undefined),
+    );
   }
   // Eager window-state capture, the geometry twin of the eager dispose above
   // (audit 2026-07-13 T1.1): on these same direct-quit shapes the window's
