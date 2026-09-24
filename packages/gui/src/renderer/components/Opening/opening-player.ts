@@ -8,6 +8,7 @@ import {
   getInterpolatedBrightness,
   getStrength,
   getSymbolState,
+  openingGlyphSizes,
   precomputeCellTimings,
   quantizeGlyphSize,
   RENDER_OPTIONS,
@@ -15,6 +16,7 @@ import {
   revealEnvelope,
   type SegmentData,
 } from "./ascii-renderer.js";
+import type { OpeningSheet, OpeningSheetEntry } from "./glyph-sheet-layout.js";
 
 /** Playback fraction at which the splash begins dissolving: the figure AND the
  *  white backdrop fade out together (carried by the overlay's opacity) over
@@ -100,6 +102,11 @@ export interface OpeningPlayer {
  * thread when no worker can start. `surface` is the canvas `ctx` draws on
  * (its backing size is set here). `mountMs` is the host's clock at start, in
  * the same time base as the frame times it will pass.
+ *
+ * With a `sheet` (`glyph-sheet-layout.ts`, M-opening-4) each glyph is copied
+ * from it to a whole device pixel instead of drawn as text — whenever the
+ * sheet matches: drawn at this device scale, in this segment's ink, and
+ * holding every size this view can ask for. Otherwise the loop draws text.
  */
 export function createOpeningPlayer(
   surface: { width: number; height: number },
@@ -108,6 +115,7 @@ export function createOpeningPlayer(
   dark: boolean,
   events: OpeningPlayerEvents,
   mountMs: number,
+  sheet: OpeningSheet | null = null,
 ): OpeningPlayer {
   const duration = data.frameCount / data.fps;
   const { dissolveMs } = openingTimeline(data);
@@ -136,17 +144,50 @@ export function createOpeningPlayer(
   let done = false;
   let viewW = 0;
   let viewH = 0;
+  let dpr = 1;
+
+  // The sheet's cells by size and its symbols by glyph, when it can serve
+  // this segment at all: every layer must draw in the ink it was drawn in.
+  const sheetCells = new Map<number, OpeningSheetEntry>();
+  const sheetGlyphs = new Map<string, number>();
+  if (
+    sheet !== null &&
+    Object.values(layerStyles).every((s) => s.foreground === sheet.ink)
+  ) {
+    for (const entry of sheet.entries) sheetCells.set(entry.px, entry);
+    for (let g = 0; g < sheet.glyphs.length; g += 1) {
+      sheetGlyphs.set(sheet.glyphs[g] as string, g);
+    }
+  }
+  const geometry = {
+    width: data.width,
+    height: data.height,
+    maxCellSize: data.cells.reduce((m, c) => Math.max(m, c[2]), 0),
+  };
+  // Decided per view size: the sheet serves only a view it was drawn for.
+  let useSheet = false;
 
   return {
-    resize(width, height, dpr) {
+    resize(width, height, nextDpr) {
       viewW = width;
       viewH = height;
+      dpr = nextDpr;
       surface.width = Math.floor(width * dpr);
       surface.height = Math.floor(height * dpr);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      useSheet =
+        sheet !== null &&
+        sheetCells.size > 0 &&
+        sheet.dpr === dpr &&
+        openingGlyphSizes(width, height, geometry).every((px) =>
+          sheetCells.has(px),
+        );
     },
 
     frame(timeMs) {
+      // The sheet path leaves the canvas in device pixels; every frame
+      // starts back in CSS pixels.
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       // Restored after the timeline expired while hidden (user 2026-07-14):
       // painting the resumed frame would show ONE full-hold figure and then
       // run the whole multi-second dissolve — a ghost splash minutes later.
@@ -197,6 +238,60 @@ export function createOpeningPlayer(
       // (symbol, size) pairs the text engine must rasterize.
       let lastFont = "";
       let lastFill = "";
+      const drawText = (
+        symbol: string,
+        px: number,
+        fill: string,
+        alpha: number,
+        x: number,
+        y: number,
+      ): void => {
+        const font = `${px}px ${RENDER_OPTIONS.fontFamily}`;
+        if (font !== lastFont) {
+          ctx.font = font;
+          lastFont = font;
+        }
+        if (fill !== lastFill) {
+          ctx.fillStyle = fill;
+          lastFill = fill;
+        }
+        ctx.globalAlpha = alpha;
+        ctx.fillText(symbol, x, y);
+      };
+      // Sheet copies are placed in device pixels: the nearest whole one to
+      // where fillText would centre the glyph.
+      const bitmap = useSheet && sheet !== null ? sheet.bitmap : null;
+      if (bitmap !== null) ctx.setTransform(1, 0, 0, 1, 0, 0);
+      const copy = (
+        entry: OpeningSheetEntry,
+        symbol: string,
+        alpha: number,
+        x: number,
+        y: number,
+        px: number,
+        fill: string,
+      ): void => {
+        const g = sheetGlyphs.get(symbol);
+        if (bitmap === null || g === undefined) {
+          // Not a symbol the sheet holds: text, in CSS pixels.
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          drawText(symbol, px, fill, alpha, x, y);
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+          return;
+        }
+        ctx.globalAlpha = alpha;
+        ctx.drawImage(
+          bitmap,
+          entry.pos[2 * g] ?? 0,
+          entry.pos[2 * g + 1] ?? 0,
+          entry.w,
+          entry.h,
+          Math.round(x * dpr - entry.w / 2),
+          Math.round(y * dpr - entry.h / 2),
+          entry.w,
+          entry.h,
+        );
+      };
 
       for (let i = 0; i < data.cells.length; i += 1) {
         const cell = data.cells[i];
@@ -234,25 +329,27 @@ export function createOpeningPlayer(
           timings.phaseOffsets[i],
         );
 
-        const font = `${quantizeGlyphSize(fontSize)}px ${RENDER_OPTIONS.fontFamily}`;
-        if (font !== lastFont) {
-          ctx.font = font;
-          lastFont = font;
-        }
-        if (style.foreground !== lastFill) {
-          ctx.fillStyle = style.foreground;
-          lastFill = style.foreground;
-        }
+        const px = quantizeGlyphSize(fontSize);
+        const entry = bitmap !== null ? sheetCells.get(px) : undefined;
         const ca = baseAlpha * state.currentAlpha;
-        if (state.currentSymbol && ca > 0.001) {
-          ctx.globalAlpha = ca;
-          ctx.fillText(state.currentSymbol, x, y);
-        }
         const na = baseAlpha * state.nextAlpha;
-        if (state.nextSymbol && na > 0.001) {
-          ctx.globalAlpha = na;
-          ctx.fillText(state.nextSymbol, x, y);
+        if (entry !== undefined) {
+          if (state.currentSymbol && ca > 0.001) {
+            copy(entry, state.currentSymbol, ca, x, y, px, style.foreground);
+          }
+          if (state.nextSymbol && na > 0.001) {
+            copy(entry, state.nextSymbol, na, x, y, px, style.foreground);
+          }
+          continue;
         }
+        if (bitmap !== null) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        if (state.currentSymbol && ca > 0.001) {
+          drawText(state.currentSymbol, px, style.foreground, ca, x, y);
+        }
+        if (state.nextSymbol && na > 0.001) {
+          drawText(state.nextSymbol, px, style.foreground, na, x, y);
+        }
+        if (bitmap !== null) ctx.setTransform(1, 0, 0, 1, 0, 0);
       }
 
       ctx.globalAlpha = 1;

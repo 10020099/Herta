@@ -226,8 +226,8 @@ describe("ascii-renderer glyph sizes (M-opening-2)", () => {
 
   it("openingGlyphSizes lists every size the draw loop can ask for, at any window shape", () => {
     // The draw loop's own arithmetic, swept over strength, cell size, reveal
-    // and every layer style: a size the warm-up missed would be paid for on
-    // the main thread in the middle of the reveal.
+    // and every layer style: a size missing from the glyph sheet would leave
+    // the sheet unused, and the opening drawing text.
     const missing: string[] = [];
     for (const [w, h] of [
       [1440, 900],
@@ -261,7 +261,7 @@ describe("ascii-renderer glyph sizes (M-opening-2)", () => {
     expect(missing).toEqual([]);
   });
 
-  it("every committed opening segment has the geometry the warm-up sizes its work from", () => {
+  it("every committed opening segment has the geometry the glyph sheet is drawn to", () => {
     const dir = fileURLToPath(
       new URL("../../assets/openings/", import.meta.url),
     );

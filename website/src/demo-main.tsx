@@ -8,6 +8,7 @@
 import "@gui/styles/reference-ux.css";
 import "./demo-overrides.css";
 import { App } from "@gui/App";
+import { startOpeningGlyphSheet } from "@gui/components/Opening/glyph-sheet";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { createDemoBridge } from "./demo-bridge.js";
@@ -34,6 +35,10 @@ const demoTheme = params.get("theme") === "dark" ? "dark" : "light";
 if (demoTheme === "dark") {
   document.documentElement.dataset.theme = "dark";
 }
+
+// The opening's glyph sheet, as the desktop app starts it at boot — after
+// the theme stamp, because the sheet is drawn in the theme's ink.
+startOpeningGlyphSheet();
 
 // Capture seam for the narrow-screen posters (?poster=1, never set by the
 // site): streams the showcase's closing line instead of loading it settled,

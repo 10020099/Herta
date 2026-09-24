@@ -218,8 +218,8 @@ export function quantizeGlyphSize(px: number): number {
 }
 
 /** The geometry every committed opening segment shares (a test holds each
- *  asset to it): the glyph warm-up sizes its work from it before the picked
- *  segment has loaded. */
+ *  asset to it): the glyph sheet is drawn to it before the picked segment
+ *  has loaded. */
 export const OPENING_SEGMENT_GEOMETRY = {
   width: 1908,
   height: 1080,

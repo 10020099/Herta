@@ -1,4 +1,5 @@
 import type { SegmentData } from "./ascii-renderer.js";
+import type { OpeningSheet } from "./glyph-sheet-layout.js";
 import {
   createOpeningPlayer,
   type OpeningPlayer,
@@ -17,7 +18,7 @@ import {
  * Two steps, so the start-up overlaps the segment's load: `prepare` (sent as
  * the splash mounts) takes the canvas and paints the first frame's opaque
  * veil, which creates its GPU context; `play` (sent once the segment has
- * loaded) starts the frames. The main thread hears of three
+ * loaded and the glyph sheet is drawn, M-opening-4) starts the frames. The main thread hears of three
  * moments only: the first frame, the dissolve, and an instant finish.
  */
 
@@ -34,7 +35,12 @@ export type OpeningDrawRequest =
       readonly canvas: OffscreenCanvas;
       readonly dark: boolean;
     } & View)
-  | { readonly type: "play"; readonly data: SegmentData }
+  | {
+      readonly type: "play";
+      readonly data: SegmentData;
+      /** The glyph sheet to copy glyphs from, or null to draw text. */
+      readonly sheet: OpeningSheet | null;
+    }
   | ({ readonly type: "resize" } & View);
 
 /** Worker → main. `first-frame` carries when it was committed, in epoch ms;
@@ -58,8 +64,26 @@ let surface: {
 let view: View = { width: 0, height: 0, dpr: 1 };
 let player: OpeningPlayer | null = null;
 
-function play(data: SegmentData): void {
+/**
+ * The sheet as this thread's GPU texture. The sheet arrives drawn on a
+ * software canvas (its text is rasterized off the GPU process); copied once
+ * into a canvas of this thread, it becomes a GPU-backed bitmap the frames
+ * copy from. Drawn from directly, its pixels went to the GPU process again
+ * with every frame (in-app trace, M-opening-4: 247 → 376 ms of the hold's
+ * GPU time, and the hold slower than drawing text).
+ */
+function onGpu(sheet: OpeningSheet): OpeningSheet {
+  const upload = new OffscreenCanvas(sheet.bitmap.width, sheet.bitmap.height);
+  const g = upload.getContext("2d");
+  if (g === null) return sheet;
+  g.drawImage(sheet.bitmap, 0, 0);
+  sheet.bitmap.close();
+  return { ...sheet, bitmap: upload.transferToImageBitmap() };
+}
+
+function play(data: SegmentData, received: OpeningSheet | null): void {
   if (surface === null || player !== null) return;
+  const sheet = received === null ? null : onGpu(received);
   const started = createOpeningPlayer(
     surface.canvas,
     surface.ctx,
@@ -70,6 +94,7 @@ function play(data: SegmentData): void {
       onInstant: () => send({ type: "instant" }),
     },
     performance.now(),
+    sheet,
   );
   player = started;
   started.resize(view.width, view.height, view.dpr);
@@ -121,6 +146,6 @@ addEventListener("message", (event: MessageEvent<OpeningDrawRequest>) => {
       view.dpr,
     );
   } else {
-    play(request.data);
+    play(request.data, request.sheet);
   }
 });

@@ -1,5 +1,7 @@
 import { useEffect, useRef } from "react";
 import type { SegmentData } from "./ascii-renderer.js";
+import { openingGlyphSheet } from "./glyph-sheet.js";
+import type { OpeningSheet } from "./glyph-sheet-layout.js";
 import type {
   OpeningDrawEvent,
   OpeningDrawRequest,
@@ -15,6 +17,12 @@ import {
  *  instead. A cold start shows it well within this; it only catches a
  *  worker whose frames never come. */
 const FIRST_FRAME_WATCHDOG_MS = 2000;
+
+/** How long the opening waits for the glyph sheet once its segment has
+ *  loaded (M-opening-4: the owner chose waiting over switching renderers
+ *  mid-reveal). A cold start's sheet is drawn in 0.3–0.4 s from boot; this
+ *  only bounds a sheet that never comes, after which the loop draws text. */
+const SHEET_WAIT_MAX_MS = 2500;
 
 export interface OpeningAsciiCanvasProps {
   /** The segment to play; null while it loads (the draw worker is already
@@ -32,6 +40,9 @@ export interface OpeningAsciiCanvasProps {
   /** Test seam: the draw worker, or null for none. Defaults to the bundled
    *  worker where the platform has one. */
   readonly spawnWorker?: () => Worker | null;
+  /** Test seam: the glyph sheet. Defaults to the one boot started drawing
+   *  (`glyph-sheet.ts`). */
+  readonly getSheet?: () => Promise<OpeningSheet | null>;
 }
 
 /** The bundled draw worker, or null where the platform has no `Worker`
@@ -54,7 +65,9 @@ interface OpeningHost {
  * (`opening-player.ts`) runs on a worker over the transferred canvas
  * (M-opening-3), so boot work on the main thread and the opening's frames
  * stop waiting on each other; the worker starts as the splash mounts, while
- * the segment still loads. Where no worker can draw, the same loop runs here
+ * the segment still loads. Frames start once the segment has loaded and the
+ * glyph sheet boot started is drawn (M-opening-4), so the whole opening
+ * draws one way. Where no worker can draw, the same loop runs here
  * on requestAnimationFrame; where there is no 2D context at all (jsdom,
  * headless), a timer completes the sequence.
  *
@@ -72,11 +85,12 @@ export function OpeningAsciiCanvas(
   const onFirstFrameRef = useRef(props.onFirstFrame);
   onFirstFrameRef.current = props.onFirstFrame;
   const spawnRef = useRef(props.spawnWorker ?? spawnBundledWorker);
+  const sheetRef = useRef(props.getSheet ?? openingGlyphSheet);
 
   useEffect(() => {
     const stage = stageRef.current;
     if (stage === null) return;
-    const host = createOpeningHost(stage, spawnRef.current, {
+    const host = createOpeningHost(stage, spawnRef.current, sheetRef.current, {
       onComplete: (ms) => onCompleteRef.current(ms),
       onFirstFrame: (at) => onFirstFrameRef.current?.(at),
     });
@@ -97,6 +111,7 @@ export function OpeningAsciiCanvas(
 function createOpeningHost(
   stage: HTMLDivElement,
   spawnWorker: () => Worker | null,
+  getSheet: () => Promise<OpeningSheet | null>,
   events: {
     readonly onComplete: (dissolveMs: number) => void;
     readonly onFirstFrame: (atEpochMs?: number) => void;
@@ -107,7 +122,13 @@ function createOpeningHost(
   let disposed = false;
   let completed = false;
   let firstFrame = false;
-  let data: SegmentData | null = null;
+  // The segment asked for (plays once), and what plays: the segment with the
+  // glyph sheet or null, once the wait for the sheet is over.
+  let requested: SegmentData | null = null;
+  let ready: {
+    readonly segment: SegmentData;
+    readonly sheet: OpeningSheet | null;
+  } | null = null;
   const complete = (dissolveMs: number): void => {
     if (completed || disposed) return;
     completed = true;
@@ -133,7 +154,10 @@ function createOpeningHost(
     for (const stop of stops.splice(0)) stop();
   };
 
-  const playOnMainThread = (segment: SegmentData): void => {
+  const playOnMainThread = (
+    segment: SegmentData,
+    sheet: OpeningSheet | null,
+  ): void => {
     let ctx: CanvasRenderingContext2D | null = null;
     try {
       ctx = canvas.getContext("2d");
@@ -156,6 +180,7 @@ function createOpeningHost(
       dark,
       { onDissolve: complete, onInstant: () => complete(0) },
       performance.now(),
+      sheet,
     );
     const resize = (): void => {
       const v = viewSize();
@@ -189,7 +214,7 @@ function createOpeningHost(
     stopAll();
     canvas.remove();
     canvas = freshCanvas(stage);
-    if (data !== null) playOnMainThread(data);
+    if (ready !== null) playOnMainThread(ready.segment, ready.sheet);
   };
 
   const startWorker = (): Worker | null => {
@@ -247,19 +272,43 @@ function createOpeningHost(
     }, FIRST_FRAME_WATCHDOG_MS);
   };
 
+  // The sheet, or null once SHEET_WAIT_MAX_MS have passed without one. Until
+  // then the canvas holds the first frame's cover (painted at `prepare`).
+  const waitForSheet = (): Promise<OpeningSheet | null> =>
+    new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(null), SHEET_WAIT_MAX_MS);
+      getSheet().then(
+        (sheet) => {
+          clearTimeout(timer);
+          resolve(sheet);
+        },
+        () => {
+          clearTimeout(timer);
+          resolve(null);
+        },
+      );
+    });
+
   return {
     play(segment) {
-      if (disposed || data !== null) return;
-      data = segment;
-      if (worker === null) {
-        playOnMainThread(segment);
-        return;
-      }
-      worker.postMessage({
-        type: "play",
-        data: segment,
-      } satisfies OpeningDrawRequest);
-      watch();
+      if (disposed || requested !== null) return;
+      requested = segment;
+      void waitForSheet().then((sheet) => {
+        if (disposed) return;
+        ready = { segment, sheet };
+        if (worker === null) {
+          playOnMainThread(segment, sheet);
+          return;
+        }
+        // A clone, not a transfer: the bitmap's pixels are shared, and a
+        // fallback to this thread can still use the sheet.
+        worker.postMessage({
+          type: "play",
+          data: segment,
+          sheet,
+        } satisfies OpeningDrawRequest);
+        watch();
+      });
     },
     dispose() {
       disposed = true;

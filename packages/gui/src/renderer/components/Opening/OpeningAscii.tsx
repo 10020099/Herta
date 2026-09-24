@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { journeyMarkAfterPaint, journeyMarkAt } from "../../lib/journey.js";
 import { holdLaunch, releaseLaunch } from "../../lib/launch-gate.js";
 import type { SegmentData } from "./ascii-renderer.js";
+import { releaseOpeningGlyphSheet } from "./glyph-sheet.js";
 import { OpeningAsciiCanvas } from "./OpeningAsciiCanvas.js";
 import { pickOpeningSegment } from "./pick-opening-segment.js";
 
@@ -72,6 +73,7 @@ export function OpeningAscii(props: OpeningAsciiProps): JSX.Element {
       .catch(() => {
         if (cancelled) return;
         releaseLaunch("settled");
+        releaseOpeningGlyphSheet();
         onDoneRef.current();
       });
     return () => {
@@ -91,6 +93,9 @@ export function OpeningAscii(props: OpeningAsciiProps): JSX.Element {
     onFadeStartRef.current?.();
     fadeTimerRef.current = window.setTimeout(() => {
       releaseLaunch("settled");
+      // The opening is over: its glyph sheet's pixels go (the draw worker's
+      // copy goes with the worker).
+      releaseOpeningGlyphSheet();
       onDoneRef.current();
     }, ms);
   };

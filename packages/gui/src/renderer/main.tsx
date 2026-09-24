@@ -1,19 +1,10 @@
 import "./styles/reference-ux.css";
-import { StrictMode } from "react";
-import { createRoot } from "react-dom/client";
-import { App } from "./App.js";
-import { warmOpeningGlyphs } from "./components/Opening/glyph-warm.js";
+import { startOpeningGlyphSheet } from "./components/Opening/glyph-sheet.js";
 
-// Before React: the warm-up worker needs the time until the opening's first frame.
-warmOpeningGlyphs();
+// The entry is kept tiny on purpose (M-opening-4). The opening waits for its
+// glyph sheet, and most of the sheet's time is its worker's own start-up.
+// Starting it here — before the app's modules are fetched, compiled and
+// run — lays that start-up over the app's own load instead of after it.
+startOpeningGlyphSheet();
 
-const rootEl = document.getElementById("root");
-if (rootEl === null) {
-  throw new Error("#root element not found in index.html");
-}
-
-createRoot(rootEl).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
-);
+void import("./boot.js");
