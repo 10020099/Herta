@@ -316,7 +316,7 @@ export function Composer(): JSX.Element {
     // key into Settings or searches the sidebar leaves them there (UX review
     // 2026-09-22, item 12 — the refocus used to be unconditional).
     if (was && !busy && !suppressed && caretIsFree(composerRef.current)) {
-      taRef.current?.focus();
+      taRef.current?.focus({ preventScroll: true });
       // "Caret back, ready to type" includes the height: expand directly
       // rather than relying on the focus() call's focusin reaching the form
       // handler (browsers deliver it; jsdom does not, and a focus() that
@@ -346,7 +346,7 @@ export function Composer(): JSX.Element {
       if (ta !== null && document.activeElement !== ta) {
         quietFocus.current = true;
         try {
-          ta.focus();
+          ta.focus({ preventScroll: true });
         } finally {
           quietFocus.current = false;
         }
@@ -374,7 +374,7 @@ export function Composer(): JSX.Element {
     if (pending === null) return;
     sessionStore.clearHeld();
     setText((prev) => (prev.length > 0 ? `${pending}\n\n${prev}` : pending));
-    taRef.current?.focus();
+    taRef.current?.focus({ preventScroll: true });
     setFocusWithin(true);
   };
 
@@ -425,7 +425,7 @@ export function Composer(): JSX.Element {
     if (composerDraftImages !== null) images.restore(composerDraftImages);
     setHintActive(false);
     pendingCaret.current = composerDraft.length;
-    taRef.current?.focus();
+    taRef.current?.focus({ preventScroll: true });
     sessionStore.clearComposerDraft();
   }, [composerDraft]);
 
@@ -552,7 +552,7 @@ export function Composer(): JSX.Element {
         // owner's report: cancel re-expanded the composer with focus stuck
         // on the attach button and no caret anywhere). Explicit set beside
         // focus(), same rationale as the turn-end refocus.
-        taRef.current?.focus();
+        taRef.current?.focus({ preventScroll: true });
         setFocusWithin(true);
       });
   };
@@ -727,7 +727,7 @@ export function Composer(): JSX.Element {
           // message that goes with the files. Busy drops surface a refusal
           // notice instead — a disabled textarea can't take the caret.
           if (!busy) {
-            taRef.current?.focus();
+            taRef.current?.focus({ preventScroll: true });
             setFocusWithin(true);
           }
         }}

@@ -136,7 +136,7 @@ function Workbench({ booting }: { readonly booting: boolean }): JSX.Element {
     setQuery("");
     // Return keyboard focus to the search trigger (it's always mounted in the
     // top bar) so closing via Escape doesn't drop focus to <body>.
-    searchButtonRef.current?.focus();
+    searchButtonRef.current?.focus({ preventScroll: true });
   };
   const toggleSearch = (): void => {
     if (searchOpen) {

@@ -156,7 +156,7 @@ function ImageLightbox({
   // Keyboard users land inside the dialog (the close button), like the
   // key prompt focuses its input.
   useEffect(() => {
-    closeRef.current?.focus();
+    closeRef.current?.focus({ preventScroll: true });
   }, []);
 
   // CTRL (or ⌘) + wheel zooms; a bare wheel SCROLLS (owner 2026-08-28).

@@ -83,6 +83,7 @@ export const DOM_FREE_TESTS = [
   "src/renderer/components/Workspace/plan-context.test.ts",
   "src/renderer/components/Workspace/step-display.test.ts",
   "src/renderer/components/Workspace/trace-context.test.ts",
+  "src/renderer/focus-prevent-scroll.test.ts",
   "src/renderer/i18n/no-hardcoded-cjk.test.ts",
   "src/renderer/ipc/bridge-types.test.ts",
   "src/renderer/ipc/mock-bridge.test.ts",

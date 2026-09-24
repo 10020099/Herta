@@ -309,14 +309,18 @@ export function SettingsModal({
     if (open && mounted && !focusTaken.current) {
       focusTaken.current = true;
       prevFocus.current = document.activeElement as HTMLElement | null;
-      cardRef.current?.focus();
+      // No scroll on either hand-over: the card animates in, and what held
+      // focus before may sit in a part of the window that is sliding.
+      cardRef.current?.focus({ preventScroll: true });
     } else if (!open && focusTaken.current) {
       focusTaken.current = false;
       const prev = prevFocus.current;
       if (prev && prev !== document.body && document.contains(prev)) {
-        prev.focus?.();
+        prev.focus?.({ preventScroll: true });
       } else {
-        document.querySelector<HTMLElement>(".sidebar-settings")?.focus?.();
+        document
+          .querySelector<HTMLElement>(".sidebar-settings")
+          ?.focus?.({ preventScroll: true });
       }
     }
   }, [open, mounted]);
@@ -352,9 +356,11 @@ export function SettingsModal({
       const active = document.activeElement;
       if (e.shiftKey && (active === first || active === cardRef.current)) {
         e.preventDefault();
+        // focus-scrolls: Tab navigation — the control must come into view.
         last?.focus();
       } else if (!e.shiftKey && active === last) {
         e.preventDefault();
+        // focus-scrolls: Tab navigation — the control must come into view.
         first?.focus();
       }
     };

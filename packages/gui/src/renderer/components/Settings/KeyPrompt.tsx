@@ -41,7 +41,7 @@ export function KeyPrompt(): JSX.Element | null {
   useEffect(() => {
     openingSeq.current += 1;
     if (open) {
-      inputRef.current?.focus();
+      inputRef.current?.focus({ preventScroll: true });
     } else {
       setDraft("");
       setSaving(false);

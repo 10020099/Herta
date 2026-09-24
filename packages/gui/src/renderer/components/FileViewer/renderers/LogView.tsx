@@ -210,7 +210,7 @@ export function LogView(): JSX.Element {
                   } else {
                     e.currentTarget
                       .closest<HTMLElement>(".file-viewer")
-                      ?.focus();
+                      ?.focus({ preventScroll: true });
                   }
                 }
               }}
