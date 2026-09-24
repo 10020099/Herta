@@ -396,6 +396,16 @@ describe("OpeningAsciiCanvas on the draw worker (M-opening-3)", () => {
     expect(worker.posted).toEqual([PREPARE]);
   });
 
+  it("keeps the stage the first frame's opaque veil until the worker's first frame (owner 2026-09-25: blue frames)", () => {
+    const { worker, container } = setUp();
+    const stage = container.querySelector(
+      ".opening-ascii-stage",
+    ) as HTMLElement;
+    expect(stage.style.background).toBe("rgb(255, 255, 255)");
+    worker.say({ type: "first-frame", atEpochMs: 1 });
+    expect(stage.style.background).toBe("");
+  });
+
   it("passes on the worker's first frame (with its time) and dissolve, once each", () => {
     const { worker, onComplete, onFirstFrame } = setUp();
     worker.say({ type: "first-frame", atEpochMs: 1234.5 });

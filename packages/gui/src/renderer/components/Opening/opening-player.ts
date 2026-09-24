@@ -69,11 +69,33 @@ export function paintOpeningCover(
   height: number,
   dpr: number,
 ): void {
-  surface.width = Math.floor(width * dpr);
-  surface.height = Math.floor(height * dpr);
+  sizeSurface(surface, width, height, dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.fillStyle = veilFill(dark, backdropVeil(0));
   ctx.fillRect(0, 0, width, height);
+}
+
+/**
+ * Give the surface its backing size; true when that wiped it. Setting a
+ * canvas's size wipes it even when the size is unchanged, and a worker's
+ * canvas reaches the screen at the end of every task: the draw worker's
+ * wiped canvas showed as a frame of the blue app behind the splash, at the
+ * start of the play and on a window resize mid-animation (owner 2026-09-25).
+ * So an unchanged size is left alone, and every caller that wipes repaints
+ * in the same task.
+ */
+function sizeSurface(
+  surface: { width: number; height: number },
+  width: number,
+  height: number,
+  dpr: number,
+): boolean {
+  const w = Math.floor(width * dpr);
+  const h = Math.floor(height * dpr);
+  if (surface.width === w && surface.height === h) return false;
+  surface.width = w;
+  surface.height = h;
+  return true;
 }
 
 export interface OpeningPlayerEvents {
@@ -166,14 +188,15 @@ export function createOpeningPlayer(
   };
   // Decided per view size: the sheet serves only a view it was drawn for.
   let useSheet = false;
+  // The instant finish wiped the canvas for good: nothing repaints it.
+  let over = false;
 
-  return {
+  const player: OpeningPlayer = {
     resize(width, height, nextDpr) {
       viewW = width;
       viewH = height;
       dpr = nextDpr;
-      surface.width = Math.floor(width * dpr);
-      surface.height = Math.floor(height * dpr);
+      const wiped = sizeSurface(surface, width, height, dpr);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       useSheet =
         sheet !== null &&
@@ -182,6 +205,15 @@ export function createOpeningPlayer(
         openingGlyphSizes(width, height, geometry).every((px) =>
           sheetCells.has(px),
         );
+      // A wiped canvas is repainted before this task ends (see sizeSurface):
+      // the last frame again, or the cover the first frame opens on.
+      if (!wiped || over) return;
+      if (lastFrameMs === null) {
+        ctx.fillStyle = veilFill(dark, backdropVeil(0));
+        ctx.fillRect(0, 0, viewW, viewH);
+      } else {
+        player.frame(lastFrameMs);
+      }
     },
 
     frame(timeMs) {
@@ -201,6 +233,7 @@ export function createOpeningPlayer(
         RENDER_OPTIONS.playbackRate;
       if (gapMs > GAP_SKIP_MS && wouldElapse >= duration * DISSOLVE_START) {
         ctx.clearRect(0, 0, viewW, viewH);
+        over = true;
         if (!done) {
           done = true;
           events.onInstant();
@@ -363,4 +396,5 @@ export function createOpeningPlayer(
       return elapsed < duration;
     },
   };
+  return player;
 }

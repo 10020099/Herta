@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   BASE_LAYER_STYLE,
   DARK_FOREGROUND,
@@ -55,6 +55,7 @@ describe("the opening's glyph sheet (M-opening-4)", () => {
   afterEach(() => {
     resetOpeningGlyphSheetForTest();
     delete document.documentElement.dataset.theme;
+    vi.useRealTimers();
   });
 
   it("asks the worker for the loop's sizes at this window, its font, every symbol, the device scale and the ink", () => {
@@ -78,7 +79,8 @@ describe("the opening's glyph sheet (M-opening-4)", () => {
     expect(worker.posted[0]).toMatchObject({ ink: DARK_FOREGROUND });
   });
 
-  it("hands over the drawn sheet and lets the worker go; starts only once", async () => {
+  it("hands over the sheet, lets the worker finish storing it, and starts only once", async () => {
+    vi.useFakeTimers();
     const worker = new FakeWorker();
     startOpeningGlyphSheet(() => worker as unknown as Worker);
     const second = new FakeWorker();
@@ -87,6 +89,10 @@ describe("the opening's glyph sheet (M-opening-4)", () => {
     const { sheet } = fakeSheet();
     worker.answer({ type: "sheet", sheet });
     await expect(openingGlyphSheet()).resolves.toBe(sheet);
+    // The worker stores the sheet for the next launch after answering, and
+    // closes itself; it is only cut off when that never ends.
+    expect(worker.terminated).toBe(false);
+    vi.advanceTimersByTime(15_000);
     expect(worker.terminated).toBe(true);
   });
 

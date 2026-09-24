@@ -26,6 +26,9 @@ function spawnBundledWorker(): Worker | null {
 
 let pending: Promise<OpeningSheet | null> | null = null;
 
+/** How long the worker may go on storing the sheet after answering. */
+const WORKER_GRACE_MS = 15_000;
+
 /**
  * Starts drawing the opening's glyph sheet (see `glyph-sheet.worker.ts`) for
  * this window's size, device scale and theme. Called once, first thing at
@@ -60,17 +63,21 @@ export function startOpeningGlyphSheet(
       BASE_LAYER_STYLE.foreground,
   };
   pending = new Promise<OpeningSheet | null>((resolve) => {
-    const settle = (sheet: OpeningSheet | null): void => {
+    const settle = (sheet: OpeningSheet | null, failed: boolean): void => {
       w.onmessage = null;
       w.onerror = null;
       w.onmessageerror = null;
-      w.terminate();
+      if (failed) w.terminate();
+      // After its answer the worker may still be storing the sheet for the
+      // next launch, and closes itself when done; this only bounds a store
+      // that never finishes.
+      else setTimeout(() => w.terminate(), WORKER_GRACE_MS);
       resolve(sheet);
     };
     w.onmessage = (event: MessageEvent<GlyphSheetReply>) =>
-      settle(event.data.type === "sheet" ? event.data.sheet : null);
-    w.onerror = () => settle(null);
-    w.onmessageerror = () => settle(null);
+      settle(event.data.type === "sheet" ? event.data.sheet : null, false);
+    w.onerror = () => settle(null, true);
+    w.onmessageerror = () => settle(null, true);
   });
   w.postMessage(request);
 }

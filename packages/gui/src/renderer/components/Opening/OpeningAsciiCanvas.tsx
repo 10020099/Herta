@@ -134,9 +134,16 @@ function createOpeningHost(
     completed = true;
     events.onComplete(dissolveMs);
   };
+  // Until the canvas has a frame of its own, the stage is the first frame's
+  // opaque veil. The overlay behind it is only 88 % opaque (it frosts the
+  // app on purpose once the veil thins), and an empty canvas let the blue
+  // app through: the worker's first paint comes ~0.1–0.2 s after the mount
+  // (owner 2026-09-25). The veil at playback 0 is this colour, fully opaque.
+  stage.style.background = dark ? "rgb(13, 17, 22)" : "rgb(255, 255, 255)";
   const markFirstFrame = (atEpochMs?: number): void => {
     if (firstFrame || disposed) return;
     firstFrame = true;
+    stage.style.background = "";
     events.onFirstFrame(atEpochMs);
   };
 

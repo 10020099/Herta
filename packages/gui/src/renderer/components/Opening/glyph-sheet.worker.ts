@@ -1,22 +1,27 @@
 import {
+  readCachedSheet,
+  sheetCacheKey,
+  writeCachedSheet,
+} from "./glyph-sheet-cache.js";
+import {
   layoutOpeningSheet,
   OPENING_SHEET_WIDTH,
   type OpeningSheet,
 } from "./glyph-sheet-layout.js";
 
 /**
- * The opening's glyph sheet, drawn on its own thread while the app boots
+ * The opening's glyph sheet, on its own thread while the app boots
  * (M-opening-4, 2026-09-25; before that this thread only measured the
  * glyphs to warm the text cache, M-opening-2).
  *
  * Every symbol at every size the draw loop can ask for, at the device's
- * pixel scale, in the ink: ~2.6k glyphs at a 1440-wide window. On a cold
- * start that took 0.3 s alone and ~0.55 s alongside the boot, much of it the
- * thread's own start-up (its fonts, its canvas), which is why `main.tsx`
- * starts it before the app's modules load; split across workers it barely
- * got faster. The canvas is a software one: the text is rasterized on this
- * thread, not in the GPU process the opening's frames queue for. The sheet
- * goes back as an ImageBitmap; the thread closes.
+ * pixel scale, in the ink: ~2.6k glyphs at a 1440-wide window. Drawing it
+ * took 0.3 s alone and ~0.55 s alongside a cold boot, much of it the thread's
+ * own start-up (its fonts, its canvas). So a drawn sheet is kept between
+ * launches (`glyph-sheet-cache.ts`, M-opening-5): a launch with the same
+ * window, display scale, theme and engine decodes the stored PNG instead.
+ * The canvas is a software one: the text is rasterized on this thread, not
+ * in the GPU process the opening's frames queue for.
  */
 
 /** What to draw. `sizes` are CSS px; `dpr` scales them to the device. */
@@ -28,8 +33,8 @@ export interface GlyphSheetRequest {
   readonly ink: string;
 }
 
-/** The drawn sheet, or `none` when there is none to draw (too large, or no
- *  2D context) — the opening then draws text, as before. */
+/** The sheet, or `none` when there is none to draw (too large, or no 2D
+ *  context) — the opening then draws text, as before. */
 export type GlyphSheetReply =
   | { readonly type: "sheet"; readonly sheet: OpeningSheet }
   | { readonly type: "none" };
@@ -38,11 +43,29 @@ function reply(message: GlyphSheetReply, transfer: Transferable[] = []): void {
   // The options form: this file is typed against the window's globals, and a
   // worker's postMessage takes `{ transfer }` just the same.
   postMessage(message, { transfer });
-  close();
 }
 
 addEventListener("message", (event: MessageEvent<GlyphSheetRequest>) => {
-  const { sizes, fontFamily, glyphs, dpr, ink } = event.data;
+  void makeSheet(event.data).finally(() => close());
+});
+
+async function makeSheet(request: GlyphSheetRequest): Promise<void> {
+  const { sizes, fontFamily, glyphs, dpr, ink } = request;
+  const key = sheetCacheKey(request, navigator.userAgent);
+  const cached = await readCachedSheet(key);
+  if (cached !== null) {
+    try {
+      const bitmap = await createImageBitmap(cached.png, {
+        premultiplyAlpha: "premultiply",
+      });
+      const sheet = { bitmap, dpr, ink, glyphs, entries: cached.entries };
+      reply({ type: "sheet", sheet }, [bitmap]);
+      return;
+    } catch {
+      // A stored PNG that no longer decodes: draw a new one.
+    }
+  }
+
   const layout = layoutOpeningSheet(sizes, dpr, glyphs.length);
   if (layout === null) {
     reply({ type: "none" });
@@ -67,6 +90,9 @@ addEventListener("message", (event: MessageEvent<GlyphSheetRequest>) => {
       ctx.fillText(glyphs[i] as string, x + entry.w / 2, y + entry.h / 2);
     }
   }
+  // The PNG is taken from the canvas as it stands, before the bitmap empties
+  // it; the opening gets its sheet first and the store happens after.
+  const png = canvas.convertToBlob({ type: "image/png" });
   const bitmap = canvas.transferToImageBitmap();
   reply(
     {
@@ -75,4 +101,9 @@ addEventListener("message", (event: MessageEvent<GlyphSheetRequest>) => {
     },
     [bitmap],
   );
-});
+  try {
+    await writeCachedSheet(key, { png: await png, entries: layout.entries });
+  } catch {
+    // Not kept: the next launch draws it again.
+  }
+}
