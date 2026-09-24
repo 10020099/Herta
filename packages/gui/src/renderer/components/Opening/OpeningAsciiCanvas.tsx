@@ -10,6 +10,7 @@ import {
   getStrength,
   getSymbolState,
   precomputeCellTimings,
+  quantizeGlyphSize,
   RENDER_OPTIONS,
   resolveLayerStyles,
   revealEnvelope,
@@ -175,10 +176,10 @@ export function OpeningAsciiCanvas(
       drawCtx.textBaseline = "middle";
 
       // Canvas state caches: `ctx.font =` re-parses a CSS font string on
-      // every assignment, and the loop used to build + assign it twice per
-      // cell. Quantizing the size to 0.1px (imperceptible; the one deliberate
-      // approximation of M-opening-1) makes consecutive same-layer cells
-      // share the string, so most assignments become no-op skips.
+      // every assignment, so an unchanged string is skipped. The size is
+      // quantized to GLYPH_SIZE_STEP_PX (the deliberate approximation of
+      // M-opening-1, coarsened by M-opening-2): the step bounds how many
+      // (symbol, size) pairs the text engine must rasterize.
       let lastFont = "";
       let lastFill = "";
 
@@ -218,7 +219,7 @@ export function OpeningAsciiCanvas(
           timings.phaseOffsets[i],
         );
 
-        const font = `${Math.round(fontSize * 10) / 10}px ${RENDER_OPTIONS.fontFamily}`;
+        const font = `${quantizeGlyphSize(fontSize)}px ${RENDER_OPTIONS.fontFamily}`;
         if (font !== lastFont) {
           drawCtx.font = font;
           lastFont = font;

@@ -202,6 +202,71 @@ export function fontSizeFromStrength(
   );
 }
 
+/**
+ * The glyph size step, in CSS px (M-opening-2, 2026-09-25). The text engine
+ * rasterizes and caches every distinct (symbol, size) pair the loop draws,
+ * and a new pair costs ~0.1 ms on the main thread. At the old 0.1px step a
+ * 1440×900 opening asks for ~12k pairs, and even its second loop cost 1.7×
+ * the 0.5px loop per frame; a cold start drew the hold at 5–12 fps. At 0.5px
+ * it asks for ~2.4k. A glyph's edges land within 1/8 px of where the exact
+ * size puts them.
+ */
+export const GLYPH_SIZE_STEP_PX = 0.5;
+
+export function quantizeGlyphSize(px: number): number {
+  return Math.round(px / GLYPH_SIZE_STEP_PX) * GLYPH_SIZE_STEP_PX;
+}
+
+/** The geometry every committed opening segment shares (a test holds each
+ *  asset to it): the glyph warm-up sizes its work from it before the picked
+ *  segment has loaded. */
+export const OPENING_SEGMENT_GEOMETRY = {
+  width: 1908,
+  height: 1080,
+  maxCellSize: 36,
+} as const;
+
+/** Every symbol the draw loop can pick. */
+export const OPENING_GLYPHS = RENDER_OPTIONS.charGroups
+  .map((group) => group.chars)
+  .join("");
+
+/**
+ * Every quantized size the draw loop can ask for in a `viewW`×`viewH` view:
+ * from a strength-0 glyph up to a full-strength glyph in the largest cell,
+ * across every layer style, in GLYPH_SIZE_STEP_PX steps. Each value is
+ * exactly what `quantizeGlyphSize` returns for a size in that range.
+ */
+export function openingGlyphSizes(
+  viewW: number,
+  viewH: number,
+  geometry: {
+    readonly width: number;
+    readonly height: number;
+    readonly maxCellSize: number;
+  } = OPENING_SEGMENT_GEOMETRY,
+): number[] {
+  const scale = Math.min(viewW / geometry.width, viewH / geometry.height);
+  let lo = Number.POSITIVE_INFINITY;
+  let hi = 0;
+  for (const style of Object.values(resolveLayerStyles())) {
+    lo = Math.min(
+      lo,
+      Math.max(style.minDrawFontSize, style.minFontSize * scale),
+    );
+    hi = Math.max(
+      hi,
+      fontSizeFromStrength(1, geometry.maxCellSize, style) * scale,
+    );
+  }
+  const sizes: number[] = [];
+  const last = Math.round(hi / GLYPH_SIZE_STEP_PX);
+  for (let k = Math.round(lo / GLYPH_SIZE_STEP_PX); k <= last; k += 1) {
+    sizes.push(k * GLYPH_SIZE_STEP_PX);
+  }
+  return sizes;
+}
+
 export function getFontSize(
   brightness: number,
   cellSize: number,

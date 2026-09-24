@@ -1,6 +1,6 @@
 import { act, render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { SegmentData } from "./ascii-renderer.js";
+import { GLYPH_SIZE_STEP_PX, type SegmentData } from "./ascii-renderer.js";
 import { OpeningAsciiCanvas } from "./OpeningAsciiCanvas.js";
 
 function stubSegment(): SegmentData {
@@ -40,6 +40,53 @@ describe("OpeningAsciiCanvas", () => {
       <OpeningAsciiCanvas data={stubSegment()} onComplete={() => {}} />,
     );
     expect(container.querySelector("canvas")).not.toBeNull();
+  });
+
+  it("draws every glyph at a GLYPH_SIZE_STEP_PX size (M-opening-2)", () => {
+    const fonts: string[] = [];
+    const ctx = {
+      setTransform: vi.fn(),
+      clearRect: vi.fn(),
+      fillRect: vi.fn(),
+      fillText: vi.fn(),
+      get font(): string {
+        return fonts.at(-1) ?? "";
+      },
+      set font(value: string) {
+        fonts.push(value);
+      },
+      fillStyle: "",
+      globalAlpha: 1,
+      textAlign: "",
+      textBaseline: "",
+    };
+    const getCtx = vi
+      .spyOn(HTMLCanvasElement.prototype, "getContext")
+      .mockReturnValue(ctx as unknown as CanvasRenderingContext2D);
+    let rafCbs: FrameRequestCallback[] = [];
+    const raf = vi
+      .spyOn(window, "requestAnimationFrame")
+      .mockImplementation((cb) => {
+        rafCbs.push(cb);
+        return rafCbs.length;
+      });
+    const pump = (t: number): void => {
+      const cbs = rafCbs;
+      rafCbs = [];
+      for (const cb of cbs) cb(t);
+    };
+    render(<OpeningAsciiCanvas data={stubSegment()} onComplete={() => {}} />);
+    // Reveal 0 on the first frame draws nothing; 40 ms later the dark cell is in.
+    act(() => pump(1000));
+    act(() => pump(1040));
+    expect(ctx.fillText).toHaveBeenCalled();
+    expect(fonts.length).toBeGreaterThan(0);
+    for (const font of fonts) {
+      const px = Number.parseFloat(font);
+      expect(px / GLYPH_SIZE_STEP_PX).toBe(Math.round(px / GLYPH_SIZE_STEP_PX));
+    }
+    getCtx.mockRestore();
+    raf.mockRestore();
   });
 
   it("completes INSTANTLY (0ms dissolve, no paint) when restored after the timeline expired while hidden (2026-07-14)", () => {

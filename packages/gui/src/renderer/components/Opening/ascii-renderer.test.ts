@@ -1,3 +1,6 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   alphaFromStrength,
@@ -7,14 +10,21 @@ import {
   DARK_FOREGROUND,
   decodeBase64ToBytes,
   fontSizeFromStrength,
+  GLYPH_SIZE_STEP_PX,
   getBaseAlpha,
   getFontSize,
   getInterpolatedBrightness,
   getStrength,
   getSymbolState,
+  OPENING_GLYPHS,
+  OPENING_SEGMENT_GEOMETRY,
+  openingGlyphSizes,
   precomputeCellTimings,
+  quantizeGlyphSize,
+  RENDER_OPTIONS,
   resolveLayerStyles,
   revealEnvelope,
+  type SegmentData,
   type SegmentLayer,
 } from "./ascii-renderer.js";
 
@@ -203,6 +213,79 @@ describe("ascii-renderer layer styles", () => {
     expect(styles.default?.inkOpacity).toBe(BASE_LAYER_STYLE.inkOpacity);
     expect(styles.default?.gamma).toBe(BASE_LAYER_STYLE.gamma);
     expect(styles.coarse?.inkOpacity).toBeCloseTo(0.48, 5);
+  });
+});
+
+describe("ascii-renderer glyph sizes (M-opening-2)", () => {
+  it("quantizeGlyphSize rounds to the nearest GLYPH_SIZE_STEP_PX", () => {
+    expect(GLYPH_SIZE_STEP_PX).toBe(0.5);
+    expect(quantizeGlyphSize(7.24)).toBe(7);
+    expect(quantizeGlyphSize(7.26)).toBe(7.5);
+    expect(quantizeGlyphSize(12.9)).toBe(13);
+  });
+
+  it("openingGlyphSizes lists every size the draw loop can ask for, at any window shape", () => {
+    // The draw loop's own arithmetic, swept over strength, cell size, reveal
+    // and every layer style: a size the warm-up missed would be paid for on
+    // the main thread in the middle of the reveal.
+    const missing: string[] = [];
+    for (const [w, h] of [
+      [1440, 900],
+      [1280, 720],
+      [2560, 1440],
+      [900, 1200],
+    ] as const) {
+      const sizes = new Set(openingGlyphSizes(w, h));
+      const scale = Math.min(
+        w / OPENING_SEGMENT_GEOMETRY.width,
+        h / OPENING_SEGMENT_GEOMETRY.height,
+      );
+      for (const style of Object.values(resolveLayerStyles())) {
+        for (
+          let cell = 1;
+          cell <= OPENING_SEGMENT_GEOMETRY.maxCellSize;
+          cell++
+        ) {
+          for (let i = 0; i <= 20; i += 1) {
+            for (const reveal of [0, 0.3, 1]) {
+              const px =
+                fontSizeFromStrength(i / 20, cell, style, reveal) * scale;
+              if (px < style.minDrawFontSize) continue;
+              if (!sizes.has(quantizeGlyphSize(px)))
+                missing.push(`${w}×${h} ${px}`);
+            }
+          }
+        }
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+
+  it("every committed opening segment has the geometry the warm-up sizes its work from", () => {
+    const dir = fileURLToPath(
+      new URL("../../assets/openings/", import.meta.url),
+    );
+    const files = readdirSync(dir).filter((f) => f.endsWith(".json"));
+    expect(files.length).toBeGreaterThan(0);
+    for (const file of files) {
+      const segment = JSON.parse(
+        readFileSync(join(dir, file), "utf8"),
+      ) as SegmentData;
+      expect([file, segment.width, segment.height]).toEqual([
+        file,
+        OPENING_SEGMENT_GEOMETRY.width,
+        OPENING_SEGMENT_GEOMETRY.height,
+      ]);
+      const largest = segment.cells.reduce((m, c) => Math.max(m, c[2]), 0);
+      expect(largest).toBeLessThanOrEqual(OPENING_SEGMENT_GEOMETRY.maxCellSize);
+    }
+  });
+
+  it("OPENING_GLYPHS holds every symbol of every group", () => {
+    for (const group of RENDER_OPTIONS.charGroups) {
+      for (const symbol of group.chars)
+        expect(OPENING_GLYPHS).toContain(symbol);
+    }
   });
 });
 
