@@ -164,6 +164,13 @@ const WindowIcon = (): JSX.Element => (
  * random listing): 通用 (how the app behaves) → 黑塔 (her voice and downtime)
  * → 引擎 (the model + coding backend). Every open lands on the first item of
  * the first group.
+ *
+ * `rows`: the pane's option rows scroll inside a fixed-height pane (its
+ * `.settings-rows` list; see `.settings-content.has-rows` in the CSS). Said
+ * here, not derived in CSS with `:has(> .settings-rows)`: that rule made
+ * every send in the conversation restyle ~400 elements, Settings closed and
+ * all — 10–28 ms at 4× CPU, just before the send's first frame (measured
+ * 2026-09-24). A test holds this flag to what each pane renders.
  */
 const GROUPS = [
   {
@@ -174,18 +181,21 @@ const GROUPS = [
         labelKey: "nav.language" satisfies MessageKey,
         Icon: LanguageIcon,
         Pane: LanguageSettings,
+        rows: false,
       },
       {
         key: "window",
         labelKey: "nav.window" satisfies MessageKey,
         Icon: WindowIcon,
         Pane: WindowSettings,
+        rows: false,
       },
       {
         key: "update",
         labelKey: "nav.update" satisfies MessageKey,
         Icon: UpdateIcon,
         Pane: UpdateSettings,
+        rows: false,
       },
     ],
   },
@@ -197,12 +207,14 @@ const GROUPS = [
         labelKey: "nav.voice" satisfies MessageKey,
         Icon: VolumeIcon,
         Pane: VoiceSettings,
+        rows: true,
       },
       {
         key: "dream",
         labelKey: "nav.dream" satisfies MessageKey,
         Icon: MoonIcon,
         Pane: DreamSettings,
+        rows: false,
       },
     ],
   },
@@ -214,12 +226,14 @@ const GROUPS = [
         labelKey: "nav.deepseek" satisfies MessageKey,
         Icon: DeepSeekIcon,
         Pane: DeepSeekSettings,
+        rows: false,
       },
       {
         key: "banzhuan",
         labelKey: "nav.coprocessor" satisfies MessageKey,
         Icon: ChipIcon,
         Pane: BanzhuanSettings,
+        rows: true,
       },
     ],
   },
@@ -414,7 +428,7 @@ export function SettingsModal({
             </Fragment>
           ))}
         </nav>
-        <div className="settings-content">
+        <div className={`settings-content${active.rows ? " has-rows" : ""}`}>
           <button
             type="button"
             className="settings-close"

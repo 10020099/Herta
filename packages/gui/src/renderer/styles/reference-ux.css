@@ -6885,8 +6885,12 @@ button.commit-view__path:hover {
    slim pill bar as the pane, never the OS bar. Flex items do not collapse
    margins, so the intro→rows gap is carried by the intro alone. On a
    short window the floor shrinks with the card and the rows give way
-   first, down to about one row; past that the pane itself scrolls. */
-.settings-content:has(> .settings-rows) {
+   first, down to about one row; past that the pane itself scrolls.
+   `.has-rows` is set by SettingsModal from the section's `rows` flag. It
+   was `:has(> .settings-rows)`, and that selector cost every send in the
+   conversation a ~400-element restyle while Settings was not even open
+   (10–28 ms at 4× CPU, 2026-09-24). */
+.settings-content.has-rows {
   display: flex;
   flex-direction: column;
   /* Floor AND ceiling: the pane is exactly the floor (its stretched height
@@ -6894,7 +6898,7 @@ button.commit-view__path:hover {
   min-height: min(630px, calc(100vh - 98px));
   max-height: min(630px, calc(100vh - 98px));
 }
-.settings-content:has(> .settings-rows) > * { flex: none; }
+.settings-content.has-rows > * { flex: none; }
 .settings-content > .settings-rows {
   flex: 0 1 auto;
   min-height: 84px;
