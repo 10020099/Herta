@@ -21,6 +21,7 @@ import type {
   SpeechControlEvent,
   StagedImageInfo,
 } from "../ipc/bridge-types.js";
+import { journeyMark, journeyMarkAfterPaint } from "../lib/journey.js";
 
 export type SessionStatus = "idle" | "thinking" | "speaking";
 
@@ -705,6 +706,8 @@ export class SessionStore {
       navBlock: null,
     });
     this.hertaLandedThisTurn = false;
+    // The open-session journey ends when this record is on screen.
+    journeyMarkAfterPaint("open-session:painted");
   }
 
   private onWorkspace(e: WorkspaceEvent): void {
@@ -997,6 +1000,9 @@ export class SessionStore {
         });
         return;
       }
+      // The reply's first glyph at the renderer's door: the send journey's
+      // split between everything upstream and the renderer's own share.
+      if (this.snapshot.streamingText === null) journeyMark("send:first-delta");
       this.emit({
         ...this.snapshot,
         streamingText: (this.snapshot.streamingText ?? "") + ev.text,

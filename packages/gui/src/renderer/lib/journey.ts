@@ -1,0 +1,86 @@
+/**
+ * Journey marks (2026-09-24): User Timing marks at the start and end of the
+ * four things a user waits on — launching the app, opening a session,
+ * sending a message (until it shows), and the reply's first glyph. Each
+ * journey starts at the user's action and ends once its result is PAINTED,
+ * so a measure is what the user felt, not when some code finished.
+ *
+ * Marks only: nothing is logged, sent or stored. A lab bench reads them over
+ * CDP (`scripts/ux-probes/journeys.mjs`) with
+ * `performance.getEntriesByType("mark")`; so can DevTools' Performance
+ * panel. Each name keeps only its latest mark, so a long session holds a
+ * few dozen entries, not one per turn.
+ *
+ * Method from the claude.ai speed-up (2026-09-23 post): define the journeys
+ * first, start them at an interaction, end them at the render, and keep the
+ * client's share apart from the server's — here `send:first-delta` (the
+ * first glyph arrived) splits the reply's wait at the renderer's door.
+ */
+
+export type JourneyMark =
+  /** React painted the app root (the splash overlay is up). */
+  | "launch:app-painted"
+  /** The opening's segment loaded and its first frame is on screen. */
+  | "launch:opening-painted"
+  /** The opening started fading and the workbench with it. */
+  | "launch:revealed"
+  /** The opening is gone: the connect screen takes input. */
+  | "launch:interactive"
+  /** A session row was clicked. */
+  | "open-session:start"
+  /** The opened session's record is on screen. */
+  | "open-session:painted"
+  /** A message was sent. */
+  | "send:start"
+  /** The sent message's echo is on screen. */
+  | "send:echo-painted"
+  /** The reply's first glyph reached the renderer. */
+  | "send:first-delta"
+  /** The reply's first glyph is on screen. */
+  | "send:first-painted";
+
+const PREFIX = "herta:";
+/** An occluded window gets no animation frames; past this, mark anyway. */
+const PAINT_WAIT_MAX_MS = 1000;
+
+function canMark(): boolean {
+  return (
+    typeof performance !== "undefined" &&
+    typeof performance.mark === "function" &&
+    typeof performance.clearMarks === "function"
+  );
+}
+
+/** Mark now. */
+export function journeyMark(name: JourneyMark): void {
+  if (!canMark()) return;
+  const full = PREFIX + name;
+  performance.clearMarks(full);
+  performance.mark(full);
+}
+
+/**
+ * Mark once the NEXT frame has painted: a task queued from inside an
+ * animation frame runs after that frame's paint. A window with no frames
+ * (occluded, minimized) would never paint, so a timer caps the wait and the
+ * mark says so (`detail.late`).
+ */
+export function journeyMarkAfterPaint(name: JourneyMark): void {
+  if (!canMark()) return;
+  let done = false;
+  const mark = (late: boolean): void => {
+    if (done) return;
+    done = true;
+    const full = PREFIX + name;
+    performance.clearMarks(full);
+    performance.mark(full, late ? { detail: { late: true } } : undefined);
+  };
+  const cap = setTimeout(() => mark(true), PAINT_WAIT_MAX_MS);
+  if (typeof requestAnimationFrame !== "function") return;
+  requestAnimationFrame(() => {
+    setTimeout(() => {
+      clearTimeout(cap);
+      mark(false);
+    }, 0);
+  });
+}

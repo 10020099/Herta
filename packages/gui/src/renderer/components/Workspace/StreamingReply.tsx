@@ -3,6 +3,7 @@ import {
   createIncrementalScrubber,
   type IncrementalScrubber,
 } from "../../lib/incremental-strip.js";
+import { journeyMarkAfterPaint } from "../../lib/journey.js";
 import { measureRevealSpan } from "../../lib/reveal-perf.js";
 import { publishRevealedSpeech } from "../../lib/reveal-source.js";
 import {
@@ -124,6 +125,19 @@ export function StreamingReply(props: StreamingReplyProps): JSX.Element | null {
     publishRevealedSpeech(revealed);
   }, [revealed]);
   useEffect(() => () => publishRevealedSpeech(null), []);
+
+  // The send journey ends at the reply's first VISIBLE glyph — after the
+  // in-flight row's hold and the reveal's pacing, which the store's
+  // `send:first-delta` does not see. Once per stream.
+  const firstShown = useRef(false);
+  const hasGlyph = revealed !== null && revealed.length > 0;
+  useEffect(() => {
+    if (props.streamingText === null) firstShown.current = false;
+    else if (hasGlyph && !firstShown.current) {
+      firstShown.current = true;
+      journeyMarkAfterPaint("send:first-painted");
+    }
+  }, [hasGlyph, props.streamingText]);
 
   // Live bubble STACK (slice 5): the revealed prefix re-segments per frame.
   // The reveal is an append-only prefix, so a `\n\n` boundary, once crossed,

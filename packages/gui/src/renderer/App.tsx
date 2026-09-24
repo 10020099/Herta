@@ -29,6 +29,7 @@ import { LocaleProvider, useT } from "./i18n/LocaleProvider.js";
 import { en } from "./i18n/messages/en.js";
 import { zh } from "./i18n/messages/zh.js";
 import type { HertaBridge, Locale } from "./ipc/bridge-types.js";
+import { journeyMarkAfterPaint } from "./lib/journey.js";
 import { initTheme } from "./lib/theme.js";
 import { ReferenceView } from "./ReferenceView.js";
 
@@ -254,6 +255,7 @@ export function App(props: AppProps = {}): JSX.Element {
   // overlay is already on screen when it goes.
   useEffect(() => {
     document.getElementById("boot-splash")?.remove();
+    journeyMarkAfterPaint("launch:app-painted");
   }, []);
 
   // Frameless-window drag strip (SPEC v0.3 §5.1.1). Full-width, sits
@@ -329,8 +331,14 @@ export function App(props: AppProps = {}): JSX.Element {
       </LocaleProvider>
       {!splashDone && (
         <OpeningAscii
-          onFadeStart={() => setSplashFading(true)}
-          onDone={() => setSplashDone(true)}
+          onFadeStart={() => {
+            setSplashFading(true);
+            journeyMarkAfterPaint("launch:revealed");
+          }}
+          onDone={() => {
+            setSplashDone(true);
+            journeyMarkAfterPaint("launch:interactive");
+          }}
         />
       )}
     </>

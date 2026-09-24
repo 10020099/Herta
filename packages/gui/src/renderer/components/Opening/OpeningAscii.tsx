@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { journeyMarkAfterPaint } from "../../lib/journey.js";
 import type { SegmentData } from "./ascii-renderer.js";
 import { OpeningAsciiCanvas } from "./OpeningAsciiCanvas.js";
 import { pickOpeningSegment } from "./pick-opening-segment.js";
@@ -46,7 +47,9 @@ export function OpeningAscii(props: OpeningAsciiProps): JSX.Element {
     const loader = props.loadSegment ?? pickOpeningSegment();
     loader()
       .then((seg) => {
-        if (!cancelled) setData(seg);
+        if (cancelled) return;
+        setData(seg);
+        journeyMarkAfterPaint("launch:opening-painted");
       })
       .catch(() => {
         if (!cancelled) onDoneRef.current();
