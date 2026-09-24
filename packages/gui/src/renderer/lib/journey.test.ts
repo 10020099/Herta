@@ -44,6 +44,25 @@ describe("journey marks", () => {
     expect(marks("send:echo-painted")).toHaveLength(1);
   });
 
+  it("after the frame, a user-blocking postTask runs the mark ahead of queued timers", () => {
+    const posted: Array<{ cb: () => void; priority: string }> = [];
+    vi.stubGlobal("scheduler", {
+      postTask: (cb: () => void, opts: { priority: string }) => {
+        posted.push({ cb, priority: opts.priority });
+        return Promise.resolve();
+      },
+    });
+    journeyMarkAfterPaint("send:echo-painted");
+    for (const f of frames.splice(0)) f();
+    expect(posted.map((p) => p.priority)).toEqual(["user-blocking"]);
+    expect(marks("send:echo-painted")).toHaveLength(0);
+    posted[0]?.cb();
+    expect(marks("send:echo-painted")).toHaveLength(1);
+    // No timer was queued for it, and the cap was cleared.
+    vi.advanceTimersByTime(2000);
+    expect(marks("send:echo-painted")).toHaveLength(1);
+  });
+
   it("an occluded window (no frames) still marks, flagged late", () => {
     journeyMarkAfterPaint("open-session:painted");
     vi.advanceTimersByTime(999);

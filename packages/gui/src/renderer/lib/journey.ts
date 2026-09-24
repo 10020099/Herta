@@ -59,6 +59,25 @@ export function journeyMark(name: JourneyMark): void {
   performance.mark(full);
 }
 
+interface PostTaskScheduler {
+  postTask: (cb: () => void, opts: { priority: string }) => Promise<unknown>;
+}
+
+/** Run `cb` as the next task, ahead of the ordinary ones already queued.
+ *  A plain timer waits behind all of them — React's scheduler work, a focus
+ *  change — and in the send's trace (2026-09-24, 4× CPU) that put the echo's
+ *  mark 47 ms after the frame that actually painted it. A `user-blocking`
+ *  postTask runs first; where the browser has none, the timer it replaced. */
+function nextTask(cb: () => void): void {
+  const s = (globalThis as { scheduler?: Partial<PostTaskScheduler> })
+    .scheduler;
+  if (typeof s?.postTask === "function") {
+    s.postTask(cb, { priority: "user-blocking" }).catch(() => undefined);
+  } else {
+    setTimeout(cb, 0);
+  }
+}
+
 /**
  * Mark once the NEXT frame has painted: a task queued from inside an
  * animation frame runs after that frame's paint. A window with no frames
@@ -78,9 +97,9 @@ export function journeyMarkAfterPaint(name: JourneyMark): void {
   const cap = setTimeout(() => mark(true), PAINT_WAIT_MAX_MS);
   if (typeof requestAnimationFrame !== "function") return;
   requestAnimationFrame(() => {
-    setTimeout(() => {
+    nextTask(() => {
       clearTimeout(cap);
       mark(false);
-    }, 0);
+    });
   });
 }
