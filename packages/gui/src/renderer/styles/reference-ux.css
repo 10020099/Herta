@@ -417,7 +417,14 @@ body:after{
   display:grid;
   grid-template-columns:276px 1fr;
   grid-template-rows: var(--topbar-h) 1fr;
+  /* clip, not hidden (owner 2026-09-24): the app frame must never scroll,
+     and `hidden` still makes it a scroll container that focus() and
+     scrollIntoView() may scroll. Focusing a row in the parked rail scrolled
+     the whole app 656px left mid-slide (FileViewerPanel's focus comment).
+     `clip` is no scroll container at all; `hidden` stays as the fallback for
+     an engine without it. */
   overflow:hidden;
+  overflow:clip;
   background:var(--shell);
   /* backdrop-filter REMOVED (perf 2026-07-13): replaced by the body:after
      pre-blurred gradient above — identical look over a static backdrop,
