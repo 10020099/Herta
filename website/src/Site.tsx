@@ -392,6 +392,10 @@ interface SiteCopy {
   readonly dreamCaption: string;
   readonly dreamAlt: string;
   readonly visionAlt: string;
+  /** Under each diagram on a narrow screen: the diagrams keep a legible
+   *  880-px width and scroll sideways inside their frame, which a phone
+   *  gives no sign of (2026-09-24). */
+  readonly diagramHint: string;
   readonly deskKicker: string;
   readonly deskH2: string;
   readonly deskLead: string;
@@ -442,7 +446,7 @@ const ZH: SiteCopy = {
   ctaDl: "下载桌面版",
   ctaGh: "GitHub",
   tryHint: "接入空间站，跟她说句话试试。",
-  demoPosterNote: "可交互演示需要在桌面浏览器中打开。下图是她工作时的界面。",
+  demoPosterNote: "可交互演示请用桌面浏览器打开。下图是她工作时的界面。",
   whyKicker: "为什么 · why a self",
   whyH2: "扮演与自我。",
   whyLead:
@@ -486,14 +490,14 @@ const ZH: SiteCopy = {
         "又反过来塑造自我。",
       impl:
         "入梦时，每个候选片段先判断值不值得记；写下来之后，再评审读起来像不像她。不像她的，不会写入。" +
-        "收录时还会估计这段经历的情绪强度：越强烈的记忆，起点越牢，留得越久。",
+        "收录时还会估计这段经历的情绪强度：越强烈的记忆，初始强度越高，保留得越久。",
     },
     {
       title: "遗忘是记忆的功能",
       sub: "forgetting is functional",
       body: "遗忘是记忆整理自己的方式：常用的留在手边，不常用的逐渐退后，重要的东西因此更容易找到。",
       impl:
-        "她的记忆会随时间变淡。某段记忆被再次提起，或者她又用上了其中的说法，这段记忆就会变牢。" +
+        "她的记忆会随时间变淡。某段记忆被再次提起，或者她又用上了其中的说法，这段记忆就会得到巩固。" +
         "淡到一定程度的记忆会被遗忘；记忆写满时，同类记忆中最淡的一条先让位。",
     },
     {
@@ -524,12 +528,13 @@ const ZH: SiteCopy = {
     "入梦默认关闭，可在设置中开启；它会消耗你的 DeepSeek API 额度。开启后，你离开期间，" +
     "她会回顾已经结束的会话。值得记住的片段要通过几道检查：值不值得记、写下来像不像她、" +
     "是否与已有的记忆重复。通过的片段写进她的记忆，之后的每次对话都会带着。" +
-    "记忆随时间变淡，被再次提起时变牢；淡去的记忆被遗忘时，其中关于你的认识会写进她的自传。" +
+    "记忆随时间变淡，被再次提起时得到巩固；淡去的记忆被遗忘时，其中关于你的认识会写进她的自传。" +
     "重新打开一段她回顾过的会话时，只要会话原文还完整地在她的上下文里，相关的记忆就先收起不用。",
   dreamAlt:
     "入梦循环：离开时触发，经过几道检查，写入记忆与自传，之后的对话随身携带",
   visionAlt:
     "她的自传分为身份、记忆、世界、当下四部分，在三种时间尺度上被持续续写",
+  diagramHint: "← 左右滑动查看完整图示 →",
   deskKicker: "终端 · the live terminal",
   deskH2: "动态终端。",
   deskLead: "差分协处理器 PBR 动态渲染，Git 仓库适配，本地/云端实时语音。",
@@ -594,12 +599,11 @@ const ZH: SiteCopy = {
         "相似的新经历唤起一段记忆时，原记忆会被加强；如果与新经历合并后的版本读起来更像她，" +
         "就替换原来那条。记忆因衰减或容量被遗忘时，文件归档而不删除，其中关于你的认识" +
         "整理进一页认识页。这一页有篇幅上限，每次整页重写，不随时间衰减，所以每次入梦都会用" +
-        "最牢的几段记忆校对它，只修改被明确推翻的句子。",
+        "最稳固的几段记忆校对它，只修改被明确推翻的句子。",
     },
   ],
   dlH2: "装到你的桌面",
-  dlBody:
-    "提供 Windows 与 macOS 安装包。安装后填入 DeepSeek API 密钥即可使用。",
+  dlBody: "提供 Windows 与 macOS 安装包，填入 DeepSeek API 密钥即可使用。",
   dlBtnWin: "Windows 版",
   dlBtnMac: "macOS 版",
   dlGh: "源码 · GitHub",
@@ -613,7 +617,7 @@ const ZH: SiteCopy = {
   // (2026-09-24).
   dlFine:
     "Windows 10/11 x64 · macOS 12+ · 对话只发送给 DeepSeek API（开启云端语音时，她的台词另发送给 MiniMax）；密钥加密保存在本机",
-  footer: "· 本页演示运行的就是应用本身的界面代码。",
+  footer: "本页演示运行的就是应用本身的界面代码。",
   fanNotice:
     "黑塔是《崩坏：星穹铁道》的角色，版权归米哈游所有。本项目为非官方同人作品，与米哈游无关，亦未获其认可。",
   skipDemo: "跳过演示，继续阅读",
@@ -753,6 +757,7 @@ const EN: SiteCopy = {
     "The dream cycle: triggered while you are away, several checks, written into her memory and autobiography, carried into later conversations",
   visionAlt:
     "Her autobiography in four parts, identity, memory, world and present, written on continuously at three timescales",
+  diagramHint: "← swipe sideways to see the whole diagram →",
   deskKicker: "the terminal · 终端",
   deskH2: "A live terminal.",
   deskLead:
@@ -834,7 +839,7 @@ const EN: SiteCopy = {
   ],
   dlH2: "On your desktop",
   dlBody:
-    "Installers for Windows and macOS. Add a DeepSeek API key after installing, and she is ready.",
+    "Installers for Windows and macOS. Add a DeepSeek API key, and she is ready.",
   dlBtnWin: "For Windows",
   dlBtnMac: "For macOS",
   dlGh: "Source · GitHub",
@@ -844,7 +849,7 @@ const EN: SiteCopy = {
   // See the zh note above — "fully local" was false; turns go to DeepSeek.
   dlFine:
     "Windows 10/11 x64 · macOS 12+ · your conversation goes only to the DeepSeek API (with cloud voice on, her lines also go to MiniMax) · your key is encrypted on your machine",
-  footer: "· the demo on this page runs the app's own interface code.",
+  footer: "the demo on this page runs the app's own interface code.",
   fanNotice:
     "Herta is a character from Honkai: Star Rail, © HoYoverse. Unofficial fan project, unaffiliated with and not endorsed by HoYoverse.",
   skipDemo: "Skip the demo",
@@ -1035,6 +1040,9 @@ export function Site(): JSX.Element {
               alt={t.visionAlt}
             />
           </figure>
+          <p className="diagram-hint" aria-hidden="true">
+            {t.diagramHint}
+          </p>
         </div>
       </section>
 
@@ -1080,6 +1088,9 @@ export function Site(): JSX.Element {
                 alt={t.turnAlt}
               />
             </figure>
+            <p className="diagram-hint" aria-hidden="true">
+              {t.diagramHint}
+            </p>
           </div>
           <div className="mech-block reveal">
             <h3 className="mech-title">
@@ -1093,6 +1104,9 @@ export function Site(): JSX.Element {
                 alt={t.dreamAlt}
               />
             </figure>
+            <p className="diagram-hint" aria-hidden="true">
+              {t.diagramHint}
+            </p>
           </div>
         </div>
       </section>
@@ -1199,8 +1213,12 @@ export function Site(): JSX.Element {
             © 2026 PersonaCLI ·{" "}
             <a href={REPO_URL} target="_blank" rel="noreferrer">
               Herta
-            </a>{" "}
-            {t.footer}
+            </a>
+            {/* No-break before the dot: it stays at the end of the first line. */}
+            {" · "}
+            {/* One unit: on a phone it moves to its own line whole instead
+                of breaking mid-word (本页演|示) under the balanced wrap. */}
+            <span className="site-footer__note">{t.footer}</span>
           </p>
           <p className="site-footer__fan">{t.fanNotice}</p>
         </div>
