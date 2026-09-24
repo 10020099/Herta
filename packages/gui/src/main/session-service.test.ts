@@ -31,7 +31,6 @@ import {
   startForwarders,
 } from "./session-service.js";
 
-
 describe("legacy MCP migration", () => {
   it("offers only a pending legacy file, copies it without removing the source, and honors the one-time decision", async () => {
     const root = mkdtempSync(join(tmpdir(), "herta-mcp-migration-"));

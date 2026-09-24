@@ -1,4 +1,4 @@
-import { constants as fsConstants, existsSync } from "node:fs";
+import { existsSync, constants as fsConstants } from "node:fs";
 import { copyFile, mkdir, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
@@ -7,10 +7,10 @@ import {
   type AppServerConfig,
   createSessionHost,
   defaultDirsFor,
-  type LogQuery,
-  recordTail,
   globalMcpConfigPath,
+  type LogQuery,
   type ProviderType,
+  recordTail,
   type Session,
   type SessionHost,
   type SessionMetadata,
@@ -56,7 +56,6 @@ import {
   isBackendContract,
   isBackendThinking,
   isCompactionLevel,
-  isModelChoice,
   normalizeModelChoice,
   readAppSettings,
 } from "./app-settings.js";

@@ -12,9 +12,11 @@
  * (getters and setters over the service's own variables, so the flags the
  * synthesizer reads at every stream's start stay the service's).
  */
+
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { ProviderType, SessionHost } from "@herta/app-server";
 import {
-  globalMcpConfigPath,
   isProjectRuleFileName,
   listProjectRuleFiles,
   loadGlobalMcpConfig,
@@ -27,8 +29,6 @@ import {
 import { validateDeepSeekKey } from "@herta/providers";
 import { findBash } from "@herta/tools";
 import { app, type ipcMain } from "electron";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { CMD } from "../preload/channels.js";
 import type {
   InteractionLanguageChoice,
@@ -266,11 +266,10 @@ export function registerSettingsHandlers(deps: SettingsIpcDeps): void {
     deps.host()?.activeSession?.backendWorkspace ?? workspaceRoot();
   handle(
     CMD.getMcpConfig,
-    async (
-      _e,
-      scope: "global" | "project" = "project",
-    ): Promise<McpConfig> =>
-      scope === "global" ? loadGlobalMcpConfig() : loadMcpConfig(mcpWorkspace()),
+    async (_e, scope: "global" | "project" = "project"): Promise<McpConfig> =>
+      scope === "global"
+        ? loadGlobalMcpConfig()
+        : loadMcpConfig(mcpWorkspace()),
   );
   handle(
     CMD.setMcpConfig,

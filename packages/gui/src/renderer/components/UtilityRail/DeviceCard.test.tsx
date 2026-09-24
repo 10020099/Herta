@@ -242,7 +242,7 @@ describe("DeviceCard", () => {
       removeCommandRule: _b,
       ...rest
     } = mock.bridge;
-    const { container } = renderWithLocale(
+    renderWithLocale(
       <HertaBridgeProvider bridge={rest as typeof mock.bridge}>
         <DeviceCard />
       </HertaBridgeProvider>,
@@ -507,7 +507,7 @@ describe("DeviceCard", () => {
       setWorkspaceTrust: _b,
       ...rest
     } = mock.bridge;
-    const { container } = renderWithLocale(
+    renderWithLocale(
       <HertaBridgeProvider bridge={rest as typeof mock.bridge}>
         <DeviceCard />
       </HertaBridgeProvider>,

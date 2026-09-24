@@ -904,42 +904,42 @@ export function Composer(): JSX.Element {
               inside it is not, which no layout measurement can see. Shifting
               the window by that offset lands ink centre on box centre without
               touching the scale. */}
-          <svg viewBox="0.32 0.83 14 14" aria-hidden="true" focusable="false">
-            <path d="M9.5 4.2 5.3 8.4a1.6 1.6 0 0 0 2.3 2.3l4.2-4.2a3 3 0 0 0-4.2-4.2L3.2 6.6a4.3 4.3 0 0 0 6.1 6.1l3.4-3.4" />
-          </svg>
-        </button>
-      </Tooltip>
-      <ContextIndicator
-        sessionId={sessionId}
-        busy={busy}
-        onQueued={(notice) => sessionStore.setComposerNotice(notice)}
-      />
-      <button
-        ref={sendButtonRef}
-        type={busy ? "button" : "submit"}
-        className={`composer-send${busy ? " is-stop" : ""}`}
-        aria-label={busy ? t("composer.stop") : t("composer.send")}
-        disabled={!busy && text.trim().length === 0}
-        onClick={
-          busy
-            ? () => {
-                // Cut any in-flight voice ON the click, not via the turn
-                // lifecycle: the opening's interrupt-as-SKIP finishes the
-                // turn normally (`finished`, no `failed`), so useVoiceCues'
-                // failed-cut never fires and the opening clip talked through
-                // the skip (user 2026-07-13). The stop click IS the intent —
-                // silence immediately, then abort the turn.
-                stopAllVoice();
-                stopRequested.current = true;
-                void bridge.interrupt();
-              }
-            : undefined
-        }
-      >
-        <span
-          className="composer-send__glyph composer-send__glyph--send"
-          aria-hidden="true"
+            <svg viewBox="0.32 0.83 14 14" aria-hidden="true" focusable="false">
+              <path d="M9.5 4.2 5.3 8.4a1.6 1.6 0 0 0 2.3 2.3l4.2-4.2a3 3 0 0 0-4.2-4.2L3.2 6.6a4.3 4.3 0 0 0 6.1 6.1l3.4-3.4" />
+            </svg>
+          </button>
+        </Tooltip>
+        <ContextIndicator
+          sessionId={sessionId}
+          busy={busy}
+          onQueued={(notice) => sessionStore.setComposerNotice(notice)}
+        />
+        <button
+          ref={sendButtonRef}
+          type={busy ? "button" : "submit"}
+          className={`composer-send${busy ? " is-stop" : ""}`}
+          aria-label={busy ? t("composer.stop") : t("composer.send")}
+          disabled={!busy && text.trim().length === 0}
+          onClick={
+            busy
+              ? () => {
+                  // Cut any in-flight voice ON the click, not via the turn
+                  // lifecycle: the opening's interrupt-as-SKIP finishes the
+                  // turn normally (`finished`, no `failed`), so useVoiceCues'
+                  // failed-cut never fires and the opening clip talked through
+                  // the skip (user 2026-07-13). The stop click IS the intent —
+                  // silence immediately, then abort the turn.
+                  stopAllVoice();
+                  stopRequested.current = true;
+                  void bridge.interrupt();
+                }
+              : undefined
+          }
         >
+          <span
+            className="composer-send__glyph composer-send__glyph--send"
+            aria-hidden="true"
+          >
             <SendArrowIcon />
           </span>
           <span

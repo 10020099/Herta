@@ -69,18 +69,12 @@ import {
 } from "./repo-watch.js";
 import { SessionAttachments } from "./session-attachments.js";
 import { SessionEventProjector } from "./session-event-projector.js";
-import {
-  createTitleProvider,
-  loadSessionTitleState,
-  SessionTitler,
-} from "./session-titler.js";
+import { loadSessionTitleState, SessionTitler } from "./session-titler.js";
 import { loadSessionVoice, type SessionVoice } from "./session-voice.js";
 import {
   type BackendStack,
   createActorStack,
-  createBackendProvider,
   createBackendStack,
-  defaultDigestModel,
   digestModelFrom,
   prepareBackendStack,
 } from "./session-wiring.js";

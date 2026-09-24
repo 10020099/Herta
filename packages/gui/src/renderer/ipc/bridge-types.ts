@@ -1,10 +1,10 @@
 import type {
   ApprovalOverlayState,
   ApprovalResult,
-  ContextCompactionRequestResult,
-  ContextUsage,
   BranchList,
   CommitDescription,
+  ContextCompactionRequestResult,
+  ContextUsage,
   CreateSessionOpts,
   LogPage,
   LogQuery,
