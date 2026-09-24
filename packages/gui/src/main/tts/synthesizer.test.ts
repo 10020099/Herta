@@ -153,6 +153,65 @@ describe("createTtsSynthesizer", () => {
     expect(noBundle.status().modelRoot).toBeNull();
   });
 
+  // ── The launch probe off the main thread (2026-09-24) ────────────────────
+
+  it("probeInBackground: unavailable until the probe answers, then available — the same root the sync probe picks", async () => {
+    const downloaded = join(tmp(), "absent-yet");
+    const dev = makeBundle(tmp());
+    const synth = createTtsSynthesizer({
+      modelRoots: [downloaded, dev],
+      workerPath: "/fake/w.cjs",
+      sherpaPath: "/fake/s.js",
+      enabled: () => true,
+      log: () => undefined,
+      probeInBackground: true,
+    });
+    // Constructed without touching the disk on this thread.
+    expect(synth.available()).toBe(false);
+    expect(synth.status().bundle).toBe(false);
+    await vi.waitFor(() => expect(synth.available()).toBe(true));
+    expect(synth.status().modelRoot).toBe(dev);
+  });
+
+  it("probeInBackground: a refreshBundle during the probe wins over the probe's late answer", async () => {
+    const root = join(tmp(), "store", "herta-best-e72");
+    const logs: string[] = [];
+    const synth = createTtsSynthesizer({
+      modelRoots: [root],
+      workerPath: "/fake/w.cjs",
+      sherpaPath: "/fake/s.js",
+      enabled: () => true,
+      log: (l) => logs.push(l),
+      probeInBackground: true,
+    });
+    // The background probe started on an empty store; the download lands
+    // and refreshes before that probe answers.
+    makeBundle(root);
+    expect(synth.refreshBundle()).toBe(true);
+    // Let the stale "no bundle" answer arrive — it must not undo the refresh.
+    await new Promise((r) => setTimeout(r, 150));
+    expect(synth.available()).toBe(true);
+    expect(synth.status().modelRoot).toBe(root);
+    expect(logs.some((l) => l.includes("no model bundle"))).toBe(false);
+  });
+
+  it("probeInBackground: a missing bundle reads unavailable and is logged once the probe answers", async () => {
+    const logs: string[] = [];
+    const synth = createTtsSynthesizer({
+      modelRoots: [join(tmp(), "absent")],
+      workerPath: "/fake/w.cjs",
+      sherpaPath: "/fake/s.js",
+      enabled: () => true,
+      log: (l) => logs.push(l),
+      probeInBackground: true,
+    });
+    await vi.waitFor(() =>
+      expect(logs.some((l) => l.includes("no model bundle"))).toBe(true),
+    );
+    expect(synth.available()).toBe(false);
+    expect(synth.status().modelRoot).toBeNull();
+  });
+
   // ── The bundle as a download (ADR 0061) ──────────────────────────────────
 
   it("the first COMPLETE root wins: a downloaded copy shadows the dev workspace's", () => {

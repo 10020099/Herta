@@ -3,6 +3,7 @@ import { deviceSceneAssetUrl } from "../../../../shared/device-scene.js";
 import type { BanzhuanDeviceState } from "../../../hooks/useDeviceState.js";
 import { useReducedMotion } from "../../../hooks/useReducedMotion.js";
 import type { ResolvedTheme } from "../../../hooks/useResolvedTheme.js";
+import { afterLaunch } from "../../../lib/launch-gate.js";
 import { detectDeviceSceneBackend } from "./capability.js";
 import type { DeviceSceneHandle, DeviceSceneInputs } from "./scene.js";
 import {
@@ -157,7 +158,7 @@ function DeviceSceneBuild(
     // The build's own abort (ADR 0057 §6.5): before this, an unmount
     // mid-build had nothing to dispose and the build ran to completion.
     const abort = new AbortController();
-    void (async () => {
+    const build = async (): Promise<void> => {
       const backend = await detectDeviceSceneBackend();
       if (cancelled) return;
       if (backend === null) {
@@ -206,10 +207,19 @@ function DeviceSceneBuild(
       canvas.dataset.liveMs = performance.now().toFixed(0);
       onLive.current(true);
       setIsLive(true);
-    })().catch(() => {
-      if (!cancelled) onLive.current(false);
+    };
+    // After the opening (the launch gate): the build's asynchronous compile
+    // held the GPU process ~0.2 s, and once the opening drew on its worker
+    // that time came out of the dissolve's frames (17 → 12 fps, M-opening-3).
+    // The scene goes live seconds after the splash lifts either way: its
+    // first frame waits for a quiet main thread.
+    const cancelGate = afterLaunch("settled", () => {
+      build().catch(() => {
+        if (!cancelled) onLive.current(false);
+      });
     });
     return () => {
+      cancelGate();
       cancelled = true;
       abort.abort();
       setIsLive(false);

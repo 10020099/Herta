@@ -698,78 +698,15 @@ void app
         Menu.setApplicationMenu(Menu.buildFromTemplate(template));
       }
     }
-    createWindow();
-    // Auto-update: created after the window so state pushes have a target.
-    // The electron-updater import is deferred to here (require-time) so a dev
-    // run without the packaged app-update.yml never touches it unless the
-    // dry-run override is set.
-    {
-      // Dev-only (audit 2026-07-13 T1.3): the override is a private-repo
-      // dry-run lever. Honoring it in a PACKAGED build let anyone who could
-      // set an env var for the launch (malicious shortcut, local process)
-      // point the feed anywhere — and the override also disables the
-      // update-service dev gate, so autoInstallOnAppQuit would run whatever
-      // that feed served.
-      const feedOverride = app.isPackaged
-        ? undefined
-        : process.env.HERTA_UPDATE_URL;
-      // Lazy import keeps electron-updater out of the dev startup path.
-      void import("electron-updater")
-        .then(async ({ default: pkg }) => {
-          const { autoUpdater } = pkg;
-          // The persisted Settings → Update toggle seeds the automatic cycle
-          // (default on); later changes live-apply via onAutoUpdateChanged.
-          const settings = await readGlobalSettings(app.getPath("userData"));
-          updateService = createUpdateService({
-            updater: autoUpdater,
-            isPackaged: app.isPackaged,
-            autoEnabled: settings.autoUpdate ?? true,
-            ...(feedOverride !== undefined && feedOverride !== ""
-              ? { feedUrlOverride: feedOverride }
-              : {}),
-            send: (state) => {
-              const win = mainWindow;
-              if (win !== null && !win.isDestroyed()) {
-                win.webContents.send(EVT.update, state);
-              }
-            },
-            // macOS closes the windows BEFORE before-quit on this path, so
-            // the close-to-tray guard must already know a quit is under way
-            // or it hides the window and the restart never happens.
-            beforeQuitAndInstall: () => {
-              quitRequested = true;
-            },
-            // electron-updater updates a Linux build only as an AppImage
-            // (APPIMAGE set by its runtime); elsewhere every check resolves
-            // to nothing, and the pane should say so (2026-09-23).
-            unsupported:
-              process.platform === "linux" &&
-              process.env.APPIMAGE === undefined,
-          });
-          registerUpdateHandlers();
-          updateService.start();
-        })
-        .catch((err) => {
-          // A failed import/bootstrap must not become an unhandledRejection —
-          // the app just runs without auto-update (manual checks report idle).
-          console.error("[herta] update service bootstrap failed:", err);
-        });
-    }
-    tray = createAppTray({
-      listSessions: () => mainService?.listSessions() ?? [],
-      openSession: async (id) => {
-        await mainService?.openSessionFromMain(id);
-      },
-      newChat: async () => {
-        await mainService?.createSessionFromMain();
-      },
-      showWindow: showMainWindow,
-      requestExit,
-      getLocale: async () => {
-        const s = await readGlobalSettings(app.getPath("userData"));
-        return resolveInitialLocale(s, osLocale(process.platform, app));
-      },
-    });
+    const firstWindow = createWindow();
+    // The auto-updater and the tray wait for the renderer's first load
+    // (cold-start trace, 2026-09-24): run right after createWindow they held
+    // this thread ~100 ms — the electron-updater chunk's compile and require
+    // chain, the tray bitmap — exactly while the page was navigating, and
+    // every request the page makes waits on this thread's header callback
+    // (the CSP hook above). Neither is needed before the window has
+    // content; a renderer that never loads still gets them on the timer.
+    runAfterFirstLoad(firstWindow, startBackgroundServices);
     app.on("activate", () => {
       // macOS dock click: recreate if gone, otherwise surface the (possibly
       // hidden-to-tray) existing window.
@@ -792,6 +729,101 @@ void app
     }
     app.exit(1);
   });
+
+/** After the window's first page load has finished and the renderer's own
+ *  opening IPC has been answered — or, if that never happens, after a
+ *  fallback — run `fn` once. */
+function runAfterFirstLoad(win: BrowserWindow, fn: () => void): void {
+  let ran = false;
+  const run = (): void => {
+    if (ran) return;
+    ran = true;
+    clearTimeout(fallback);
+    fn();
+  };
+  const fallback = setTimeout(run, BACKGROUND_SERVICES_FALLBACK_MS);
+  win.webContents.once("did-finish-load", () => {
+    setTimeout(run, BACKGROUND_SERVICES_AFTER_LOAD_MS);
+  });
+}
+/** The renderer's first IPC burst (locale, theme, the session list) lands
+ *  right after its load event; let it be answered first. */
+const BACKGROUND_SERVICES_AFTER_LOAD_MS = 300;
+const BACKGROUND_SERVICES_FALLBACK_MS = 5000;
+
+/** The auto-updater and the tray (see the call site for why they wait). */
+function startBackgroundServices(): void {
+  // Auto-update: created after the window so state pushes have a target.
+  // The electron-updater import is deferred to here (require-time) so a dev
+  // run without the packaged app-update.yml never touches it unless the
+  // dry-run override is set.
+  {
+    // Dev-only (audit 2026-07-13 T1.3): the override is a private-repo
+    // dry-run lever. Honoring it in a PACKAGED build let anyone who could
+    // set an env var for the launch (malicious shortcut, local process)
+    // point the feed anywhere — and the override also disables the
+    // update-service dev gate, so autoInstallOnAppQuit would run whatever
+    // that feed served.
+    const feedOverride = app.isPackaged
+      ? undefined
+      : process.env.HERTA_UPDATE_URL;
+    // Lazy import keeps electron-updater out of the dev startup path.
+    void import("electron-updater")
+      .then(async ({ default: pkg }) => {
+        const { autoUpdater } = pkg;
+        // The persisted Settings → Update toggle seeds the automatic cycle
+        // (default on); later changes live-apply via onAutoUpdateChanged.
+        const settings = await readGlobalSettings(app.getPath("userData"));
+        updateService = createUpdateService({
+          updater: autoUpdater,
+          isPackaged: app.isPackaged,
+          autoEnabled: settings.autoUpdate ?? true,
+          ...(feedOverride !== undefined && feedOverride !== ""
+            ? { feedUrlOverride: feedOverride }
+            : {}),
+          send: (state) => {
+            const win = mainWindow;
+            if (win !== null && !win.isDestroyed()) {
+              win.webContents.send(EVT.update, state);
+            }
+          },
+          // macOS closes the windows BEFORE before-quit on this path, so
+          // the close-to-tray guard must already know a quit is under way
+          // or it hides the window and the restart never happens.
+          beforeQuitAndInstall: () => {
+            quitRequested = true;
+          },
+          // electron-updater updates a Linux build only as an AppImage
+          // (APPIMAGE set by its runtime); elsewhere every check resolves
+          // to nothing, and the pane should say so (2026-09-23).
+          unsupported:
+            process.platform === "linux" && process.env.APPIMAGE === undefined,
+        });
+        registerUpdateHandlers();
+        updateService.start();
+      })
+      .catch((err) => {
+        // A failed import/bootstrap must not become an unhandledRejection —
+        // the app just runs without auto-update (manual checks report idle).
+        console.error("[herta] update service bootstrap failed:", err);
+      });
+  }
+  tray = createAppTray({
+    listSessions: () => mainService?.listSessions() ?? [],
+    openSession: async (id) => {
+      await mainService?.openSessionFromMain(id);
+    },
+    newChat: async () => {
+      await mainService?.createSessionFromMain();
+    },
+    showWindow: showMainWindow,
+    requestExit,
+    getLocale: async () => {
+      const s = await readGlobalSettings(app.getPath("userData"));
+      return resolveInitialLocale(s, osLocale(process.platform, app));
+    },
+  });
+}
 
 app.on("window-all-closed", () => {
   // A macOS app stays in the Dock with no window — unless a quit closed it

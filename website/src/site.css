@@ -111,6 +111,27 @@ html {
   margin: 0 auto;
   padding: 0 28px;
 }
+/* Line ends (2026-09-24, owner: the mobile page). Chinese breaks between any
+   two characters, so a paragraph could close on a lone 「用。」 or 「作。」 on a
+   phone. `pretty` keeps body copy from ending on a stray glyph; the short,
+   centred lines — headings, leads, captions, the download card — are
+   `balance`d instead. Both are progressive: an engine without them wraps as
+   it always did. */
+.site p,
+.site figcaption {
+  text-wrap: pretty;
+}
+.site h1,
+.site h2,
+.site h3,
+.site .section-lead,
+.site .sub,
+.site .try-hint,
+.site .demo-poster figcaption,
+.site .download-card p,
+.site .site-footer p {
+  text-wrap: balance;
+}
 
 /* ── nav ───────────────────────────────────────────────────────────── */
 .site-nav {
@@ -164,6 +185,7 @@ html {
   font-size: 13.5px;
   color: var(--site-muted);
   text-decoration: none;
+  white-space: nowrap;
 }
 .site-nav a.nav-link:hover {
   color: var(--site-ink);
@@ -206,15 +228,25 @@ html {
 .site-nav a.nav-gh:hover {
   background: var(--site-chip-hover);
 }
-/* Phones: section links go away (the page is one scroll anyway) — wordmark,
-   language toggle, and GitHub stay. CJK labels must never wrap into
-   vertical character stacks. */
+/* Narrow screens: section links go away (the page is one scroll anyway) —
+   wordmark, language toggle, and GitHub stay. CJK labels must never wrap
+   into vertical character stacks. The whole row needs 957px in EN and 763px
+   in zh (measured 2026-09-24, fonts loaded); the links used to hide only
+   below 720px, so a 768px tablet in EN wrapped them and pushed GitHub off
+   the page. Each language drops them before its row runs out of room. */
+@media (max-width: 1000px) {
+  :root:lang(en) .site-nav a.nav-link {
+    display: none;
+  }
+}
+@media (max-width: 800px) {
+  .site-nav a.nav-link {
+    display: none;
+  }
+}
 @media (max-width: 720px) {
   .site-nav .site-inner {
     gap: 12px;
-  }
-  .site-nav a.nav-link {
-    display: none;
   }
   .site-nav a.nav-gh,
   .site-nav .nav-lang {
@@ -408,7 +440,10 @@ html {
 .download-card p {
   color: #aab2bf;
   font-size: 14.5px;
-  max-width: 56ch;
+  /* Wide enough that the zh line (with Linux added on release day) holds one
+     line on a desktop; below that, balanced lines (the text-wrap rule at the
+     top) rather than a lone 「用。」. 56ch wrapped it (owner, 2026-09-24). */
+  max-width: 66ch;
   margin: 0 auto 28px;
   line-height: 1.7;
 }
@@ -579,6 +614,21 @@ html {
   width: 100%;
   height: auto;
 }
+/* The 880-px floor above keeps the diagrams' labels legible, so below it the
+   frame scrolls sideways — which a phone gives no sign of (2026-09-24). The
+   hint shows only where the frame is narrower than its diagram. */
+.diagram-hint {
+  display: none;
+}
+@media (max-width: 960px) {
+  .diagram-hint {
+    display: block;
+    margin: 10px 0 0;
+    font-size: 12px;
+    text-align: center;
+    color: var(--site-muted); /* already the AA floor here — never fade it */
+  }
+}
 
 /* ── mechanism blocks ──────────────────────────────────────────────── */
 .mech-block {
@@ -610,7 +660,15 @@ html {
 }
 
 .feature-grid--two {
-  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  /* The four technical notes as 2 × 2. `auto-fit` with a 340-px floor fitted
+     THREE across the 1160-px page and left the fourth alone on its own row
+     (2026-09-24). */
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+@media (max-width: 720px) {
+  .feature-grid--two {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* ── the desk — the visible features, with pictures (2026-09-10) ──────
@@ -834,6 +892,9 @@ html {
 }
 .site-footer a {
   color: var(--site-body-ink-2);
+}
+.site-footer__note {
+  display: inline-block;
 }
 .site-footer__fan {
   margin: 10px auto 0;

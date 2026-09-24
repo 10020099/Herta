@@ -417,7 +417,14 @@ body:after{
   display:grid;
   grid-template-columns:276px 1fr;
   grid-template-rows: var(--topbar-h) 1fr;
+  /* clip, not hidden (owner 2026-09-24): the app frame must never scroll,
+     and `hidden` still makes it a scroll container that focus() and
+     scrollIntoView() may scroll. Focusing a row in the parked rail scrolled
+     the whole app 656px left mid-slide (FileViewerPanel's focus comment).
+     `clip` is no scroll container at all; `hidden` stays as the fallback for
+     an engine without it. */
   overflow:hidden;
+  overflow:clip;
   background:var(--shell);
   /* backdrop-filter REMOVED (perf 2026-07-13): replaced by the body:after
      pre-blurred gradient above — identical look over a static backdrop,
@@ -3118,6 +3125,13 @@ button.agent-preview {
 .opening-ascii.is-out {
   opacity: 0;
   transition: opacity 700ms ease-in-out;
+}
+/* The canvas's box: the component creates the canvas itself (a canvas handed
+   to the draw worker cannot be reused), so it needs a parent that fills the
+   overlay. */
+.opening-ascii-stage {
+  position: absolute;
+  inset: 0;
 }
 .opening-ascii-canvas {
   display: block;
@@ -6878,8 +6892,12 @@ button.commit-view__path:hover {
    slim pill bar as the pane, never the OS bar. Flex items do not collapse
    margins, so the intro→rows gap is carried by the intro alone. On a
    short window the floor shrinks with the card and the rows give way
-   first, down to about one row; past that the pane itself scrolls. */
-.settings-content:has(> .settings-rows) {
+   first, down to about one row; past that the pane itself scrolls.
+   `.has-rows` is set by SettingsModal from the section's `rows` flag. It
+   was `:has(> .settings-rows)`, and that selector cost every send in the
+   conversation a ~400-element restyle while Settings was not even open
+   (10–28 ms at 4× CPU, 2026-09-24). */
+.settings-content.has-rows {
   display: flex;
   flex-direction: column;
   /* Floor AND ceiling: the pane is exactly the floor (its stretched height
@@ -6887,7 +6905,7 @@ button.commit-view__path:hover {
   min-height: min(630px, calc(100vh - 98px));
   max-height: min(630px, calc(100vh - 98px));
 }
-.settings-content:has(> .settings-rows) > * { flex: none; }
+.settings-content.has-rows > * { flex: none; }
 .settings-content > .settings-rows {
   flex: 0 1 auto;
   min-height: 84px;

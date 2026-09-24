@@ -19,6 +19,33 @@ function wrap(ui: JSX.Element): JSX.Element {
 describe("SettingsModal", () => {
   afterEach(() => setVoiceMuted(false));
 
+  it("every section's `rows` flag matches the pane: .has-rows exactly when a .settings-rows list is a direct child (2026-09-24)", () => {
+    // The flag replaced `.settings-content:has(> .settings-rows)` in the CSS
+    // (that selector restyled ~400 elements on every send, Settings closed).
+    // A pane that gains or loses its scrolling rows must move its flag too,
+    // or it keeps the old layout — this walks every section to say so.
+    const { container } = renderWithLocale(
+      wrap(<SettingsModal open={true} onClose={() => {}} />),
+    );
+    const items = [
+      ...container.querySelectorAll<HTMLButtonElement>(".settings-nav-item"),
+    ];
+    expect(items.length).toBeGreaterThan(5);
+    const seen: string[] = [];
+    for (const item of items) {
+      fireEvent.click(item);
+      const content = container.querySelector(".settings-content");
+      const hasList = content?.querySelector(":scope > .settings-rows") != null;
+      expect(
+        content?.classList.contains("has-rows"),
+        `${item.textContent}: has-rows should be ${hasList}`,
+      ).toBe(hasList);
+      if (hasList) seen.push(item.textContent ?? "");
+    }
+    // Not vacuous: the two panes with scrolling rows are among them.
+    expect(seen).toEqual(["Voice", "Coprocessor"]);
+  });
+
   it("renders nothing when closed", () => {
     const { queryByRole } = renderWithLocale(
       wrap(<SettingsModal open={false} onClose={() => {}} />),

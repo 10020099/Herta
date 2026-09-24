@@ -117,6 +117,7 @@ export function Select<V extends string>(props: SelectProps<V>): JSX.Element {
           ? 0
           : buttons.length - 1
         : Math.min(buttons.length - 1, Math.max(0, idx + delta));
+    // focus-scrolls: arrow-key navigation — the option must come into view.
     buttons[next]?.focus();
   };
 

@@ -26,7 +26,7 @@ import { useT } from "../../i18n/LocaleProvider.js";
 import { useRailParked } from "../FileViewer/file-viewer-context.js";
 import { CardMenu } from "./CardMenu.js";
 import { DeviceGlow } from "./DeviceGlow.js";
-import { detectDeviceSceneBackend } from "./device-scene/capability.js";
+import { detectDeviceScenePath } from "./device-scene/capability.js";
 import { DeviceScene } from "./device-scene/DeviceScene.js";
 import {
   loadDeviceScenePref,
@@ -127,21 +127,22 @@ export function DeviceCard(): JSX.Element {
   }, [bridge]);
   const sceneSupported = bridge.setDeviceScene !== undefined;
   // The GPU path, asked at mount (2026-09-10) rather than when the scene
-  // mounts: the probe is memoised and cheap (one adapter request, ~100
-  // ms), and a machine with no path — a remote desktop, a VM, a software
+  // mounts: a machine with no path — a remote desktop, a VM, a software
   // rasterizer — used to show the frosted picture for the idle gate's
   // seconds and then cut hard to the flat art, on every launch. Knowing
   // early, the card is flat from the first answer with no glass in
-  // between; the scene's own probe finds the memoised answer.
+  // between. Asked with an adapter alone (M-opening-3): the full probe's
+  // device held the GPU process ~0.25 s in the middle of the opening; the
+  // scene's own build, after the opening, makes that probe.
   const [gpuPath, setGpuPath] = useState<"unknown" | "some" | "none">(
     "unknown",
   );
   useEffect(() => {
     if (!sceneSupported) return;
     let cancelled = false;
-    detectDeviceSceneBackend().then(
-      (backend) => {
-        if (!cancelled) setGpuPath(backend === null ? "none" : "some");
+    detectDeviceScenePath().then(
+      (some) => {
+        if (!cancelled) setGpuPath(some ? "some" : "none");
       },
       () => {
         if (!cancelled) setGpuPath("none");

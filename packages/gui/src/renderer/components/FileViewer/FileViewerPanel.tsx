@@ -281,6 +281,15 @@ export function FileViewerPanel(): JSX.Element | null {
   // opener when nothing else took it: left on body, the next Escape was
   // "nobody's" — and the approval panel used to count that as its own and
   // deny (UX review 2026-09-22, item 2).
+  //
+  // Both focus calls pass preventScroll (owner 2026-09-24). A plain focus()
+  // scrolls its target into view, and both targets can be OFF-SCREEN when
+  // focused: the panel slides in from the right, and an opener in the
+  // repository card sits in the rail, which is parked 777px to the right
+  // when the close begins. Focusing that row scrolled the whole .app 656px
+  // left: the sidebar vanished, the cards appeared mid-window without
+  // sliding, then fought the unwinding scroll back to their rest — "the
+  // cards bounce". A record-row opener is on screen, so it never showed there.
   const returnFocus = useRef<HTMLElement | null>(null);
   useEffect(() => {
     const panel = panelRef.current;
@@ -294,14 +303,14 @@ export function FileViewerPanel(): JSX.Element | null {
       ) {
         returnFocus.current = active;
       }
-      panel?.focus();
+      panel?.focus({ preventScroll: true });
       return;
     }
     const back = returnFocus.current;
     returnFocus.current = null;
     const active = document.activeElement;
     if (back?.isConnected && (active === null || active === document.body)) {
-      back.focus();
+      back.focus({ preventScroll: true });
     }
   }, [path]);
 

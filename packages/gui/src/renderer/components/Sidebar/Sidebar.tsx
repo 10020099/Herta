@@ -160,7 +160,8 @@ export function Sidebar(props: SidebarProps): JSX.Element {
   // is symmetric), which means `autoFocus` can't fire on open — focus it
   // imperatively when the field opens.
   useEffect(() => {
-    if (searchOpen) searchInputRef.current?.focus();
+    // No scroll: the sidebar may still be sliding open when the field mounts.
+    if (searchOpen) searchInputRef.current?.focus({ preventScroll: true });
   }, [searchOpen]);
 
   // (The stale-card-raster heal after a delete/reorder lives in useFlipList —

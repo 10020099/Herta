@@ -175,7 +175,8 @@ export function ApprovalPanel(): JSX.Element | null {
   // itself takes focus: Space and Enter do nothing there, the screen reader
   // reads the description, Escape denies, and one Tab reaches the buttons.
   useEffect(() => {
-    if (shown !== null && !leaving && isTop) panelRef.current?.focus();
+    if (shown !== null && !leaving && isTop)
+      panelRef.current?.focus({ preventScroll: true });
   }, [shown, leaving, isTop]);
 
   const resolve = (
@@ -261,10 +262,12 @@ export function ApprovalPanel(): JSX.Element | null {
       if (e.shiftKey) {
         if (active === first || active === root || !root.contains(active)) {
           e.preventDefault();
+          // focus-scrolls: Tab navigation — the button must come into view.
           last.focus();
         }
       } else if (active === last || active === root || !root.contains(active)) {
         e.preventDefault();
+        // focus-scrolls: Tab navigation — the button must come into view.
         first.focus();
       }
     };

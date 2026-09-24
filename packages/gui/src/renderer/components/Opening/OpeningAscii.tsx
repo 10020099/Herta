@@ -1,11 +1,21 @@
 import { useEffect, useRef, useState } from "react";
+import { journeyMarkAfterPaint, journeyMarkAt } from "../../lib/journey.js";
+import { holdLaunch, releaseLaunch } from "../../lib/launch-gate.js";
 import type { SegmentData } from "./ascii-renderer.js";
+import { releaseOpeningGlyphSheet } from "./glyph-sheet.js";
 import { OpeningAsciiCanvas } from "./OpeningAsciiCanvas.js";
 import { pickOpeningSegment } from "./pick-opening-segment.js";
 
 /** Fallback dissolve duration (ms), used only until the canvas reports the real
  *  one (the [38%, 94%] slice of playback) at dissolve-start. */
 const CURTAIN_MS = 700;
+
+/** At the first drawn frame, not at the segment's load: the draw worker says
+ *  when it committed that frame; a frame drawn here is marked after paint. */
+const markOpeningPainted = (atEpochMs?: number): void => {
+  if (atEpochMs === undefined) journeyMarkAfterPaint("launch:opening-painted");
+  else journeyMarkAt("launch:opening-painted", atEpochMs);
+};
 
 export interface OpeningAsciiProps {
   /** Called once when the opening sequence (play + fade-out) finishes, or if
@@ -41,21 +51,37 @@ export function OpeningAscii(props: OpeningAsciiProps): JSX.Element {
   const completedRef = useRef(false);
   const fadeTimerRef = useRef<number>();
 
+  // The launch gate (lib/launch-gate.ts): closed from this FIRST render —
+  // render runs before any effect of the tree the splash covers — so the
+  // rail's GPU setup waits for the opening instead of racing it. Released
+  // below as the opening plays and ends; the unmount releases it too.
+  const heldRef = useRef(false);
+  if (!heldRef.current) {
+    heldRef.current = true;
+    holdLaunch();
+  }
+
   useEffect(() => {
     let cancelled = false;
     const loader = props.loadSegment ?? pickOpeningSegment();
     loader()
       .then((seg) => {
-        if (!cancelled) setData(seg);
+        if (cancelled) return;
+        setData(seg);
+        releaseLaunch("opening");
       })
       .catch(() => {
-        if (!cancelled) onDoneRef.current();
+        if (cancelled) return;
+        releaseLaunch("settled");
+        releaseOpeningGlyphSheet();
+        onDoneRef.current();
       });
     return () => {
       cancelled = true;
       if (fadeTimerRef.current !== undefined) {
         window.clearTimeout(fadeTimerRef.current);
       }
+      releaseLaunch("settled");
     };
   }, [props.loadSegment]);
 
@@ -66,6 +92,10 @@ export function OpeningAscii(props: OpeningAsciiProps): JSX.Element {
     setFadingOut(true);
     onFadeStartRef.current?.();
     fadeTimerRef.current = window.setTimeout(() => {
+      releaseLaunch("settled");
+      // The opening is over: its glyph sheet's pixels go (the draw worker's
+      // copy goes with the worker).
+      releaseOpeningGlyphSheet();
       onDoneRef.current();
     }, ms);
   };
@@ -76,9 +106,13 @@ export function OpeningAscii(props: OpeningAsciiProps): JSX.Element {
       style={fadingOut ? { transitionDuration: `${dissolveMs}ms` } : undefined}
       data-testid="opening-ascii"
     >
-      {data !== null && (
-        <OpeningAsciiCanvas data={data} onComplete={handleComplete} />
-      )}
+      {/* Mounted before the segment loads: its draw worker starts now, in
+          the load's shadow. */}
+      <OpeningAsciiCanvas
+        data={data}
+        onComplete={handleComplete}
+        onFirstFrame={markOpeningPainted}
+      />
     </div>
   );
 }

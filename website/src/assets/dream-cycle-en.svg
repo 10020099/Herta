@@ -28,28 +28,28 @@
   <!-- trigger -->
   <rect x="70" y="60" width="270" height="110" rx="16" fill="#ffffff" fill-opacity="0.88" stroke="rgba(17,20,23,.09)"/>
   <path class="moon" d="M 106 100 a 15 15 0 1 0 13 22 a 12 12 0 0 1 -13 -22 z" fill="#2f7d92"/>
-  <text x="134" y="102" font-size="14.5" font-weight="600" fill="#111417">While you're away</text>
+  <text x="134" y="102" font-size="14.5" font-weight="600" fill="#111417">While you are away</text>
   <text x="134" y="126" font-size="11.5" fill="#59616e">idle ≥ 30 min · ≥ 7 days since last</text>
-  <text x="134" y="146" font-size="11.5" fill="#59616e">something new worth thinking about</text>
+  <text x="134" y="146" font-size="11.5" fill="#59616e">opt-in · something new to go over</text>
   <path class="flow" d="M 344 115 C 380 115, 400 115, 426 115" fill="none" stroke="#2f7d92" stroke-width="1.8" marker-end="url(#db)"/>
 
   <!-- the gauntlet -->
   <rect x="430" y="60" width="310" height="390" rx="18" fill="#ffffff" fill-opacity="0.88" stroke="rgba(17,20,23,.09)"/>
   <text x="454" y="94" font-size="15" font-weight="650" fill="#111417">The dream pass · 入梦</text>
-  <text x="454" y="112" class="mono" font-size="10.5" fill="#6f7782">four gates · default deny</text>
+  <text x="454" y="112" class="mono" font-size="10.5" fill="#6f7782">several checks · default deny</text>
   <line x1="454" y1="126" x2="716" y2="126" stroke="rgba(17,20,23,.08)"/>
   <g font-size="13.5" font-weight="600" fill="#111417">
     <text x="454" y="158">① Worth keeping? <tspan font-weight="400" font-size="11" fill="#6f7782">passing moments pass</tspan></text>
     <text x="454" y="230">② Write it down <tspan font-weight="400" font-size="11" fill="#6f7782">in her own voice</tspan></text>
-    <text x="454" y="302">③ Does it sound like her? <tspan font-weight="400" font-size="11" fill="#6f7782">a judge gates it</tspan></text>
-    <text x="454" y="374">④ Already kept? <tspan font-weight="400" font-size="11" fill="#6f7782">repeats sharpen the old one</tspan></text>
+    <text x="454" y="302">③ Already kept? <tspan font-weight="400" font-size="11" fill="#6f7782">a repeat strengthens it</tspan></text>
+    <text x="454" y="374">④ Does it sound like her? <tspan font-weight="400" font-size="11" fill="#6f7782">a judge checks</tspan></text>
   </g>
   <g stroke="rgba(17,20,23,.06)">
     <line x1="454" y1="182" x2="716" y2="182"/>
     <line x1="454" y1="254" x2="716" y2="254"/>
     <line x1="454" y1="326" x2="716" y2="326"/>
   </g>
-  <text x="454" y="420" font-size="11" font-style="italic" fill="#9aa3ad">fails a gate → archived, never dreamed again</text>
+  <text x="454" y="420" font-size="11" font-style="italic" fill="#9aa3ad">fails a check → never dreamed again</text>
 
   <!-- promotion into the shelf -->
   <path class="flow" d="M 744 250 C 774 238, 790 205, 798 188 L 814 160" fill="none" stroke="#4d86ff" stroke-width="2" marker-end="url(#db2)"/>
@@ -64,12 +64,12 @@
     <text x="844" y="160">memories written in dreams</text>
   </g>
   <line x1="844" y1="180" x2="1066" y2="180" stroke="rgba(17,20,23,.08)"/>
-  <text x="844" y="204" font-size="10.5" fill="#6f7782">24 seats · memories fade with time</text>
+  <text x="844" y="204" font-size="10.5" fill="#6f7782">27 seats · memories fade with time</text>
   <text x="844" y="224" font-size="10.5" fill="#b4453a">● never evicted</text>
 
   <!-- semanticization: the weakest deposit their gist before retiring -->
   <path class="flow" d="M 955 254 L 955 296" fill="none" stroke="#4d86ff" stroke-width="2" marker-end="url(#db2)"/>
-  <text x="972" y="272" font-size="10.5" fill="#1f4fae">before a memory fades,</text>
+  <text x="972" y="272" font-size="10.5" fill="#1f4fae">as a memory is forgotten,</text>
   <text x="972" y="288" font-size="10.5" fill="#1f4fae">its gist settles into the book</text>
 
   <!-- audit: living memories challenge the page -->
@@ -91,10 +91,10 @@
   <!-- next session -->
   <rect x="820" y="440" width="270" height="86" rx="14" fill="#14171b"/>
   <text x="844" y="470" font-size="13" font-weight="600" fill="#ffffff">Next time she wakes</text>
-  <text x="844" y="492" font-size="10.5" fill="#aab2bf">Shelf and page ride along with her opening —</text>
-  <text x="844" y="508" font-size="10.5" fill="#aab2bf">yesterday's moments shape tomorrow's voice.</text>
+  <text x="844" y="492" font-size="10.5" fill="#aab2bf">Shelf and page are part of her prompt;</text>
+  <text x="844" y="508" font-size="10.5" fill="#aab2bf">new memories apply from the next turn.</text>
 
   <!-- the cycle back -->
   <path class="flow" d="M 820 505 C 520 645, 190 570, 160 230 L 153 176" fill="none" stroke="#9aa3ad" stroke-width="1.6" marker-end="url(#dg)"/>
-  <text x="430" y="608" font-size="11.5" font-style="italic" fill="#6f7782">…new sessions become the next dream's material — the cycle of memory</text>
+  <text x="430" y="608" font-size="11.5" font-style="italic" fill="#6f7782">…new sessions become material for the next dream</text>
 </svg>

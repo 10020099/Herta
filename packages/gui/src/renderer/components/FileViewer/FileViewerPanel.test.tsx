@@ -945,6 +945,42 @@ describe("FileViewerPanel — UX review 2026-09-22", () => {
     // Not body: an Escape from here is the opener's, never "nobody's".
     expect(document.activeElement).toBe(opener);
   });
+
+  it("neither focus scrolls anything into view — an opener in the parked rail scrolled the whole app 656px (2026-09-24)", async () => {
+    const mock = createMockHertaBridge();
+    Object.assign(mock.bridge, {
+      readWorkspaceFile: vi.fn(async () => ({
+        ok: true as const,
+        content: "x",
+        truncated: false,
+        size: 1,
+        relative: "src/a.ts",
+      })),
+    });
+    const h = renderWithSession(ui(), { mock });
+    h.openSession("s1");
+    const opener = screen.getByTestId("probe");
+    opener.focus();
+    // Spied from here: only the viewer's own calls follow — the panel on
+    // open, the opener on close.
+    const focus = vi.spyOn(HTMLElement.prototype, "focus");
+    try {
+      fireEvent.click(opener);
+      const panel = await screen.findByTestId("file-viewer");
+      fireEvent.keyDown(panel, { key: "Escape" });
+      expect(document.activeElement).toBe(opener);
+      const targets = focus.mock.contexts;
+      expect(targets).toContain(panel);
+      expect(targets).toContain(opener);
+      focus.mock.calls.forEach((args, i) => {
+        if (targets[i] === panel || targets[i] === opener) {
+          expect(args[0]).toEqual({ preventScroll: true });
+        }
+      });
+    } finally {
+      focus.mockRestore();
+    }
+  });
 });
 
 describe("FileViewerPanel — divider drag", () => {

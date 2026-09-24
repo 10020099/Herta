@@ -1,5 +1,6 @@
 import type { HertaBridge, StagedImageInfo } from "../ipc/bridge-types.js";
 import type { SessionStore } from "../store/session-store.js";
+import { journeyMark, journeyMarkAfterPaint } from "./journey.js";
 
 /**
  * Send a user message: optimistically echo it, then dispatch to the backend.
@@ -28,10 +29,12 @@ export function submitMessage(
    *  flies from its own card. Absent: the composer's input, as ever. */
   launch?: { readonly left: number; readonly top: number },
 ): void {
+  journeyMark("send:start");
   // Armed BEFORE the echo lands: the conversation's outgoing morph reads it
   // on the same edge that mounts the flying clone.
   store.armLaunch(launch ?? null);
   store.markPendingUser(text, staged);
+  journeyMarkAfterPaint("send:echo-painted");
   const ids =
     staged !== undefined && staged.length > 0
       ? staged.map((s) => s.id)

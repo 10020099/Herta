@@ -185,6 +185,13 @@ const WindowIcon = (): JSX.Element => (
  * random listing): 通用 (how the app behaves) → 黑塔 (her voice and downtime)
  * → 引擎 (the model + coding backend). Every open lands on the first item of
  * the first group.
+ *
+ * `rows`: the pane's option rows scroll inside a fixed-height pane (its
+ * `.settings-rows` list; see `.settings-content.has-rows` in the CSS). Said
+ * here, not derived in CSS with `:has(> .settings-rows)`: that rule made
+ * every send in the conversation restyle ~400 elements, Settings closed and
+ * all — 10–28 ms at 4× CPU, just before the send's first frame (measured
+ * 2026-09-24). A test holds this flag to what each pane renders.
  */
 const GROUPS = [
   {
@@ -195,18 +202,21 @@ const GROUPS = [
         labelKey: "nav.language" satisfies MessageKey,
         Icon: LanguageIcon,
         Pane: LanguageSettings,
+        rows: false,
       },
       {
         key: "window",
         labelKey: "nav.window" satisfies MessageKey,
         Icon: WindowIcon,
         Pane: WindowSettings,
+        rows: false,
       },
       {
         key: "update",
         labelKey: "nav.update" satisfies MessageKey,
         Icon: UpdateIcon,
         Pane: UpdateSettings,
+        rows: false,
       },
     ],
   },
@@ -218,12 +228,14 @@ const GROUPS = [
         labelKey: "nav.voice" satisfies MessageKey,
         Icon: VolumeIcon,
         Pane: VoiceSettings,
+        rows: true,
       },
       {
         key: "dream",
         labelKey: "nav.dream" satisfies MessageKey,
         Icon: MoonIcon,
         Pane: DreamSettings,
+        rows: false,
       },
     ],
   },
@@ -235,30 +247,35 @@ const GROUPS = [
         labelKey: "nav.provider" satisfies MessageKey,
         Icon: DeepSeekIcon,
         Pane: ProviderSettings,
+        rows: false,
       },
       {
         key: "banzhuan",
         labelKey: "nav.coprocessor" satisfies MessageKey,
         Icon: ChipIcon,
         Pane: BanzhuanSettings,
+        rows: true,
       },
       {
         key: "mcp",
         labelKey: "nav.mcp" satisfies MessageKey,
         Icon: McpIcon,
         Pane: McpSettings,
+        rows: false,
       },
       {
         key: "projectRules",
         labelKey: "nav.projectRules" satisfies MessageKey,
         Icon: McpIcon,
         Pane: ProjectRulesSettings,
+        rows: false,
       },
       {
         key: "context",
         labelKey: "nav.context" satisfies MessageKey,
         Icon: ChipIcon,
         Pane: ContextSettings,
+        rows: false,
       },
     ],
   },
@@ -348,14 +365,18 @@ export function SettingsModal({
     if (open && mounted && !focusTaken.current) {
       focusTaken.current = true;
       prevFocus.current = document.activeElement as HTMLElement | null;
-      cardRef.current?.focus();
+      // No scroll on either hand-over: the card animates in, and what held
+      // focus before may sit in a part of the window that is sliding.
+      cardRef.current?.focus({ preventScroll: true });
     } else if (!open && focusTaken.current) {
       focusTaken.current = false;
       const prev = prevFocus.current;
       if (prev && prev !== document.body && document.contains(prev)) {
-        prev.focus?.();
+        prev.focus?.({ preventScroll: true });
       } else {
-        document.querySelector<HTMLElement>(".sidebar-settings")?.focus?.();
+        document
+          .querySelector<HTMLElement>(".sidebar-settings")
+          ?.focus?.({ preventScroll: true });
       }
     }
   }, [open, mounted]);
@@ -391,9 +412,11 @@ export function SettingsModal({
       const active = document.activeElement;
       if (e.shiftKey && (active === first || active === cardRef.current)) {
         e.preventDefault();
+        // focus-scrolls: Tab navigation — the control must come into view.
         last?.focus();
       } else if (!e.shiftKey && active === last) {
         e.preventDefault();
+        // focus-scrolls: Tab navigation — the control must come into view.
         first?.focus();
       }
     };
@@ -447,7 +470,7 @@ export function SettingsModal({
             </Fragment>
           ))}
         </nav>
-        <div className="settings-content">
+        <div className={`settings-content${active.rows ? " has-rows" : ""}`}>
           <button
             type="button"
             className="settings-close"

@@ -44,7 +44,7 @@
   <text x="620" y="72" class="mono" font-size="12" letter-spacing="1.6" fill="#6f7782">三个时间尺度，写同一本书 · NEVER RESETS</text>
 
   <rect x="620" y="96" width="270" height="72" rx="14" fill="#ffffff" fill-opacity="0.85" stroke="rgba(17,20,23,.09)"/>
-  <text x="644" y="126" font-size="14" font-weight="600" fill="#111417">周 <tspan font-weight="400" font-size="11.5" fill="#6f7782">· while you're away</tspan></text>
+  <text x="644" y="126" font-size="14" font-weight="600" fill="#111417">周 <tspan font-weight="400" font-size="11.5" fill="#6f7782">· while you are away</tspan></text>
   <text x="644" y="150" font-size="11.5" fill="#59616e">入梦：值得记的瞬间，写进她的自传。</text>
 
   <rect x="620" y="240" width="270" height="72" rx="14" fill="#ffffff" fill-opacity="0.85" stroke="rgba(17,20,23,.09)"/>

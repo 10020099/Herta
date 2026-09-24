@@ -12,6 +12,7 @@ import {
   aliasBanzhuanPlain,
   stripInlineCodeTicks,
 } from "../../lib/banzhuan-mention.js";
+import { journeyMark } from "../../lib/journey.js";
 import { isRepeatClick } from "../../lib/repeat-click.js";
 import { TitleText } from "../TitleText.js";
 import { TrashIcon } from "./icons.js";
@@ -331,6 +332,7 @@ export function SessionItem(props: SessionItemProps): JSX.Element {
     if (jumpTo !== undefined) {
       sessionStore.requestJump(props.session.sessionId, jumpTo);
     }
+    journeyMark("open-session:start");
     void bridge.openSession(props.session.sessionId).then((r) => {
       if (r === null || !("openError" in r)) return;
       // Nothing to land in — drop the request so it cannot fire against
