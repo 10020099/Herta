@@ -8,7 +8,7 @@ import type {
   ToolResult,
 } from "@herta/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { listFilesTool } from "../list-files/index.js";
+import { globTool } from "../glob/index.js";
 import { searchTextTool } from "../search-text/index.js";
 import {
   MAX_EXCERPT_CHARS,
@@ -62,6 +62,28 @@ describe("show_excerpt", () => {
     expect(r.data.truncated).toBe(false);
     // The summary is what becomes the record row's argument.
     expect(r.summary).toBe("a.txt:2-4");
+  });
+
+  it("a bare path shows the head of the file, up to the excerpt bound (2026-09-18)", async () => {
+    // The permission lab's most frequent tool failure: 9 of 37 show_excerpt
+    // calls were a first call with only the path, rejected with "give either
+    // `match` or `fromLine`" and corrected on the second call. The natural
+    // first ask is "show me this file"; it now gets the head of the file.
+    seed("a.txt", ["one", "two", "three", "four", "five"]);
+    const r = await run({ path: "a.txt" });
+    expect(r.ok).toBe(true);
+    if (!r.ok || r.data === undefined) throw new Error("expected ok + data");
+    expect(r.data.range).toEqual([1, 5]);
+    expect(r.data.excerpt).toBe("1\tone\n2\ttwo\n3\tthree\n4\tfour\n5\tfive");
+    // A long file: the head is the whole excerpt bound, flagged truncated.
+    seed(
+      "long.txt",
+      Array.from({ length: 200 }, (_, i) => `L${i + 1}`),
+    );
+    const long = await run({ path: "long.txt" });
+    if (!long.ok || long.data === undefined) throw new Error("expected ok");
+    expect(long.data.range).toEqual([1, MAX_EXCERPT_LINES]);
+    expect(long.data.truncated).toBe(true);
   });
 
   it("centres on a `match` with context lines each side", async () => {
@@ -201,24 +223,25 @@ describe("show_excerpt", () => {
     // ADR 0036 opened .herta/logs to reads BY FULL PATH, which is enough only
     // if you already know the filename — they are `<uuid>-call_NN_<op>.log`.
     // Both persona re-test arcs watched the backend guess and fail, and one
-    // filled the gap by reciting the line from memory.
+    // filled the gap by reciting the line from memory. The listing is a glob
+    // rooted at the log dir since list_files left (2026-09-18, ADR 0067).
     mkdirSync(join(root, ".herta", "logs"), { recursive: true });
     writeFileSync(
       join(root, ".herta", "logs", "abc-call_00_xyz.log"),
       "exit 0\np = 4.21e-22\n",
     );
-    const listed = (await listFilesTool().run(
+    const listed = (await globTool().run(
       {
         id: "l1",
-        tool: "list_files",
-        input: { path: ".herta/logs" },
+        tool: "glob",
+        input: { pattern: "*.log", path: ".herta/logs" },
       } as ToolCallRequest,
       ctx(),
       noopProgress,
-    )) as ToolResult<{ entries: Array<{ path: string }> }>;
+    )) as ToolResult<{ files: Array<{ path: string }> }>;
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
-    expect(listed.data?.entries.some((e) => e.path.includes("call_00"))).toBe(
+    expect(listed.data?.files.some((e) => e.path.includes("call_00"))).toBe(
       true,
     );
 
@@ -239,11 +262,11 @@ describe("show_excerpt", () => {
   it("discovery stops at the log dir — .herta itself and tool-results stay denied", async () => {
     mkdirSync(join(root, ".herta", "tool-results"), { recursive: true });
     writeFileSync(join(root, ".herta", "tool-results", "c.json"), "{}\n");
-    const listRoot = (await listFilesTool().run(
+    const listRoot = (await globTool().run(
       {
         id: "l2",
-        tool: "list_files",
-        input: { path: ".herta" },
+        tool: "glob",
+        input: { pattern: "**/*", path: ".herta" },
       } as ToolCallRequest,
       ctx(),
       noopProgress,
@@ -252,11 +275,11 @@ describe("show_excerpt", () => {
     if (listRoot.ok) return;
     expect(listRoot.error?.code).toBe("path_denied");
 
-    const listResults = (await listFilesTool().run(
+    const listResults = (await globTool().run(
       {
         id: "l3",
-        tool: "list_files",
-        input: { path: ".herta/tool-results" },
+        tool: "glob",
+        input: { pattern: "**/*", path: ".herta/tool-results" },
       } as ToolCallRequest,
       ctx(),
       noopProgress,
@@ -332,11 +355,15 @@ describe("show_excerpt", () => {
     expect(r.error?.code).toBe("binary_file");
   });
 
-  it("requires either a range or a match", async () => {
+  it("a wrong range key is still named, not silently stripped (strict schema)", async () => {
+    // A bare path is valid since 2026-09-18 (the head of the file), but a
+    // misspelled range key must still fail loudly — the 2026-07-31 lesson.
     seed("a.txt", ["x"]);
-    const r = await run({ path: "a.txt" });
+    const r = await run({ path: "a.txt", from: 1 });
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.error?.code).toBe("invalid_input");
+    expect(r.error?.message).toContain("from");
+    expect(r.suggestion).toContain("usage:");
   });
 });

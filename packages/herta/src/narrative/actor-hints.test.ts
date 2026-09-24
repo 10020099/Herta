@@ -12,7 +12,6 @@ describe("loadActorHints (compiled assets, M-prompts-1)", () => {
   it("resolves every hint from the compiled corpus (non-empty, trimmed)", () => {
     const hints = loadActorHints();
     for (const value of [
-      hints.thoughtHintLine,
       hints.phase2Thought,
       hints.phase2Speech,
       ...hints.speechRetry,
@@ -20,6 +19,7 @@ describe("loadActorHints (compiled assets, M-prompts-1)", () => {
       hints.beatPatchPreview,
       hints.beatVerification,
       hints.beatToolFail,
+      hints.beatSteer,
       hints.supervisorVetoTemplate,
     ]) {
       expect(value.length).toBeGreaterThan(0);
@@ -39,6 +39,7 @@ describe("loadActorHints (compiled assets, M-prompts-1)", () => {
       hints.beatPatchPreview,
       hints.beatVerification,
       hints.beatToolFail,
+      hints.beatSteer,
     ]) {
       expect(beat).not.toContain("{{no_banzhuan}}");
       expect(beat).toContain(clause);
@@ -90,6 +91,7 @@ describe("loadActorHints — interaction language (slice 4)", () => {
       hints.beatPatchPreview,
       hints.beatVerification,
       hints.beatToolFail,
+      hints.beatSteer,
     ]) {
       expect(beat).not.toContain("{{no_banzhuan}}");
       expect(beat).toContain(clause);
@@ -106,7 +108,6 @@ describe("defaultActorHintsFor (slice 4)", () => {
   it('"en" mirrors actorHintTexts("en") plus an EN supervisor-veto template', () => {
     const en = defaultActorHintsFor("en");
     const t = actorHintTexts("en");
-    expect(en.thoughtHintLine).toBe(t.thoughtHintLine);
     expect(en.phase2Thought).toBe(t.phase2Thought);
     expect(en.phase2Speech).toBe(t.phase2Speech);
     expect(en.speechRetry).toEqual(t.speechRetry);
@@ -114,6 +115,7 @@ describe("defaultActorHintsFor (slice 4)", () => {
     expect(en.beatPatchPreview).toBe(t.beatPatchPreview);
     expect(en.beatVerification).toBe(t.beatVerification);
     expect(en.beatToolFail).toBe(t.beatToolFail);
+    expect(en.beatSteer).toBe(t.beatSteer);
     expect(en.supervisorVetoTemplate).toContain("{{reason}}");
     expect(en.supervisorVetoTemplate).not.toBe(
       DEFAULT_ACTOR_HINTS.supervisorVetoTemplate,
@@ -130,5 +132,23 @@ describe("selectBeatHint", () => {
       h.beatToolFail,
     );
     expect(selectBeatHint(h, "something.else")).toBe(h.phase2Speech);
+  });
+
+  it("a steer (ADR 0063) gets its own hint, in Herta's voice, and never the generic speech hint", () => {
+    const h = DEFAULT_ACTOR_HINTS;
+    const hint = selectBeatHint(h, "steer:6d1c0a9e");
+    expect(hint).toBe(h.beatSteer);
+    expect(hint).not.toBe(h.phase2Speech);
+    // Her own account of the moment, not an order: 板砖 reads the line at
+    // its next step, she does not relay it or answer for it.
+    expect(hint).toContain("不用我转达，也不需要我替它处理");
+    expect(hint).toContain("我也简单附和一下他");
+    expect(hint).toContain("不装作已经做完");
+    expect(hint).toContain("必须以（我 说）开始，以（/我 说）结束");
+    // The compiled asset carries the same, with the shared clause spliced.
+    const compiled = loadActorHints().beatSteer;
+    expect(compiled).toContain("不用我转达");
+    expect(compiled).not.toContain("{{no_banzhuan}}");
+    expect(loadActorHints("en").beatSteer).toContain("I don't relay it");
   });
 });

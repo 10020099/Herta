@@ -5,6 +5,7 @@ import type { ThemePref } from "../../ipc/bridge-types.js";
 import { applyThemePref, themePref } from "../../lib/theme.js";
 import { Select } from "./Select.js";
 import { SettingRow } from "./SettingRow.js";
+import { useRememberedSetting } from "./settings-snapshot.js";
 import { Toggle } from "./Toggle.js";
 
 /**
@@ -17,8 +18,18 @@ import { Toggle } from "./Toggle.js";
 export function WindowSettings(): JSX.Element {
   const t = useT();
   const { bridge } = useHertaBridge();
-  // Default ON until the persisted value loads (tray is the default).
-  const [enabled, setEnabled] = useState(true);
+  // The last-known value on the first frame (settings-snapshot.ts); the
+  // platform's default only when nothing has been read yet — ON, except on
+  // Linux, where main defaults it OFF (app-global-settings.ts,
+  // defaultCloseToTray: stock GNOME shows no tray icon).
+  const [enabled, setEnabled] = useRememberedSetting(
+    bridge,
+    "window.closeToTray",
+    bridge.platform !== "linux",
+  );
+  // A Mac has a menu bar, not a system tray, and stays in the Dock when its
+  // window closes — "quit on close" is not what happens there (2026-09-23).
+  const isMac = bridge.platform === "darwin";
   const [failed, setFailed] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
   // Seed from the controller (already booted by App) — no async flash.
@@ -47,7 +58,7 @@ export function WindowSettings(): JSX.Element {
     return () => {
       alive = false;
     };
-  }, [bridge]);
+  }, [bridge, setEnabled]);
 
   const onChange = (next: boolean): void => {
     // Optimistic: flip now, persist async. On a failed write, snap back so
@@ -80,12 +91,16 @@ export function WindowSettings(): JSX.Element {
         }
       />
       <SettingRow
-        title={t("window.closeToTray")}
-        description={t("window.closeToTrayDesc")}
+        title={t(isMac ? "window.closeToTrayMac" : "window.closeToTray")}
+        description={t(
+          isMac ? "window.closeToTrayDescMac" : "window.closeToTrayDesc",
+        )}
         control={
           <Toggle
             checked={enabled}
-            ariaLabel={t("window.closeToTray")}
+            ariaLabel={t(
+              isMac ? "window.closeToTrayMac" : "window.closeToTray",
+            )}
             onChange={onChange}
           />
         }

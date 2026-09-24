@@ -20,9 +20,11 @@ export {
   type BanzhuanBridgeDeps,
   type BeatFirer,
   invokeBanzhuanBridge,
+} from "./narrative/backend-bridge.js";
+export {
   projectBackendEvent,
   sanitizeSystemBlock,
-} from "./narrative/backend-bridge.js";
+} from "./narrative/backend-record-projection.js";
 export {
   BeatPolicy,
   type BeatPolicyOpts,
@@ -49,6 +51,7 @@ export {
   escapeUserText,
   FORBIDDEN_USER_PATTERNS,
 } from "./narrative/escape.js";
+export { checkFewShot, type FewShotCheck } from "./narrative/few-shot-guard.js";
 export {
   type ClassifyIntentInput,
   type ClassifyIntentResult,
@@ -174,6 +177,8 @@ export {
 } from "./narrative/supervisor.js";
 export { buildSupervisorVetoHint } from "./narrative/thought-hint.js";
 export {
+  type DriverSessionScope,
+  type StaticPrefixRebuilder,
   V2ActorDriver,
   type V2ActorDriverDeps,
 } from "./narrative/v2-actor-driver.js";

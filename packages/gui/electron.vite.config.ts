@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "electron-vite";
 import type { Plugin } from "vite";
+import { isDeadTranscoderAsset } from "./src/shared/dead-transcoder.js";
 
 /**
  * Where the bundle manifest lands. Under out/ (gitignored, and what
@@ -57,6 +58,66 @@ function bundleManifest(section: "main" | "preload" | "renderer"): Plugin {
   };
 }
 
+/**
+ * Drop three's own emitted copy of the Basis transcoder (ADR 0057 §6.5):
+ * `KTX2Loader` imports it through `new URL(…, import.meta.url)`, which Vite
+ * emits as assets unconditionally, and the scene always sets a
+ * `transcoderPath` to the scheme-served copy — so the pair under assets/
+ * is 585 KB of dead weight in the asar. The served copy is public/, not an
+ * asset, and is untouched.
+ */
+function dropDeadTranscoder(): Plugin {
+  return {
+    name: "herta-drop-dead-transcoder",
+    generateBundle(_options, bundle) {
+      for (const name of Object.keys(bundle)) {
+        if (isDeadTranscoderAsset(name)) delete bundle[name];
+      }
+    },
+  };
+}
+
+/**
+ * Emit the neural-voice worker beside the main bundle, verbatim (ADR 0042).
+ *
+ * `src/main/tts/tts-worker.cjs` is deliberately NOT part of the bundle: it
+ * `require`s the native `sherpa-onnx-node` addon, which rollup cannot bundle
+ * (and must not try to — the whole packaging invariant is that `out/main`
+ * references no native code). The coordinator forks it by absolute path
+ * (`join(__dirname, "tts-worker.cjs")`), so it has to exist as a real file
+ * next to `out/main/index.js`. `comm-channel-effect.cjs` (the terminal
+ * treatment, vendored from the voice repo) rides along the same way: the
+ * worker requires it as a sibling, so it must be a real file beside it.
+ *
+ * Copied through `emitFile` rather than a static `publicDir` so a missing
+ * source file fails the BUILD loudly instead of producing an app whose voice
+ * silently never starts.
+ */
+function ttsWorker(): Plugin {
+  const files = [
+    "tts-worker.cjs",
+    "comm-channel-effect.cjs",
+    "sherpa-punctuation.cjs",
+  ];
+  return {
+    name: "herta-tts-worker",
+    generateBundle() {
+      for (const name of files) {
+        const src = resolve(__dirname, "src/main/tts", name);
+        if (!existsSync(src)) {
+          this.error(`tts worker file missing at ${src}`);
+          return;
+        }
+        this.emitFile({
+          type: "asset",
+          fileName: name,
+          source: readFileSync(src, "utf8"),
+        });
+      }
+    },
+  };
+}
+
 export default defineConfig({
   // Main + preload BUNDLE their entire dependency graph (packaging strategy,
   // 2026-07-06): the former externalizeDepsPlugin left @herta/* as runtime
@@ -68,7 +129,7 @@ export default defineConfig({
   // app ships NO node_modules and NO native modules. electron + node
   // builtins stay external automatically.
   main: {
-    plugins: [bundleManifest("main")],
+    plugins: [bundleManifest("main"), ttsWorker()],
     build: {
       outDir: "out/main",
       rollupOptions: {
@@ -97,9 +158,19 @@ export default defineConfig({
   },
   renderer: {
     root: resolve(__dirname, "src/renderer"),
-    plugins: [react(), bundleManifest("renderer")],
+    plugins: [react(), dropDeadTranscoder(), bundleManifest("renderer")],
     build: {
       outDir: "out/renderer",
+      // electron-vite's renderer default is `minify: false` (it is Vite's
+      // that minifies) — the app had shipped 15.7 MB of readable JS: a
+      // 928 KB entry the window parses before its first paint, a 2.6 MB
+      // scene chunk (perf audit 2026-09-20). JS only: the stylesheet stays
+      // byte-for-byte what was authored — its masks, fallback declarations
+      // and `-webkit-` pairs were tuned by eye, and a minifier's merges are
+      // not worth re-checking every surface for ~100 KB. Main and preload
+      // stay readable: a stack trace from a user's log has to name things.
+      minify: "esbuild",
+      cssMinify: false,
       rollupOptions: {
         input: resolve(__dirname, "src/renderer/index.html"),
       },

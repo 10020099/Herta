@@ -1,8 +1,24 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { writeFileAtomic } from "@herta/core";
+import { MINIMAX_HOSTS } from "./tts/minimax-api.js";
 
 export type Locale = "zh" | "en";
 export type ThemePref = "light" | "dark" | "system";
+/** Which engine speaks Herta's replies (ADR 0062): the local Kokoro model
+ *  (ADR 0042/0061, the default) or a MiniMax cloud clone on the user's own
+ *  key. */
+export type VoiceEngine = "local" | "minimax";
+
+/** The cloned MiniMax voice this install owns (ADR 0062). `host` is the
+ *  platform the key authenticated on (international or China); `lastUsedAt`
+ *  lets the app re-clone before MiniMax's 7-day idle deletion bites. */
+export interface MiniMaxVoiceRecord {
+  readonly voiceId: string;
+  readonly host: string;
+  readonly clonedAt: string;
+  readonly lastUsedAt?: string;
+}
 /** Interaction language — the language Herta is PROMPTED in (slice 4).
  *  Distinct from `Locale` (the UI chrome language); any combination works. */
 export type InteractionLang = "zh" | "en";
@@ -45,6 +61,27 @@ export interface GlobalSettings {
    *  config from Electron userData into the visible global `~/.herta` layer.
    *  The legacy file is always retained; true means the prompt must not recur. */
   readonly legacyMcpMigrationHandled?: boolean;
+  /** The 3D device card (ADR 0057). ABSENT = the shipped default
+   *  (`DEVICE_SCENE_DEFAULT`); the Settings → 差分协处理器 toggle writes an
+   *  explicit boolean. Live-applied in the renderer; no restart. */
+  readonly deviceScene?: boolean;
+  /**
+   * Herta's synthesized real-time voice (ADR 0042): she SPEAKS her replies,
+   * and the text types in step with the audio. Default TRUE, and LIVE — the
+   * synthesizer's `available()` is read at every speech stream's start, so a
+   * toggle applies to the next reply with no restart.
+   *
+   * Default-on is safe because it is gated on assets: an install without the
+   * model bundle reports unavailable and behaves exactly as before. It is
+   * also the one switch that stops the synthesis WORK — the master mute
+   * below it silences playback but the sentences are still synthesized.
+   */
+  readonly realtimeVoice?: boolean;
+  /** Which engine speaks (ADR 0062). ABSENT = local. Live: the switching
+   *  synthesizer reads it at every speech stream's start. */
+  readonly voiceEngine?: VoiceEngine;
+  /** The MiniMax clone this install made, or absent when none / forgotten. */
+  readonly minimaxVoice?: MiniMaxVoiceRecord;
 }
 
 export interface WindowStateSnapshot {
@@ -77,6 +114,10 @@ export async function readGlobalSettings(
       windowState,
       interactionLanguage,
       legacyMcpMigrationHandled,
+      deviceScene,
+      realtimeVoice,
+      voiceEngine,
+      minimaxVoice,
     } = parsed as {
       locale?: unknown;
       closeToTray?: unknown;
@@ -85,7 +126,24 @@ export async function readGlobalSettings(
       windowState?: unknown;
       interactionLanguage?: unknown;
       legacyMcpMigrationHandled?: unknown;
+      deviceScene?: unknown;
+      realtimeVoice?: unknown;
+      voiceEngine?: unknown;
+      minimaxVoice?: unknown;
     };
+    if (deviceScene !== undefined && typeof deviceScene !== "boolean") {
+      return {};
+    }
+    if (
+      voiceEngine !== undefined &&
+      voiceEngine !== "local" &&
+      voiceEngine !== "minimax"
+    ) {
+      return {};
+    }
+    if (minimaxVoice !== undefined && !isValidMiniMaxVoice(minimaxVoice)) {
+      return {};
+    }
     if (locale !== undefined && locale !== "zh" && locale !== "en") return {};
     if (
       interactionLanguage !== undefined &&
@@ -98,6 +156,9 @@ export async function readGlobalSettings(
       return {};
     }
     if (autoUpdate !== undefined && typeof autoUpdate !== "boolean") {
+      return {};
+    }
+    if (realtimeVoice !== undefined && typeof realtimeVoice !== "boolean") {
       return {};
     }
     if (
@@ -121,6 +182,21 @@ export async function readGlobalSettings(
   } catch {
     return {};
   }
+}
+
+function isValidMiniMaxVoice(v: unknown): v is MiniMaxVoiceRecord {
+  if (typeof v !== "object" || v === null) return false;
+  const r = v as Record<string, unknown>;
+  return (
+    typeof r.voiceId === "string" &&
+    r.voiceId.length > 0 &&
+    // The host is one of the two platforms the app talks to, not any
+    // https URL a hand-edited file might carry (review 2026-09-10).
+    typeof r.host === "string" &&
+    MINIMAX_HOSTS.includes(r.host) &&
+    typeof r.clonedAt === "string" &&
+    (r.lastUsedAt === undefined || typeof r.lastUsedAt === "string")
+  );
 }
 
 function isValidWindowState(v: unknown): v is WindowStateSnapshot {
@@ -149,9 +225,7 @@ export async function writeGlobalSettings(
 ): Promise<void> {
   const path = settingsPath(userDataDir);
   await mkdir(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp`;
-  await writeFile(tmp, `${JSON.stringify(settings, null, 2)}\n`, "utf-8");
-  await rename(tmp, path);
+  await writeFileAtomic(path, `${JSON.stringify(settings, null, 2)}\n`);
 }
 
 /** All settings.json read-modify-write cycles chain through this promise.
@@ -177,8 +251,45 @@ export function updateGlobalSettings(
   return run;
 }
 
+/**
+ * Whether the close button hides to the tray when the user has not chosen
+ * (Settings → Window). On by default — except on Linux (platform review
+ * 2026-09-23): stock GNOME (Fedora, Debian, Arch) shows NO tray icon without
+ * the AppIndicator extension, so a hidden window was an app that seemed to
+ * quit while its session kept running, with no icon to bring it back —
+ * relaunching even a newer AppImage just surfaced the old instance. Nothing
+ * can tell whether a tray host is present, so Linux closes like a normal
+ * app, and a user whose desktop shows the tray can turn it on.
+ */
+export function defaultCloseToTray(platform: NodeJS.Platform): boolean {
+  return platform !== "linux";
+}
+
+/**
+ * The OS language the boot locale is resolved from. `app.getLocale()` is
+ * Chromium's UI locale, and on macOS that is limited to the localizations the
+ * app BUNDLE carries — a packaging step that drops `zh_CN.lproj` makes a
+ * Chinese Mac answer `en` (platform review 2026-09-23; electron-builder.yml
+ * now keeps the folder). The user's own language list is the truth there, so
+ * darwin reads it first and falls back to the Chromium locale only when it is
+ * empty. Windows and Linux keep `getLocale()`, which already follows the OS.
+ */
+export function osLocale(
+  platform: NodeJS.Platform,
+  source: {
+    getLocale(): string;
+    getPreferredSystemLanguages(): string[];
+  },
+): string {
+  if (platform === "darwin") {
+    const first = source.getPreferredSystemLanguages()[0];
+    if (first !== undefined && first.length > 0) return first;
+  }
+  return source.getLocale();
+}
+
 /** Resolve the boot locale: a stored choice wins; else map the OS locale
- *  (`app.getLocale()`), zh* -> zh, everything else -> en. */
+ *  (`osLocale`), zh* -> zh, everything else -> en. */
 export function resolveInitialLocale(
   settings: GlobalSettings,
   osLocale: string,

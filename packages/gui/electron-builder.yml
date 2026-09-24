@@ -14,23 +14,30 @@ directories:
   output: release
 
 # The app payload is just the compiled output plus runtime resources: main and
-# preload bundle their entire dependency graph (see electron.vite.config.ts),
-# and every package.json dep is a devDependency, so electron-builder collects
-# zero node_modules into the archive.
+# preload bundle their entire dependency graph (see electron.vite.config.ts).
+# The ONE production dependency, sherpa-onnx-node (ADR 0042), is a native
+# runtime that ships as a plain directory copy under extraResources (below),
+# never through the archive: without the exclusion electron-builder packed
+# its JS wrapper into app.asar, where the synthesizer's walk-up found it on a
+# build whose runtime had NOT been staged (the mac workflow, until
+# 2026-09-10) and reported the voice runtime present with no addon behind it.
 files:
   - out/**
   # The build-time module manifest electron.vite.config.ts writes for the
   # third-party notices generator — build metadata, not app payload.
   - "!out/bundle-manifest.json"
   - resources/**
+  - "!node_modules/**"
 # The window icon is read from disk at runtime via the `?asset` import
 # (out/main resolves ../../resources/herta-icon.png); keep it as a real file
 # rather than an asar entry, per the electron-vite packaging convention.
 asarUnpack:
   - resources/**
 
-# Nothing native ships (better-sqlite3 is tree-shaken out of the bundle), so
-# there is nothing to rebuild against Electron's ABI.
+# Nothing native is REBUILT: better-sqlite3 is tree-shaken out of the bundle,
+# and the one native runtime that ships (tts-runtime, below) is a prebuilt
+# Node-API addon loaded by a utility process — Node-API is ABI-stable across
+# Electron's Node, so it needs no rebuild against Electron's headers.
 npmRebuild: false
 
 # Ship only the Chromium UI locales the app can actually speak (size audit
@@ -55,6 +62,15 @@ extraResources:
     to: voice
     filter:
       - "**/*.opus"
+  # The recording the MiniMax clone is made from (ADR 0062): the game's
+  # archive lines merged into one 24 kHz WAV (~8 MB), read by the main
+  # process when the user asks for the cloud voice. Its own tree, not under
+  # voice/: the clip payload check treats a .wav there as an untranscoded
+  # master.
+  - from: ../../data/voice-clone
+    to: voice-clone
+    filter:
+      - "herta-reference.wav"
   # The licence text ships with the binary (audit BL26). `files:` above is
   # app-dir relative, so the root LICENSE can never be picked up there — and
   # it is the file that carries both the MIT grant AND the scope note saying
@@ -69,6 +85,25 @@ extraResources:
   # than tidy: it requires the license text itself to accompany the code.
   - from: ../../THIRD-PARTY-NOTICES.md
     to: THIRD-PARTY-NOTICES.md
+  # ── Herta's real-time voice (ADR 0042 / ADR 0061) ─────────────────────────
+  # ONLY the native synthesis runtime (~23 MB/arch) ships here. The Kokoro
+  # model bundle (~116 MB) is NOT in the installer — the owner's call on its
+  # size (2026-09-08): the user downloads it from Settings → Voice, and the
+  # app verifies it against the hash pinned in src/main/tts/tts-release.ts
+  # before a byte is extracted. `scripts/check-tts-payload.mjs` fails the
+  # build if a model entry ever creeps back in here.
+  #
+  # The runtime is a NATIVE addon, which cannot be bundled into out/main (the
+  # packaging invariant CI greps for) and must not sit behind the asar
+  # boundary — the addon finds its own platform library through a SIBLING
+  # path, so both packages need to be real directories next to each other.
+  # `scripts/stage-tts.mjs` produces exactly that layout;
+  # `src/main/tts/synthesizer.ts` resolves <resources>/tts-runtime/.
+  #
+  # Optional by design: absent, the synthesizer reports unavailable and every
+  # reply types at the read-along pace, exactly as before the voice existed.
+  - from: tts-runtime
+    to: tts-runtime
 
 # Auto-update feed (2026-07-10): the PUBLIC Herta repo's GitHub Releases.
 # electron-builder embeds this as app-update.yml in the packaged app (what
@@ -165,6 +200,20 @@ mac:
   # electron-builder generates the .icns from build/icon.png (1024x1024).
   icon: build/icon.png
   category: public.app-category.developer-tools
+  # The top-level list names Chromium's .pak locales (Windows/Linux: `zh-CN`).
+  # On macOS the same filter runs over `.lproj` folders, which Chromium names
+  # with UNDERSCORES — `zh_CN.lproj`, `zh_TW.lproj`, `en.lproj` — and the
+  # filter compares lowercased names exactly (`zh-cn` ≠ `zh_cn`), so every
+  # Chinese folder was deleted and only `en.lproj` survived through its
+  # prefix rule. macOS then offered the app English only: app.getLocale()
+  # answered `en` on a Chinese Mac, and the first launch came up in English
+  # UI AND English interaction language (platform review 2026-09-23; CI never
+  # showed it — its runners are English). mac-build.yml asserts the folder
+  # reached every .app.
+  electronLanguages:
+    - en
+    - zh_CN
+    - zh_TW
   # ── Signing (audit 2026-08-05, S6) ───────────────────────────────────────
   # `identity: null` WAS set here while there was no Apple membership. It is
   # removed, and must not come back: electron-builder short-circuits on it
@@ -196,6 +245,60 @@ mac:
 
 dmg:
   artifactName: Herta-${version}-${arch}.${ext}
+
+# The AppImage runtime (platform review 2026-09-23). Unset, electron-builder
+# 26 builds the LEGACY type-2 AppImage, whose runtime links libfuse.so.2 —
+# which Ubuntu 22.04 and later no longer install. Double-click, and nothing
+# happens; from a terminal, "AppImages require FUSE to run". 1.0.3 is the
+# static runtime (no libfuse2). electron-builder marks it beta; the Linux
+# workflow launches the built AppImage on a stock runner to prove it.
+# Both runtimes share one AppRun, which adds --no-sandbox only when
+# `unshare -Ur true` fails (Ubuntu 24.04's AppArmor default) — so the
+# Chromium sandbox stays ON wherever user namespaces are allowed.
+toolsets:
+  appimage: "1.0.3"
+
+# Linux targets (added for community builds). No signing — Linux has no
+# SmartScreen/Gatekeeper equivalent. AppImage is the primary format (no
+# install, works on any distro); deb covers Debian/Ubuntu. The icon.png
+# source is the same 1024x1024 the macOS build uses; electron-builder
+# generates the PNG size set Linux expects from it.
+#
+# TTS runtime: stage-tts.mjs without --win/--mac auto-detects the host
+# platform, so a Linux build machine stages sherpa-onnx-linux-<arch>
+# automatically. Cross-arch (e.g. building arm64 on x64) needs the
+# matching npm package fetched into the cache — the script handles that.
+linux:
+  target:
+    - target: AppImage
+      arch: [x64]
+    # deb is ready to enable the day a maintainer email exists: fpm requires
+    # package.json "homepage" AND an author email (or linux.maintainer), and
+    # neither is this repo's to invent — the copyright block above is exactly
+    # about not asserting things that are not true. To enable: add the
+    # maintainer line below + homepage in package.json, uncomment, done.
+    # - target: deb
+    #   arch: [x64]
+  # maintainer: Herta <email@example.com>
+  category: Development
+  icon: build/icon.png
+  # NO version in the Linux file name (platform review 2026-09-23), unlike
+  # Windows and macOS. electron-updater's AppImage install keeps the running
+  # file's path only when that name carries no `x.y.z`; with one, every update
+  # writes a NEW file beside it and deletes the old — and every launcher,
+  # dock pin and AppImageLauncher entry pointing at the old path breaks.
+  artifactName: Herta-${arch}.${ext}
+  # The package name is scoped (@herta/gui), and electron-builder derives the
+  # Linux executable name from it — "@hertagui", which the AppImage builder
+  # rejects ('characters that cannot be safely used in file paths'). Windows
+  # and macOS never hit this: those targets name the executable after
+  # productName. Pin the conventional lowercase binary name here.
+  executableName: herta
+  # Window association (electron-builder's own warning): the .desktop file's
+  # StartupWMClass must match the WM_CLASS Electron sets (the app name,
+  # "Herta"), or desktop environments will not group the running window with
+  # its launcher entry.
+  syncDesktopName: true
 
 nsis:
   # Pinned to the dash form electron-updater's latest.yml references. The

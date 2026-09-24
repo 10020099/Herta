@@ -1,37 +1,30 @@
-import {
-  existsSync,
-  constants as fsConstants,
-  mkdirSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { copyFile, mkdir } from "node:fs/promises";
+import { constants as fsConstants, existsSync } from "node:fs";
+import { copyFile, mkdir, readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   type AppServerConfig,
   createSessionHost,
   defaultDirsFor,
-  globalMcpConfigPath,
-  isProjectRuleFileName,
-  listProjectRuleFiles,
-  loadGlobalMcpConfig,
-  loadMcpConfig,
-  MAX_PROJECT_RULE_FILE_CHARS,
-  type McpConfig,
-  type ProviderType,
+  type LogQuery,
   recordTail,
+  globalMcpConfigPath,
+  type ProviderType,
   type Session,
   type SessionHost,
   type SessionMetadata,
-  writeGlobalMcpConfig,
-  writeMcpConfig,
+  type SpeechSynthesizer,
+  type SteerTextResult,
+  type WorkspaceTrustState,
 } from "@herta/app-server";
-import { SessionFileError } from "@herta/core";
-import { validateDeepSeekKey } from "@herta/providers";
+import { errorMessage } from "@herta/core";
 import {
   canonicalWorkspaceRoot,
-  findBash,
+  isGitReadTimeout,
+  isSafeRefName,
+  MAX_LOG_LIMIT,
+  MAX_LOG_QUERY_CHARS,
   validateWorkspaceRoot,
 } from "@herta/tools";
 import {
@@ -39,49 +32,127 @@ import {
   type BrowserWindow,
   dialog,
   ipcMain,
+  net,
+  shell,
   type WebContents,
 } from "electron";
 import { CMD, EVT } from "../preload/channels.js";
 import type {
-  InteractionLanguageChoice,
-  SessionOpenFailure,
+  MiniMaxRefusalState,
   SessionSnapshot,
 } from "../renderer/ipc/bridge-types.js";
+import { slimAgentEventForRenderer } from "../shared/agent-event-wire.js";
+import type { VoiceEngine } from "./app-global-settings.js";
 import {
   type InteractionLang,
-  type Locale,
+  osLocale,
   readGlobalSettings,
   resolveInitialLocale,
   resolveInteractionLang,
-  type ThemePref,
   updateGlobalSettings,
 } from "./app-global-settings.js";
 import {
+  dreamEnabled,
   isBackendContract,
   isBackendThinking,
   isCompactionLevel,
   isModelChoice,
+  normalizeModelChoice,
   readAppSettings,
-  readAppSettingsSync,
-  updateAppSettings,
-  writeAppSettings,
 } from "./app-settings.js";
 import {
-  clearDeepSeekKey,
-  clearProviderKey,
-  getDeepSeekKeyStatus,
-  getProviderStatus,
   type ProviderConfig,
   readDeepSeekKeyPlain,
+  readMiniMaxKeyPlain,
+  readMiniMaxPlanKeyPlain,
   readProviderConfig,
-  setDeepSeekKey,
-  setProviderKey,
-  updateProviderConfig,
 } from "./key-store.js";
-import { fetchProviderModels } from "./provider-models.js";
+import {
+  readWorkspaceBytesBounded,
+  readWorkspaceFileBounded,
+  resolveInsideWorkspace,
+} from "./read-workspace-file.js";
+import { createSessionActivation } from "./session-activation.js";
+import {
+  registerSettingsHandlers,
+  type SettingsHooks,
+} from "./settings-ipc.js";
+import { TRAY_SESSION_ROWS } from "./tray-menu.js";
+import { createFallbackFetch } from "./tts/fallback-fetch.js";
+import {
+  createMiniMaxSynthesizer,
+  type MiniMaxSynthesizer,
+} from "./tts/minimax-synthesizer.js";
+import {
+  createMiniMaxVoiceService,
+  type MiniMaxVoiceService,
+} from "./tts/minimax-voice.js";
+import { createSwitchingSynthesizer } from "./tts/switching-synthesizer.js";
+import {
+  createTtsSynthesizer,
+  resolveSherpaEntry,
+  type TtsSynthesizer,
+} from "./tts/synthesizer.js";
+import {
+  resolveTtsModelRoots,
+  resolveVoiceCloneReference,
+  TTS_BUNDLE_ID,
+  TTS_EFFECT,
+  voiceModelStoreRoot,
+} from "./tts/tts-path.js";
+import {
+  TTS_ARCHIVE_BYTES,
+  TTS_ARCHIVE_SHA256,
+  TTS_ARCHIVE_URL,
+  TTS_ARCHIVE_URL_ENV,
+  TTS_BUNDLE_BYTES,
+} from "./tts/tts-release.js";
+import {
+  createVoiceModelService,
+  type VoiceModelService,
+} from "./tts/voice-model.js";
 import { resolveVoiceRoot } from "./voice-path.js";
 
 type Send = (channel: string, payload: unknown) => void;
+
+/**
+ * The history tab's query as the IPC door accepts it (ADR 0059 §6):
+ * integer paging, a branch-shaped `ref` (the same rule the reader
+ * applies, so a refused shape never reaches a spawn), a bounded `query`.
+ * Null for anything else. Exported for tests.
+ */
+export function sanitizeLogQuery(raw: unknown): LogQuery | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const skip = r.skip;
+  const limit = r.limit;
+  if (
+    typeof skip !== "number" ||
+    !Number.isInteger(skip) ||
+    skip < 0 ||
+    typeof limit !== "number" ||
+    !Number.isInteger(limit) ||
+    limit <= 0 ||
+    limit > MAX_LOG_LIMIT
+  ) {
+    return null;
+  }
+  const out: { skip: number; limit: number; ref?: string; query?: string } = {
+    skip,
+    limit,
+  };
+  if (r.ref !== undefined) {
+    if (typeof r.ref !== "string" || !isSafeRefName(r.ref)) return null;
+    out.ref = r.ref;
+  }
+  if (r.query !== undefined) {
+    if (typeof r.query !== "string") return null;
+    const q = r.query.trim();
+    if (q.length > MAX_LOG_QUERY_CHARS) return null;
+    if (q.length > 0) out.query = q;
+  }
+  return out;
+}
 
 /** Walk up from `start` to the nearest ancestor containing a `.git`
  *  marker (file or dir) — the canonical project-root indicator. Returns
@@ -94,6 +165,49 @@ export function findProjectRoot(start: string): string | undefined {
     if (parent === dir) return undefined; // reached the filesystem root
     dir = parent;
   }
+}
+
+/** Window commands that are the user doing something outside a turn (dream
+ *  review 2026-09-22, finding 12). Each resets the dream trigger's idle
+ *  clock, and a pass already running steps aside at its next episode: a
+ *  user rewinding, attaching, searching or reading a file in the viewer is
+ *  back, however long ago they last sent a message. Turns are counted by
+ *  the host itself; reads the window makes on its own (the list refresh,
+ *  a resync, the repo watcher, settings panes loading their values) are
+ *  not the user and stay out. */
+const USER_ACTION_CHANNELS: ReadonlySet<string> = new Set([
+  CMD.interrupt,
+  CMD.steerText,
+  CMD.rewindLastTurn,
+  CMD.search,
+  CMD.recordSlice,
+  CMD.deleteSession,
+  CMD.resolveApproval,
+  CMD.removeCommandRule,
+  CMD.setWorkspaceTrust,
+  CMD.pickWorkspace,
+  CMD.setWorkspace,
+  CMD.resetWorkspace,
+  CMD.pickAttachments,
+  CMD.attachFiles,
+  CMD.removeAttachment,
+  CMD.stageImages,
+  CMD.unstageImage,
+  CMD.readWorkspaceFile,
+  CMD.readWorkspaceBytes,
+  CMD.readWorkspaceCommit,
+  CMD.readWorkspaceDiff,
+  CMD.readWorkspaceLog,
+  CMD.readWorkspaceBranches,
+  CMD.openWorkspaceFile,
+]);
+
+export function countsAsUserActivity(channel: string): boolean {
+  // Every settings WRITE is a choice the user just made; the reads are the
+  // panes loading and are not.
+  return (
+    USER_ACTION_CHANNELS.has(channel) || channel.startsWith("settings:set")
+  );
 }
 
 /** The workspace the session serves. Resolution order:
@@ -188,8 +302,8 @@ const PROVIDER_DEFAULTS: Record<
   deepseek: {
     baseUrl: "https://api.deepseek.com",
     actorModel: "deepseek-v4-pro",
-    backendModel: "deepseek-v4-flash",
-    routerModel: "deepseek-v4-flash",
+    backendModel: "deepseek-flash",
+    routerModel: "deepseek-flash",
   },
   openai: {
     baseUrl: "https://api.openai.com/v1",
@@ -228,6 +342,11 @@ export async function buildConfig(
   // reasoning as HERTA_UPDATE_URL, audit T1.3: a packaged build honoring an
   // env-set base URL would send the API key to an arbitrary host).
   devBaseUrl?: string,
+  // Herta's speech synthesizer (ADR 0042), injected for the same purity
+  // reason as the key and the voice root: it forks an Electron
+  // utilityProcess. Absent → sessions run the paced text reveal, exactly as
+  // before.
+  speechSynthesizer?: SpeechSynthesizer,
 ): Promise<AppServerConfig> {
   // The GUI reads the DeepSeek key from the encrypted secure store ONLY — no
   // env var, no legacy `deepseek-api-key.txt`. So "No key set" is honest: when
@@ -259,38 +378,39 @@ export async function buildConfig(
     (devBaseUrl !== undefined && devBaseUrl !== "" ? devBaseUrl : undefined) ??
     defaults.baseUrl;
 
-  const actorModel =
+  const actorModel: string =
     providerConfig?.actorModel ??
     process.env.HERTA_ACTOR_MODEL ??
-    (isModelChoice(settings.models?.actor)
-      ? settings.models.actor
-      : defaults.actorModel);
-  const backendModel =
+    normalizeModelChoice(settings.models?.actor) ??
+    defaults.actorModel;
+  const backendModel: string =
     providerConfig?.backendModel ??
     process.env.HERTA_BACKEND_MODEL ??
-    (isModelChoice(settings.models?.backend)
-      ? settings.models.backend
-      : defaults.backendModel);
+    normalizeModelChoice(settings.models?.backend) ??
+    defaults.backendModel;
   // Provider defaults supply an explicit router model where one exists. For
   // third-party OpenAI-compatible services it is intentionally absent, so use
   // the chosen backend model rather than sending `model: ""` on mood-routing,
   // recap and title requests.
-  const routerModel =
+  const routerModel: string =
     providerConfig?.routerModel ?? (defaults.routerModel || backendModel);
 
   return {
     workspaceRoot: cwd,
     ...dirs,
     ...(voiceAssetsDir !== undefined ? { voiceAssetsDir } : {}),
-    dream: { enabled: settings.dream?.enabled ?? true },
+    ...(speechSynthesizer !== undefined
+      ? { speech: { synthesizer: speechSynthesizer } }
+      : {}),
+    dream: { enabled: dreamEnabled(settings) },
     providers: {
-      type: activeProvider,
-      apiKey: providerConfig?.apiKey ?? deepseekApiKey,
       // Model precedence: provider config > env (dev/lab knob) > Settings →
       // 模型 (persisted UI choice) > provider built-in default.
       // Per-provider dispatch (DeepSeek completion, OpenAI responses, Anthropic
       // messages, openai-compat chat) happens in @herta/app-server's
       // provider-factory, keyed on `providers.type`.
+      type: activeProvider,
+      apiKey: providerConfig?.apiKey ?? deepseekApiKey,
       actorModel,
       backendModel,
       routerModel,
@@ -320,7 +440,8 @@ export async function buildConfig(
   };
 }
 
-function snapshot(s: Session): SessionSnapshot {
+/** The `session:reset` payload for a session. Exported for testing. */
+export function snapshot(s: Session): SessionSnapshot {
   // Long-session windowing (2026-07-12): the reset snapshot carries only the
   // trailing RECORD_TAIL_BLOCKS window — a 10MB session no longer crosses IPC
   // in one message or mounts thousands of renderer rows. `recordStart` is the
@@ -338,6 +459,20 @@ function snapshot(s: Session): SessionSnapshot {
     backendWorkspaceIsDefault: s.backendWorkspaceIsDefault,
     topics: s.topics,
     lang: s.lang,
+    // Whatever the repository probe has answered by now (ADR 0058); the
+    // `session:repo` stream carries the rest.
+    repo: s.repo ?? null,
+    // A window that reloads mid-turn comes back busy, with the hold window
+    // and the staged strip as they are (UX review 2026-09-22, item 7): the
+    // snapshot used to carry no turn state, so a running turn showed no
+    // Stop and no bubble, and staged pictures vanished while main still
+    // counted them.
+    ...(s.turnInFlight
+      ? { turn: { backendActive: s.backendActive ?? false } }
+      : {}),
+    ...(s.stagedImageList !== undefined && s.stagedImageList.length > 0
+      ? { stagedImages: s.stagedImageList }
+      : {}),
   };
 }
 
@@ -379,23 +514,38 @@ export function startForwarders(session: Session, send: Send): () => void {
   // their subscription buffers + this `send` closure) parked in `it.next()`
   // forever, accumulating per session switch.
   const iterators: AsyncIterator<unknown>[] = [];
-  async function pump<T>(it: AsyncIterable<T>, channel: string): Promise<void> {
+  async function pump<T>(
+    it: AsyncIterable<T>,
+    channel: string,
+    // What crosses for one event; `null` = nothing does.
+    wire?: (value: T) => T | null,
+  ): Promise<void> {
     const iterator = it[Symbol.asyncIterator]();
     iterators.push(iterator);
     while (true) {
       const r = await iterator.next();
       if (r.done === true || !live) break;
-      send(channel, r.value);
+      const value = wire === undefined ? r.value : wire(r.value);
+      if (value !== null) send(channel, value);
     }
   }
   void pump(session.subscribeRecord(), EVT.record);
   void pump(session.subscribeOverlay(), EVT.overlay);
   void pump(session.subscribeSpeech(), EVT.speech);
-  void pump(session.subscribeAgentEvents(), EVT.agent);
+  // The raw stream is a trace; the renderer wants its signals only.
+  void pump(
+    session.subscribeAgentEvents(),
+    EVT.agent,
+    slimAgentEventForRenderer,
+  );
   void pump(session.subscribeTurnLifecycle(), EVT.turn);
   void pump(session.subscribeTitle(), EVT.title);
   void pump(session.subscribeWorkspace(), EVT.workspace);
   void pump(session.subscribeVoice(), EVT.voice);
+  // The repository card's stream (ADR 0058); optional on the interface.
+  if (session.subscribeRepo !== undefined) {
+    void pump(session.subscribeRepo(), EVT.repo);
+  }
   return () => {
     live = false;
     for (const it of iterators) {
@@ -474,28 +624,14 @@ export interface SessionService {
   openSessionFromMain(sessionId: string): Promise<void>;
   /** Tray-facing: create + activate a fresh session ("New Chat"). */
   createSessionFromMain(): Promise<void>;
+  /** The active session's effective backend workspace — where attachments
+   *  live (ADR 0048). Null before bootstrap. Read fresh per call: the user
+   *  can change the workspace mid-session. */
+  backendWorkspace(): string | null;
 }
 
-export interface SessionServiceHooks {
-  /** Fired after Settings → Language persists a new locale. Lets main-side
-   *  surfaces that render OUTSIDE the renderer (the tray hover tooltip —
-   *  drawn by the OS, so no React re-render reaches it) re-resolve their
-   *  strings immediately instead of showing the old language until restart. */
-  readonly onLocaleChanged?: () => void;
-  /** Fired after Settings → Window persists the close-to-tray flag. The
-   *  window close handler lives in main's index.ts — this hook updates its
-   *  cached flag so the change applies to the very next close click. */
-  readonly onCloseToTrayChanged?: (enabled: boolean) => void;
-  /** Fired after Settings → Update persists the automatic-update toggle.
-   *  The update service lives in main's index.ts — this hook live-applies
-   *  it (cancelling or restarting the check cycle). */
-  readonly onAutoUpdateChanged?: (enabled: boolean) => void;
-  /** Fired after Settings → Window persists the appearance preference
-   *  (night mode). index.ts retints the NATIVE window backgroundColor —
-   *  the surface that shows for a beat on cold launch and during resizes,
-   *  which the renderer's CSS can't cover. */
-  readonly onThemeChanged?: (theme: ThemePref) => void;
-}
+/** The main-side hooks the Settings rows fire (see settings-ipc.ts). */
+export type SessionServiceHooks = SettingsHooks;
 
 /** Wires the SessionHost + ipcMain handlers to a single window's webContents.
  *  Single-window assumption for Slice 4. */
@@ -505,17 +641,56 @@ export function createSessionService(
   hooks: SessionServiceHooks = {},
 ): SessionService {
   let host: SessionHost | null = null;
-  let stopForwarders: (() => void) | null = null;
+  /** The Dream flag the running host was built with (the Settings pane's
+   *  restart note compares against it); undefined before bootstrap. */
+  let dreamRunning: boolean | undefined;
   let handlersRegistered = false;
+  // Herta's synthesized voice (ADR 0042). Built once at bootstrap and shared
+  // by every session; the enable flag is cached here so `available()` — read
+  // at every speech stream's start — never touches disk, and the Settings
+  // toggle applies to the very next reply.
+  let synthesizer: TtsSynthesizer | null = null;
+  let realtimeVoiceEnabled = true;
+  // The model as a download (ADR 0061): built beside the synthesizer, it
+  // owns the bundle directory under userData and tells the synthesizer to
+  // re-probe when a download lands or the bundle is removed.
+  let voiceModel: VoiceModelService | null = null;
+  // The cloud voice (ADR 0062): which engine speaks (cached from settings,
+  // read at every stream's start), the MiniMax synthesizer and the clone it
+  // uses. The key itself stays in the secure store and is read per call.
+  let voiceEngine: VoiceEngine = "local";
+  let minimaxSynth: MiniMaxSynthesizer | null = null;
+  let minimaxVoice: MiniMaxVoiceService | null = null;
+  // The cloud voice's network path (ADR 0062 §1.4, amended): Chromium's
+  // proxy-aware `net.fetch` first — the same stack the DeepSeek calls use —
+  // and Node's `fetch` only when Chromium could not connect at all. On the
+  // owner's second machine Chromium reached DeepSeek but failed the TLS
+  // handshake to both MiniMax hosts; a second stack is the only lever the
+  // app has there. Called after `whenReady` only (the handlers and the
+  // services are wired inside `start`).
+  const minimaxFetch = createFallbackFetch(
+    [(url, init) => net.fetch(url, init), (url, init) => fetch(url, init)],
+    (line) => console.log(line),
+  );
+  /** Either MiniMax key is enough to try for a voice: the pay-as-you-go
+   *  one clones, the plan one can adopt (ADR 0062 §1.8). */
+  const anyMiniMaxKey = (): boolean =>
+    readMiniMaxKeyPlain() !== null || readMiniMaxPlanKeyPlain() !== null;
+  // The synthesizer's refusal, blamed on the key that spoke: the plan key
+  // when set (speech prefers it), else the API key. The synthesizer forgets
+  // a refusal when its key changes, so the key in use now is the one it was
+  // answered for.
+  const minimaxRefusal = (): MiniMaxRefusalState | null => {
+    const reason = minimaxSynth?.status().refusal ?? null;
+    if (reason === null) return null;
+    return {
+      reason,
+      key: readMiniMaxPlanKeyPlain() !== null ? "plan" : "api",
+    };
+  };
   const send: Send = (ch, payload) => {
     if (!wc.isDestroyed()) wc.send(ch, payload);
   };
-
-  function pointAt(session: Session): void {
-    stopForwarders?.();
-    stopForwarders = startForwarders(session, send);
-    send(EVT.reset, snapshot(session));
-  }
 
   // Interaction language (slice 4): resolved FRESH here per activation (like
   // getTheme reads per call) — stored choice, else follow the UI locale.
@@ -527,73 +702,23 @@ export function createSessionService(
   // global EN/CN toggle changes NEW sessions without retro-flipping old ones.
   async function currentInteractionLang(): Promise<InteractionLang> {
     const s = await readGlobalSettings(app.getPath("userData"));
-    return resolveInteractionLang(s, resolveInitialLocale(s, app.getLocale()));
+    return resolveInteractionLang(
+      s,
+      resolveInitialLocale(s, osLocale(process.platform, app)),
+    );
   }
 
-  // Last-CLICK-wins activation ordering, shared by the renderer's IPC
-  // handlers AND the tray menu. Activations run concurrently, and each used
-  // to pointAt whatever it resolved — so clicking session A (slow disk load)
-  // then session B (fast) landed the UI on A when A's open resolved LAST.
-  // Only the newest activation may point the renderer; a superseded one
-  // still resolves its snapshot (harmless) but never re-points.
-  let activationSeq = 0;
-
-  async function openAndPoint(
-    id: string,
-  ): Promise<Session | SessionOpenFailure | null> {
-    const my = ++activationSeq;
-    let s: Session | undefined;
-    try {
-      s = await host?.openSession({
-        sessionId: id,
-        lang: await currentInteractionLang(),
-      });
-    } catch (err) {
-      // The host validates the session file BEFORE swapping sessions, so a
-      // failed open leaves the previously-active session pointed and the app
-      // fully usable. Report a structured failure instead of letting the
-      // renderer's invoke reject with no user-facing surface.
-      console.error(`[herta] openSession(${id}) failed:`, err);
-      return {
-        openError:
-          err instanceof SessionFileError
-            ? {
-                code: err.code,
-                ...(err.line !== undefined ? { line: err.line } : {}),
-              }
-            : { code: "unknown" },
-      };
-    }
-    if (s !== undefined && my === activationSeq) {
-      pointAt(s);
-      // D2: if last session's reply was lost to a mid-stream app-close, this
-      // session ends on an orphaned user message — regenerate the reply now
-      // (fire-and-forget; no-op when it ends on a Herta reply). Fired AFTER
-      // pointAt so the renderer is subscribed before the reply streams.
-      void s.regenerateLastReplyIfOrphaned?.();
-    }
-    return s ?? null;
-  }
-
-  async function createAndPoint(
-    opts: Parameters<SessionHost["createSession"]>[0],
-  ): Promise<Session | null> {
-    const my = ++activationSeq;
-    const s = await host?.createSession({
-      ...(opts ?? {}),
-      // Main-resolved, never renderer-supplied (sanitizeCreateOpts drops any
-      // renderer value): the per-user setting is the single source of truth.
-      lang: await currentInteractionLang(),
-    });
-    if (s !== undefined && my === activationSeq) {
-      pointAt(s);
-      // D3: stream the opening seed in like a reply (fire-and-forget; no-op
-      // when there is no opening). Fired AFTER pointAt so the renderer is
-      // subscribed before the seed streams.
-      void s.playOpening?.();
-    }
-    return s ?? null;
-  }
+  // Which session the window shows, and the open / create / delete calls
+  // that change it — last click wins, and after each settles the window
+  // follows the host (session-activation.ts).
+  const activation = createSessionActivation({
+    host: () => host,
+    send,
+    startForwarders,
+    snapshot,
+    lang: currentInteractionLang,
+  });
+  const { openAndPoint, createAndPoint } = activation;
 
   // Channels THIS service registered — dispose() removes exactly these
   // (audit T3.7): the old sweep removed every channel in the CMD map,
@@ -601,7 +726,15 @@ export function createSessionService(
   // index.ts owns whenever a session service was disposed.
   const ownedChannels: string[] = [];
   const handle: typeof ipcMain.handle = (channel, listener) => {
-    ipcMain.handle(channel, listener);
+    ipcMain.handle(
+      channel,
+      countsAsUserActivity(channel)
+        ? (event, ...args) => {
+            host?.noteUserActivity?.();
+            return listener(event, ...args);
+          }
+        : listener,
+    );
     ownedChannels.push(channel);
   };
 
@@ -615,36 +748,59 @@ export function createSessionService(
   function registerHandlers(): void {
     if (handlersRegistered) return;
     handlersRegistered = true;
-    handle(CMD.submitText, async (_e, text: string) => {
-      // Length only — chat content must not land in terminal/log capture
-      // (audit 2026-07-13 T1.5; mirrors the repo's memory discipline).
-      console.log(`[herta] submitText invoked (${text.length} chars)`);
-      const active = host?.activeSession ?? null;
-      if (active === null) {
-        console.warn("[herta] submitText ignored — no active session yet");
-        return undefined;
-      }
-      try {
-        const before = active.record.length;
-        const result = await active.submitText(text);
-        if ("needsKey" in result) {
-          console.log("[herta] submitText deferred — no DeepSeek key set");
-        } else {
-          console.log(
-            `[herta] submitText turn done: ${result.turnId} (record ${before} → ${active.record.length} blocks)`,
-          );
+    handle(
+      CMD.submitText,
+      async (_e, text: string, stagedImageIds?: readonly string[]) => {
+        // Length only — chat content must not land in terminal/log capture
+        // (audit 2026-07-13 T1.5; mirrors the repo's memory discipline). The
+        // staged COUNT is safe for the same reason a file count is.
+        console.log(
+          `[herta] submitText invoked (${text.length} chars${
+            stagedImageIds !== undefined && stagedImageIds.length > 0
+              ? `, ${stagedImageIds.length} image(s)`
+              : ""
+          })`,
+        );
+        const active = host?.activeSession ?? null;
+        if (active === null) {
+          console.warn("[herta] submitText ignored — no active session yet");
+          return undefined;
         }
-        return result;
-      } catch (err) {
-        // Surface turn failures in the MAIN-process terminal. Without this
-        // the rejection only reaches the renderer's voided invoke (DevTools
-        // console), so the user watching the terminal sees nothing.
-        console.error("[herta] submitText turn failed:", err);
-        throw err;
-      }
-    });
+        try {
+          const before = active.record.length;
+          const result = await active.submitText(
+            text,
+            stagedImageIds !== undefined && stagedImageIds.length > 0
+              ? { stagedImageIds }
+              : {},
+          );
+          if ("needsKey" in result) {
+            console.log("[herta] submitText deferred — no DeepSeek key set");
+          } else {
+            console.log(
+              `[herta] submitText turn done: ${result.turnId} (record ${before} → ${active.record.length} blocks)`,
+            );
+          }
+          return result;
+        } catch (err) {
+          // Surface turn failures in the MAIN-process terminal. Without this
+          // the rejection only reaches the renderer's voided invoke (DevTools
+          // console), so the user watching the terminal sees nothing.
+          console.error("[herta] submitText turn failed:", err);
+          throw err;
+        }
+      },
+    );
     handle(CMD.interrupt, (_e, turnId?: string) =>
       host?.activeSession?.interrupt({ turnId }),
+    );
+    // A message while 板砖 works (ADR 0063). Without a session, or on a
+    // session that cannot steer, the honest answer is `queued`: the renderer
+    // keeps the text and sends it as the next turn.
+    handle(
+      CMD.steerText,
+      async (_e, text: string): Promise<SteerTextResult> =>
+        (await host?.activeSession?.steerText?.(text)) ?? { queued: true },
     );
     handle(CMD.rewindLastTurn, async (_e, sessionId?: string) => {
       const active = host?.activeSession ?? null;
@@ -683,8 +839,10 @@ export function createSessionService(
       () => host?.listSessions({ limit: SIDEBAR_LIST_LIMIT }) ?? [],
     );
     // Transcript content search (sidebar). Bounded + best-effort in the
-    // host; the renderer debounces keystrokes, so a sync scan of this
-    // workspace's transcripts per invoke is fine at chat scale.
+    // host; the renderer debounces keystrokes. Async since 2026-09-03: the
+    // scan reads off the event loop chunk by chunk (a 50 MB transcript set
+    // used to hold this thread ~0.5 s per keystroke), and a query that
+    // extends the previous one reads only its hits.
     handle(CMD.search, (_e, query: string) =>
       typeof query === "string" ? (host?.searchSessions(query) ?? []) : [],
     );
@@ -732,16 +890,7 @@ export function createSessionService(
     handle(CMD.deleteSession, async (_e, id: string) => {
       // Same id gate as CMD.open — deleteSession feeds rmSync path joins.
       if (!isSafeSessionId(id)) return { ok: false, wasActive: false };
-      const r = await host?.deleteSession(id);
-      if (r === undefined) return { ok: false, wasActive: false };
-      // If we deleted the OPEN session, the host already closed it — tear down
-      // its forwarders so no stale events reach the (now blank) renderer.
-      if (r.wasActive) {
-        stopForwarders?.();
-        stopForwarders = null;
-      }
-      send(EVT.sessionDeleted, { sessionId: id });
-      return r;
+      return activation.deleteAndReconcile(id);
     });
     handle(CMD.resolveApproval, (_e, opts) =>
       host?.activeSession?.resolveApproval(opts),
@@ -755,6 +904,21 @@ export function createSessionService(
     handle(CMD.removeCommandRule, async (_e, display: string) => {
       if (typeof display !== "string" || display.length === 0) return false;
       return (await host?.activeSession?.removeCommandRule?.(display)) ?? false;
+    });
+    // Workspace trust (ADR 0064) — the ACTIVE session's effective workspace.
+    // No session → a real project that asks (the honest default).
+    const noTrust: WorkspaceTrustState = {
+      effective: "ask",
+      explicit: null,
+      isDefaultWorkspace: false,
+    };
+    handle(
+      CMD.getWorkspaceTrust,
+      async () => (await host?.activeSession?.getWorkspaceTrust?.()) ?? noTrust,
+    );
+    handle(CMD.setWorkspaceTrust, async (_e, value: unknown) => {
+      const v = value === "workspace" || value === "ask" ? value : null;
+      return (await host?.activeSession?.setWorkspaceTrust?.(v)) ?? noTrust;
     });
     // Record heal after a record-channel overflow drop: the session re-emits
     // its live record as a `reset` through the record stream (FIFO with block
@@ -778,6 +942,16 @@ export function createSessionService(
           reason: "unavailable" as const,
         }
       );
+    });
+    // The renderer's store asks for its state once it has subscribed
+    // (session-activation.ts `resync`).
+    handle(CMD.requestSync, () => {
+      activation.resync();
+    });
+    // The repository card asks for a fresh probe on window focus (ADR
+    // 0058); the answer arrives as a `session:repo` event.
+    handle(CMD.refreshRepo, async () => {
+      await host?.activeSession?.refreshRepo?.();
     });
     handle(CMD.pickWorkspace, async () => {
       const r = await dialog.showOpenDialog(win, {
@@ -825,6 +999,173 @@ export function createSessionService(
       },
     );
     handle(
+      CMD.stageImages,
+      async (
+        _e,
+        sessionId: string,
+        inputs: readonly {
+          readonly path?: string;
+          readonly bytes?: Uint8Array;
+          readonly name?: string;
+        }[],
+      ) => {
+        const s = host?.activeSession ?? null;
+        if (s === null || s.sessionId !== sessionId) {
+          return { ok: false as const, message: "no matching active session" };
+        }
+        if (s.stageImages === undefined) {
+          return { ok: false as const, message: "attachments unavailable" };
+        }
+        const r = await s.stageImages(inputs);
+        if (r.ok)
+          return { ok: true as const, staged: r.staged, rejected: r.rejected };
+        return {
+          ok: false as const,
+          message:
+            r.reason === "turn_in_progress"
+              ? "a turn is in progress"
+              : r.reason === "too_many_images"
+                ? "five images per message"
+                : "no files",
+        };
+      },
+    );
+    handle(CMD.unstageImage, async (_e, sessionId: string, id: string) => {
+      const s = host?.activeSession ?? null;
+      if (s === null || s.sessionId !== sessionId) return false;
+      return (await s.unstageImage?.(id)) ?? false;
+    });
+    // The file-viewer panel (ADR 0050): a bounded read jailed to the
+    // session's EFFECTIVE backend workspace — the tree the record's file
+    // names actually live in. Session-bound like every other command.
+    handle(
+      CMD.readWorkspaceFile,
+      async (_e, sessionId: string, path: string) => {
+        const s = host?.activeSession ?? null;
+        if (s === null || s.sessionId !== sessionId) {
+          return { ok: false as const, reason: "no_session" as const };
+        }
+        return readWorkspaceFileBounded(s.backendWorkspace, path);
+      },
+    );
+    // The rich kinds' read (ADR 0054 §2): the whole file as bytes for the
+    // renderers that parse it themselves — same jail, 64 MB ceiling.
+    handle(
+      CMD.readWorkspaceBytes,
+      async (_e, sessionId: string, path: string) => {
+        const s = host?.activeSession ?? null;
+        if (s === null || s.sessionId !== sessionId) {
+          return { ok: false as const, reason: "no_session" as const };
+        }
+        return readWorkspaceBytesBounded(s.backendWorkspace, path);
+      },
+    );
+    // The viewer's commit tab (ADR 0059): one commit of the session's
+    // repository, read by the session against its effective workspace.
+    // The id is checked here too — a hex commit id and nothing else ever
+    // reaches a git argv (the session's reader checks again).
+    handle(
+      CMD.readWorkspaceCommit,
+      async (_e, sessionId: string, ref: string) => {
+        const s = host?.activeSession ?? null;
+        if (s === null || s.sessionId !== sessionId) {
+          return { ok: false as const, reason: "no_session" as const };
+        }
+        if (typeof ref !== "string" || !/^[0-9a-f]{4,64}$/.test(ref)) {
+          return { ok: false as const, reason: "not_found" as const };
+        }
+        const commit = (await s.describeCommit?.(ref)) ?? null;
+        if (isGitReadTimeout(commit)) {
+          return { ok: false as const, reason: "timeout" as const };
+        }
+        return commit === null
+          ? { ok: false as const, reason: "not_found" as const }
+          : { ok: true as const, commit };
+      },
+    );
+    // The viewer's diff tab (ADR 0059 §5): one path's working-tree change
+    // against HEAD. The SAME jail as the file reads decides the path —
+    // the session's reader diffs an untracked file against /dev/null, so
+    // an outside-resolving name must never reach it. A tracked file
+    // deleted from the tree has no inode and still has a diff: `missing`
+    // passes its in-workspace spelling through.
+    handle(
+      CMD.readWorkspaceDiff,
+      async (_e, sessionId: string, path: string) => {
+        const s = host?.activeSession ?? null;
+        if (s === null || s.sessionId !== sessionId) {
+          return { ok: false as const, reason: "no_session" as const };
+        }
+        const r = await resolveInsideWorkspace(s.backendWorkspace, path);
+        if (r.kind === "outside") {
+          return { ok: false as const, reason: "outside_workspace" as const };
+        }
+        const relative = r.kind === "ok" ? r.relative : r.relative;
+        if (relative === undefined || relative.length === 0) {
+          return { ok: false as const, reason: "not_found" as const };
+        }
+        const diff = (await s.describeWorkingDiff?.(relative)) ?? null;
+        if (isGitReadTimeout(diff)) {
+          return { ok: false as const, reason: "timeout" as const };
+        }
+        return diff === null
+          ? { ok: false as const, reason: "not_found" as const }
+          : { ok: true as const, diff };
+      },
+    );
+    // The viewer's log tab (ADR 0059 §6): a page of a ref's history,
+    // optionally filtered. Every field is checked at the door — paging
+    // numbers are integers, the ref has a branch's shape (the reader
+    // checks again and hands git `--end-of-options`), the query is a
+    // bounded string — and the reader bounds the limit again.
+    handle(
+      CMD.readWorkspaceLog,
+      async (_e, sessionId: string, raw: unknown) => {
+        const s = host?.activeSession ?? null;
+        if (s === null || s.sessionId !== sessionId) {
+          return { ok: false as const, reason: "no_session" as const };
+        }
+        const opts = sanitizeLogQuery(raw);
+        if (opts === null) {
+          return { ok: false as const, reason: "not_found" as const };
+        }
+        const page = (await s.describeLog?.(opts)) ?? null;
+        if (isGitReadTimeout(page)) {
+          return { ok: false as const, reason: "timeout" as const };
+        }
+        return page === null
+          ? { ok: false as const, reason: "not_found" as const }
+          : { ok: true as const, page };
+      },
+    );
+    // The history tab's read-only branch picker (ADR 0059 §6).
+    handle(CMD.readWorkspaceBranches, async (_e, sessionId: string) => {
+      const s = host?.activeSession ?? null;
+      if (s === null || s.sessionId !== sessionId) {
+        return { ok: false as const, reason: "no_session" as const };
+      }
+      const branches = (await s.describeBranches?.()) ?? null;
+      if (isGitReadTimeout(branches)) {
+        return { ok: false as const, reason: "timeout" as const };
+      }
+      return branches === null
+        ? { ok: false as const, reason: "not_found" as const }
+        : { ok: true as const, branches };
+    });
+    // The viewer's 打开: hand the jailed path to the OS default app. The
+    // same resolution as the read — an outside-resolving name never
+    // reaches shell.openPath.
+    handle(
+      CMD.openWorkspaceFile,
+      async (_e, sessionId: string, path: string) => {
+        const s = host?.activeSession ?? null;
+        if (s === null || s.sessionId !== sessionId) return false;
+        const r = await resolveInsideWorkspace(s.backendWorkspace, path);
+        if (r.kind !== "ok") return false;
+        return (await shell.openPath(r.abs)) === "";
+      },
+    );
+    handle(
       CMD.removeAttachment,
       async (_e, sessionId: string, path: string) => {
         const s = host?.activeSession ?? null;
@@ -841,7 +1182,9 @@ export function createSessionService(
           message:
             r.reason === "turn_in_progress"
               ? "a turn is in progress"
-              : "attachment not found",
+              : r.reason === "in_use"
+                ? "file in use"
+                : "attachment not found",
         };
       },
     );
@@ -856,343 +1199,46 @@ export function createSessionService(
       }
       return { ok: true as const };
     });
-    // Settings → Dream. Restart-to-apply: read/write the persisted flag; the
-    // running app-server is untouched (it reads config.dream at next bootstrap).
-    handle(CMD.getDreamConfig, async () => {
-      const s = await readAppSettings(appWorkspaceRoot());
-      return { enabled: s.dream?.enabled ?? true };
-    });
-    handle(CMD.setDreamConfig, async (_e, cfg: { enabled: boolean }) => {
-      const ws = appWorkspaceRoot();
-      const s = await readAppSettings(ws);
-      await writeAppSettings(ws, {
-        ...s,
-        dream: { ...s.dream, enabled: cfg.enabled },
-      });
-    });
-    // Settings → Coprocessor: backend reasoning effort. Restart-to-apply, same
-    // contract as Dream above — buildConfig reads it at the next bootstrap.
-    handle(CMD.getBackendConfig, async () => {
-      const s = await readAppSettings(appWorkspaceRoot());
-      const v = s.backend?.thinking;
-      const c = s.backend?.contract;
-      return {
-        thinking: isBackendThinking(v) ? v : "high",
-        // ADR 0040: the tool contract, plus whether the minimal one can run
-        // here at all — the row says so next to the choice, where the user
-        // makes it, instead of a note in the record at the next session.
-        // Default MINIMAL (owner 2026-08-17) — must match buildConfig's.
-        contract: isBackendContract(c) ? c : "minimal",
-        bashFound: findBash() !== null,
-      };
-    });
-    handle(
-      CMD.setBackendConfig,
-      async (_e, cfg: { thinking?: unknown; contract?: unknown }) => {
-        // Validate like setTheme/setLocale: an off-enum value would fail the
-        // read-side shape check downstream — refuse it instead of persisting.
-        // Each field is optional so the two rows can write independently.
-        const thinking = isBackendThinking(cfg?.thinking)
-          ? cfg.thinking
-          : undefined;
-        const contract = isBackendContract(cfg?.contract)
-          ? cfg.contract
-          : undefined;
-        if (thinking === undefined && contract === undefined) return;
-        const ws = appWorkspaceRoot();
-        const s = await readAppSettings(ws);
-        await writeAppSettings(ws, {
-          ...s,
-          backend: {
-            ...s.backend,
-            ...(thinking !== undefined ? { thinking } : {}),
-            ...(contract !== undefined ? { contract } : {}),
-          },
-        });
+    // Settings → every row (settings-ipc.ts). Registered HERE, inside the
+    // synchronous registration, for the same reason as every handler above;
+    // the voice rows read and write this service's own flags through the
+    // getters and setters below.
+    registerSettingsHandlers({
+      handle,
+      hooks,
+      host: () => host,
+      workspaceRoot: appWorkspaceRoot,
+      dreamRunning: () => dreamRunning,
+      voice: {
+        get synthesizer() {
+          return synthesizer;
+        },
+        get voiceModel() {
+          return voiceModel;
+        },
+        get minimaxVoice() {
+          return minimaxVoice;
+        },
+        get engine() {
+          return voiceEngine;
+        },
+        set engine(next) {
+          voiceEngine = next;
+        },
+        get realtimeEnabled() {
+          return realtimeVoiceEnabled;
+        },
+        set realtimeEnabled(next) {
+          realtimeVoiceEnabled = next;
+        },
+        minimaxFetch,
+        anyMiniMaxKey,
+        minimaxRefusal,
+        stopSpeech: () => {
+          synthesizer?.stopWorker();
+          minimaxSynth?.cancelAll();
+        },
       },
-    );
-    // Settings → Context: the automatic recap threshold. This mirrors the
-    // restart-to-apply settings above; a session's recap runtime is immutable
-    // once constructed, while subsequent sessions read the saved level.
-    handle(CMD.getContextCompactionConfig, async () => {
-      const s = await readAppSettings(appWorkspaceRoot());
-      return {
-        level: isCompactionLevel(s.compaction?.level)
-          ? s.compaction.level
-          : "standard",
-      };
-    });
-    handle(
-      CMD.setContextCompactionConfig,
-      async (_e, cfg: { level?: unknown }) => {
-        if (!isCompactionLevel(cfg?.level)) return;
-        const ws = appWorkspaceRoot();
-        const s = await readAppSettings(ws);
-        await writeAppSettings(ws, {
-          ...s,
-          compaction: { ...s.compaction, level: cfg.level },
-        });
-      },
-    );
-    // Settings → DeepSeek → 模型: per-stage model (2026-08-17). Same
-    // restart-to-apply contract; buildConfig reads it at the next bootstrap
-    // (an env override, if set, still wins there — it is the dev/lab knob).
-    handle(CMD.getModelConfig, async () => {
-      const s = await readAppSettings(appWorkspaceRoot());
-      return {
-        actor: isModelChoice(s.models?.actor)
-          ? s.models.actor
-          : "deepseek-v4-pro",
-        // Default flash (owner 2026-08-17) — must match buildConfig's.
-        backend: isModelChoice(s.models?.backend)
-          ? s.models.backend
-          : "deepseek-v4-flash",
-      };
-    });
-    handle(
-      CMD.setModelConfig,
-      async (_e, cfg: { actor?: unknown; backend?: unknown }) => {
-        if (!isModelChoice(cfg?.actor) || !isModelChoice(cfg?.backend)) return;
-        const ws = appWorkspaceRoot();
-        const s = await readAppSettings(ws);
-        await writeAppSettings(ws, {
-          ...s,
-          models: { ...s.models, actor: cfg.actor, backend: cfg.backend },
-        });
-      },
-    );
-    // Settings → MCP: project scope follows the active session's effective
-    // workspace; global scope is the visible `~/.herta/mcp.json` layer.
-    const mcpWorkspace = (): string =>
-      host?.activeSession?.backendWorkspace ?? appWorkspaceRoot();
-    handle(
-      CMD.getMcpConfig,
-      async (
-        _e,
-        scope: "global" | "project" = "project",
-      ): Promise<McpConfig> =>
-        scope === "global"
-          ? loadGlobalMcpConfig()
-          : loadMcpConfig(mcpWorkspace()),
-    );
-    handle(
-      CMD.setMcpConfig,
-      async (_e, config: unknown, scope: "global" | "project" = "project") => {
-        if (scope === "global") await writeGlobalMcpConfig(config);
-        else await writeMcpConfig(mcpWorkspace(), config);
-      },
-    );
-    // The connection attempt belongs to SessionImpl.create(), because it owns
-    // MCP client lifetimes. The settings surface reads its current session's
-    // immutable outcomes; no session (or a newly saved, not-yet-started server)
-    // yields an empty map and therefore a neutral `unknown` indicator.
-    handle(
-      CMD.getMcpConnectionStatus,
-      () => host?.activeSession?.getMcpConnectionStatus?.() ?? {},
-    );
-    // Settings → Project rules. Unlike app-wide settings, these follow the
-    // active session's EFFECTIVE workspace, exactly like the runtime getters
-    // which inject them into Herta and Brick on each new request.
-    const projectRulesWorkspace = (): string =>
-      host?.activeSession?.backendWorkspace ?? appWorkspaceRoot();
-    handle(CMD.listProjectRules, async () =>
-      listProjectRuleFiles(projectRulesWorkspace()),
-    );
-    handle(CMD.saveProjectRule, async (_e, name: unknown, content: unknown) => {
-      if (typeof name !== "string" || !isProjectRuleFileName(name)) {
-        return { ok: false, message: "invalid rule filename" };
-      }
-      if (typeof content !== "string") {
-        return { ok: false, message: "rule content must be text" };
-      }
-      if (content.length > MAX_PROJECT_RULE_FILE_CHARS) {
-        return {
-          ok: false,
-          message: `rule files are limited to ${MAX_PROJECT_RULE_FILE_CHARS} characters`,
-        };
-      }
-      try {
-        const rulesDir = join(projectRulesWorkspace(), ".herta");
-        mkdirSync(rulesDir, { recursive: true });
-        writeFileSync(join(rulesDir, name), content, "utf-8");
-        return { ok: true };
-      } catch {
-        return { ok: false, message: "could not save project rule" };
-      }
-    });
-    handle(CMD.deleteProjectRule, async (_e, name: unknown) => {
-      if (typeof name !== "string" || !isProjectRuleFileName(name)) {
-        return { ok: false, message: "invalid rule filename" };
-      }
-      try {
-        rmSync(join(projectRulesWorkspace(), ".herta", name), {
-          force: true,
-        });
-        return { ok: true };
-      } catch {
-        return { ok: false, message: "could not delete project rule" };
-      }
-    });
-    // Settings → Language. App-global (per-user) preference; the renderer
-    // applies it live, so this is just persistence. getLocale resolves a stored
-    // choice, else maps the OS locale.
-    handle(CMD.getLocale, async () => {
-      const s = await readGlobalSettings(app.getPath("userData"));
-      return resolveInitialLocale(s, app.getLocale());
-    });
-    handle(CMD.setLocale, async (_e, locale: Locale) => {
-      // Validate like setTheme: an off-enum value would fail the read-side
-      // shape check and silently reset EVERY preference to default.
-      if (locale !== "zh" && locale !== "en") return;
-      await updateGlobalSettings(app.getPath("userData"), (s) => ({
-        ...s,
-        locale,
-      }));
-      // AFTER the write settles: the hook re-reads the persisted settings,
-      // so firing early would re-render the tray tooltip from the OLD file.
-      hooks.onLocaleChanged?.();
-    });
-    // Settings → Language: interaction language (slice 4). Returns the STORED
-    // choice ("follow" when absent = follow the UI locale); "follow" DELETES
-    // the stored field. Applies to NEW sessions (per-session static prefix +
-    // prompt cache) — session activation resolves it fresh above.
-    handle(CMD.getInteractionLanguage, async () => {
-      const s = await readGlobalSettings(app.getPath("userData"));
-      return s.interactionLanguage ?? "follow";
-    });
-    handle(
-      CMD.setInteractionLanguage,
-      async (_e, choice: InteractionLanguageChoice) => {
-        // Validate like setTheme: an off-enum value would fail the read-side
-        // shape check and silently reset EVERY preference to default.
-        if (choice !== "zh" && choice !== "en" && choice !== "follow") return;
-        await updateGlobalSettings(app.getPath("userData"), (s) => {
-          if (choice === "follow") {
-            const { interactionLanguage: _drop, ...rest } = s;
-            return rest;
-          }
-          return { ...s, interactionLanguage: choice };
-        });
-      },
-    );
-    // Settings → Window. Close-to-tray is app-global (per-user) and applies
-    // LIVE: the hook updates main's cached close-handler flag immediately.
-    handle(CMD.getCloseToTray, async () => {
-      const s = await readGlobalSettings(app.getPath("userData"));
-      return s.closeToTray ?? true;
-    });
-    handle(CMD.setCloseToTray, async (_e, enabled: boolean) => {
-      await updateGlobalSettings(app.getPath("userData"), (s) => ({
-        ...s,
-        closeToTray: enabled === true,
-      }));
-      hooks.onCloseToTrayChanged?.(enabled === true);
-    });
-    // Settings → Update: automatic checks/downloads. App-global and applied
-    // LIVE via the hook (the update service cancels or restarts its cycle).
-    handle(CMD.getAutoUpdate, async () => {
-      const s = await readGlobalSettings(app.getPath("userData"));
-      return s.autoUpdate ?? true;
-    });
-    handle(CMD.setAutoUpdate, async (_e, enabled: boolean) => {
-      await updateGlobalSettings(app.getPath("userData"), (s) => ({
-        ...s,
-        autoUpdate: enabled === true,
-      }));
-      hooks.onAutoUpdateChanged?.(enabled === true);
-    });
-    // Settings → Appearance (night-mode slice 2). The renderer's theme
-    // controller applies it live; main just persists (validated on read).
-    // Default "system" (user 2026-07-14): a first launch follows the OS
-    // appearance; light/dark stay explicit overrides.
-    handle(CMD.getTheme, async () => {
-      const s = await readGlobalSettings(app.getPath("userData"));
-      return s.theme ?? "system";
-    });
-    handle(CMD.setTheme, async (_e, theme: ThemePref) => {
-      if (theme !== "light" && theme !== "dark" && theme !== "system") return;
-      await updateGlobalSettings(app.getPath("userData"), (s) => ({
-        ...s,
-        theme,
-      }));
-      hooks.onThemeChanged?.(theme);
-    });
-    // Settings → DeepSeek key. The secure store is the single source of truth;
-    // `host.setDeepSeekKey` mirrors it to the running session's live key so the
-    // NEXT turn uses it with no restart. Only the masked status crosses back to
-    // the renderer (the raw key stays in main).
-    handle(CMD.getDeepSeekKeyStatus, () => getDeepSeekKeyStatus());
-    handle(CMD.setDeepSeekKey, async (_e, key: string) => {
-      const trimmed = key.trim();
-      // Validate before persisting (a cheap token-free auth check). A rejected
-      // key is never stored, so "Connected" stays truthful and no doomed turn
-      // ever runs. A check we couldn't complete (offline) saves anyway, flagged
-      // `unverified`, rather than blocking the user.
-      const verdict = await validateDeepSeekKey(trimmed);
-      if (verdict === "rejected") {
-        return { ok: false as const, reason: "rejected" as const };
-      }
-      const { encrypted } = setDeepSeekKey(trimmed);
-      host?.setDeepSeekKey(trimmed);
-      return {
-        ok: true as const,
-        encrypted,
-        status: getDeepSeekKeyStatus(),
-        unverified: verdict === "unreachable",
-      };
-    });
-    handle(CMD.clearDeepSeekKey, () => {
-      clearDeepSeekKey();
-      host?.setDeepSeekKey("");
-      return { ok: true as const, status: getDeepSeekKeyStatus() };
-    });
-    // Settings → Multi-provider support.
-    handle(CMD.getActiveProvider, () => {
-      const s = readAppSettingsSync(appWorkspaceRoot());
-      return (s.activeProvider ?? "deepseek") as ProviderType;
-    });
-    handle(CMD.setActiveProvider, async (_e, type: ProviderType) => {
-      await updateAppSettings(appWorkspaceRoot(), { activeProvider: type });
-    });
-    handle(CMD.getProviderStatus, (_e, type: ProviderType) => {
-      return getProviderStatus(type);
-    });
-    handle(
-      CMD.fetchProviderModels,
-      async (_e, type: ProviderType, draftBaseUrl?: string) => {
-        const config = readProviderConfig(type);
-        if (config === null) {
-          throw new Error("Save an API key before fetching models");
-        }
-        return fetchProviderModels({
-          type,
-          apiKey: config.apiKey,
-          baseUrl: draftBaseUrl?.trim() || config.baseUrl,
-        });
-      },
-    );
-    handle(
-      CMD.setProviderKey,
-      async (_e, type: ProviderType, key: string, opts) => {
-        const { encrypted } = setProviderKey(type, key, opts);
-        // If this is the active provider, push it to the running session.
-        const s = readAppSettingsSync(appWorkspaceRoot());
-        if (s.activeProvider === type || s.activeProvider === undefined) {
-          host?.setDeepSeekKey(key);
-        }
-        return { encrypted };
-      },
-    );
-    handle(CMD.updateProviderConfig, async (_e, type: ProviderType, opts) => {
-      updateProviderConfig(type, opts);
-      return getProviderStatus(type);
-    });
-    handle(CMD.clearProviderKey, (_e, type: ProviderType) => {
-      clearProviderKey(type);
-      const s = readAppSettingsSync(appWorkspaceRoot());
-      if (s.activeProvider === type) {
-        host?.setDeepSeekKey("");
-      }
     });
   }
   registerHandlers();
@@ -1205,8 +1251,8 @@ export function createSessionService(
       const active = host.activeSession;
       // Re-sync the reloaded renderer: re-point at the open session if any, else
       // restore the connect screen (the user reloaded while still disconnected).
-      if (active !== null) pointAt(active);
-      else send(EVT.reset, { noSession: true });
+      if (active !== null) activation.pointAt(active);
+      else activation.pointNowhere();
       return;
     }
     // Wrap the WHOLE bootstrap: a missing key (buildConfig) OR a failed
@@ -1273,6 +1319,126 @@ export function createSessionService(
       }
 
       const workspaceRoot = appWorkspaceRoot();
+      // Herta's synthesized voice (ADR 0042). Constructed here — before the
+      // host, so every session it creates carries it — but the utility
+      // process starts LAZILY on the first sentence, so an install that
+      // never speaks never pays the model load. The enable flag is seeded
+      // from the persisted setting; the Settings handler keeps it current.
+      realtimeVoiceEnabled =
+        (await readGlobalSettings(app.getPath("userData"))).realtimeVoice ??
+        true;
+      const userDataPath = app.getPath("userData");
+      synthesizer = createTtsSynthesizer({
+        // The downloaded copy first, the dev workspace's second (ADR 0061);
+        // a packaged app has only the first.
+        modelRoots: resolveTtsModelRoots({
+          userDataPath,
+          isPackaged: app.isPackaged,
+          workspaceRoot,
+        }),
+        // electron.vite.config.ts emits the worker beside the main bundle;
+        // it is a plain .cjs on purpose — a native addon cannot be bundled.
+        workerPath: join(__dirname, "tts-worker.cjs"),
+        sherpaPath: resolveSherpaEntry({
+          isPackaged: app.isPackaged,
+          resourcesPath: process.resourcesPath,
+          startDir: __dirname,
+        }),
+        enabled: () => realtimeVoiceEnabled,
+      });
+      {
+        // The model download (ADR 0061). The archive's location is pinned
+        // with its hash; a dev run may point it at a local server for the
+        // lab — NEVER a packaged build (the T1.3 rule the update feed and
+        // the DeepSeek base URL already follow).
+        const override = app.isPackaged
+          ? undefined
+          : process.env[TTS_ARCHIVE_URL_ENV];
+        const synth = synthesizer;
+        voiceModel = createVoiceModelService({
+          root: voiceModelStoreRoot(userDataPath),
+          bundleId: TTS_BUNDLE_ID,
+          archive: {
+            url:
+              override !== undefined && override !== ""
+                ? override
+                : TTS_ARCHIVE_URL,
+            sha256: TTS_ARCHIVE_SHA256,
+            bytes: TTS_ARCHIVE_BYTES,
+            unpackedBytes: TTS_BUNDLE_BYTES,
+          },
+          // Electron's client: proxy-aware, and the session's certificate
+          // policy applies. The signal aborts the transfer on cancel.
+          fetch: (url, init) => net.fetch(url, { signal: init.signal }),
+          onChange: (state) => send(EVT.voiceModel, state),
+          // The worker holds the bundle's files open; stop it before the
+          // files go (it forks afresh on the next request if a bundle is
+          // still there).
+          beforeRemove: () => synth.stopWorker(),
+          afterChange: () => {
+            synth.refreshBundle();
+          },
+        });
+      }
+      // The cloud voice (ADR 0062) beside the local one, both behind one
+      // switching synthesizer the app-server sees. The engine and the clone
+      // record come from settings; the key from the secure store, per call.
+      const startupSettings = await readGlobalSettings(userDataPath);
+      voiceEngine = startupSettings.voiceEngine ?? "local";
+      const referencePath = resolveVoiceCloneReference({
+        isPackaged: app.isPackaged,
+        resourcesPath: process.resourcesPath,
+        workspaceRoot,
+      });
+      const fetchLike = minimaxFetch;
+      minimaxVoice = createMiniMaxVoiceService({
+        fetch: fetchLike,
+        key: readMiniMaxKeyPlain,
+        planKey: readMiniMaxPlanKeyPlain,
+        readReference: async () => {
+          try {
+            return new Uint8Array(await readFile(referencePath));
+          } catch {
+            return null;
+          }
+        },
+        initial: startupSettings.minimaxVoice ?? null,
+        save: async (record) => {
+          await updateGlobalSettings(userDataPath, (s) => ({
+            ...s,
+            minimaxVoice: record ?? undefined,
+          }));
+        },
+        onChange: (state) => send(EVT.voiceMinimax, state),
+      });
+      const voiceService = minimaxVoice;
+      // An install that chose the cloud and has a key but no clone yet (a
+      // reset, a settings file from before the clone existed): make it at
+      // start, unasked — the user never operates the clone.
+      if (
+        voiceEngine === "minimax" &&
+        anyMiniMaxKey() &&
+        voiceService.voice() === null
+      ) {
+        void voiceService.prepare();
+      }
+      minimaxSynth = createMiniMaxSynthesizer({
+        fetch: fetchLike,
+        // Speech goes through the plan when there is one (§1.8), else it is
+        // billed to the pay-as-you-go key.
+        key: () => readMiniMaxPlanKeyPlain() ?? readMiniMaxKeyPlain(),
+        voice: () => voiceService.voice(),
+        enabled: () => realtimeVoiceEnabled && voiceEngine === "minimax",
+        applyEffect: loadCommChannelEffect(),
+        onVoiceMissing: (id) => voiceService.markMissing(id),
+        onUsed: () => voiceService.stampUsed(),
+        onRefusal: () => send(EVT.voiceMinimaxSpeech, minimaxRefusal()),
+      });
+      const speech = createSwitchingSynthesizer({
+        engine: () => voiceEngine,
+        local: synthesizer,
+        minimax: minimaxSynth,
+      });
       const config = await buildConfig(
         workspaceRoot,
         homedir(),
@@ -1287,8 +1453,17 @@ export function createSessionService(
         // (T1.3 pattern — an env-settable base URL in production would
         // redirect the API key to an arbitrary host).
         app.isPackaged ? undefined : process.env.HERTA_DEEPSEEK_BASE_URL,
+        speech,
       );
-      host = createSessionHost(config);
+      dreamRunning = config.dream?.enabled === true;
+      host = createSessionHost({
+        ...config,
+        // Per-install, beside the settings: each model call's token counts
+        // as the API states them, cache hits included — numbers only. The
+        // path needs Electron's `app`, so it is set here, not in the pure
+        // `buildConfig`.
+        usageLogPath: join(userDataPath, "usage.jsonl"),
+      });
       // Launch lands on the connect screen (接入黑塔空间站) rather than
       // auto-resuming the latest session: the user explicitly opens one from the
       // sidebar or starts a new one from the connect button (user 2026-06-20).
@@ -1302,14 +1477,13 @@ export function createSessionService(
       console.error("[herta] session bootstrap failed:", err);
       host = null;
       send(EVT.reset, {
-        error: err instanceof Error ? err.message : String(err),
+        error: errorMessage(err),
       });
     }
   }
 
   async function dispose(): Promise<void> {
-    stopForwarders?.();
-    stopForwarders = null;
+    activation.release();
     if (handlersRegistered) {
       // Exactly the channels registered above — never the whole CMD map,
       // which also names the update / app-version / window-control channels
@@ -1322,12 +1496,63 @@ export function createSessionService(
     await host?.closeActiveSession();
     host?.dispose();
     host = null;
+    // The voice worker is a CHILD PROCESS: left running it would outlive the
+    // window and hold ~200 MB of loaded model. Disposed after the sessions,
+    // so a turn still unwinding can finish its last synthesis request
+    // (which resolves null once the worker is gone — the reveal types it).
+    // A download in flight dies with the window (its partial file is
+    // discarded by the downloader itself); the service is rebuilt with the
+    // synthesizer on the next start.
+    voiceModel?.cancel();
+    voiceModel = null;
+    minimaxSynth?.dispose();
+    minimaxSynth = null;
+    minimaxVoice = null;
+    synthesizer?.dispose();
+    synthesizer = null;
+  }
+
+  /**
+   * The station-terminal treatment for the cloud voice, from the vendored
+   * `.cjs` emitted beside the main bundle (the worker requires the same file
+   * the same way). Absent — a dev tree before a build — the cloud voice
+   * plays dry rather than not at all.
+   */
+  function loadCommChannelEffect():
+    | ((samples: Float32Array, sampleRate: number) => Float32Array)
+    | undefined {
+    try {
+      const mod = createRequire(__filename)(
+        join(__dirname, "comm-channel-effect.cjs"),
+      ) as {
+        applyCommChannel: (
+          samples: Float32Array,
+          sampleRate: number,
+          options: { preset: string },
+        ) => Float32Array;
+      };
+      return (samples, sampleRate) =>
+        mod.applyCommChannel(samples, sampleRate, { preset: TTS_EFFECT });
+    } catch (err) {
+      console.warn(
+        `[herta-minimax] comm-channel effect unavailable, playing dry: ${String(err)}`,
+      );
+      return undefined;
+    }
   }
 
   return {
     start,
     dispose,
-    listSessions: () => host?.listSessions() ?? [],
+    // Bounded like the sidebar's listing above (audit BL11): the tray shows
+    // at most TRAY_SESSION_ROWS sessions, and an unbounded listing ran a stat,
+    // a 128KB read and a sidecar open PER session ever created, on this
+    // thread, on every right-click (perf audit 2026-09-20). Twice the rows:
+    // the host orders by transcript mtime and the menu re-sorts by
+    // lastActivityAt, so a little slack keeps the two orders from disagreeing
+    // about who is fifteenth.
+    listSessions: () =>
+      host?.listSessions({ limit: TRAY_SESSION_ROWS * 2 }) ?? [],
     // Tray-initiated navigation carries the SAME guards the renderer's
     // sidebar/top bar enforce (audit 2026-07-10): pre-guard-less, a tray
     // click on the already-open session tore down a running turn (re-open →
@@ -1361,6 +1586,8 @@ export function createSessionService(
       if (block !== null) return;
       await createAndPoint({});
     },
+    backendWorkspace: (): string | null =>
+      host?.activeSession?.backendWorkspace ?? null,
   };
 }
 

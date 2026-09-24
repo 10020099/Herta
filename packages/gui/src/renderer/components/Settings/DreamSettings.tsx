@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useHertaBridge } from "../../context/HertaBridgeContext.js";
 import { useT } from "../../i18n/LocaleProvider.js";
 import { SettingRow } from "./SettingRow.js";
+import { useRememberedSetting } from "./settings-snapshot.js";
 import { Toggle } from "./Toggle.js";
 
 /**
@@ -13,11 +14,19 @@ import { Toggle } from "./Toggle.js";
 export function DreamSettings(): JSX.Element {
   const t = useT();
   const { bridge } = useHertaBridge();
-  // Default to ON until the persisted value loads (Dream is on by default).
-  const [enabled, setEnabled] = useState(true);
-  // The value when the section opened — what the running app is using. The
-  // restart note shows only when the toggle now DIFFERS from it, so toggling
-  // back to the original hides it again.
+  // The last-known value on the first frame (settings-snapshot.ts); OFF —
+  // Dream is opt-in (2026-09-21) — only when nothing has been read yet.
+  const [enabled, setEnabled] = useRememberedSetting(
+    bridge,
+    "dream.enabled",
+    false,
+  );
+  // What the RUNNING app is using. The restart note shows only when the
+  // toggle now DIFFERS from it, so toggling back to it hides the note again.
+  // Main says it (`running`); the saved value on this pane's mount stood in
+  // for it before, and a pane reopened after a change showed ON with no note
+  // while the running app still had the old value (dream review
+  // 2026-09-22, finding 20). A bridge that does not say keeps that stand-in.
   const [initial, setInitial] = useState<boolean | null>(null);
   const [failed, setFailed] = useState(false);
   // A rejected config read previously died silently: the toggle showed the
@@ -31,7 +40,7 @@ export function DreamSettings(): JSX.Element {
       (c) => {
         if (alive) {
           setEnabled(c.enabled);
-          setInitial(c.enabled);
+          setInitial(c.running ?? c.enabled);
         }
       },
       () => {
@@ -41,7 +50,7 @@ export function DreamSettings(): JSX.Element {
     return () => {
       alive = false;
     };
-  }, [bridge]);
+  }, [bridge, setEnabled]);
 
   const onChange = (next: boolean): void => {
     // Optimistic: flip now, persist async. If the write fails, snap back so the

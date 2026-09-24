@@ -35,6 +35,22 @@ export interface RgFindings {
   timedOut: boolean;
 }
 
+/**
+ * rg's path for a match, in the workspace-relative form the verifier loads:
+ * the "./" prefix rg adds when the search root is "." dropped (the JS walker
+ * emits bare relatives), and on Windows its backslashes turned forward. ONLY
+ * on Windows: on macOS and Linux a backslash is an ordinary file-name
+ * character, and rewriting `a\b.ts` to `a/b.ts` pointed the verifier at a
+ * different file (platform review 2026-09-23).
+ */
+export function rgRelPath(
+  p: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const slashed = platform === "win32" ? p.split("\\").join("/") : p;
+  return slashed.replace(/^\.\//, "");
+}
+
 /** Cached per-process probe: resolves to the rg binary name, or null. */
 let rgProbe: Promise<string | null> | undefined;
 
@@ -52,11 +68,6 @@ export function detectRg(): Promise<string | null> {
     }
   });
   return rgProbe;
-}
-
-/** Test seam: reset the cached probe (e.g. after PATH manipulation). */
-export function resetRgProbe(): void {
-  rgProbe = undefined;
 }
 
 export function runRgFinder(opts: {
@@ -137,13 +148,13 @@ export function runRgFinder(opts: {
           };
         };
         if (ev.type !== "match") return;
+        // A name that is not UTF-8 arrives as `path.bytes`, with no `text`,
+        // and is skipped: every later stage opens files by string path,
+        // which cannot spell it (the JS walker never reaches one either).
         const p = ev.data?.path?.text;
         const n = ev.data?.line_number;
         if (typeof p !== "string" || typeof n !== "number") return;
-        // Normalize: backslashes on Windows, and the "./" prefix rg adds
-        // when the search root is "." (the JS walker emits bare relatives).
-        const rel = p.split("\\").join("/").replace(/^\.\//, "");
-        candidates.push({ relPath: rel, line: n });
+        candidates.push({ relPath: rgRelPath(p), line: n });
         if (candidates.length >= opts.candidateCap) {
           capped = true;
           child.kill();

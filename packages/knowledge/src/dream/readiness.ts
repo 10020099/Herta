@@ -2,11 +2,22 @@ import type { TerminalRecord } from "@herta/core";
 
 /** Count 黑塔 turns — speech or thought blocks — in a session record. This is
  *  the voice-density proxy the material gate uses to judge a single session as
- *  "long enough" to distill on its own (user/系统/差分协处理器 blocks don't count). */
-export function countHertaTurns(record: TerminalRecord): number {
+ *  "long enough" to distill on its own (user/系统/差分协处理器 blocks don't count).
+ *
+ *  With `sinceMs`, only blocks stamped AFTER it count — the material that is
+ *  new since the last completed pass. Counting the whole record let a
+ *  weeks-old session touched by a single block re-qualify for a full pass
+ *  every cooldown (dream review 2026-09-22, finding 11). A block with no
+ *  parseable stamp predates stamping and is old by definition. */
+export function countHertaTurns(record: TerminalRecord, sinceMs = 0): number {
   let n = 0;
   for (const block of record) {
-    if (block.kind === "herta") n++;
+    if (block.kind !== "herta") continue;
+    if (sinceMs > 0) {
+      const at = block.at === undefined ? Number.NaN : Date.parse(block.at);
+      if (!(at > sinceMs)) continue;
+    }
+    n++;
   }
   return n;
 }
@@ -38,17 +49,20 @@ export interface MaterialThresholds {
  *
  * `newSessionRecords` is the set of session records modified since the last
  * completed pass. Returns true when there are enough new sessions OR one of
- * them is long enough on its own (by 黑塔 turn count). The cadence floor
- * (cooldown) is enforced separately by the trigger — this is only the
- * "is there anything worth distilling" half of the gate.
+ * them has enough 黑塔 turns SINCE the last pass (`sinceMs`) to stand on its
+ * own. The cadence floor (cooldown) is enforced separately by the trigger —
+ * this is only the "is there anything worth distilling" half of the gate.
  */
 export function hasEnoughMaterial(
   newSessionRecords: readonly TerminalRecord[],
   thresholds: MaterialThresholds,
+  sinceMs = 0,
 ): boolean {
   if (newSessionRecords.length >= thresholds.minNewSessions) return true;
   for (const record of newSessionRecords) {
-    if (countHertaTurns(record) >= thresholds.minSessionHertaTurns) return true;
+    if (countHertaTurns(record, sinceMs) >= thresholds.minSessionHertaTurns) {
+      return true;
+    }
   }
   return false;
 }

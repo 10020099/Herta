@@ -72,6 +72,32 @@ describe("ApprovalPanel", () => {
     ]);
   });
 
+  it("a resolve the session never took re-arms the buttons instead of leaving them disabled (2026-09-10)", async () => {
+    const mock = createMockHertaBridge();
+    let attempts = 0;
+    const bridge = {
+      ...mock.bridge,
+      resolveApproval: async (): Promise<never> => {
+        attempts += 1;
+        throw new Error("session disposed");
+      },
+    };
+    renderWithLocale(
+      <HertaBridgeProvider bridge={bridge}>
+        <ApprovalPanel />
+      </HertaBridgeProvider>,
+    );
+    await settle();
+    emitPending(mock);
+    const allow = screen.getByRole("button", { name: "Allow" });
+    fireEvent.click(allow);
+    expect(allow).toBeDisabled(); // the one-resolution latch
+    await settle();
+    expect(allow).toBeEnabled(); // the rejection released it
+    fireEvent.click(allow);
+    expect(attempts).toBe(2);
+  });
+
   it("Always allow resolves allow/session", async () => {
     const mock = setup();
     await settle();
@@ -194,10 +220,81 @@ describe("ApprovalPanel", () => {
     const mock = setup();
     await settle();
     emitPending(mock);
-    fireEvent.keyDown(window, { key: "Escape" });
+    // A key goes to the focused element — the panel, which a fresh gate
+    // focuses.
+    fireEvent.keyDown(document.activeElement as Element, { key: "Escape" });
     expect(mock.calls.resolveApproval).toEqual([
       { requestId: "req-9", decision: "deny" },
     ]);
+  });
+
+  describe("a stray key never decides (UX review 2026-09-22, items 1-2)", () => {
+    /** A key the way a browser delivers it: keydown at the focused element,
+     *  and Enter/Space on a focused button clicks it (the default action
+     *  jsdom does not perform). */
+    function press(key: string, init: { repeat?: boolean } = {}): void {
+      const target = document.activeElement ?? document.body;
+      const proceed = fireEvent.keyDown(target, { key, ...init });
+      if (
+        proceed &&
+        (key === "Enter" || key === " ") &&
+        target instanceof HTMLButtonElement
+      ) {
+        fireEvent.click(target);
+      }
+    }
+
+    it("a fresh gate focuses the dialog, not Allow — Space and Enter typed into it approve nothing", async () => {
+      // Pre-fix the gate put focus on Allow the instant it appeared, while
+      // the user was typing a held message or confirming a pinyin candidate
+      // with Space: the next key allowed the operation, unread.
+      const mock = setup();
+      await settle();
+      emitPending(mock);
+      const panel = screen.getByTestId("approval-panel");
+      expect(document.activeElement).toBe(panel);
+      press(" ");
+      press("Enter");
+      expect(mock.calls.resolveApproval).toEqual([]);
+      // One deliberate Tab reaches the decisions.
+      fireEvent.keyDown(window, { key: "Tab" });
+      expect(document.activeElement).toBe(
+        screen.getByRole("button", { name: "Allow" }),
+      );
+    });
+
+    it("an Escape with nothing focused does not deny (the viewer just closed under the first one)", async () => {
+      // "Esc Esc" to close the file viewer: the first closed it and left
+      // focus on body, the second denied the write behind it.
+      const mock = setup();
+      await settle();
+      emitPending(mock);
+      act(() => {
+        (document.activeElement as HTMLElement | null)?.blur();
+      });
+      expect(document.activeElement).toBe(document.body);
+      press("Escape");
+      expect(mock.calls.resolveApproval).toEqual([]);
+    });
+
+    it("a key-repeat Escape never denies — holding Escape to close Settings stops at Settings", async () => {
+      pushOverlay("settings", OVERLAY_Z.settings);
+      const mock = setup();
+      await settle();
+      emitPending(mock);
+      act(() => {
+        popOverlay("settings");
+      });
+      // The panel is topmost and focused now; the held key keeps repeating.
+      expect(document.activeElement).toBe(screen.getByTestId("approval-panel"));
+      press("Escape", { repeat: true });
+      expect(mock.calls.resolveApproval).toEqual([]);
+      // A fresh press still denies.
+      press("Escape");
+      expect(mock.calls.resolveApproval).toEqual([
+        { requestId: "req-9", decision: "deny" },
+      ]);
+    });
   });
 
   it("ignores an Escape that originated in another focused element (audit 2026-07-24 H2)", async () => {
@@ -236,11 +333,14 @@ describe("ApprovalPanel", () => {
       const mock = setup();
       await settle();
       emitPending(mock);
-      // No focus steal: the Allow button did not take focus.
+      // No focus steal: neither the panel nor a button took focus.
+      expect(document.activeElement).not.toBe(
+        screen.getByTestId("approval-panel"),
+      );
       expect(document.activeElement).not.toBe(
         screen.getByRole("button", { name: "Allow" }),
       );
-      fireEvent.keyDown(window, { key: "Escape" });
+      fireEvent.keyDown(document.activeElement ?? window, { key: "Escape" });
       expect(mock.calls.resolveApproval).toEqual([]);
     } finally {
       popOverlay("settings");
@@ -256,11 +356,9 @@ describe("ApprovalPanel", () => {
     act(() => {
       popOverlay("settings");
     });
-    // Now topmost: focus lands on Allow, and Escape denies.
-    expect(document.activeElement).toBe(
-      screen.getByRole("button", { name: "Allow" }),
-    );
-    fireEvent.keyDown(window, { key: "Escape" });
+    // Now topmost: focus lands on the panel, and Escape denies.
+    expect(document.activeElement).toBe(screen.getByTestId("approval-panel"));
+    fireEvent.keyDown(document.activeElement as Element, { key: "Escape" });
     expect(mock.calls.resolveApproval).toEqual([
       { requestId: "req-9", decision: "deny" },
     ]);
@@ -275,9 +373,9 @@ describe("ApprovalPanel", () => {
     emitPending(mock);
     const allow = screen.getByRole("button", { name: "Allow" });
     const deny = screen.getByRole("button", { name: "Deny" });
-    // Autofocus put us on Allow (the first focusable). Shift+Tab from the
-    // FIRST button wraps to the LAST — never out of the panel.
-    expect(document.activeElement).toBe(allow);
+    // Autofocus put us on the dialog itself. Shift+Tab from there wraps to
+    // the LAST button — never out of the panel.
+    expect(document.activeElement).toBe(screen.getByTestId("approval-panel"));
     fireEvent.keyDown(window, { key: "Tab", shiftKey: true });
     expect(document.activeElement).toBe(deny);
     // Tab from the LAST wraps back to the FIRST.
@@ -319,8 +417,9 @@ describe("ApprovalPanel", () => {
     // before the `resolved` event round-trips — none may send a second call.
     fireEvent.click(allow);
     fireEvent.click(screen.getByRole("button", { name: "Deny" }));
-    fireEvent.keyDown(window, { key: "Escape" });
-    fireEvent.keyDown(window, { key: "Escape" });
+    const panel = screen.getByTestId("approval-panel");
+    fireEvent.keyDown(panel, { key: "Escape" });
+    fireEvent.keyDown(panel, { key: "Escape" });
     expect(mock.calls.resolveApproval).toEqual([
       { requestId: "req-9", decision: "allow", persistence: "once" },
     ]);
@@ -648,5 +747,47 @@ describe("ApprovalPanel — conversation reserve (2026-07-27)", () => {
       expect(well?.textContent).toContain("import http from 'node:http';");
       expect(well?.textContent).not.toContain("folded");
     });
+  });
+});
+
+describe("ApprovalPanel — workspace trust (ADR 0064)", () => {
+  it("offers 「Trust this workspace」 with its scope note only when the request is trustable, and resolves allow/trust", async () => {
+    const mock = setup();
+    await settle();
+    act(() => {
+      mock.emitOverlay({
+        kind: "pending",
+        overlay: {
+          kind: "pending-permission",
+          requestId: "req-t",
+          risk: "workspace_write",
+          tool: "bash",
+          summary: "git commit changes the repository",
+          command: "git add -A && git commit -m x",
+          cacheable: true,
+          trustable: true,
+        },
+      });
+    });
+    expect(
+      screen.getByText(/Once this workspace is trusted/),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Trust this workspace" }),
+    );
+    expect(mock.calls.resolveApproval).toEqual([
+      { requestId: "req-t", decision: "allow", persistence: "trust" },
+    ]);
+  });
+
+  it("hides the trust choice when the request is not trustable (network, destructive, or already trusted)", async () => {
+    const mock = setup();
+    await settle();
+    emitPending(mock); // the network fixture carries no `trustable`
+    expect(screen.getByTestId("approval-panel")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Trust this workspace" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/Once this workspace is trusted/)).toBeNull();
   });
 });

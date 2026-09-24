@@ -12,9 +12,11 @@ import { tmpdir } from "node:os";
 import { join, parse } from "node:path";
 import type { Session, SessionMetadata } from "@herta/app-server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { CMD } from "../preload/channels.js";
 import {
   buildConfig,
   copyLegacyMcpConfig,
+  countsAsUserActivity,
   findProjectRoot,
   handleSetWorkspace,
   isSafeSessionId,
@@ -23,9 +25,12 @@ import {
   pickLatest,
   resolveWorkspaceRoot,
   sanitizeCreateOpts,
+  sanitizeLogQuery,
   shouldOfferLegacyMcpMigration,
+  snapshot,
   startForwarders,
 } from "./session-service.js";
+
 
 describe("legacy MCP migration", () => {
   it("offers only a pending legacy file, copies it without removing the source, and honors the one-time decision", async () => {
@@ -54,6 +59,119 @@ describe("legacy MCP migration", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("countsAsUserActivity — what tells a running dream pass the user is back (dream review 2026-09-22, finding 12)", () => {
+  it("counts what the user does outside a turn", () => {
+    for (const channel of [
+      CMD.rewindLastTurn,
+      CMD.steerText,
+      CMD.interrupt,
+      CMD.search,
+      CMD.attachFiles,
+      CMD.stageImages,
+      CMD.readWorkspaceFile,
+      CMD.readWorkspaceLog,
+      CMD.recordSlice,
+      CMD.setDreamConfig,
+      CMD.setLocale,
+    ]) {
+      expect(countsAsUserActivity(channel), channel).toBe(true);
+    }
+  });
+
+  it("does not count what the window does on its own", () => {
+    for (const channel of [
+      CMD.list,
+      CMD.resyncRecord,
+      CMD.requestSync,
+      CMD.refreshRepo,
+      CMD.maybePlayEasterEgg,
+      CMD.getDreamConfig,
+      CMD.getDeepSeekKeyStatus,
+      CMD.windowIsMaximized,
+    ]) {
+      expect(countsAsUserActivity(channel), channel).toBe(false);
+    }
+  });
+});
+
+describe("snapshot — the reset payload (UX review 2026-09-22, item 7)", () => {
+  const base = {
+    sessionId: "s",
+    workspaceRoot: "/r",
+    record: [],
+    overlay: null,
+    title: null,
+    backendWorkspace: "/w",
+    backendWorkspaceIsDefault: true,
+    topics: [],
+    lang: "zh",
+    repo: null,
+  };
+
+  it("carries the turn state and the staged strip while a turn is in flight — a reloaded window comes back busy", () => {
+    const s = {
+      ...base,
+      turnInFlight: true,
+      backendActive: true,
+      stagedImageList: [{ id: "i1", name: "shot.png", path: "a/shot.png" }],
+    } as unknown as Session;
+    expect(snapshot(s)).toMatchObject({
+      turn: { backendActive: true },
+      stagedImages: [{ id: "i1", name: "shot.png", path: "a/shot.png" }],
+    });
+  });
+
+  it("an idle session with nothing staged carries neither", () => {
+    const s = {
+      ...base,
+      turnInFlight: false,
+      backendActive: false,
+      stagedImageList: [],
+    } as unknown as Session;
+    const snap = snapshot(s);
+    expect(snap).not.toHaveProperty("turn");
+    expect(snap).not.toHaveProperty("stagedImages");
+  });
+});
+
+describe("sanitizeLogQuery (the history tab's IPC door, ADR 0059 §6)", () => {
+  it("passes integer paging, a branch-shaped ref and a trimmed query; drops an empty query", () => {
+    expect(sanitizeLogQuery({ skip: 0, limit: 50 })).toEqual({
+      skip: 0,
+      limit: 50,
+    });
+    expect(
+      sanitizeLogQuery({
+        skip: 50,
+        limit: 50,
+        ref: "feature/x",
+        query: " fix ",
+      }),
+    ).toEqual({ skip: 50, limit: 50, ref: "feature/x", query: "fix" });
+    expect(sanitizeLogQuery({ skip: 0, limit: 50, query: "   " })).toEqual({
+      skip: 0,
+      limit: 50,
+    });
+  });
+
+  it("refuses non-objects, bad paging, an option-shaped or malformed ref, and an oversized query", () => {
+    expect(sanitizeLogQuery(null)).toBeNull();
+    expect(sanitizeLogQuery("x")).toBeNull();
+    expect(sanitizeLogQuery({ skip: -1, limit: 50 })).toBeNull();
+    expect(sanitizeLogQuery({ skip: 0.5, limit: 50 })).toBeNull();
+    expect(sanitizeLogQuery({ skip: 0, limit: 0 })).toBeNull();
+    expect(sanitizeLogQuery({ skip: 0, limit: 10_000 })).toBeNull();
+    expect(
+      sanitizeLogQuery({ skip: 0, limit: 50, ref: "--output=x" }),
+    ).toBeNull();
+    expect(sanitizeLogQuery({ skip: 0, limit: 50, ref: "a..b" })).toBeNull();
+    expect(sanitizeLogQuery({ skip: 0, limit: 50, ref: 7 })).toBeNull();
+    expect(
+      sanitizeLogQuery({ skip: 0, limit: 50, query: "q".repeat(201) }),
+    ).toBeNull();
   });
 });
 
@@ -171,11 +289,13 @@ describe("buildConfig", () => {
     expect(cfg.workspaceRoot).toBe(cwd);
     expect(cfg.providers.apiKey).toBe("sk-test-123");
     // Must match the working CLI: the completion endpoint accepts only
-    // deepseek-v4-pro / deepseek-v4-flash (deepseek-v4-base 400s).
-    // Defaults (owner 2026-08-17): actor Pro, backend FLASH.
+    // deepseek-flash / deepseek-v4-pro (2026-09-10; deepseek-v4-base 400s).
+    // Defaults: actor Pro (owner 2026-08-17); backend the flash — the
+    // vision-capable one since the rename (owner 2026-08-28, ADR 0048
+    // §5a/§5b — 板砖 can re-look out of the box).
     expect(cfg.providers.actorModel).toBe("deepseek-v4-pro");
-    expect(cfg.providers.backendModel).toBe("deepseek-v4-flash");
-    expect(cfg.providers.routerModel).toBe("deepseek-v4-flash");
+    expect(cfg.providers.backendModel).toBe("deepseek-flash");
+    expect(cfg.providers.routerModel).toBe("deepseek-flash");
     // "high" is the default backend reasoning effort (Settings → Coprocessor
     // can lower/raise it; with no settings file the default stands).
     expect(cfg.thinking).toBe("high");
@@ -183,33 +303,47 @@ describe("buildConfig", () => {
   });
 
   it("honors HERTA_ACTOR_MODEL / HERTA_BACKEND_MODEL overrides", async () => {
-    vi.stubEnv("HERTA_ACTOR_MODEL", "deepseek-v4-flash");
-    vi.stubEnv("HERTA_BACKEND_MODEL", "deepseek-v4-flash");
+    vi.stubEnv("HERTA_ACTOR_MODEL", "deepseek-flash");
+    vi.stubEnv("HERTA_BACKEND_MODEL", "deepseek-flash");
     const cwd = mkdtempSync(join(tmpdir(), "herta-bc-cwd-ov-"));
     const home = mkdtempSync(join(tmpdir(), "herta-bc-home-ov-"));
     const cfg = await buildConfig(cwd, home, "sk-test-123");
-    expect(cfg.providers.actorModel).toBe("deepseek-v4-flash");
-    expect(cfg.providers.backendModel).toBe("deepseek-v4-flash");
+    expect(cfg.providers.actorModel).toBe("deepseek-flash");
+    expect(cfg.providers.backendModel).toBe("deepseek-flash");
   });
 
-  it("defaults Dream enabled to true with no settings file", async () => {
+  it("Dream is OPT-IN: off with no settings file, and with a file that never recorded a choice (2026-09-21)", async () => {
+    // The pass runs while the user is away, on their key — a default of ON
+    // spent tokens for people who had never opened the Dream pane.
     const cwd = mkdtempSync(join(tmpdir(), "herta-bc-dream-"));
     const home = mkdtempSync(join(tmpdir(), "herta-bc-dreamh-"));
-    const cfg = await buildConfig(cwd, home, "sk-test-123");
-    expect(cfg.dream?.enabled).toBe(true);
-  });
-
-  it("honors a persisted Dream enabled:false from settings.json", async () => {
-    const cwd = mkdtempSync(join(tmpdir(), "herta-bc-dream2-"));
-    const home = mkdtempSync(join(tmpdir(), "herta-bc-dream2h-"));
+    expect((await buildConfig(cwd, home, "sk-test-123")).dream?.enabled).toBe(
+      false,
+    );
     mkdirSync(join(cwd, ".herta"), { recursive: true });
     writeFileSync(
       join(cwd, ".herta", "settings.json"),
-      JSON.stringify({ dream: { enabled: false } }),
+      JSON.stringify({ backend: { thinking: "low" } }),
       "utf-8",
     );
-    const cfg = await buildConfig(cwd, home, "sk-test-123");
-    expect(cfg.dream?.enabled).toBe(false);
+    expect((await buildConfig(cwd, home, "sk-test-123")).dream?.enabled).toBe(
+      false,
+    );
+  });
+
+  it("honors a persisted Dream choice from settings.json — on, and off", async () => {
+    for (const enabled of [true, false]) {
+      const cwd = mkdtempSync(join(tmpdir(), "herta-bc-dream2-"));
+      const home = mkdtempSync(join(tmpdir(), "herta-bc-dream2h-"));
+      mkdirSync(join(cwd, ".herta"), { recursive: true });
+      writeFileSync(
+        join(cwd, ".herta", "settings.json"),
+        JSON.stringify({ dream: { enabled } }),
+        "utf-8",
+      );
+      const cfg = await buildConfig(cwd, home, "sk-test-123");
+      expect(cfg.dream?.enabled).toBe(enabled);
+    }
   });
 
   it("honors a persisted backend thinking tier from settings.json", async () => {
@@ -233,14 +367,14 @@ describe("buildConfig", () => {
     mkdirSync(join(cwd, ".herta"), { recursive: true });
     writeFileSync(
       join(cwd, ".herta", "settings.json"),
-      JSON.stringify({ models: { actor: "deepseek-v4-flash" } }),
+      JSON.stringify({ models: { actor: "deepseek-flash" } }),
       "utf-8",
     );
     const cfg = await buildConfig(cwd, home, "sk-test-123");
     // Actor follows the setting; backend, unset, keeps the built-in default
-    // (flash since 2026-08-17). A PERSISTED backend choice is also honored.
-    expect(cfg.providers.actorModel).toBe("deepseek-v4-flash");
-    expect(cfg.providers.backendModel).toBe("deepseek-v4-flash");
+    // (the flash). A PERSISTED backend choice is also honored.
+    expect(cfg.providers.actorModel).toBe("deepseek-flash");
+    expect(cfg.providers.backendModel).toBe("deepseek-flash");
     writeFileSync(
       join(cwd, ".herta", "settings.json"),
       JSON.stringify({ models: { backend: "deepseek-v4-pro" } }),
@@ -249,6 +383,29 @@ describe("buildConfig", () => {
     expect(
       (await buildConfig(cwd, home, "sk-test-123")).providers.backendModel,
     ).toBe("deepseek-v4-pro");
+  });
+
+  it("a settings.json from before the 2026-09 rename still means the flash — for BOTH stages, and the retired vision row folds into it", async () => {
+    vi.stubEnv("HERTA_ACTOR_MODEL", undefined);
+    vi.stubEnv("HERTA_BACKEND_MODEL", undefined);
+    const cwd = mkdtempSync(join(tmpdir(), "herta-bc-legacy-"));
+    const home = mkdtempSync(join(tmpdir(), "herta-bc-legacyh-"));
+    mkdirSync(join(cwd, ".herta"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".herta", "settings.json"),
+      JSON.stringify({
+        models: {
+          actor: "deepseek-v4-flash",
+          backend: "deepseek-v4-flash-vision-exp",
+        },
+      }),
+      "utf-8",
+    );
+    const cfg = await buildConfig(cwd, home, "sk-test-123");
+    // Not the Pro default: a user who had picked the flash keeps the flash
+    // (and its price) across the rename.
+    expect(cfg.providers.actorModel).toBe("deepseek-flash");
+    expect(cfg.providers.backendModel).toBe("deepseek-flash");
   });
 
   it("an env override still beats the setting (dev/lab knob), and an off-enum setting is ignored", async () => {
@@ -260,13 +417,14 @@ describe("buildConfig", () => {
     writeFileSync(
       join(cwd, ".herta", "settings.json"),
       JSON.stringify({
-        models: { actor: "deepseek-v4-flash", backend: "deepseek-v4-base" },
+        models: { actor: "deepseek-flash", backend: "deepseek-v4-base" },
       }),
       "utf-8",
     );
     const cfg = await buildConfig(cwd, home, "sk-test-123");
     expect(cfg.providers.actorModel).toBe("deepseek-v4-pro"); // env won
-    expect(cfg.providers.backendModel).toBe("deepseek-v4-flash"); // off-enum → default
+    // off-enum → the built-in default (the flash)
+    expect(cfg.providers.backendModel).toBe("deepseek-flash");
   });
 
   it("backendContract (ADR 0040): default MINIMAL (owner flip 2026-08-17); setting honored; env beats setting; off-enum → default", async () => {

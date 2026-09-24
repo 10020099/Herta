@@ -96,7 +96,11 @@ const JSON_ONLY: Record<PromptLang, string> = {
  *   FACTUAL sentences naming the underlying event, stored at promotion and
  *   keyed on by the reactivation gate. Zero extra calls: this gate already
  *   reads the digest.
- * REPLY: JSON { "worthy": boolean, "reason": string, "occasion": string }
+ * REPLY: JSON { "worthy": boolean, "reason": string, "occasion": string,
+ *   "retellsKnownEvent": boolean, "mixedTopics": boolean } — mixedTopics
+ *   (dream review 2026-09-22, finding 22): the excerpt strings together
+ *   unrelated topics; the verdict and the occasion are about the most
+ *   memorable one, and generation and critique then focus on it.
  *
  * @param digest    Rendered episode digest text.
  * @param summaries Titles + tags + occasion lines of existing 废案 for dedup check.
@@ -171,16 +175,21 @@ export function buildWorthinessPrompt(
           "",
           "**Default to worthy: false.** Reply worthy: true only when a positive signal is clearly present AND none of the negative items apply. Ambiguous cases are always rejected — better no 废案 than a weak one.",
           "",
+          "## Excerpts that mix topics",
+          "",
+          "Sometimes an excerpt strings together two or more unrelated topics — no causal or emotional thread runs from one to the next (a debugging session, then an unrelated chat about dinner). Do not reject it for that, and do not average the topics: judge the most memorable one ALONE, name that one in occasion, and set mixedTopics true. The 废案, if written, will tell that one only. A conversation that wanders but stays connected is not mixed.",
+          "",
           "## Reply format",
           "",
           JSON_ONLY.en,
           `${FENCE}json`,
-          '{"worthy": boolean, "reason": "string", "occasion": "string", "retellsKnownEvent": boolean}',
+          '{"worthy": boolean, "reason": "string", "occasion": "string", "retellsKnownEvent": boolean, "mixedTopics": boolean}',
           FENCE,
           "",
           "reason: one or two English sentences explaining the call (if accepted, name the positive signal; if rejected, name the negative item).",
           'occasion: one or two FACTUAL English sentences naming the real-life occasion behind the excerpt — who did what / what actually happened, NOT the literary angle a 废案 might take on it (e.g. "The Trailblazer recounted the accident where he force-pushed over the main branch and stayed up all night restoring the commits from the reflog."). When the excerpt RECOUNTS or revisits an earlier event, name THAT underlying event (the incident itself), never the act of recounting it — "retold the story to a colleague" is the wrong anchor; the force-push accident is the right one. Fill it whenever the excerpt clearly discusses ONE event, even when worthy is false (a repeat mention still strengthens the memory of that event downstream); use the empty string "" only when no single event can be named.',
           "retellsKnownEvent: true when the excerpt is (at least partly) a RE-telling or revisiting of an event that plainly happened before this conversation — the speakers refer back to it rather than living it for the first time. Independent of worthy: an unworthy repeat with retellsKnownEvent true still reinforces the existing memory downstream. Default false when unsure.",
+          "mixedTopics: true only when the excerpt strings together unrelated topics (see above); then occasion names the one you judged. Default false.",
         ]
       : [
           "你在判断一段会话片段是否值得被收录为一则废案（黑塔的语气范例）。",
@@ -217,16 +226,21 @@ export function buildWorthinessPrompt(
           "",
           "**默认回 worthy: false。** 只有在确实看到正面信号且不触碰以上任何一条否定项时，才回 worthy: true。模糊情况一律拒绝——废案宁缺毋滥。",
           "",
+          "## 多个话题拼在一起的片段",
+          "",
+          "有时一段片段是两件以上互不相关的事拼在一起——前后之间没有因果或情绪上的连线（先是一段调试，后面是毫不相干的晚饭闲聊）。不要因此拒绝，也不要把几件事平均起来看：只按其中**最值得记住的那一件**判断，让 occasion 点名那一件，并把 mixedTopics 填 true。若写成废案，只会写那一件。聊着聊着转了话题、但前后连得上的一段对话不算拼在一起。",
+          "",
           "## 回复格式",
           "",
           "**必须**以 json 格式回复，且只输出 JSON，不附加任何说明：",
           `${FENCE}json`,
-          '{"worthy": boolean, "reason": "string", "occasion": "string", "retellsKnownEvent": boolean}',
+          '{"worthy": boolean, "reason": "string", "occasion": "string", "retellsKnownEvent": boolean, "mixedTopics": boolean}',
           FENCE,
           "",
           "其中 reason 用一两句中文说明判断理由（接受则指出哪个正面信号；拒绝则指出哪条否定项）。",
           'occasion：用一到两句**事实性**中文点名这段对话背后真实发生的事由——谁做了什么/实际发生了什么，不是废案可能采用的文学角度（例如："开拓者讲述了他把 main 分支 force push 覆盖、熬夜用 reflog 恢复提交的事故"）。若这段对话是在**重提/回顾**更早发生的某件事，事由要点名**那件事本身**（事故本身），而不是「重提」这个动作——"把事故讲给了新同事听"是错误的锚点，"force push 事故"才是。只要对话明确围绕某一件事展开就填写，哪怕 worthy 为 false（重复提起也会在下游强化对那件事的记忆）；只有当无法点名任何一件事时才填空字符串 ""。',
           "retellsKnownEvent：当这段对话（至少部分）是在**重述/回顾**一件明显发生在本次对话之前的事——说话双方在回指它，而非第一次经历它——时填 true。与 worthy 相互独立：不值得收录的重复提起，只要 retellsKnownEvent 为 true，仍会在下游强化既有记忆。拿不准填 false。",
+          "mixedTopics：仅当片段是几件互不相关的事拼在一起时填 true（见上文），这时 occasion 点名你据以判断的那一件。默认 false。",
         ];
 
   return {
@@ -268,6 +282,10 @@ export function buildGenerationPrompt(
   guide: string,
   env: string,
   lang: PromptLang = "zh",
+  /** The one event to tell when the worthiness gate found the digest to
+   *  string together unrelated topics (dream review 2026-09-22, finding
+   *  22): its occasion. Omitted → the whole digest, as before. */
+  focus?: string,
 ): DistillPromptResult {
   const exemplarBlock =
     exemplars.length > 0
@@ -408,6 +426,16 @@ export function buildGenerationPrompt(
           "- The novelty requirement below constrains difference from the **existing 废案** — never difference from the digest. If the digest resembles an existing 废案's situation, write THIS experience's distinct facet; do not fabricate a new event to be novel.",
           "- When the digest is an emotional occasion (a confided loss, a farewell, a heavy thing said out loud), the 废案 must keep that occasion as its subject — never swap it for a technical incident, and never write the heavy thing light.",
           "",
+          ...(focus !== undefined
+            ? [
+                "## Scope of this 废案",
+                "",
+                "The digest strings together several unrelated topics. This 废案 is about ONE of them only:",
+                focus,
+                "Write that one. The others do not enter the page — not as scenes, not as background, not in passing.",
+                "",
+              ]
+            : []),
           "## Evidence-grounding principle",
           "",
           "**Conclusions reflect verified evidence only.**",
@@ -415,8 +443,9 @@ export function buildGenerationPrompt(
           '- Targeted tests pass → write "targeted tests pass", not "fix complete"',
           '- One file changed → write "changed this one spot", not "all done"',
           "- 板砖 reported an error code → cite the error code; do not translate it into a system meltdown",
+          "- Each 〔…〕 block says in its parentheses what it is: （已核实） is a record of what happened; （失败） a failed tool call or a run that failed; （中断） a run stopped before it finished — usually the Trailblazer called it off; （受阻） a run that could not proceed; （部分完成） a run that did only part of its job. A run tagged anything but （已核实） did NOT complete: say it failed, stopped or stalled — never retell it as done or passed.",
           "",
-          '**Only when** the session digest contains 〔差分协处理器（已核实）：…〕 blocks (i.e. the excerpt involves coding / a 板砖 delegation) must Herta\'s lines draw their evidence from them, never claiming more than the evidence says; **if the excerpt is pure conversation** (no such blocks), then there is no "done/passed"-type conclusion to ground — do not invent any task outcome or verification result.',
+          '**Only when** the session digest contains 〔差分协处理器（…）：…〕 or 〔系统（…）：…〕 blocks (i.e. the excerpt involves coding / a 板砖 delegation) must Herta\'s lines draw their evidence from them, never claiming more than the evidence says; **if the excerpt is pure conversation** (no such blocks), then there is no "done/passed"-type conclusion to ground — do not invent any task outcome or verification result.',
           "",
           "## Handling self-corrections",
           "",
@@ -530,6 +559,16 @@ export function buildGenerationPrompt(
           "- 下方「新颖性要求」约束的是与**已有废案**的差异，不是与摘要的差异。若摘要与某则已有废案情境相近，就写这次经历**独有的侧面**，而不是为了新颖凭空编一件新事。",
           "- 摘要是情绪场合（一次倾诉、一次告别、一件说出口的重事）时，废案必须以那个场合为主体——不许把它换成技术事件，也不许把重的事写轻。",
           "",
+          ...(focus !== undefined
+            ? [
+                "## 本则废案的取材范围",
+                "",
+                "摘要里是几件互不相关的事拼在一起。这则废案只写其中一件：",
+                focus,
+                "只写这一件。其余几件不进入废案——不写成场景，不作背景，也不顺带一提。",
+                "",
+              ]
+            : []),
           "## 证据接地原则",
           "",
           "**结论只反映已核实的证据。**",
@@ -537,8 +576,9 @@ export function buildGenerationPrompt(
           '- 定向测试通过 → 写"定向测试通过"，不写"修复完成"',
           '- 一个文件改动 → 写"改了这一处"，不写"全部搞定"',
           "- 板砖报告了错误码 → 引用错误码，不翻译成系统崩溃",
+          "- 每个〔…〕块的括号里标着它是什么：（已核实）是发生过的事的记录；（失败）是一次失败的工具调用或一次失败的运行；（中断）是没跑完就停下的运行——多半是开拓者叫停的；（受阻）是走不下去的运行；（部分完成）是只做了一部分的运行。标着（已核实）以外的运行**没有完成**：失败就写失败，中断就写中断，受阻就写受阻，绝不写成已完成或已通过。",
           "",
-          '**仅当** 会话摘要中出现 〔差分协处理器（已核实）：…〕 块（即本片段涉及编程/板砖委托）时，黑塔的台词须从中提取证据，不得比证据说的更多；**若本片段是纯对话**（没有这类块），则不存在需要接地的"完成/通过"类结论——不要凭空虚构任何任务成果或验证结论。',
+          '**仅当** 会话摘要中出现 〔差分协处理器（…）：…〕 或 〔系统（…）：…〕 块（即本片段涉及编程/板砖委托）时，黑塔的台词须从中提取证据，不得比证据说的更多；**若本片段是纯对话**（没有这类块），则不存在需要接地的"完成/通过"类结论——不要凭空虚构任何任务成果或验证结论。',
           "",
           "## 自我更正的处理",
           "",
@@ -598,6 +638,9 @@ export function buildCritiquePrompt(
    *  Omitted (legacy callers/tests): no faithfulness section, payload is
    *  the bare draft, byte-identical to the previous contract. */
   digest?: string,
+  /** The one event the draft was asked to tell (finding 22, see
+   *  `buildGenerationPrompt`): faithfulness is judged against it alone. */
+  focus?: string,
 ): DistillPromptResult {
   const guideBlock =
     guide.trim().length > 0
@@ -631,7 +674,7 @@ export function buildCritiquePrompt(
           "| **Stock phrasing** | Generic delivery, without Herta's specific word choices or sentence habits |",
           "| **Dramatized** | Emotion spills onto the surface — too many exclamations, piled metaphors, tone inflated beyond what the facts need |",
           '| **Sloganized** | A summary slogan appears, e.g. "That\'s how a genius does it" / "I\'m always right" — a performative wrap-up |',
-          '| **Overclaimed conclusion** | Inferring "all done" from "targeted tests pass", or "problem solved" from "changed one file" |',
+          '| **Overclaimed conclusion** | Inferring "all done" from "targeted tests pass", or "problem solved" from "changed one file"; or telling a run that the source digest tags （失败）/（中断）/（受阻）/（部分完成） as finished or passed |',
           '| **Missing Herta signature** | The line is fluent and error-free but carries none of her angle of observation or diction (see the guide above) — "correct but not her", unrecognizable as Herta |',
           "",
           '**Important**: a high voice score requires more than "no problems above" — the lines must carry Herta recognizability (logical density; nicknames/openers/clipped bursts are optional, but a neutral could-be-anyone correct line is not enough). Lines that are merely correct with no personal angle should cap the voice score at 0.7. Note: do NOT suggest stuffing trademark catchphrases just to raise the voice score.',
@@ -672,6 +715,13 @@ export function buildCritiquePrompt(
                 "- **0.5 ~ 0.7**: the event is present but crowded out — invented side-plots carry more of the page than the source does",
                 "- **< 0.5**: the page tells a different story; the digest's core event (especially an emotional occasion — a confided loss, a heavy admission) is missing or replaced by an invented incident",
                 "A page that keeps the digest's THEME but swaps its actual event scores low. When the digest records an emotional occasion, the occasion itself must be the page's subject for a high score.",
+                ...(focus !== undefined
+                  ? [
+                      "The digest strings together several unrelated topics, and this 废案 was asked to tell ONE of them:",
+                      focus,
+                      "Judge faithfulness against that one alone; leaving the others out costs nothing.",
+                    ]
+                  : []),
                 "",
               ]
             : []),
@@ -719,7 +769,7 @@ export function buildCritiquePrompt(
           "| **套话** | 使用了通用的说话方式，没有黑塔特定的词汇选择或句式习惯 |",
           "| **戏剧化** | 情绪溢出表面——感叹过多、比喻堆砌、语气夸张超出事实需要 |",
           '| **口号化** | 出现了总结性的口号句，如"这就是天才的方式"/"我永远正确"之类的表演式收尾 |',
-          '| **夸大结论** | 从"定向测试通过"推论到"全部搞定"，或从"改了一个文件"推论到"问题解决" |',
+          '| **夸大结论** | 从"定向测试通过"推论到"全部搞定"，或从"改了一个文件"推论到"问题解决"；或把来源摘要里标着（失败）/（中断）/（受阻）/（部分完成）的运行写成已完成或已通过 |',
           '| **缺少黑塔标志** | 台词通顺、没有明显错误，但完全没有她的观察角度或用词习惯（参照上方说话指南）——"正确但没有她"，不像本人 |',
           "",
           '**重要**：高语气分不仅要求"没有上述问题"，更要求台词带有黑塔的辨识度（逻辑密度、外号/开场/破折号等招牌可有可无，但「谁都能说」的中性正确句不够）。空有正确语气、毫无个人角度的台词，语气分（voice）不应高于 0.7。注意：不要为了拉高语气分而建议堆砌招牌口头禅。',
@@ -760,6 +810,13 @@ export function buildCritiquePrompt(
                 "- **0.5 ~ 0.7**：那件事还在，但被挤到了边上——虚构的支线占的篇幅比来源事件还多",
                 "- **< 0.5**：页面讲的是另一个故事；摘要的核心事件（尤其是情绪场合——一次倾诉、一句沉重的坦白）缺席，或被一件虚构事件顶替",
                 "只保留了摘要的「主题」但换掉了实际事件的页面，得低分。摘要记录的是情绪场合时，那个场合本身必须是页面的主体才能得高分。",
+                ...(focus !== undefined
+                  ? [
+                      "摘要里是几件互不相关的事拼在一起，这则废案只取其中一件：",
+                      focus,
+                      "忠实性只对照这一件；没写其余几件不扣分。",
+                    ]
+                  : []),
                 "",
               ]
             : []),

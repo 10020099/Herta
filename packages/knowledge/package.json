@@ -6,7 +6,8 @@
   "type": "module",
   "sideEffects": false,
   "exports": {
-    ".": "./dist/index.js"
+    ".": "./dist/index.js",
+    "./dream-prompt": "./dist/dream-prompt.js"
   },
   "bin": {
     "herta-knowledge": "./dist/cli/herta-knowledge-bin.js"

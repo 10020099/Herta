@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useHertaBridge } from "../../context/HertaBridgeContext.js";
 import type { MessageKey } from "../../i18n/keys.js";
 import { useT } from "../../i18n/LocaleProvider.js";
 import { OVERLAY_Z, useModalOverlay } from "../../lib/overlay-stack.js";
@@ -9,6 +10,7 @@ import { LanguageSettings } from "./LanguageSettings.js";
 import { McpSettings } from "./McpSettings.js";
 import { ProjectRulesSettings } from "./ProjectRulesSettings.js";
 import { ProviderSettings } from "./ProviderSettings.js";
+import { primeSettings } from "./settings-snapshot.js";
 import { UpdateSettings } from "./UpdateSettings.js";
 import { VoiceSettings } from "./VoiceSettings.js";
 import { WindowSettings } from "./WindowSettings.js";
@@ -85,7 +87,10 @@ const DeepSeekIcon = (): JSX.Element => (
   </svg>
 );
 
-const GlobeIcon = (): JSX.Element => (
+// 语言: a 文 over an A — the translate mark (owner 2026-09-16: the globe
+// read as a browser icon). The 文 is its tick, bar and the two crossing
+// falling strokes; the A carries its crossbar; the two sit on a diagonal.
+const LanguageIcon = (): JSX.Element => (
   <svg
     width="17"
     height="17"
@@ -97,8 +102,8 @@ const GlobeIcon = (): JSX.Element => (
     strokeLinejoin="round"
     aria-hidden="true"
   >
-    <circle cx="12" cy="12" r="9" />
-    <path d="M3 12h18M12 3c2.5 2.5 2.5 15 0 18M12 3c-2.5 2.5-2.5 15 0 18" />
+    <path d="M8 2.5V5M3 5h10M11 8.5 4 15M5 8.5c1 2.6 3 4.9 6 6.4" />
+    <path d="m13.5 21 4.25-9.5L22 21M15.1 17.4h5.3" />
   </svg>
 );
 
@@ -188,7 +193,7 @@ const GROUPS = [
       {
         key: "language",
         labelKey: "nav.language" satisfies MessageKey,
-        Icon: GlobeIcon,
+        Icon: LanguageIcon,
         Pane: LanguageSettings,
       },
       {
@@ -281,16 +286,28 @@ export function SettingsModal({
   onClose,
 }: SettingsModalProps): JSX.Element | null {
   const t = useT();
+  const { bridge } = useHertaBridge();
+  // Prime the panes' last-known values (settings-snapshot.ts): once when the
+  // app starts — this component is mounted, closed, from launch — and again
+  // on every open, so each pane's FIRST frame shows the stored state instead
+  // of a default it corrects a few frames later (owner 2026-09-18). A pane
+  // mounts on a nav click, which no hand makes before these reads answer.
+  useEffect(() => {
+    primeSettings(bridge);
+  }, [bridge]);
+  useEffect(() => {
+    if (open) primeSettings(bridge);
+  }, [open, bridge]);
   const [mounted, setMounted] = useState(open);
   const [leaving, setLeaving] = useState(false);
   const [section, setSection] = useState<Section>("voice");
   const active = SECTIONS.find((s) => s.key === section) ?? SECTIONS[0];
   const cardRef = useRef<HTMLDivElement>(null);
   const prevFocus = useRef<HTMLElement | null>(null);
-  // True once the modal has actually been opened, so the focus-restore below
-  // runs only on a real open→close — never on the initial mount (which would
-  // otherwise focus the sidebar Settings button on app launch).
-  const everOpened = useRef(false);
+  // True while THIS open has taken focus, so the restore below runs only on
+  // a real open→close — never on the initial mount (which would otherwise
+  // focus the sidebar Settings button on app launch), and once per close.
+  const focusTaken = useRef(false);
 
   // Mount on open; keep mounted through the exit animation, then unmount.
   useEffect(() => {
@@ -319,15 +336,21 @@ export function SettingsModal({
 
   // Focus the card on open; restore focus to the trigger on close — falling
   // back to the sidebar Settings button if the prior focus was lost to <body>.
-  // The restore is gated on `everOpened` so it never fires on the initial mount
-  // (open is already false then), which would steal focus to the Settings
-  // button at launch.
+  //
+  // Keyed on `mounted` as well as `open`: from the closed state the card
+  // does not exist in the flush that sees `open` — the mount effect above
+  // only schedules it, and `if (!mounted) return null` renders nothing — so
+  // a focus keyed on `open` alone found no card, the trap never engaged, and
+  // Tab walked the workspace behind the backdrop (UX review 2026-09-22,
+  // item 10). The restore is gated on `focusTaken`, so it never fires on the
+  // initial mount and fires once per close.
   useEffect(() => {
-    if (open) {
-      everOpened.current = true;
+    if (open && mounted && !focusTaken.current) {
+      focusTaken.current = true;
       prevFocus.current = document.activeElement as HTMLElement | null;
       cardRef.current?.focus();
-    } else if (everOpened.current) {
+    } else if (!open && focusTaken.current) {
+      focusTaken.current = false;
       const prev = prevFocus.current;
       if (prev && prev !== document.body && document.contains(prev)) {
         prev.focus?.();
@@ -335,7 +358,7 @@ export function SettingsModal({
         document.querySelector<HTMLElement>(".sidebar-settings")?.focus?.();
       }
     }
-  }, [open]);
+  }, [open, mounted]);
 
   // Overlay-stack registration: only the TOPMOST overlay owns Escape, so
   // closing Settings can never also feed the keypress to the approval panel

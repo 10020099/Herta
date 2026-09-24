@@ -22,7 +22,7 @@
  * callbacks are the front-end's own).
  */
 import { randomUUID } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -32,8 +32,10 @@ import {
   type BackendContract,
   CodingAgentRuntime,
   type CompletionProviderAdapter,
+  darwinBackendHostNote,
   dreamDirFor,
   type EventBus,
+  errorMessage,
   type HertaTool,
   InMemoryEventBus,
   InMemoryToolRegistry,
@@ -51,6 +53,7 @@ import {
   type ActorHints,
   buildRecapRuntime,
   buildStaticHertaPrefix,
+  type DriverSessionScope,
   loadActorHints,
   loadMetaThinkCorpus,
   type MetaThinkCorpus,
@@ -61,22 +64,33 @@ import {
   type RecapRuntime,
   readRecapCache,
   type StaticHertaPrefix,
+  type StaticPrefixRebuilder,
   supervisorReferenceFor,
   type V2ActorDriverDeps,
 } from "@herta/herta";
+// The narrow entry, NOT the package root: the root is the whole knowledge
+// package — ingest, voice tooling, the SQLite store and its native addon —
+// and cost the unbundled CLI ~470 ms on every start for these three names
+// (measured 2026-09-21; see knowledge/src/dream-prompt.ts).
 import {
   readManifest,
   resolveDreamConfig,
   selectPromptExclusions,
-} from "@herta/knowledge";
+} from "@herta/knowledge/dream-prompt";
 import { FileMemoryManager } from "@herta/memory";
-import type { ApiKey } from "@herta/providers";
+import { type ApiKey, deepseekProvider } from "@herta/providers";
 import {
   createMinimalTools,
   createMvpTools,
   type DigestModel,
+  describeRepoContext,
+  diffCommittedRange,
+  digestToolFor,
   findBash,
+  gitDiffTool,
+  gitStatusTool,
   PersistentShell,
+  primeShellPaths,
   probeRepoState,
   registerEditFileRule,
   registerMinimalRules,
@@ -91,7 +105,89 @@ import {
 import type { AppServerConfig, ProviderType, ThinkingEffort } from "./types.js";
 import { loadEffectiveRules } from "./workspace-rules.js";
 
+// The usage log (token counts per model call) — a host that builds its
+// stacks by hand, as the CLI does, installs it from the same entry point.
+export { installUsageLog } from "./usage-log.js";
+
 // ── Backend stack ───────────────────────────────────────────────────────────
+
+/**
+ * The BACKEND provider makes no transport retries of its own (2026-09-03).
+ *
+ * Two retry layers used to stack: the provider's `retryPost` retried a 429
+ * or 5xx twice per call (0.5 s, 1 s), and the backend turn loop's
+ * `BackendRetryState` then retried the whole call up to three more times
+ * with 2/4/8/16 s backoff — so one persistent rate limit cost twelve full-
+ * prompt POSTs of the backend frame and half a minute before `provider_failed`,
+ * against an API that was already saying "slow down". The loop's policy is
+ * the one designed for this (named reasons, jittered backoff, a hard cap), so
+ * the backend provider runs with the transport layer's retries off and lets
+ * the policy pace. The actor and the sidecars keep the provider default —
+ * they have no loop above them.
+ */
+export const BACKEND_PROVIDER_MAX_RETRIES = 0;
+
+/**
+ * The backend (板砖) model's provider, built the ONE way both hosts build it
+ * (2026-09-03). The desktop session and the CLI each spelled this out —
+ * model, thinking level, the retry constant, the base-URL lever — and the
+ * two had already parted on a neighbour (the vision rule below). What
+ * differs per host stays with the host: WHERE the model name and the
+ * thinking level come from (Settings vs. env). `thinking` accepts the
+ * Settings vocabulary ("off") and the CLI's (`false`) alike; absent →
+ * "high". Per the DeepSeek doc (2026-09-10) both `deepseek-flash` and
+ * `deepseek-v4-pro` take low / high / max; thinking is on by default at
+ * "high" when the block is omitted.
+ */
+export function createBackendProvider(opts: {
+  readonly apiKey: ApiKey;
+  readonly model: string;
+  readonly thinking?: "low" | "high" | "max" | "off" | false;
+  /** The dev-only chaos/staging base URL (see AppServerConfig.providers). */
+  readonly baseUrl?: string;
+  /** Test seam. */
+  readonly fetchImpl?: typeof fetch;
+}): ProviderAdapter {
+  return deepseekProvider({
+    apiKey: opts.apiKey,
+    model: opts.model,
+    thinking:
+      opts.thinking === "off" || opts.thinking === false
+        ? false
+        : (opts.thinking ?? "high"),
+    // The turn loop's retry policy paces a rate limit; the transport must
+    // not stack its own retries under it (see the constant).
+    maxRetries: BACKEND_PROVIDER_MAX_RETRIES,
+    ...(opts.baseUrl !== undefined ? { baseUrl: opts.baseUrl } : {}),
+    ...(opts.fetchImpl !== undefined ? { fetchImpl: opts.fetchImpl } : {}),
+  });
+}
+
+/**
+ * Whether the backend MODEL can read a picture (ADR 0048 §5). Derived from
+ * the model name rather than a separate setting — the capability IS the
+ * model, and two switches that could disagree would eventually disagree.
+ * Since the 2026-09 API the flash itself reads images: `deepseek-flash`
+ * (V4.1 Flash) sees, and so does the retired `deepseek-v4-flash-vision-exp`
+ * DeepSeek still serves with it (the substring rule this started with).
+ * `deepseek-v4-pro` does NOT — and no longer answers an image with a 400
+ * either: it replies that it cannot see the picture (probe 2026-09-10), so
+ * mounting `view_image` on it would let 板砖 "look" and be told nothing.
+ * One rule for both hosts (2026-09-03): `createBackendStack` applies it
+ * itself from the model name it is handed.
+ */
+export function isVisionModel(model: string): boolean {
+  return model === "deepseek-flash" || model.includes("vision");
+}
+
+/** The digest tool's side model as both hosts mount it (ADR 0043): the
+ *  flash sidecar over the same key and base URL as everything else. */
+export function defaultDigestModel(
+  apiKey: ApiKey,
+  baseUrl: { baseUrl?: string } = {},
+): DigestModel {
+  return digestModelFrom(makeDigestProvider(apiKey, baseUrl));
+}
 
 /**
  * The digest tool's side model (ADR 0043): one chat call in, plain text out.
@@ -135,8 +231,8 @@ export function makeDigestProvider(
   return createChatProvider({
     type: "deepseek",
     apiKey,
-    model: "deepseek-v4-flash",
-    actorModel: "deepseek-v4-flash",
+    model: "deepseek-flash",
+    actorModel: "deepseek-flash",
     thinking: "off",
     temperature: 0.2,
     maxTokens: 1024,
@@ -160,6 +256,13 @@ export interface BackendStackOpts {
   /** Extra tools (e.g. MCP) registered AFTER the contract's built-in set.
    *  Absent/empty → none. */
   readonly extraTools?: readonly HertaTool[];
+  /** The backend model's NAME, beside its provider: the stack derives from
+   *  it whether the model can read images (ADR 0048 §5, `isVisionModel`) and
+   *  mounts `view_image` accordingly — so a visual question can be answered
+   *  by a RE-LOOK rather than by the attachment caption's one-shot reading.
+   *  Was a caller-supplied `vision` flag until 2026-09-03; the two hosts
+   *  had each derived it their own way. */
+  readonly backendModel: string;
   /** The digest tool's side model (ADR 0043); null mounts the tool as
    *  `unavailable` (no key, tests). */
   readonly digestModel: DigestModel | null;
@@ -174,6 +277,14 @@ export interface BackendStackOpts {
     readonly cache: SessionApprovalCache;
     readonly rules: ProjectCommandRuleStore;
   }) => AskResolver;
+  /** The steer source (ADR 0063) every dispatch's runtime drains at its
+   *  loop head — the session's `SteerChannel`. Absent (the CLI): no steer. */
+  readonly pendingUserInput?: () => readonly string[];
+  /** Whether the session already holds an attached document (a reopened
+   *  record with attachment rows). Mounts `digest_document` at build; a
+   *  session without one gets it from `mountDigestTool` when the first
+   *  document lands (ADR 0067). Absent = false (the CLI never attaches). */
+  readonly attachmentsPresent?: boolean;
 }
 
 export interface BackendStack {
@@ -192,6 +303,50 @@ export interface BackendStack {
   /** Per-invocation `CodingAgentRuntime` (per ADR 0007): each `@板砖`
    *  dispatch gets a fresh one, reading the workspace holder at call time. */
   readonly runtimeFactory: () => CodingAgentRuntime;
+  /** Mount `digest_document` (ADR 0067) — idempotent. The session calls it
+   *  when the first document is attached; the builder lists tools per
+   *  brief, so the next dispatch sees it. */
+  readonly mountDigestTool: () => void;
+  /** Re-decide the git tools from the CURRENT workspace (ADR 0067): mounted
+   *  inside a git repository, unmounted outside. Standard contract only —
+   *  the minimal contract's bash runs git itself. The session calls it after
+   *  a workspace move; a no-op when nothing changes. */
+  readonly refreshGitTools: () => void;
+}
+
+/** A workspace is "inside a git repository" when it carries a `.git` entry
+ *  (a directory, or the file a worktree keeps). Cheap and synchronous: the
+ *  decision is made at build and at a workspace move, never per call. */
+export function hasGitDir(workspace: string): boolean {
+  return existsSync(join(workspace, ".git"));
+}
+
+/**
+ * What `createBackendStack` would otherwise have to find out while holding
+ * the thread: how this machine's bash spells `/tmp` (one bash start, Windows
+ * only). The stack build is synchronous and, in the desktop app, runs on
+ * the main thread — a host awaits this first and the build finds the answer
+ * cached. Optional: a host that skips it gets the same stack, just slower.
+ * Never rejects.
+ */
+export function prepareBackendStack(opts: {
+  readonly wantMinimal: boolean;
+}): Promise<void> {
+  return opts.wantMinimal ? primeShellPaths(findBash()) : Promise.resolve();
+}
+
+/** Which host note a session's backend frame carries (ADR 0044, amended
+ *  2026-09-23), as a spreadable deps fragment. Exported for its tests. */
+export function hostNoteFor(
+  platform: NodeJS.Platform,
+  contract: BackendContract,
+  lang: "zh" | "en",
+): { hostNote?: string } {
+  if (platform === "win32" && contract === "standard") {
+    return { hostNote: windowsBackendHostNote(lang) };
+  }
+  if (platform === "darwin") return { hostNote: darwinBackendHostNote(lang) };
+  return {};
 }
 
 export function createBackendStack(opts: BackendStackOpts): BackendStack {
@@ -227,21 +382,56 @@ export function createBackendStack(opts: BackendStackOpts): BackendStack {
       ? wsHolder.current
       : new PersistentShell({ bashPath, workspaceRoot: wsHolder.current })
           .workspaceShellPath;
+  // Whether the backend MODEL can read a picture (ADR 0048 §5). Mounts
+  // `view_image` on either contract; false everywhere else, so a model
+  // without vision is never told it can look.
+  const vision = isVisionModel(opts.backendModel);
+  // The toolset follows the environment, per session (ADR 0067): the
+  // digest tool waits for a document, the git tools for a repository. Both
+  // decisions are made here and at the two events that change them —
+  // never per turn, since the tools array heads the cached prefix.
   if (contract === "minimal") {
     for (const t of createMinimalTools({
       bashPath: bashPath as string,
       workspaceShellPath,
       digestModel: opts.digestModel,
       lang,
+      vision,
+      digest: false,
     }))
       backendTools.register(t);
   } else {
-    for (const t of createMvpTools({ digestModel: opts.digestModel, lang }))
+    for (const t of createMvpTools({
+      digestModel: opts.digestModel,
+      lang,
+      vision,
+      digest: false,
+      gitTools: hasGitDir(wsHolder.current),
+    }))
       backendTools.register(t);
   }
   // Extra tools (MCP) join after the contract set; their `mcp__` prefix
   // keeps them from shadowing a built-in.
   for (const t of opts.extraTools ?? []) backendTools.register(t);
+  const mountDigestTool = (): void => {
+    if (backendTools.get("digest_document") !== undefined) return;
+    backendTools.register(
+      digestToolFor({ digestModel: opts.digestModel, lang, bashPath }),
+    );
+  };
+  if (opts.attachmentsPresent === true) mountDigestTool();
+  const refreshGitTools = (): void => {
+    if (contract !== "standard") return;
+    const want = hasGitDir(wsHolder.current);
+    const have = backendTools.get("git_status") !== undefined;
+    if (want && !have) {
+      backendTools.register(gitStatusTool());
+      backendTools.register(gitDiffTool());
+    } else if (!want && have) {
+      backendTools.unregister("git_status");
+      backendTools.unregister("git_diff");
+    }
+  };
 
   const backendBuilder = new BackendContextBuilder({
     tools: backendTools,
@@ -256,11 +446,12 @@ export function createBackendStack(opts: BackendStackOpts): BackendStack {
     // ADR 0044: the standard contract on Windows says what the host is —
     // without it the backend's Unix habits (grep/sed/ls) are a not_found
     // each, which is what a bash-less machine's user reads as "很多命令
-    // 执行不了". win32-only, standard-only; the note text lives in core.
-    ...((opts.platform ?? process.platform) === "win32" &&
-    contract === "standard"
-      ? { hostNote: windowsBackendHostNote(lang) }
-      : {}),
+    // 执行不了". win32 standard only. macOS (amended 2026-09-23): BOTH
+    // contracts, because the GNU habits (`sed -i`, `grep -P`, bash-4 syntax)
+    // fail in the Mac's BSD shell as much as through run_command. Per
+    // SESSION, like the toolset (ADR 0067) — never a per-turn prompt change.
+    // The note texts live in core.
+    ...hostNoteFor(opts.platform ?? process.platform, contract, lang),
   });
 
   // Permission rules attach to the shared engine.
@@ -292,6 +483,20 @@ export function createBackendStack(opts: BackendStackOpts): BackendStack {
       // and `bash` is not one of them: on the DEFAULT contract every shell
       // write, move and delete was invisible to `changedFiles`.
       repoProbe: (signal) => probeRepoState(wsHolder.current, signal),
+      // The baseline's second half (2026-08-26): attribute the committed
+      // range when this dispatch moved HEAD forward, instead of refusing
+      // attribution on every brief that ends in a commit.
+      repoRangeDiff: (from, to, signal) =>
+        diffCommittedRange(wsHolder.current, from, to, signal),
+      // The frame's repo-snapshot section (ADR 0049 §2): gathered once at
+      // brief start beside the baseline, so the backend stops spending tool
+      // calls rediscovering branch/state the harness already held.
+      repoContext: (signal) => describeRepoContext(wsHolder.current, signal),
+      // The steer source (ADR 0063): one channel per session, read by every
+      // dispatch's loop at the top of each iteration.
+      ...(opts.pendingUserInput !== undefined
+        ? { pendingUserInput: opts.pendingUserInput }
+        : {}),
     });
 
   return {
@@ -305,10 +510,29 @@ export function createBackendStack(opts: BackendStackOpts): BackendStack {
     backendBuilder,
     memory,
     runtimeFactory,
+    mountDigestTool,
+    refreshGitTools,
   };
 }
 
 // ── Actor stack ─────────────────────────────────────────────────────────────
+
+/** The shipped default of ADR 0065's fast veto path: ON. Set by the lab
+ *  (`scripts/respeak-lab.mjs` config `sup-revise` + `respeak-judge.mjs`,
+ *  2026-09-17): the supervisor's corrected line won 10 of 12 blind pairs
+ *  against the actor's rethink + respeak and tied the other 2, every line
+ *  usable, ~5 s less on the veto path's mean. The ADR keeps the numbers;
+ *  `HERTA_SUPERVISOR_REVISION=0` restores the two-stage path. */
+const SUPERVISOR_REVISION_DEFAULT = true;
+
+/** `HERTA_SUPERVISOR_REVISION=1|0` overrides the shipped default in both
+ *  front-ends — the lab's A/B lever and the operator's escape hatch. */
+function supervisorRevisionDefault(): boolean {
+  const raw = process.env.HERTA_SUPERVISOR_REVISION;
+  if (raw === "1") return true;
+  if (raw === "0") return false;
+  return SUPERVISOR_REVISION_DEFAULT;
+}
 
 /** Test-only seams (the app-server's `SessionInternalDeps` thread these
  *  through); production callers omit them. */
@@ -342,6 +566,11 @@ export interface ActorStackOpts {
   readonly thinking?: ThinkingEffort;
   /** Supervisor toggle (default ON in both front-ends). */
   readonly supervisorEnabled: boolean;
+  /** ADR 0065: the supervisor's corrected line stands in for the actor's
+   *  rethink + respeak on a veto. Undefined → the shipped default, unless
+   *  `HERTA_SUPERVISOR_REVISION` overrides it (`1` on, `0` off — the lab's
+   *  A/B lever and the operator's escape hatch). */
+  readonly supervisorRevision?: boolean;
   /** Dream config for the reopen own-dream filter (app-server settings;
    *  the CLI passes nothing → defaults). */
   readonly dream?: AppServerConfig["dream"];
@@ -373,10 +602,29 @@ export interface ActorStack {
    *  the driver immediately (CLI) or stream it in (host). */
   readonly seedBlock: TerminalRecordBlock | null;
   readonly metaThinkCorpus: MetaThinkCorpus;
+  /** Resolved `supervisorRevision` (ADR 0065) for `V2ActorDriverDeps`. */
+  readonly supervisorRevision: boolean;
+  /** Whether the driver starts the first thought while the router is still
+   *  classifying (ADR 0066 amendment 2026-09-21) — on unless
+   *  `HERTA_SPECULATIVE_THOUGHT=0`. For `V2ActorDriverDeps`. */
+  readonly speculativeThought: boolean;
   readonly actorHints: ActorHints;
   readonly supervisorReference: string;
   readonly recap: RecapRuntime;
   readonly onPrompt: V2ActorDriverDeps["onPrompt"];
+  /** ADR 0069 §1, for `V2ActorDriverDeps`: re-derives the prefix at a step
+   *  event. Undefined when the prefix is overridden (tests). */
+  readonly rebuildStaticPrefix: StaticPrefixRebuilder | undefined;
+  /** The recap boundary `staticPrefix` was derived against. */
+  readonly prefixRecapBoundary: number;
+  /** ADR 0069 §3: the session-scoped parts for ANOTHER session of this
+   *  workspace and language — its prefix and exclusions, its recap runtime,
+   *  its rebuilder. The CLI's in-REPL `/resume` rebinds the driver with
+   *  them instead of keeping the boot session's. */
+  readonly sessionScope: (
+    sessionId: string,
+    record: TerminalRecord,
+  ) => Promise<DriverSessionScope>;
 }
 
 export async function createActorStack(
@@ -393,33 +641,43 @@ export async function createActorStack(
     await materializeSeedFeian(workspaceRoot, lang);
   }
 
-  // Reopen own-dream filter: 废案 distilled from THIS session's episodes stay
-  // out of the prefix while their source content is still verbatim in the
-  // loaded record (behind the recap boundary they return as recovered
-  // memory). Only a reopen can hit this.
-  const excludeFewShotFiles =
-    overrides.staticPrefix === undefined && initialRecord.length > 0
-      ? ownDreamExclusions({
-          workspaceRoot,
-          sessionId,
-          record: initialRecord,
-          dream: opts.dream,
-          lang,
-        })
-      : undefined;
-
   // Static Herta prefix (bio/env compiled in; 废案 from the live, lang-aware
   // narrative dir — an EN session reads .herta/narrative-en, not the zh
   // corpus; must stay consistent with buildStaticHertaPrefix's lang-derived
-  // relPath prefix).
-  const staticPrefix: StaticHertaPrefix =
-    overrides.staticPrefix ??
-    (await buildStaticHertaPrefix({
+  // relPath prefix), with the reopen own-dream filter applied: 废案 distilled
+  // from the session's OWN episodes stay out while their source content is
+  // still verbatim in its record (behind the recap boundary they return as
+  // recovered memory). Derived at open, and again at each step event
+  // (ADR 0069 §1) against the record and boundary of that moment.
+  const derivePrefix = (
+    sid: string,
+    record: TerminalRecord,
+    recapBoundaryIndex: number,
+  ): Promise<StaticHertaPrefix> => {
+    const excludeFewShotFiles =
+      record.length > 0
+        ? ownDreamExclusions({
+            workspaceRoot,
+            sessionId: sid,
+            record,
+            dream: opts.dream,
+            lang,
+            recapBoundaryIndex,
+          })
+        : undefined;
+    return buildStaticHertaPrefix({
       workspaceRoot,
       lang,
-      ...(opts.onFewShotDropped !== undefined
-        ? { onFewShotDropped: opts.onFewShotDropped }
-        : {}),
+      // ALWAYS log a dropped few-shot (ADR 0051): the 2026-08-06 guard
+      // regression silently dropped the entire 废案 corpus for 25 days
+      // because only the CLI passed a logger and the GUI path had none —
+      // a voice-defining failure with zero observable signal. The caller's
+      // handler (when given) still runs; the warn is the floor, not the
+      // ceiling.
+      onFewShotDropped: (name, reason) => {
+        console.warn(`few-shot dropped from prefix: ${name} — ${reason}`);
+        opts.onFewShotDropped?.(name, reason);
+      },
       readFile: async (relPath) =>
         readFile(join(workspaceRoot, relPath), "utf-8"),
       readNarrativeDir: async () => {
@@ -432,7 +690,29 @@ export async function createActorStack(
         }
       },
       ...(excludeFewShotFiles !== undefined ? { excludeFewShotFiles } : {}),
-    }));
+    });
+  };
+  // A rebuild keeps what the session-scoped prefix carries besides the
+  // corpus: a new session's opening preamble stays for the session's life.
+  // No rebuilder when the prefix is a test override — there is no corpus
+  // behind it to follow.
+  const rebuilderFor = (sid: string): StaticPrefixRebuilder | undefined =>
+    overrides.staticPrefix !== undefined
+      ? undefined
+      : async ({ record, recapBoundaryIndex, current }) => {
+          const next = await derivePrefix(sid, record, recapBoundaryIndex);
+          return current.opening !== undefined
+            ? { ...next, opening: current.opening }
+            : next;
+        };
+
+  const prefixRecapBoundary =
+    initialRecord.length > 0
+      ? cachedRecapBoundary(workspaceRoot, sessionId, initialRecord)
+      : 0;
+  const staticPrefix: StaticHertaPrefix =
+    overrides.staticPrefix ??
+    (await derivePrefix(sessionId, initialRecord, prefixRecapBoundary));
 
   // Opening (new sessions only — a resumed record already carries block 0).
   // The preamble is session-zero scaffolding visible only to the model: it
@@ -458,15 +738,20 @@ export async function createActorStack(
         }
       : null;
 
-  // Providers. Router: flash-equivalent at thinking "low" (owner decision
-  // 2026-08-03; a 7-way mood pick needs thinking MODE, not depth).
+  // Providers. Router: flash with thinking OFF (router lab 2026-09-17,
+  // `scripts/router-lab.mjs`: flash 4.1 routed 33/33 graded samples both
+  // with and without thinking; off ran 670 ms mean / 1.3 s max against
+  // 915 ms / 2.8 s at "low"). "low" had been the floor since 2026-08-03
+  // because flash 4.0 could not classify without thinking — that failure
+  // shape (empty output, schema metalanguage) did not recur in 39 calls.
+  // The router sits on every turn's critical path, so the tail matters.
   // Supervisor: its own flash-equivalent adapter at "high" — a precision
   // gate (misses buried-rule shapes ~1/3 even at high, trigger-gate
   // 2026-07-29); the recap summarizer rides this adapter for the same
   // reason. Per-provider dispatch + effort mapping live in
   // provider-factory.ts.
   const providerType: ProviderType = opts.providerType ?? "deepseek";
-  const routerModel = opts.routerModel ?? "deepseek-v4-flash";
+  const routerModel = opts.routerModel ?? "deepseek-flash";
   const actorProvider =
     overrides.actorProvider ??
     createCompletionProvider({
@@ -482,7 +767,7 @@ export async function createActorStack(
       apiKey: opts.apiKey,
       model: routerModel,
       actorModel: routerModel,
-      thinking: "low",
+      thinking: "off",
       ...(opts.baseUrl !== undefined ? { baseUrl: opts.baseUrl } : {}),
     });
   // Test seam preserved: with only a router override present, the
@@ -507,17 +792,41 @@ export async function createActorStack(
   const supervisorReference =
     overrides.supervisorReference ??
     supervisorReferenceFor(opts.supervisorEnabled);
+  const supervisorRevision =
+    opts.supervisorRevision ?? supervisorRevisionDefault();
 
   // Recap runtime — automatic long-session compaction (ADR 0009). The
-  // manual /compact path (CLI) bypasses `enabled`.
-  const recap = await buildRecapRuntime({
-    routerProvider: supervisorProvider,
-    workspaceRoot,
-    sessionId,
-    enabled: true,
-    level: opts.compactionLevel,
-    lang,
-  });
+  // manual /compact path (CLI) bypasses `enabled`. Keyed by session: its
+  // sidecar is `.herta/compaction/<sessionId>.json`.
+  const recapFor = (sid: string): Promise<RecapRuntime> =>
+    buildRecapRuntime({
+      routerProvider: supervisorProvider,
+      workspaceRoot,
+      sessionId: sid,
+      enabled: true,
+      level: opts.compactionLevel,
+      lang,
+    });
+  const recap = await recapFor(sessionId);
+
+  // Another session of this workspace and language, rebound in place (the
+  // CLI's in-REPL /resume, ADR 0069 §3). A loaded record is never new, so
+  // there is no opening to carry.
+  const sessionScope = async (
+    sid: string,
+    record: TerminalRecord,
+  ): Promise<DriverSessionScope> => {
+    const boundary =
+      record.length > 0 ? cachedRecapBoundary(workspaceRoot, sid, record) : 0;
+    const rebuild = rebuilderFor(sid);
+    return {
+      staticPrefix:
+        overrides.staticPrefix ?? (await derivePrefix(sid, record, boundary)),
+      recap: await recapFor(sid),
+      ...(rebuild !== undefined ? { rebuildStaticPrefix: rebuild } : {}),
+      prefixRecapBoundary: boundary,
+    };
+  };
 
   return {
     actorProvider,
@@ -527,19 +836,45 @@ export async function createActorStack(
     opening,
     seedBlock,
     metaThinkCorpus,
+    supervisorRevision,
+    // On by default; `0` is the operator's escape hatch and the lab's A/B
+    // lever, the same shape as HERTA_SUPERVISOR_REVISION.
+    speculativeThought: process.env.HERTA_SPECULATIVE_THOUGHT !== "0",
     actorHints,
     supervisorReference,
     recap,
     onPrompt: makePromptDump(opts.promptDumpDir, sessionId, opts.onPromptDump),
+    rebuildStaticPrefix: rebuilderFor(sessionId),
+    prefixRecapBoundary,
+    sessionScope,
   };
 }
 
 /**
- * Filenames of dreamed 废案 to withhold from a reopening session's prefix
- * (design 2026-07-07): those whose source episodes still sit verbatim in the
- * loaded record. Fail-open — any error returns undefined (no exclusions),
- * which is exactly the pre-filter behavior. Lang-aware: an EN session reads
- * its own dream manifest (.herta/dream-en), not the zh one.
+ * The recap boundary a session's prompt starts from: the cached sidecar
+ * boundary, validated the way the recap runtime validates it — it must index
+ * a user block inside this record, else the runtime treats the session as
+ * uncompacted and so must everything that follows the runtime's view (the
+ * own-dream filter, and the open session's dreamable span, ADR 0069 §2).
+ * 0 = no recap engaged: the whole record is verbatim.
+ */
+export function cachedRecapBoundary(
+  workspaceRoot: string,
+  sessionId: string,
+  record: TerminalRecord,
+): number {
+  const cached = readRecapCache(workspaceRoot, sessionId)?.boundaryIndex ?? 0;
+  return cached > 0 && cached < record.length && record[cached]?.kind === "user"
+    ? cached
+    : 0;
+}
+
+/**
+ * Filenames of dreamed 废案 to withhold from a session's prefix (design
+ * 2026-07-07): those whose source episodes still sit verbatim in the record,
+ * or were withdrawn from it. Fail-open — any error returns undefined (no
+ * exclusions), which is exactly the pre-filter behavior. Lang-aware: an EN
+ * session reads its own dream manifest (.herta/dream-en), not the zh one.
  */
 export function ownDreamExclusions(opts: {
   workspaceRoot: string;
@@ -547,19 +882,15 @@ export function ownDreamExclusions(opts: {
   record: TerminalRecord;
   dream: AppServerConfig["dream"];
   lang: PromptLang;
+  /** The boundary the prompt uses. Omitted → the validated cached one (a
+   *  session being opened); a step-event rebuild passes the turn's own
+   *  (ADR 0069 §1). */
+  recapBoundaryIndex?: number;
 }): ReadonlySet<string> | undefined {
   try {
-    // Mirror the recap runtime's cache validation: a cached boundary must
-    // index a user block inside this record, else the runtime treats the
-    // session as uncompacted — the prefix filter must see the same view.
-    const cached =
-      readRecapCache(opts.workspaceRoot, opts.sessionId)?.boundaryIndex ?? 0;
     const recapBoundaryIndex =
-      cached > 0 &&
-      cached < opts.record.length &&
-      opts.record[cached]?.kind === "user"
-        ? cached
-        : 0;
+      opts.recapBoundaryIndex ??
+      cachedRecapBoundary(opts.workspaceRoot, opts.sessionId, opts.record);
     const excluded = selectPromptExclusions({
       manifest: readManifest(dreamDirFor(opts.workspaceRoot, opts.lang)),
       sessionId: opts.sessionId,
@@ -589,7 +920,7 @@ function makePromptDump(
   try {
     mkdirSync(promptsDir, { recursive: true });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = errorMessage(err);
     note?.(`prompt dump disabled (mkdir failed: ${msg})`);
     return undefined;
   }
@@ -601,7 +932,7 @@ function makePromptDump(
       const filename = `turn-${String(promptCounter).padStart(3, "0")}-${label}.txt`;
       writeFileSync(join(promptsDir, filename), prompt, "utf-8");
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errorMessage(err);
       note?.(`prompt dump failed: ${msg}`);
     }
   };

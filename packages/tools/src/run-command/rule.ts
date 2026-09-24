@@ -5,6 +5,7 @@ import type {
   ToolCallRequest,
   ToolContext,
 } from "@herta/core";
+import { detectInProgressState, resolveGitDir } from "../git/repo-probe.js";
 import { formatInputIssues } from "../input-issues.js";
 import { resolveSafePath } from "../path-safety.js";
 import { classifyCommand } from "./classifier.js";
@@ -31,7 +32,14 @@ export function makeRunCommandRule(): PermissionRule {
       return { kind: "deny", code: safe.code, reason: safe.message };
     }
 
-    const verdict = classifyCommand(argv);
+    const verdict = classifyCommand(argv, {
+      // Lazy in-progress probe at the command's effective cwd (ADR 0049 §5)
+      // — consulted only for commit-concluding git shapes.
+      repoInProgress: () => {
+        const gitDir = resolveGitDir(safe.resolved);
+        return gitDir === null ? null : detectInProgressState(gitDir);
+      },
+    });
     if (verdict.kind === "block") {
       return {
         kind: "deny",
@@ -51,10 +59,14 @@ export function makeRunCommandRule(): PermissionRule {
         argv,
       );
       if (readerDenial !== null) {
+        // A refused READ (2026-08-26, same as the bash rule's reader guard):
+        // withheld information, not a refused mutation — must not cap the
+        // brief's status.
         return {
           kind: "deny",
           code: readerDenial.code,
           reason: readerDenial.message,
+          risk: "workspace_read",
         };
       }
       return { kind: "allow" };
@@ -64,6 +76,9 @@ export function makeRunCommandRule(): PermissionRule {
       reason: verdict.reason,
       risk: verdict.risk,
       code: verdict.code,
+      ...(verdict.consequence !== undefined
+        ? { consequence: verdict.consequence }
+        : {}),
     };
   };
 }

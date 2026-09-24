@@ -1,11 +1,14 @@
 import {
   appendFileSync,
+  closeSync,
+  fstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
-  renameSync,
-  writeFileSync,
+  readSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { writeFileAtomicSync } from "../atomic-write.js";
 import type { TerminalRecordBlock } from "../types/terminal-record.js";
 
 export interface ForNewSessionOpts {
@@ -53,22 +56,40 @@ const wallClock = (): string => new Date().toISOString();
  * A file with no newline at all (partial header) is left untouched —
  * `readSessionFile` reports bad-header and the caller surfaces it.
  */
-function healTrailingPartialLine(sessionFile: string): void {
-  let raw: string;
+/** True for an empty file or one whose last byte is `\n`. Throws ENOENT. */
+function endsWithNewlineOrIsEmpty(sessionFile: string): boolean {
+  const fd = openSync(sessionFile, "r");
   try {
-    raw = readFileSync(sessionFile, "utf8");
+    const size = fstatSync(fd).size;
+    if (size === 0) return true;
+    const last = Buffer.allocUnsafe(1);
+    readSync(fd, last, 0, 1, size - 1);
+    return last[0] === 0x0a;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function healTrailingPartialLine(sessionFile: string): void {
+  // Fast path: a clean shutdown always leaves a trailing newline — ONE byte
+  // answers that. This used to read and decode the whole transcript (tens of
+  // megabytes for a long session) on every resume, right after
+  // `readSessionFile` had read the same file, to look at its last character
+  // (perf audit 2026-09-20). `\n` is 0x0A in UTF-8 and never a continuation
+  // byte, so the last byte decides it exactly as `endsWith("\n")` did.
+  try {
+    if (endsWithNewlineOrIsEmpty(sessionFile)) return;
   } catch (err) {
     // No file on disk → nothing to heal (a fresh session writes its own header).
     if ((err as { code?: string }).code === "ENOENT") return;
     throw err;
   }
-  // Fast path: clean shutdown always leaves a trailing newline.
+  // The rare path: a crash left a fragment. Now the whole file is wanted.
+  const raw = readFileSync(sessionFile, "utf8");
   if (raw.length === 0 || raw.endsWith("\n")) return;
   const lastNewline = raw.lastIndexOf("\n");
   if (lastNewline === -1) return; // partial header — leave for readSessionFile
-  const tmp = `${sessionFile}.heal-tmp`;
-  writeFileSync(tmp, raw.slice(0, lastNewline + 1), "utf8");
-  renameSync(tmp, sessionFile);
+  writeFileAtomicSync(sessionFile, raw.slice(0, lastNewline + 1));
   console.warn(
     `V2RecordPersister: healed truncated trailing line in ${sessionFile} (${raw.length - lastNewline - 1} chars dropped)`,
   );
@@ -271,9 +292,7 @@ export class V2RecordPersister {
       kept.push(line);
       if (isBlock) blockCount += 1;
     }
-    const tmp = `${this.sessionFile}.rewind-tmp`;
-    writeFileSync(tmp, `${kept.join("\n")}\n`, "utf8");
-    renameSync(tmp, this.sessionFile);
+    writeFileAtomicSync(this.sessionFile, `${kept.join("\n")}\n`);
   }
 
   /**
@@ -331,8 +350,6 @@ export class V2RecordPersister {
       blockCount += 1;
     }
     if (!replaced) return;
-    const tmp = `${this.sessionFile}.replace-tmp`;
-    writeFileSync(tmp, `${lines.join("\n")}\n`, "utf8");
-    renameSync(tmp, this.sessionFile);
+    writeFileAtomicSync(this.sessionFile, `${lines.join("\n")}\n`);
   }
 }

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { access } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import {
@@ -24,12 +25,17 @@ import {
   resolveDreamConfig,
   runDreamPass,
 } from "@herta/knowledge";
+import { reportProviderUsage } from "@herta/providers";
 import { DreamTrigger } from "./dream-trigger.js";
 import { SessionImpl } from "./session.js";
 import {
+  DEFAULT_HIT_LIMIT,
+  narrowSearchCandidates,
+  type SearchMemo,
   type SessionSearchHit,
   searchSessionTranscripts,
 } from "./session-search.js";
+import { cachedRecapBoundary } from "./session-wiring.js";
 import type {
   AppServerConfig,
   CreateSessionOpts,
@@ -39,6 +45,7 @@ import type {
   SessionHost,
   SessionMetadata,
 } from "./types.js";
+import { installUsageLog } from "./usage-log.js";
 
 export function createSessionHost(config: AppServerConfig): SessionHost {
   validateConfig(config);
@@ -46,6 +53,9 @@ export function createSessionHost(config: AppServerConfig): SessionHost {
   // no-op for a PACKAGED app, whose workspace is userData and not a repo —
   // it matters for a dev GUI and for any build pointed at a real project.
   ensureHertaGitignore(config.workspaceRoot);
+  // The usage log is per process, like the provider sink it installs; a
+  // host rebuilt with the same path just installs it again.
+  if (config.usageLogPath !== undefined) installUsageLog(config.usageLogPath);
   return new SessionHostImpl(config);
 }
 
@@ -67,6 +77,9 @@ class SessionHostImpl implements SessionHost {
    *  not this assignment. A promise-chain mutex makes each lifecycle op
    *  observe the previous one's final state. */
   private readonly serializeLifecycle = makeLifecycleSerializer();
+  /** The previous content search's outcome, so a query that extends it
+   *  scans only its hits (see narrowSearchCandidates). */
+  private searchMemo: SearchMemo | null = null;
 
   constructor(private readonly config: AppServerConfig) {
     this.keyHolder = { current: config.providers.apiKey };
@@ -81,6 +94,7 @@ class SessionHostImpl implements SessionHost {
       lastFullPassAt: () => this.lastDreamPassAtMs(),
       hasEnoughMaterial: () => this.hasEnoughDreamMaterial(),
       runPass: () => this.runDreamPassDetached(),
+      isBusy: () => this._active?.turnInFlight === true,
     });
 
     if (dreamCfg.enabled) {
@@ -168,6 +182,11 @@ class SessionHostImpl implements SessionHost {
    */
   private hasEnoughDreamMaterial(): boolean {
     try {
+      // No key, no pass (`runDreamPassDetached` returns at once): checked
+      // FIRST, before the listing and the transcript reads below — they ran
+      // on the main thread for a pass that could not happen (dream review
+      // 2026-09-22, finding 11).
+      if (this.keyHolder.current.trim() === "") return false;
       const dreamCfg = resolveDreamConfig(this.config.dream);
       const since = this.lastDreamPassAtMs() ?? 0;
       const newRecords: TerminalRecord[] = [];
@@ -183,7 +202,9 @@ class SessionHostImpl implements SessionHost {
           // Unreadable transcript — skip it for the material count.
         }
       }
-      return hasEnoughMaterial(newRecords, dreamCfg);
+      // Turns counted SINCE the anchor: a long session touched by one block
+      // used to re-qualify on its whole history every cooldown.
+      return hasEnoughMaterial(newRecords, dreamCfg, since);
     } catch {
       return false;
     }
@@ -204,9 +225,21 @@ class SessionHostImpl implements SessionHost {
         return;
       }
       const dreamCfg = resolveDreamConfig(this.config.dream);
+      // The pass steps aside between episodes once the user is back — any
+      // action since it started, or a turn in flight (finding 12). It used
+      // to run to completion beside the live turn on the same key.
+      const activityAtStart = this.dreamTrigger.activityCount;
+      const shouldYield = (): boolean =>
+        this._active?.turnInFlight === true ||
+        this.dreamTrigger.activityCount !== activityAtStart;
       const client = new RealDeepSeekClient({
         apiKey: key,
         model: dreamCfg.model,
+        // Into usage.jsonl with every other call, marked as the dream's
+        // (dream review 2026-09-22, finding 4): the one consumer of the key
+        // that runs while the user is away was the one the log never saw.
+        onUsage: (u) =>
+          reportProviderUsage({ endpoint: "chat", source: "dream", ...u }),
       });
 
       // Enumerate sessions, GROUPED by the interaction language each was
@@ -242,6 +275,20 @@ class SessionHostImpl implements SessionHost {
                 return [];
               }
             },
+            // The session open in the window dreams only behind its recap
+            // boundary (ADR 0069 §2): what the prompt has already lost to
+            // compression. Its live tail — what a rewind or a take-back can
+            // still change, what the prompt still shows verbatim — waits.
+            dreamableEnd: (record) => {
+              const open = this._active;
+              return open !== null && open.sessionId === meta.sessionId
+                ? cachedRecapBoundary(
+                    open.workspaceRoot,
+                    meta.sessionId,
+                    record,
+                  )
+                : undefined;
+            },
           });
           byLang.set(lang, arr);
         } catch {
@@ -253,7 +300,7 @@ class SessionHostImpl implements SessionHost {
       // runDreamPass's `lang`). Sequential so they never contend for the shared
       // client; a fresh runId per pass.
       for (const [lang, sessions] of byLang) {
-        await runDreamPass({
+        const result = await runDreamPass({
           workspaceRoot: this.config.workspaceRoot,
           sessions,
           client,
@@ -261,7 +308,19 @@ class SessionHostImpl implements SessionHost {
           config: this.config.dream,
           now: () => new Date(),
           lang,
+          // The automatic pass's spend ceiling (finding 3); the rest waits.
+          maxEpisodes: dreamCfg.autoPassMaxEpisodes,
+          shouldYield,
         });
+        // The corpus may have moved: the open session's next turn re-derives
+        // its prefix once (ADR 0069 §1b) — new dreams from any session
+        // enter, archived ones leave. Marked after any pass that held the
+        // lock, even an aborted one (the stale floor archives before the
+        // episodes): a rebuild that finds nothing new yields the same bytes,
+        // so the prompt cache does not notice.
+        if (result.lockBusy !== true) this._active?.markPrefixStale?.();
+        // The user is back: the other language's pass waits too.
+        if (result.yielded === true) break;
       }
     } catch {
       // Swallow all errors — this is a background pass and must never
@@ -271,6 +330,14 @@ class SessionHostImpl implements SessionHost {
 
   get activeSession(): Session | null {
     return this._active;
+  }
+
+  /** Something the user did in the window that is not a turn — a rewind, an
+   *  attachment, a search, a file opened in the viewer. It resets the dream
+   *  trigger's idle clock, and a pass already running steps aside at its
+   *  next episode (dream review 2026-09-22, finding 12). */
+  noteUserActivity(): void {
+    this.dreamTrigger.noteActivity();
   }
 
   /** Update the live DeepSeek key. The active session (and any later one) reads
@@ -290,7 +357,6 @@ class SessionHostImpl implements SessionHost {
     // clock (audit finding 21: only submitText did, so a pass could fire
     // right as the user navigated in).
     this.dreamTrigger.noteActivity();
-    await this.closeActiveInner();
     const sessionId = randomUUID();
     const workspaceRoot = opts.workspaceRoot ?? this.config.workspaceRoot;
     // The effective backend (板砖) workspace: an explicit caller override, or
@@ -298,6 +364,12 @@ class SessionHostImpl implements SessionHost {
     // session. Stamped into the JSONL header so resume can recover it.
     const backendWorkspace =
       opts.backendWorkspace ?? defaultWorkspaceFor(homedir(), sessionId);
+    // The new transcript is written BEFORE the active session closes — the
+    // same contract openSessionInner keeps by validating first. A transcript
+    // directory that cannot be written (a full disk, a permission) throws
+    // here with the open session intact; closing first left the host with
+    // nothing open while the window still showed the closed session (UX
+    // review 2026-09-22, item 6).
     const persister = V2RecordPersister.forNewSession({
       sessionId,
       workspaceRoot,
@@ -308,6 +380,7 @@ class SessionHostImpl implements SessionHost {
       // can scope this session by language.
       ...(opts.lang !== undefined ? { lang: opts.lang } : {}),
     });
+    await this.closeActiveInner();
     const session = await SessionImpl.create({
       sessionId,
       workspaceRoot,
@@ -381,7 +454,7 @@ class SessionHostImpl implements SessionHost {
     return wrapSessionForDreamActivity(session, this.dreamTrigger);
   }
 
-  searchSessions(query: string): SessionSearchHit[] {
+  async searchSessions(query: string): Promise<SessionSearchHit[]> {
     // Content search re-opens each transcript itself and uses only the session
     // id + newest-first order, so it takes the header-only listing — no
     // tail-window or title-sidecar reads per debounced keystroke. Same
@@ -391,17 +464,46 @@ class SessionHostImpl implements SessionHost {
       currentWorkspaceRoot: this.config.workspaceRoot,
       limit: Number.POSITIVE_INFINITY,
     });
-    return searchSessionTranscripts({
+    const sessions = headers.map((h) => ({
+      sessionId: h.sessionId,
+      workspaceRoot: h.workspaceRoot,
+      startedAt: h.startedAt,
+      lastActivityAt: h.mtime.toISOString(),
+      ...(h.lang !== undefined ? { lang: h.lang } : {}),
+    }));
+    // A query that extends the previous one scans only the previous hits
+    // (2026-09-03); the open session is always read — it grows as the user
+    // types. The scan itself reads off the event loop chunk by chunk.
+    const candidates = narrowSearchCandidates(
+      this.searchMemo,
+      query,
+      sessions,
+      {
+        ...(this._active !== null
+          ? { alwaysInclude: this._active.sessionId }
+          : {}),
+      },
+    );
+    const hits = await searchSessionTranscripts({
       transcriptDir: this.config.transcriptDir,
-      sessions: headers.map((h) => ({
-        sessionId: h.sessionId,
-        workspaceRoot: h.workspaceRoot,
-        startedAt: h.startedAt,
-        lastActivityAt: h.mtime.toISOString(),
-        ...(h.lang !== undefined ? { lang: h.lang } : {}),
-      })),
+      sessions: candidates,
       query,
     });
+    const trimmed = query.trim();
+    this.searchMemo =
+      trimmed === ""
+        ? null
+        : {
+            query: trimmed,
+            hitSessionIds: hits.map((h) => h.sessionId),
+            // Under the cap → every candidate was read, and (by the
+            // containment the narrowing relies on) the hits are complete
+            // over the FULL listing, not just the narrowed candidates.
+            exhaustive: hits.length < DEFAULT_HIT_LIMIT,
+            candidateCount: sessions.length,
+            at: Date.now(),
+          };
+    return hits;
   }
 
   listSessions(opts?: ListSessionsOpts): SessionMetadata[] {
@@ -439,23 +541,45 @@ class SessionHostImpl implements SessionHost {
 
   private async deleteSessionInner(
     sessionId: string,
-  ): Promise<{ ok: boolean; wasActive: boolean }> {
+  ): Promise<{ ok: boolean; wasActive: boolean; removed?: boolean }> {
     const wasActive =
       this._active !== null && this._active.sessionId === sessionId;
     // Close FIRST so the persister releases its handle on `<id>.jsonl`
-    // (Windows locks open files — rmSync would EBUSY otherwise). close()
-    // awaits the in-flight turn's settlement (finding 14), so the rmSync
-    // below cannot race a still-unwinding turn's appends.
+    // (Windows locks open files — the remove would EBUSY otherwise). close()
+    // awaits the in-flight turn's settlement (finding 14), so the remove
+    // below cannot race a still-unwinding turn's appends. The remove is
+    // awaited (async since 2026-09-03 — a managed workspace with a
+    // node_modules is a seconds-long tree delete that used to block the
+    // main thread), and this whole method runs inside the lifecycle
+    // serializer, so nothing reopens the session until it is gone.
     if (wasActive) await this.closeActiveInner();
-    deleteSessionFiles(
-      this.config.transcriptDir,
-      sessionId,
-      workspacesBaseDir(homedir()),
-      // Also the recap sidecar under `.herta/compaction` (audit BL8) — it
-      // lives outside transcriptDir, so it used to survive every delete.
-      this.config.workspaceRoot,
-    );
-    return { ok: true, wasActive };
+    try {
+      await deleteSessionFiles(
+        this.config.transcriptDir,
+        sessionId,
+        workspacesBaseDir(homedir()),
+        // Also the recap sidecar under `.herta/compaction` (audit BL8) — it
+        // lives outside transcriptDir, so it used to survive every delete.
+        this.config.workspaceRoot,
+      );
+    } catch (err) {
+      // The transcript goes first; what can fail after it is the managed
+      // workspace — a document in it open in Word holds the folder past the
+      // retry deadline. The session is then gone with its folder behind.
+      // A throw here used to reach the window as a rejected delete: no
+      // `deleted` event, the closed session still on screen, a composer
+      // whose sends went nowhere (UX review 2026-09-22, item 6). Report
+      // which it is instead; the caller drops the card only when the
+      // session is really gone.
+      console.warn(`[herta] deleting session ${sessionId} failed:`, err);
+      const transcript = join(this.config.transcriptDir, `${sessionId}.jsonl`);
+      const removed = await access(transcript).then(
+        () => false,
+        () => true,
+      );
+      return { ok: false, wasActive, removed };
+    }
+    return { ok: true, wasActive, removed: true };
   }
 
   closeActiveSession(): Promise<void> {
@@ -516,9 +640,14 @@ const ACTIVITY_METHODS: ReadonlySet<string> = new Set([
 /**
  * Wrap a session so every turn-running entry point notes activity on the
  * dream trigger. The trigger never runs inside the turn — noteActivity()
- * is synchronous BEFORE the turn (the idle clock resets from the user's
- * request, not from when Herta finishes) and tick() fires after in a
- * detached microtask, never awaited in the turn path.
+ * is synchronous BEFORE the turn and again when it ENDS, and tick() fires
+ * after in a detached microtask, never awaited in the turn path.
+ *
+ * Both ends (dream review 2026-09-22, finding 2): the clock used to restart
+ * from the user's request only, so a 板砖 run longer than the idle window
+ * ended into a clock that had already run out, and the post-turn tick fired
+ * a pass the moment the reply landed — while the user was reading it. The
+ * host's busy gate keeps a pass out of the turn itself.
  * Exported for testing (the host's trigger is private).
  */
 export function wrapSessionForDreamActivity(
@@ -535,11 +664,15 @@ export function wrapSessionForDreamActivity(
       ) {
         return async (...args: unknown[]) => {
           trigger.noteActivity();
-          const result = await (
-            value as (...a: unknown[]) => Promise<unknown>
-          ).apply(target, args);
-          void Promise.resolve().then(() => trigger.tick());
-          return result;
+          try {
+            return await (value as (...a: unknown[]) => Promise<unknown>).apply(
+              target,
+              args,
+            );
+          } finally {
+            trigger.noteActivity();
+            void Promise.resolve().then(() => trigger.tick());
+          }
         };
       }
       return value;

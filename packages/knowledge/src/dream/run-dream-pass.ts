@@ -1,4 +1,5 @@
 import { readdirSync } from "node:fs";
+import { join } from "node:path";
 import { dreamDirFor, narrativeDirFor, type TerminalRecord } from "@herta/core";
 import { promptAssetsFor } from "@herta/herta";
 import type { DeepSeekClient } from "../llm/types.js";
@@ -28,8 +29,9 @@ import {
   liveDreamRecords,
   markGistFolded,
   pickEvictionTarget,
-  readManifest,
+  readManifestStrict,
   reinforceRecord,
+  segmentationV2SinceMs,
   staleLiveRecords,
   writeManifest,
 } from "./manifest.js";
@@ -67,6 +69,18 @@ export interface DreamSessionInput {
    * the CLI lab) pass it directly.
    */
   record: TerminalRecord | (() => TerminalRecord);
+  /**
+   * How far this session is dreamable, as a block index into its record:
+   * only an episode that ENDS at or before it is considered this pass
+   * (ADR 0069 §2). The rest is neither dreamed nor ledgered, so a later
+   * pass takes it up once it lies behind. Given for the session OPEN in the
+   * app — its recap boundary, so the pass dreams only what compression has
+   * already taken from the prompt. Asked when the record is loaded, so a
+   * session opened or closed during a long pass is judged as it is then.
+   * Absent, or answering undefined → every settled episode (closed
+   * sessions, the manual CLI pass).
+   */
+  dreamableEnd?: (record: TerminalRecord) => number | undefined;
 }
 
 export interface RunDreamPassOptions {
@@ -84,6 +98,23 @@ export interface RunDreamPassOptions {
    *  The caller runs one pass per language over that language's sessions.
    *  Default "zh" — byte-identical to the pre-slice behavior. */
   lang?: "zh" | "en";
+  /** Most episodes this pass sends through the LLM stages (dedup skips do
+   *  not count). Past it the pass stops considering episodes: the rest stay
+   *  undreamed and un-ledgered for a later pass, and the end-of-pass work
+   *  runs as usual. Undefined = no limit (the manual CLI pass, which has its
+   *  own cost cap); the automatic pass passes `autoPassMaxEpisodes`. */
+  maxEpisodes?: number;
+  /**
+   * The user came back (dream review 2026-09-22, finding 12): asked before
+   * each episode and before the end-of-pass model calls. On true the pass
+   * steps aside — the episode in hand has finished, so nothing paid for is
+   * thrown away; the rest stay undreamed and un-ledgered, the gist fold and
+   * the notes audit wait (the fold's pending list is durable), and
+   * `lastRunAt` does not advance, so the next idle window resumes where
+   * this one stopped rather than a week later. Absent → never yields (the
+   * manual CLI pass).
+   */
+  shouldYield?: () => boolean;
 }
 
 export interface RunDreamPassResult {
@@ -122,11 +153,36 @@ export interface RunDreamPassResult {
   aborted?: string;
   /** True when another pass held the cross-process lock; nothing was done. */
   lockBusy?: boolean;
+  /** True when the pass reached `maxEpisodes` and left the rest for later. */
+  budgetStopped?: boolean;
+  /** True when `shouldYield` said the user came back and the pass stepped
+   *  aside; `lastRunAt` did not advance. */
+  yielded?: boolean;
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** Error codes that mean the DISK refused (a lock, a full volume, a
+ *  permission) rather than anything about the episode. */
+const FILE_SYSTEM_CODES: ReadonlySet<string> = new Set([
+  "EPERM",
+  "EACCES",
+  "EBUSY",
+  "ENOSPC",
+  "EMFILE",
+  "ENFILE",
+  "EIO",
+  "EROFS",
+  "EAGAIN",
+  "EEXIST",
+]);
+
+function isFileSystemError(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === "string" && FILE_SYSTEM_CODES.has(code);
+}
 
 /** Stale-floor forgetting (the actual forgetting curve): archive every live
  *  record whose retention strength has decayed below `cfg.retentionFloor`. A
@@ -140,15 +196,12 @@ function forgetStale(
   dreamDir: string,
   nowMs: number,
   now: () => Date,
-  /** Semanticization collector: each dying dream's text is captured BEFORE the
-   *  archive move so the pass can fold its gist into the 关于开拓者 page. */
-  evictedTexts?: EvictedFeianText[],
 ): number {
   const stale = staleLiveRecords(manifest, nowMs, cfg);
+  let forgotten = 0;
   for (const target of stale) {
-    collectForSemanticize(evictedTexts, narrativeDir, target.file);
     const strength = computeStrength(target, nowMs, cfg).toFixed(3);
-    archiveDreamRecord(
+    const outcome = archiveDreamRecord(
       manifest,
       target,
       narrativeDir,
@@ -156,23 +209,27 @@ function forgetStale(
       `forgotten: retention ${strength} < floor ${cfg.retentionFloor}`,
       now,
     );
+    // Held open elsewhere: still live, not forgotten — the next pass tries.
+    if (!outcome.archived) continue;
+    forgotten++;
+    markPendingFold(manifest, outcome.archivedAs);
   }
-  return stale.length;
+  return forgotten;
 }
 
-/** Read a dying dream-created 废案's text into the semanticization collector.
- *  Best-effort: an unreadable file simply contributes nothing. Seeds never
- *  route through here (their eviction path is archiveLiveRecord directly),
- *  and neither do reconsolidation supersede-archives — a reconsolidated
- *  memory lives on sharper, it is not forgotten. */
-function collectForSemanticize(
-  collector: EvictedFeianText[] | undefined,
-  narrativeDir: string,
-  file: string,
+/** A dying dream's gist is owed to the 关于开拓者 page (finding 14): its
+ *  archived name joins the manifest's pending list, flushed with the archive
+ *  move itself, and the fold reads the body back from the archive. Seeds
+ *  never route through here (their eviction path is archiveLiveRecord
+ *  directly), and neither do reconsolidation supersede-archives — a
+ *  reconsolidated memory lives on sharper, it is not forgotten. A file that
+ *  had already vanished owes nothing. */
+function markPendingFold(
+  manifest: DreamManifest,
+  archivedAs: string | null,
 ): void {
-  if (collector === undefined) return;
-  const body = readTextFile(narrativeDir, file);
-  if (body !== undefined) collector.push({ file, body });
+  if (archivedAs === null) return;
+  manifest.pendingFold = [...(manifest.pendingFold ?? []), archivedAs];
 }
 
 /**
@@ -198,8 +255,6 @@ function enforceCap(
   dreamDir: string,
   nowMs: number,
   now: () => Date,
-  /** See forgetStale — dying DREAM records (never seeds) feed the collector. */
-  evictedTexts?: EvictedFeianText[],
 ): number {
   if (cfg.maxLiveCount <= 0) return 0;
   let seedsEvicted = 0;
@@ -232,9 +287,8 @@ function enforceCap(
     // first (redundancy before diversity); unique tags → weakest overall.
     const target = pickEvictionTarget(manifest, nowMs, cfg);
     if (target === undefined) break;
-    collectForSemanticize(evictedTexts, narrativeDir, target.file);
     const strength = computeStrength(target, nowMs, cfg).toFixed(3);
-    archiveDreamRecord(
+    const outcome = archiveDreamRecord(
       manifest,
       target,
       narrativeDir,
@@ -242,6 +296,11 @@ function enforceCap(
       `cap-eviction: retention ${strength} (interference-aware)`,
       now,
     );
+    // Un-archivable (held open): stop rather than spin — the record stays
+    // live, the promotion proceeds over budget this pass, the next retries.
+    // The old path flipped it to archived anyway and went on to the next.
+    if (!outcome.archived) break;
+    markPendingFold(manifest, outcome.archivedAs);
   }
   return seedsEvicted;
 }
@@ -354,23 +413,38 @@ export async function runDreamPass(
   }
 
   try {
-    const manifest = readManifest(dreamDir);
+    // A broken manifest stops the pass before anything is written: an empty
+    // ledger in its place would re-dream everything as new (finding 8).
+    // Reported like a transport abort — `lastRunAt` does not advance.
+    const read = readManifestStrict(dreamDir);
+    if (!read.ok) {
+      res.aborted = read.reason;
+      return res;
+    }
+    const manifest = read.manifest;
+    // Segmentation v2 (ADR 0069 §4 and §7) starts with the first pass that
+    // runs with it: every block in a record today predates this moment, so
+    // it is cut as it always was and every ledgered episode keeps its hash.
+    // Recorded with the manifest's next flush, and never moved after.
+    if (manifest.segmentationV2Since === undefined) {
+      manifest.segmentationV2Since = now().toISOString();
+    }
+    const segmentOpts = {
+      ...cfg,
+      segmentationV2SinceMs: segmentationV2SinceMs(manifest),
+    };
 
     // Crash recovery: make the on-disk state and the ledger consistent before
     // the cap + dedup run — sweep stale temp files from an interrupted
     // promotion and prune phantom live records whose file has vanished. Does
     // NOT adopt unknown 废案 files (they may be hand-authored seeds; D7
     // never-touch-user-owned).
-    reconcileDreamState({ narrativeDir, manifest });
-
-    // Semanticization collector: every dream-created 废案 the pass forgets
-    // (stale-floor or cap) contributes its text, folded into the 关于开拓者
-    // page at the end of the pass.
-    const evictedForNotes: EvictedFeianText[] = [];
+    reconcileDreamState({ narrativeDir, manifest, nowMs: now().getTime() });
 
     // Stale-floor forgetting (the forgetting curve): archive dreams whose
     // retention has decayed below the floor, once per pass, before episodes. A
-    // no-op at the default floor of 0. Flush so a crash can't resurrect a fade.
+    // no-op at the default floor of 0. Flush so a crash can't resurrect a fade
+    // — the flush also carries the dying gists' pending-fold entries.
     const forgotten = forgetStale(
       manifest,
       cfg,
@@ -378,7 +452,6 @@ export async function runDreamPass(
       dreamDir,
       now().getTime(),
       now,
-      evictedForNotes,
     );
     if (forgotten > 0) writeManifest(dreamDir, manifest);
 
@@ -446,7 +519,7 @@ export async function runDreamPass(
     // size of a manifest that only ever grows. Built once here and kept in
     // step as episodes are recorded below.
     const dreamedKeys = new Set(
-      manifest.episodes.map((e) => `${e.sessionId} ${e.episodeHash}`),
+      manifest.episodes.map((e) => `${e.sessionId}\u0000${e.episodeHash}`),
     );
 
     for (const s of opts.sessions) {
@@ -458,10 +531,19 @@ export async function runDreamPass(
       const episodes = segmentSession(
         s.sessionId,
         record,
-        cfg,
+        segmentOpts,
         now().getTime(),
       );
-      const candidates = selectEpisodes(episodes, cfg);
+      // The open session dreams only behind its recap boundary (ADR 0069
+      // §2): what compression has already taken from the prompt. The same
+      // inequality the reopen filter uses (`end > boundary` is verbatim).
+      const dreamableEnd = s.dreamableEnd?.(record);
+      const candidates = selectEpisodes(
+        dreamableEnd === undefined
+          ? episodes
+          : episodes.filter((ep) => ep.endIndex <= dreamableEnd),
+        cfg,
+      );
 
       for (const ep of candidates) {
         // Skip if already processed in a prior pass (unless --reconsider
@@ -469,12 +551,28 @@ export async function runDreamPass(
         // manifest flush.
         if (
           !opts.reconsider &&
-          dreamedKeys.has(`${ep.sessionId} ${ep.episodeHash}`)
+          dreamedKeys.has(`${ep.sessionId}\u0000${ep.episodeHash}`)
         ) {
           res.skipped++;
           continue;
         }
-        dreamedKeys.add(`${ep.sessionId} ${ep.episodeHash}`);
+        // The user came back (finding 12): step aside between episodes,
+        // before this one is marked seen.
+        if (opts.shouldYield?.() === true) {
+          res.yielded = true;
+          break;
+        }
+        // The spend ceiling (dream review 2026-09-22, finding 3): checked
+        // before the episode is marked seen, so what the pass leaves is
+        // simply undreamed — the next pass takes it up.
+        if (
+          opts.maxEpisodes !== undefined &&
+          res.considered >= opts.maxEpisodes
+        ) {
+          res.budgetStopped = true;
+          break;
+        }
+        dreamedKeys.add(`${ep.sessionId}\u0000${ep.episodeHash}`);
         try {
           res.considered++;
           const digest = buildEpisodeDigest(ep.blocks);
@@ -513,6 +611,7 @@ export async function runDreamPass(
             reason?: string;
             occasion?: string;
             retellsKnownEvent?: boolean;
+            mixedTopics?: boolean;
           }>(
             opts.client,
             buildWorthinessPrompt(digest, steerSummaries(), env, lang),
@@ -613,6 +712,12 @@ export async function runDreamPass(
             continue;
           }
 
+          // An excerpt that strings together unrelated topics (finding 22):
+          // the gate judged the most memorable one and named it; the page
+          // tells that one, and the critique judges faithfulness against it.
+          const focus =
+            worthyResult.mixedTopics === true ? epOccasion : undefined;
+
           // ── 2. Generate + refine-on-validator-error ───────────────────────
           const genResult = await jsonCall<{
             feian: string;
@@ -626,6 +731,7 @@ export async function runDreamPass(
               guide,
               env,
               lang,
+              focus,
             ),
             cfg.model,
             cfg.generationEffort,
@@ -833,7 +939,7 @@ export async function runDreamPass(
           // occasion retold as unrelated fiction).
           const scoresResult = await jsonCall<CritiqueScores>(
             opts.client,
-            buildCritiquePrompt(gen.feian, guide, lang, digest),
+            buildCritiquePrompt(gen.feian, guide, lang, digest, focus),
             cfg.model,
             cfg.gateEffort,
           );
@@ -906,7 +1012,6 @@ export async function runDreamPass(
             dreamDir,
             now().getTime(),
             now,
-            evictedForNotes,
           );
 
           const { nn, file } = promoteCandidate({
@@ -932,7 +1037,6 @@ export async function runDreamPass(
             summary: opening,
             critiqueScores: scoresResult,
             validateFeianPassed: true,
-            estimatedPrefixTokens: gen.feian.length,
             reactivationCount: 0,
             // The worthiness-extracted occasion (ADR 0021) — the record's
             // stable real-life identity for future reactivation. Optional:
@@ -951,6 +1055,13 @@ export async function runDreamPass(
             // is retried next pass. Recording it here would let a transient
             // outage permanently consume material.
             res.aborted = err.detail;
+          } else if (isFileSystemError(err)) {
+            // The disk refused a write — the promotion rename under an AV
+            // scan, an indexer or OneDrive on `.herta/narrative`. The same
+            // shape as an outage (finding 7): the episode was ledgered
+            // `archived: error` and never tried again, a memory consumed by
+            // a lock. Abort without consuming it; the next pass retries.
+            res.aborted = `write failed: ${(err as { code: string }).code}`;
           } else {
             recordEpisode(
               manifest,
@@ -969,7 +1080,18 @@ export async function runDreamPass(
         }
         if (res.aborted !== undefined) break;
       }
-      if (res.aborted !== undefined) break;
+      if (
+        res.aborted !== undefined ||
+        res.budgetStopped === true ||
+        res.yielded === true
+      ) {
+        break;
+      }
+    }
+    // The end-of-pass work below is model calls too: a user who came back
+    // during the last episode is not kept waiting behind them.
+    if (res.yielded !== true && opts.shouldYield?.() === true) {
+      res.yielded = true;
     }
 
     // Living-memory semanticization sources (ADR 0023 — consolidation
@@ -994,18 +1116,40 @@ export async function runDreamPass(
       }
     }
 
+    // The dying gists owed to the page: every archived name on the manifest's
+    // pending list — this pass's forgettings and any an aborted or crashed
+    // earlier pass left owing (finding 14) — read back from the archive. A
+    // name whose file is gone owes nothing more and leaves the list.
+    const archiveDir = join(dreamDir, "archive");
+    const evictedForNotes: EvictedFeianText[] = [];
+    const pendingNames: string[] = [];
+    for (const name of manifest.pendingFold ?? []) {
+      const body = readTextFile(archiveDir, name);
+      if (body === undefined) continue;
+      evictedForNotes.push({ file: name, body });
+      pendingNames.push(name);
+    }
+    if ((manifest.pendingFold?.length ?? 0) !== pendingNames.length) {
+      manifest.pendingFold = pendingNames;
+      writeManifest(dreamDir, manifest);
+    }
+
     // Semanticization (best-effort, after the loops): fold the forgotten
     // dreams' gist — and the stabilized living records' (ADR 0023) — into the
     // 关于开拓者 / "About the Trailblazer" page. Failures leave the page
     // untouched and never abort the pass — the forgetting already happened,
     // and blocking completion on this step would let a flaky call re-trigger
-    // everything.
+    // everything. A failed fold keeps the pending list: the next pass folds
+    // the same gists.
     //
     // Language-aware (ADR 0017 follow-up): each language folds into its OWN
     // notes page (this pass's per-language narrativeDir + notesFileFor/
     // notesHeaderFor selected by `lang`); the `### 记录` prefix stays CN in
     // both so the static-prefix loader still matches.
-    if (evictedForNotes.length > 0 || stabilizedTexts.length > 0) {
+    if (
+      res.yielded !== true &&
+      (evictedForNotes.length > 0 || stabilizedTexts.length > 0)
+    ) {
       const outcome = await semanticizeEvictions({
         narrativeDir,
         // Enables the pre-overwrite backup of the notes page — the one corpus
@@ -1027,6 +1171,11 @@ export async function runDreamPass(
         markGistFolded(manifest, stabilizedIds);
         writeManifest(dreamDir, manifest);
       }
+      // The dying gists reached the page: they are owed no more.
+      if (outcome === "updated" && pendingNames.length > 0) {
+        delete manifest.pendingFold;
+        writeManifest(dreamDir, manifest);
+      }
     }
 
     // Contradiction audit (fossilization mitigation): the strongest living
@@ -1036,34 +1185,40 @@ export async function runDreamPass(
     // BOTH languages now (ADR 0017 follow-up); auditTrailblazerNotes no-ops
     // (returns "none") while the page is still empty, so a fresh EN corpus with
     // no notes page yet costs nothing.
-    const living = [...liveDreamRecords(manifest)]
-      .sort(
-        (a, b) =>
-          computeStrength(b, now().getTime(), cfg) -
-          computeStrength(a, now().getTime(), cfg),
-      )
-      .slice(0, cfg.notesAuditMaxRecords)
-      .map((r) => {
-        const body = readTextFile(narrativeDir, r.file);
-        return body === undefined ? undefined : { file: r.file, body };
-      })
-      .filter((t): t is EvictedFeianText => t !== undefined);
-    const audit = await auditTrailblazerNotes({
-      narrativeDir,
-      dreamDir,
-      client: opts.client,
-      cfg,
-      living,
-      guide,
-      runId: opts.runId,
-      lang,
-    });
-    if (audit !== "none") res.notesAudit = audit;
+    if (res.yielded !== true && opts.shouldYield?.() === true) {
+      res.yielded = true;
+    }
+    if (res.yielded !== true) {
+      const living = [...liveDreamRecords(manifest)]
+        .sort(
+          (a, b) =>
+            computeStrength(b, now().getTime(), cfg) -
+            computeStrength(a, now().getTime(), cfg),
+        )
+        .slice(0, cfg.notesAuditMaxRecords)
+        .map((r) => {
+          const body = readTextFile(narrativeDir, r.file);
+          return body === undefined ? undefined : { file: r.file, body };
+        })
+        .filter((t): t is EvictedFeianText => t !== undefined);
+      const audit = await auditTrailblazerNotes({
+        narrativeDir,
+        dreamDir,
+        client: opts.client,
+        cfg,
+        living,
+        guide,
+        runId: opts.runId,
+        lang,
+      });
+      if (audit !== "none") res.notesAudit = audit;
+    }
 
     // Mark the pass complete: lastRunAt advances only on a FULL pass, so a
     // crashed or transport-aborted pass does not reset the weekly cadence — the
     // trigger retries and resumes (dedup skips the episodes already flushed).
-    if (res.aborted === undefined) {
+    // A pass that stepped aside for the user resumes the same way.
+    if (res.aborted === undefined && res.yielded !== true) {
       manifest.lastRunAt = now().toISOString();
     }
     writeManifest(dreamDir, manifest);

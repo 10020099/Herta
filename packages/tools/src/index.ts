@@ -13,7 +13,6 @@ import { editFileTool } from "./edit-file/index.js";
 import { gitDiffTool } from "./git-diff/index.js";
 import { gitStatusTool } from "./git-status/index.js";
 import { globTool } from "./glob/index.js";
-import { listFilesTool } from "./list-files/index.js";
 import { memorySaveTool } from "./memory-save/index.js";
 import { readFileTool } from "./read-file/index.js";
 import { reportFindingTool } from "./report-finding/index.js";
@@ -29,6 +28,7 @@ import {
   strReplaceEditorTool,
 } from "./str-replace-editor/index.js";
 import { todoWriteTool } from "./todo-write/index.js";
+import { viewImageTool } from "./view-image/index.js";
 import { writeNewFileTool } from "./write-new-file/index.js";
 
 export {
@@ -42,6 +42,7 @@ export {
   makeBashRule,
   makeMsysPaths,
   PersistentShell,
+  primeShellPaths,
   registerBashRule,
   SHELL_BG_ID,
   type ShellPaths,
@@ -82,7 +83,54 @@ export {
 export type { EditFileInput } from "./edit-file/schema.js";
 export type { ToolErrorCode } from "./errors.js";
 export { TOOL_ERROR_CODES } from "./errors.js";
-export { probeRepoState } from "./git/repo-probe.js";
+export type {
+  CommitDescription,
+  CommitFileChange,
+  CommitFileStatus,
+  GitReadOptions,
+} from "./git/commit-show.js";
+export {
+  describeCommit,
+  MAX_COMMIT_FILES,
+  MAX_COMMIT_PATCH_BYTES,
+} from "./git/commit-show.js";
+export type {
+  BranchEntry,
+  BranchList,
+  LogEntry,
+  LogPage,
+  LogQuery,
+} from "./git/log-list.js";
+export {
+  describeBranches,
+  describeLog,
+  isSafeRefName,
+  LOG_PAGE_SIZE,
+  MAX_BRANCHES,
+  MAX_LOG_LIMIT,
+  MAX_LOG_QUERY_CHARS,
+} from "./git/log-list.js";
+export type {
+  RangeChangedFile,
+  RepoContextOutcome,
+  RepoProbeTransientReason,
+} from "./git/repo-probe.js";
+export {
+  classifyProbeFailure,
+  describeRepoContext,
+  describeRepoOutcome,
+  detectInProgressState,
+  diffCommittedRange,
+  probeRepoState,
+  resolveGitDir,
+} from "./git/repo-probe.js";
+export type { GitReadTimeout } from "./git/spawn-git.js";
+export { GIT_READ_TIMEOUT, isGitReadTimeout } from "./git/spawn-git.js";
+export type { WorkingDiff } from "./git/working-diff.js";
+export {
+  describeWorkingDiff,
+  MAX_WORKING_DIFF_BYTES,
+} from "./git/working-diff.js";
 export type { GitDiffData, GitDiffFile } from "./git-diff/index.js";
 export { gitDiffTool } from "./git-diff/index.js";
 export type { GitDiffInput } from "./git-diff/schema.js";
@@ -93,9 +141,6 @@ export { globToRegExp } from "./glob/glob-to-regex.js";
 export type { GlobData, GlobFileEntry } from "./glob/index.js";
 export { globTool } from "./glob/index.js";
 export type { GlobInput } from "./glob/schema.js";
-export type { ListFilesData } from "./list-files/index.js";
-export { listFilesTool } from "./list-files/index.js";
-export type { ListFilesInput } from "./list-files/schema.js";
 export type { MemorySaveData } from "./memory-save/index.js";
 export { memorySaveTool } from "./memory-save/index.js";
 export type { MemorySaveInput } from "./memory-save/schema.js";
@@ -109,10 +154,12 @@ export type { ReadFileData } from "./read-file/index.js";
 export { readFileTool } from "./read-file/index.js";
 export type { ReadFileInput } from "./read-file/schema.js";
 export {
+  findingClaimLanguageLine,
   MAX_FINDING_CITES,
   MAX_FINDING_CLAIM_CHARS,
   type ReportFindingData,
   type ReportFindingInput,
+  type ReportFindingToolOpts,
   reportFindingTool,
 } from "./report-finding/index.js";
 export type { RunCommandData } from "./run-command/index.js";
@@ -152,14 +199,28 @@ export {
 } from "./str-replace-editor/index.js";
 export type { StrReplaceEditorInput } from "./str-replace-editor/schema.js";
 export { looksBinary, SNIFF_BYTES } from "./text-sniff.js";
-export type { TodoWriteData } from "./todo-write/index.js";
-export { MAX_TODO_ITEMS, todoWriteTool } from "./todo-write/index.js";
+export type {
+  TodoWriteData,
+  TodoWriteToolOpts,
+} from "./todo-write/index.js";
+export {
+  MAX_TODO_ITEMS,
+  todoContentLanguageLine,
+  todoWriteTool,
+} from "./todo-write/index.js";
 export type { TodoWriteInput } from "./todo-write/schema.js";
 export {
   canonicalWorkspaceRoot,
   validateWorkspaceRoot,
   type WorkspaceRootCheck,
 } from "./validate-workspace-root.js";
+export type { ViewImageData } from "./view-image/index.js";
+export {
+  MAX_VIEW_IMAGE_BYTES,
+  MAX_VIEW_IMAGES,
+  viewImageTool,
+} from "./view-image/index.js";
+export type { ViewImageInput } from "./view-image/schema.js";
 export type {
   WriteNewFileData,
   WriteNewFileRuleDeps,
@@ -178,6 +239,49 @@ export type { WriteNewFileInput } from "./write-new-file/schema.js";
 export interface DigestToolsOpts {
   readonly digestModel: DigestModel | null;
   readonly lang?: "zh" | "en";
+  /**
+   * Whether the backend MODEL can read an image (ADR 0048 slice 3). Mounts
+   * `view_image`.
+   *
+   * Gated rather than always-on: a model without vision answers 400 to an
+   * image part, and a tool the model is told it has but cannot use is worse
+   * than no tool — it invites a call that fails, and invites the model to
+   * believe it looked. Absent = false, which is every stack today.
+   */
+  readonly vision?: boolean;
+  /**
+   * Mount `digest_document` now (ADR 0067). Default true — a lab or a test
+   * that builds the set directly keeps the whole set. The app's wiring
+   * passes false and mounts the tool through `digestToolFor` once the
+   * session actually holds a document: ~280 schema tokens on every call
+   * are worth nothing in a session that never attaches one.
+   */
+  readonly digest?: boolean;
+  /**
+   * Mount `git_status` / `git_diff` (the standard contract only; the
+   * minimal contract's bash runs git itself). Default true. The wiring
+   * passes whether the workspace is inside a git repository and refreshes
+   * it when the workspace moves (ADR 0067).
+   */
+  readonly gitTools?: boolean;
+}
+
+/**
+ * The digest tool as a stack mounts it later (ADR 0067): the same path
+ * mapping the contract's other record channels use — the shell's spelling
+ * on the minimal contract, identity on the standard one.
+ */
+export function digestToolFor(
+  opts: DigestToolsOpts & { readonly bashPath: string | null },
+): HertaTool {
+  const paths = shellPathsFor(opts.bashPath);
+  return digestDocumentTool({
+    model: opts.digestModel,
+    ...(opts.bashPath !== null
+      ? { mapPath: (p: string): string => paths.toNative(p) ?? p }
+      : {}),
+    ...(opts.lang !== undefined ? { lang: opts.lang } : {}),
+  });
 }
 
 export interface MinimalToolsOpts extends DigestToolsOpts {
@@ -196,6 +300,15 @@ export interface MinimalToolsOpts extends DigestToolsOpts {
  * `view` is silent to the record like read_file is), and `digest_document`
  * (ADR 0043: a whole attached document's content in one call — a shell can
  * only read it end to end).
+ *
+ * `todo_write` joined 2026-08-26 (ADR 0047 §4, owner decision): without it
+ * the done marker's 待办 lane was STRUCTURALLY empty on the default
+ * contract — the git-dev lab reproduced a brief that said 记到待办 while
+ * `nextActions` stayed `[]`, and cross-dispatch inheritance survived only
+ * on the bounded user-history tail. It is the same harness-state channel
+ * class as report_finding (a shell cannot write the plan the GUI's rail
+ * card and the next dispatch read), so mounting it amends the trained
+ * 4-tool shape deliberately, not casually.
  */
 export function createMinimalTools(opts: MinimalToolsOpts): HertaTool[] {
   // The two record channels accept the SHELL's path spelling too — the model
@@ -211,13 +324,25 @@ export function createMinimalTools(opts: MinimalToolsOpts): HertaTool[] {
       bashPath: opts.bashPath,
       workspaceShellPath: opts.workspaceShellPath,
     }),
-    reportFindingTool({ mapPath }),
-    showExcerptTool({ mapPath }),
-    digestDocumentTool({
-      model: opts.digestModel,
+    reportFindingTool({
       mapPath,
       ...(opts.lang !== undefined ? { lang: opts.lang } : {}),
     }),
+    showExcerptTool({ mapPath }),
+    todoWriteTool(opts.lang !== undefined ? { lang: opts.lang } : {}),
+    ...(opts.digest !== false
+      ? [
+          digestDocumentTool({
+            model: opts.digestModel,
+            mapPath,
+            ...(opts.lang !== undefined ? { lang: opts.lang } : {}),
+          }),
+        ]
+      : []),
+    // Only on a vision-capable model (ADR 0048 §5): the caption is one shot
+    // and lossy, and a visual question that outruns it deserves a RE-LOOK
+    // rather than a longer guess.
+    ...(opts.vision === true ? [viewImageTool({ mapPath })] : []),
   ];
 }
 
@@ -239,7 +364,9 @@ export function createMvpTools(
     // Presentation, not navigation: read_file is silent to the user and to
     // Herta, so "show me what's in that file" needs its own tool (ADR 0027).
     showExcerptTool(),
-    listFilesTool(),
+    // list_files left the set on 2026-09-18 (ADR 0067): glob finds files by
+    // name and run_command's `ls`/`dir` lists a directory, the way Claude
+    // Code retired its LS tool. ~160 schema tokens per call, every call.
     searchTextTool(),
     globTool(),
     editFileTool(),
@@ -247,18 +374,26 @@ export function createMvpTools(
     commandOutputTool(),
     commandStopTool(),
     writeNewFileTool(),
-    todoWriteTool(),
-    gitStatusTool(),
-    gitDiffTool(),
+    todoWriteTool(opts.lang !== undefined ? { lang: opts.lang } : {}),
+    // Structured git reads — inside a git repository only (ADR 0067): the
+    // wiring decides from the workspace and refreshes on a move.
+    ...(opts.gitTools !== false ? [gitStatusTool(), gitDiffTool()] : []),
     memorySaveTool(),
     // The backend's channel for CONCLUSIONS (ADR 0039): its final prose has
     // none by design, so an analysis brief needs this or it delivers nothing.
-    reportFindingTool(),
-    // A whole attached document's content in one call (ADR 0043).
-    digestDocumentTool({
-      model: opts.digestModel,
-      ...(opts.lang !== undefined ? { lang: opts.lang } : {}),
-    }),
+    reportFindingTool(opts.lang !== undefined ? { lang: opts.lang } : {}),
+    // A whole attached document's content in one call (ADR 0043) — see
+    // DigestToolsOpts.digest for when the wiring mounts it instead.
+    ...(opts.digest !== false
+      ? [
+          digestDocumentTool({
+            model: opts.digestModel,
+            ...(opts.lang !== undefined ? { lang: opts.lang } : {}),
+          }),
+        ]
+      : []),
+    // Vision-capable models only (ADR 0048 §5) — see createMinimalTools.
+    ...(opts.vision === true ? [viewImageTool()] : []),
   ];
 }
 

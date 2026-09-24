@@ -1,5 +1,5 @@
 import type { TerminalRecordBlock } from "@herta/core";
-import { liveDreamRecords } from "./manifest.js";
+import { liveDreamRecords, segmentationV2SinceMs } from "./manifest.js";
 import { segmentSession } from "./segment-session.js";
 import type { DreamConfig, DreamManifest } from "./types.js";
 
@@ -61,23 +61,50 @@ export function selectPromptExclusions(
   if (live.length === 0 || record.length === 0) return excluded;
 
   // hash → end index of the episode in the current record. Built once per
-  // open; segmentation is pure and linear in the record length.
+  // open; segmentation is pure and linear in the record length. Cut the
+  // way the ledger was cut (ADR 0069 §4, §7): segmentation v2 from the
+  // manifest's cutover, the old rules before it.
   const episodeEnd = new Map<string, number>();
-  for (const ep of segmentSession(sessionId, record, config)) {
+  const v2Cutover = segmentationV2SinceMs(manifest);
+  for (const ep of segmentSession(sessionId, record, {
+    ...config,
+    ...(v2Cutover !== undefined ? { segmentationV2SinceMs: v2Cutover } : {}),
+  })) {
     episodeEnd.set(ep.episodeHash, ep.endIndex);
+  }
+  // hash → the sessions the ledger dreamed it from.
+  const ledgerSessions = new Map<string, Set<string>>();
+  for (const e of manifest.episodes) {
+    const set = ledgerSessions.get(e.episodeHash) ?? new Set<string>();
+    set.add(e.sessionId);
+    ledgerSessions.set(e.episodeHash, set);
   }
 
   for (const rec of live) {
-    // Withhold only when EVERY source episode is still verbatim in this
-    // window — then the record adds nothing the prompt doesn't already show.
-    // A reconsolidated record that also accretes episodes from other sessions
-    // (or from behind the recap boundary) stays in: it carries genuine past
-    // the record can't, and losing that costs more than partial overlap.
-    const allSourcesVerbatim = rec.sourceEpisodes.every((hash) => {
+    // Withhold only when EVERY source episode is this session's own and
+    // either still verbatim in this window or WITHDRAWN from the record —
+    // then the record adds nothing the prompt should show. A reconsolidated
+    // record that also accretes episodes from other sessions (or from
+    // behind the recap boundary) stays in: it carries genuine past the
+    // record can't, and losing that costs more than partial overlap.
+    //
+    // Withdrawn = the session's own source hash is absent from its record.
+    // Growth only ever appends new episodes, so an own episode can only
+    // vanish when its bytes changed: a rewind truncated it, a take-back
+    // rewrote an attachment's body. This used to fail OPEN — the 废案 of
+    // the evening the user took back loaded into the prompt while the
+    // altered episode sat verbatim below it (dream review 2026-09-22,
+    // finding 5). It fails CLOSED now for the session's own sources only;
+    // another session's hash is absent here by construction.
+    const own = (hash: string): boolean =>
+      ledgerSessions.get(hash)?.has(sessionId) === true ||
+      (rec.sourceSessionId === sessionId && hash === rec.sourceEpisodeHash);
+    const withhold = rec.sourceEpisodes.every((hash) => {
+      if (!own(hash)) return false;
       const end = episodeEnd.get(hash);
-      return end !== undefined && end > recapBoundaryIndex;
+      return end === undefined || end > recapBoundaryIndex;
     });
-    if (allSourcesVerbatim && rec.sourceEpisodes.length > 0) {
+    if (withhold && rec.sourceEpisodes.length > 0) {
       excluded.add(rec.file);
     }
   }

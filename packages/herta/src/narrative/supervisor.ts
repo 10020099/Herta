@@ -86,6 +86,16 @@ export interface SupervisorCheckInput {
    * Slice 4 threads the interaction-language setting through here.
    */
   readonly lang?: PromptLang;
+  /**
+   * Ask the supervisor to also WRITE the corrected line when it blocks
+   * (ADR 0065): a final `改说：<the line as it should be said>` block after
+   * the BLOCK lines. The request rides the user message's tail, so the
+   * cached system message is byte-identical with or without it. The actor
+   * adopts the line as the re-speak when it is usable and falls back to
+   * its own rethink + respeak otherwise. Default false (no request, no
+   * `revision` in the parsed verdict).
+   */
+  readonly askRevision?: boolean;
   readonly signal: AbortSignal;
   /** Optional callback fired once the prompt has been constructed and
    *  BEFORE `provider.streamChat` is called. Allows the caller to
@@ -211,6 +221,7 @@ export function buildSupervisorPrompt(
     | "feianFewShots"
     | "sessionReceipts"
     | "lang"
+    | "askRevision"
   >,
 ): { prompt: string; frame: ActorPromptFrame } {
   const lang = input.lang ?? "zh";
@@ -438,6 +449,16 @@ const USER_MESSAGE_TAIL: Record<PromptLang, string> = {
   en: `Apply the four-step hard check from the system message to the passage inside the \`### 我刚才要说出口的话\` code block above (the code fence itself is not part of the line). The formal answer first outputs the four conclusion lines (接话检查 / 声音检查 / 设定检查 / 意图检查, each line "过 / 不过——<one short reason> / 不适用"), then the final verdict line(s) (OK, or one or more lines of BLOCK：<类别>：<one first-person sentence in English>); every 不过 line must have a matching BLOCK line.`,
 };
 
+/** The 改说 request (ADR 0065), appended to the user message's tail only
+ *  when the actor asks for it. The keyword and the grammar around it are
+ *  the machine contract (`parseSupervisorVerdict`); the rules are what the
+ *  lab found a usable line needs: the sentences that passed survive, only
+ *  the named problem changes, nothing after the block. */
+const REVISION_REQUEST: Record<PromptLang, string> = {
+  zh: `若判定为 BLOCK：在最后一行 BLOCK 之后另起一行，以"改说："开头，写出这段话改正后的完整版本——就是我此刻该说出口的那段话本身。保留原话里没有问题的句子，只改 BLOCK 指出的地方，长度不超过原话；直接写正文，不带（我 说）之类的标签，不带围栏，不带引号，不带任何说明；"改说："之后不要再输出任何别的东西。判定为 OK 时不要输出改说。`,
+  en: `If the verdict is BLOCK: after the last BLOCK line, start a new line beginning with "改说：" and give the corrected passage in full — the line I should actually say now, in English. Keep the sentences that passed, change only what the BLOCK lines named, and stay no longer than the original; write the text itself, with no （我 说） tags, no fences, no quotation marks and no commentary; output nothing after the 改说 block. Never output 改说 on an OK verdict.`,
+};
+
 /** Intro prose for the session-receipts section, per prompt language. The
  *  `### 本会话的板砖完成记录` header above it is the machine contract and
  *  stays CN in both variants (like every other `### …` header here). */
@@ -465,10 +486,15 @@ function buildUserMessage(
     | "candidateSpeech"
     | "sessionReceipts"
     | "lang"
+    | "askRevision"
   >,
 ): string {
   const lang = input.lang ?? "zh";
   const moodDescription = moodDescriptions(lang)[input.currentState];
+  const tail =
+    input.askRevision === true
+      ? `${USER_MESSAGE_TAIL[lang]}\n\n${REVISION_REQUEST[lang]}`
+      : USER_MESSAGE_TAIL[lang];
   const serializedRecord = serializeTerminalRecord(input.recentRecord, {
     lang,
   });
@@ -499,7 +525,7 @@ ${fenceModelText(candidateSafe)}
 
 ---
 
-${USER_MESSAGE_TAIL[lang]}`;
+${tail}`;
 }
 
 /**
@@ -525,6 +551,53 @@ function matchVerdictKeyword(line: string): "BLOCK" | "重来" | null {
     return "BLOCK";
   }
   return line.startsWith("重来") ? "重来" : null;
+}
+
+/** Match the 改说 keyword that opens the supervisor's corrected line (ADR
+ *  0065). The keyword must be the whole line or be followed by a colon —
+ *  prose that merely begins with the characters (改说得更短) is not it.
+ *  Returns the text after the colon (possibly empty: the line may start on
+ *  the next line), or null. */
+function matchRevisionKeyword(line: string): string | null {
+  const m = /^改说\s*(?:[:：]\s*(.*))?$/u.exec(line);
+  if (m === null) return null;
+  return (m[1] ?? "").trim();
+}
+
+/** Tidy the captured 改说 text: a wrapping pair of quotes and a stray
+ *  speech envelope are tolerated (the prompt forbids both, models add
+ *  them anyway) so the actor's usability check judges the line itself. */
+function tidyRevision(lines: readonly string[]): string {
+  let text = lines.join("\n").trim();
+  for (const [open, close] of [
+    ["「", "」"],
+    ["“", "”"],
+    ['"', '"'],
+  ] as const) {
+    if (text.length > 1 && text.startsWith(open) && text.endsWith(close)) {
+      text = text.slice(open.length, text.length - close.length).trim();
+      break;
+    }
+  }
+  if (text.startsWith("（我 说）")) text = text.slice("（我 说）".length);
+  if (text.endsWith("（/我 说）")) {
+    text = text.slice(0, text.length - "（/我 说）".length);
+  }
+  // A quote opened and never closed (the 2026-09-18 soak: `"……'一切'？…`)
+  // is the model half-obeying "no quotation marks"; the lone mark would
+  // otherwise reach the screen and the record. Only an UNPAIRED opener is
+  // dropped — a line that quotes something inside itself keeps both.
+  for (const [open, close] of [
+    ['"', '"'],
+    ["“", "”"],
+    ["「", "」"],
+  ] as const) {
+    if (text.startsWith(open) && !text.slice(open.length).includes(close)) {
+      text = text.slice(open.length).trimStart();
+      break;
+    }
+  }
+  return text.trim();
 }
 
 /** Step-conclusion line marked failed, e.g. `设定检查：不过——沿用了"杨叔"`.
@@ -580,17 +653,41 @@ function parseFindingBody(afterKeyword: string): SupervisorFinding | null {
  * (a misbehaving supervisor approves, never mass-blocks). `reason` is
  * set only on `"block"`, the block details joined with `；` for
  * `buildSupervisorVetoHint`.
+ *
+ * `revision` (ADR 0065): the text of a `改说：` block — everything from
+ * the keyword to the end of the output, since the corrected line is the
+ * last thing the supervisor writes. A verdict line landing AFTER it (the
+ * wrong order) still counts as a verdict and ends the capture: a swallowed
+ * BLOCK must never read as an OK. Set only on `"block"` and only when
+ * non-empty; whether the line can stand as the re-speak is the actor's
+ * call (`usableRevision` in actor-turn.ts).
  */
 export function parseSupervisorVerdict(raw: string): {
   verdict: "ok" | "block";
   reason?: string;
   blockFindings: readonly SupervisorFinding[];
+  revision?: string;
 } {
   const blockFindings: SupervisorFinding[] = [];
   const stepFailFindings: SupervisorFinding[] = [];
+  const revisionLines: string[] = [];
+  let inRevision = false;
   for (const rawLine of raw.split(/\r?\n/)) {
     const line = rawLine.trim();
+    if (inRevision) {
+      if (matchVerdictKeyword(line) === null && line !== "OK") {
+        revisionLines.push(line);
+        continue;
+      }
+      inRevision = false;
+    }
     if (line.length === 0) continue;
+    const revisionStart = matchRevisionKeyword(line);
+    if (revisionStart !== null) {
+      inRevision = true;
+      if (revisionStart.length > 0) revisionLines.push(revisionStart);
+      continue;
+    }
     const kw = matchVerdictKeyword(line);
     if (kw === null) {
       const stepFail = parseStepFailLine(line);
@@ -612,10 +709,12 @@ export function parseSupervisorVerdict(raw: string): {
     blockFindings.push(...stepFailFindings);
   }
   if (blockFindings.length > 0) {
+    const revision = tidyRevision(revisionLines);
     return {
       verdict: "block",
       reason: blockFindings.map((f) => f.detail).join("；"),
       blockFindings,
+      ...(revision.length > 0 ? { revision } : {}),
     };
   }
   return { verdict: "ok", blockFindings };

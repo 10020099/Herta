@@ -1,4 +1,10 @@
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -37,7 +43,6 @@ const rec = (
   summary: "这是一段叙事开篇摘要。",
   critiqueScores: { voice, format: 1, novelty: 1 },
   validateFeianPassed: true,
-  estimatedPrefixTokens: 100,
   reactivationCount: 0,
   ...extra,
 });
@@ -161,6 +166,29 @@ describe("manifest", () => {
     // unchanged with the field simply absent (no schema version bump).
     expect(r?.occasion).toBeUndefined();
     expect(back.version).toBe(1);
+  });
+
+  it("a record written before 2026-09-23 sheds `estimatedPrefixTokens` — a char count nothing read (ADR 0069 §12)", () => {
+    const legacy = {
+      version: 1,
+      episodes: [],
+      created: [
+        {
+          ...rec("1", 0.9, "2026-07-01T00:00:00Z", { gistFolded: true }),
+          estimatedPrefixTokens: 4796,
+        },
+      ],
+    };
+    writeFileSync(join(dir, "manifest.json"), JSON.stringify(legacy), "utf8");
+    const back = readManifest(dir);
+    expect(back.created[0]).toEqual(
+      rec("1", 0.9, "2026-07-01T00:00:00Z", { gistFolded: true }),
+    );
+    // The next write, whatever the pass changed, leaves it out of the file.
+    writeManifest(dir, back);
+    expect(readFileSync(join(dir, "manifest.json"), "utf8")).not.toContain(
+      "estimatedPrefixTokens",
+    );
   });
 
   it("round-trips a record's occasion field (ADR 0021, additive)", () => {

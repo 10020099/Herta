@@ -73,6 +73,67 @@ describe("RealDeepSeekClient", () => {
     expect(out.usage?.totalTokens).toBe(30);
   });
 
+  it("tells onUsage each call's counts, the cache split included — and a throwing observer never breaks the call (dream review 2026-09-22, finding 4)", async () => {
+    const { fetch } = makeFakeFetch([
+      {
+        status: 200,
+        body: {
+          choices: [{ message: { content: "{}" } }],
+          model: "deepseek-v4-pro",
+          usage: {
+            prompt_tokens: 4000,
+            completion_tokens: 900,
+            total_tokens: 4900,
+            prompt_cache_hit_tokens: 3000,
+            prompt_cache_miss_tokens: 1000,
+          },
+        },
+      },
+      {
+        status: 200,
+        body: {
+          choices: [{ message: { content: "{}" } }],
+          usage: { prompt_tokens: 10, completion_tokens: 5 },
+        },
+      },
+    ]);
+    const seen: unknown[] = [];
+    const client = new RealDeepSeekClient({
+      apiKey: "sk-xxx",
+      model: "deepseek-v4-pro",
+      fetch,
+      onUsage: (u) => {
+        seen.push(u);
+        throw new Error("a broken observer");
+      },
+    });
+    const input = {
+      systemPrompt: "s",
+      userPayload: "{}",
+      model: "deepseek-v4-pro",
+    };
+    await expect(client.chatJson(input)).resolves.toMatchObject({
+      rawJsonText: "{}",
+    });
+    await client.chatJson(input);
+    expect(seen).toEqual([
+      {
+        model: "deepseek-v4-pro",
+        promptTokens: 4000,
+        completionTokens: 900,
+        cacheHitTokens: 3000,
+        cacheMissTokens: 1000,
+      },
+      {
+        model: "deepseek-v4-pro",
+        promptTokens: 10,
+        completionTokens: 5,
+        cacheHitTokens: null,
+        cacheMissTokens: null,
+      },
+    ]);
+  });
+
   it("throws DeepSeekHttpError on 4xx without retry", async () => {
     const { fetch, calls } = makeFakeFetch([
       { status: 401, body: { error: { message: "Unauthorized" } } },

@@ -1,4 +1,5 @@
 import type { HertaToAgentBrief } from "../bridge/types.js";
+import { abortError, errorMessage, isAbortError } from "../errors.js";
 import type { EventBus } from "../event-bus.js";
 import type { FindingsLedger } from "../findings-ledger.js";
 import type { MemoryManager } from "../memory-manager.js";
@@ -15,7 +16,10 @@ import type {
   ToolContext,
   ToolResult,
 } from "../types/tool.js";
-import type { BackendContextBuilder } from "./backend-context-builder.js";
+import type {
+  BackendContextBuilder,
+  RepoContextSnapshot,
+} from "./backend-context-builder.js";
 import {
   BackendRetryState,
   classifyBackendInferenceError,
@@ -29,7 +33,6 @@ import {
   fitMessagesToBudget,
 } from "./context-budget.js";
 import {
-  isAbortError,
   type ModelInferenceResult,
   streamModelInference,
 } from "./stream-model-inference.js";
@@ -67,21 +70,15 @@ export interface BackendTurnDeps {
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
 }
 
-function backoffAbortError(): Error {
-  const e = new Error("aborted during backoff");
-  e.name = "AbortError";
-  return e;
-}
-
 function defaultBackoffSleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     if (signal.aborted) {
-      reject(backoffAbortError());
+      reject(abortError("aborted during backoff"));
       return;
     }
     const onAbort = (): void => {
       clearTimeout(timer);
-      reject(backoffAbortError());
+      reject(abortError("aborted during backoff"));
     };
     const timer = setTimeout(() => {
       signal.removeEventListener("abort", onAbort);
@@ -107,8 +104,9 @@ export interface BackendTurnHandle {
    */
   scopedRepoInstructions?: string;
   /**
-   * Optional scoped project memory text selected by the actor for this dispatch.
-   * Threaded into `BackendPromptFrame.scopedMemory`. Defaults to `""`.
+   * The rendered project memory for this dispatch — `CodingAgentRuntime`
+   * recalls and renders it at brief start (ADR 0060). Threaded into
+   * `BackendPromptFrame.scopedMemory`. Defaults to `""`.
    */
   scopedMemory?: string;
   /** Pre-rendered recent dialogue since the last dispatch (referent resolution). */
@@ -118,6 +116,40 @@ export interface BackendTurnHandle {
   /** The session's interaction language (ADR 0016). Selects the backend prompt
    *  language in the context builder; absent → "zh". */
   lang?: "zh" | "en";
+  /** The repo snapshot taken at brief start (ADR 0049 §2). Threaded into the
+   *  frame's repo-snapshot section; absent → section omitted. */
+  repoContext?: RepoContextSnapshot;
+  /**
+   * Messages the user sent while this brief was running (ADR 0063 — a
+   * steer). Called at the top of EVERY iteration, before the frame is
+   * built, and expected to hand back what arrived since the last call
+   * (draining it). Each text is appended to the transcript as a user
+   * message, so the model's next inference sees it as the newest user
+   * text and every later iteration keeps it. Never called mid-batch: the
+   * loop head is the one boundary where a fresh user message can enter
+   * without racing a tool result or an open permission ask. Absent (the
+   * CLI, tests): nothing is drained.
+   */
+  takePendingUserInput?: () => readonly string[];
+}
+
+/** What the permission gate answers for one call. */
+type GateOutcome =
+  | { readonly kind: "run" }
+  | { readonly kind: "result"; readonly result: ToolResult };
+
+const PERMISSION_DENIED_SUGGESTION =
+  "Choose a read-only inspection path or ask the user.";
+
+/** The model-facing hint for a rule-deny, by code. `invalid_input` surfaces
+ *  through the same deny path as real permission denials (rules validate
+ *  before tiering) — say so, or the model reads a malformed call as "tool
+ *  forbidden" and abandons a perfectly usable tool (user 2026-07-31). */
+function denySuggestion(code: string): string | undefined {
+  if (code === "permission_denied") return PERMISSION_DENIED_SUGGESTION;
+  if (code === "invalid_input")
+    return "input validation failed, not a permission denial — fix the input shape and call the tool again";
+  return undefined;
 }
 
 export async function* runBackendTurnLoop(
@@ -138,6 +170,109 @@ export async function* runBackendTurnLoop(
     const tagged = { ...event, layer: "backend" as const } as AgentEvent;
     deps.bus.publish(tagged);
     yield tagged;
+  }
+
+  /**
+   * The permission gate for ONE tool call, shared by the serial path and
+   * the parallel batch (2026-09-03). Emits the permission events and
+   * answers either "run it" or the failed ToolResult that stands in for the
+   * run. It was two near-identical ~75-line blocks that had already
+   * drifted: the `invalid_input` suggestion (user 2026-07-31 — a model
+   * reads a malformed call as "tool forbidden" and abandons a usable tool)
+   * landed only in the parallel branch, which holds read-only tools only,
+   * and no read-only tool has a permission rule — so the one path that can
+   * produce a rule-deny never carried the hint. One gate, one drift.
+   *
+   * An abort while the resolver is pending propagates (the caller's
+   * exactly-one-terminal-event contract); any other resolver failure is a
+   * result, not a throw.
+   */
+  async function* gatePermission(
+    call: ToolCallRequest,
+    ctx: ToolContext,
+  ): AsyncGenerator<AgentEvent, GateOutcome> {
+    const decision = await deps.permissions.check(call, ctx);
+    if (decision.kind === "deny") {
+      const code = decision.code ?? "permission_denied";
+      // Deterministic rule-deny: no user prompt fired, but the refusal must
+      // still reach the report. Pre-fix nothing emitted a permission event
+      // here — `deniedPermissions` stayed 0 and a run whose only mutation
+      // was auto-blocked could report `completed` (audit 2026-07-10,
+      // finding 6). `decision: "blocked"` is the PermissionEventSummary case
+      // documented for exactly this; the event carries the tool since no
+      // permission.requested precedes it. Code + refused-risk ride along
+      // (2026-08-26) so the status gate can tell a withheld read from a
+      // refused mutation.
+      yield* emit({
+        type: "permission.resolved",
+        id: call.id,
+        decision: "blocked",
+        tool: call.tool,
+        code,
+        ...(decision.risk !== undefined ? { risk: decision.risk } : {}),
+      });
+      // The rule's own hint wins (2026-09-18: an editor's `edit_not_found`
+      // names the move that fixes it); the loop's table covers the codes
+      // every rule shares.
+      const suggestion = decision.suggestion ?? denySuggestion(code);
+      return {
+        kind: "result",
+        result: {
+          ok: false,
+          error: { code, message: decision.reason, retryable: false },
+          ...(suggestion !== undefined ? { suggestion } : {}),
+          summary: code === "permission_denied" ? "denied" : `failed: ${code}`,
+          ...(decision.modelText !== undefined
+            ? { modelText: decision.modelText }
+            : {}),
+        },
+      };
+    }
+    if (decision.kind === "ask") {
+      yield* emit({
+        type: "permission.requested",
+        request: decision.request,
+      });
+      let resolved: "allow" | "deny";
+      try {
+        resolved = await decision.decision;
+      } catch (err) {
+        if (isAbortError(err)) throw err;
+        return {
+          kind: "result",
+          result: {
+            ok: false,
+            error: {
+              code: "permission_failed",
+              message: errorMessage(err),
+              retryable: false,
+            },
+            summary: "permission resolver failed",
+          },
+        };
+      }
+      yield* emit({
+        type: "permission.resolved",
+        id: decision.request.id,
+        decision: resolved,
+      });
+      if (resolved === "deny") {
+        return {
+          kind: "result",
+          result: {
+            ok: false,
+            error: {
+              code: "permission_denied",
+              message: `User denied ${call.tool}`,
+              retryable: false,
+            },
+            suggestion: PERMISSION_DENIED_SUGGESTION,
+            summary: "denied",
+          },
+        };
+      }
+    }
+    return { kind: "run" };
   }
 
   // turn.started carries the most recent user request as the "userText"
@@ -171,6 +306,9 @@ export async function* runBackendTurnLoop(
       recentDialogue: handle.recentDialogue,
       workingHistory: handle.workingHistory,
       lang: handle.lang,
+      ...(handle.repoContext !== undefined
+        ? { repoContext: handle.repoContext }
+        : {}),
     });
 
     let iterations = 0;
@@ -184,6 +322,17 @@ export async function* runBackendTurnLoop(
         return;
       }
       iterations += 1;
+
+      // A steer (ADR 0063): user text that arrived while the previous
+      // iteration ran enters the transcript HERE — after the last tool
+      // results landed and before this iteration's frame is built — so the
+      // model reads it as the newest user message. The durable transcript
+      // keeps it; the budget fit below only ever trims tool payloads and
+      // whole old groups, never the newest user text.
+      const steered = handle.takePendingUserInput?.() ?? [];
+      for (const text of steered) {
+        deps.transcript.appendUser(text, deps.clock());
+      }
 
       // Per-iteration todo reminder (ADR 0025 §2): recomputed each call so
       // the model always sees the list it last wrote; appended by the
@@ -241,7 +390,7 @@ export async function* runBackendTurnLoop(
           if (decision.kind === "surface") {
             const error: AgentError = {
               kind: "provider_failed",
-              message: `${err instanceof Error ? err.message : String(err)} (${decision.detail})`,
+              message: `${errorMessage(err)} (${decision.detail})`,
               cause: err,
             };
             yield* emit({ type: "turn.failed", error });
@@ -290,7 +439,22 @@ export async function* runBackendTurnLoop(
       );
       yield* emit({ type: "assistant.final", message: finalMsg });
 
-      if (accToolCalls.length === 0) break;
+      if (accToolCalls.length === 0) {
+        // A steer that landed during THIS inference (ADR 0063 §1.8): the
+        // model just declared itself done without having read it, and the
+        // head only drains before an inference — there would be none. So
+        // drain once more here, and if anything arrived, go round again:
+        // 板砖 decides with the words in front of it whether more work is
+        // needed. Otherwise the text was cleared at turn end while the
+        // record already showed it delivered (the user block, Herta's
+        // beat) — a message everyone but 板砖 had seen.
+        const late = handle.takePendingUserInput?.() ?? [];
+        if (late.length === 0) break;
+        for (const text of late) {
+          deps.transcript.appendUser(text, deps.clock());
+        }
+        continue;
+      }
 
       // Tool branch. Consecutive READ-ONLY calls execute as one concurrent
       // batch (ADR 0025 slice 5 — HertaTool.readOnly is the safety marker);
@@ -389,78 +553,9 @@ export async function* runBackendTurnLoop(
           const allowed: ToolCallRequest[] = [];
           for (const call of group.calls) {
             toolCallCount += 1;
-            const decision = await deps.permissions.check(call, toolCtx);
-            if (decision.kind === "deny") {
-              const code = decision.code ?? "permission_denied";
-              yield* emit({
-                type: "permission.resolved",
-                id: call.id,
-                decision: "blocked",
-                tool: call.tool,
-              });
-              outcomes.set(call.id, {
-                ok: false,
-                error: { code, message: decision.reason, retryable: false },
-                // invalid_input surfaces through the same deny path as real
-                // permission denials (rules validate before tiering) — say so,
-                // or the model reads a malformed call as "tool forbidden" and
-                // abandons a perfectly usable tool (user 2026-07-31).
-                suggestion:
-                  code === "permission_denied"
-                    ? "Choose a read-only inspection path or ask the user."
-                    : code === "invalid_input"
-                      ? "input validation failed, not a permission denial — fix the input shape and call the tool again"
-                      : undefined,
-                summary:
-                  code === "permission_denied" ? "denied" : `failed: ${code}`,
-                ...(decision.modelText !== undefined
-                  ? { modelText: decision.modelText }
-                  : {}),
-              });
-              continue;
-            }
-            if (decision.kind === "ask") {
-              yield* emit({
-                type: "permission.requested",
-                request: decision.request,
-              });
-              let resolved: "allow" | "deny";
-              try {
-                resolved = await decision.decision;
-              } catch (err) {
-                if (isAbortError(err)) throw err;
-                outcomes.set(call.id, {
-                  ok: false,
-                  error: {
-                    code: "permission_failed",
-                    message: err instanceof Error ? err.message : String(err),
-                    retryable: false,
-                  },
-                  summary: "permission resolver failed",
-                });
-                continue;
-              }
-              yield* emit({
-                type: "permission.resolved",
-                id: decision.request.id,
-                decision: resolved,
-              });
-              if (resolved === "deny") {
-                outcomes.set(call.id, {
-                  ok: false,
-                  error: {
-                    code: "permission_denied",
-                    message: `User denied ${call.tool}`,
-                    retryable: false,
-                  },
-                  suggestion:
-                    "Choose a read-only inspection path or ask the user.",
-                  summary: "denied",
-                });
-                continue;
-              }
-            }
-            allowed.push(call);
+            const gate = yield* gatePermission(call, toolCtx);
+            if (gate.kind === "result") outcomes.set(call.id, gate.result);
+            else allowed.push(call);
           }
 
           for (const call of allowed) {
@@ -528,105 +623,18 @@ export async function* runBackendTurnLoop(
           return;
         }
         toolCallCount += 1;
-        const decision = await deps.permissions.check(call, toolCtx);
-        if (decision.kind === "deny") {
-          const code = decision.code ?? "permission_denied";
-          // Deterministic rule-deny: no user prompt fired, but the refusal
-          // must still reach the report. Pre-fix nothing emitted a
-          // permission event here — `deniedPermissions` stayed 0 and a run
-          // whose only mutation was auto-blocked could report `completed`
-          // (audit 2026-07-10, finding 6). `decision: "blocked"` is the
-          // PermissionEventSummary case documented for exactly this; the
-          // event carries the tool since no permission.requested precedes it.
-          yield* emit({
-            type: "permission.resolved",
-            id: call.id,
-            decision: "blocked",
-            tool: call.tool,
-          });
-          const result: ToolResult = {
-            ok: false,
-            error: {
-              code,
-              message: decision.reason,
-              retryable: false,
-            },
-            suggestion:
-              code === "permission_denied"
-                ? "Choose a read-only inspection path or ask the user."
-                : undefined,
-            summary:
-              code === "permission_denied" ? "denied" : `failed: ${code}`,
-            ...(decision.modelText !== undefined
-              ? { modelText: decision.modelText }
-              : {}),
-          };
+        const gate = yield* gatePermission(call, toolCtx);
+        if (gate.kind === "result") {
+          // A refusal (rule or user) or a failed resolver stands in for the
+          // run: the same finished event + transcript append a real run gets.
           yield* emit({
             type: "tool.call.finished",
             id: call.id,
             tool: call.tool,
-            result,
+            result: gate.result,
           });
-          deps.transcript.appendTool(call.id, result, deps.clock());
+          deps.transcript.appendTool(call.id, gate.result, deps.clock());
           continue;
-        }
-        if (decision.kind === "ask") {
-          yield* emit({
-            type: "permission.requested",
-            request: decision.request,
-          });
-
-          let resolved: "allow" | "deny";
-          try {
-            resolved = await decision.decision;
-          } catch (err) {
-            if (isAbortError(err)) throw err;
-            const result: ToolResult = {
-              ok: false,
-              error: {
-                code: "permission_failed",
-                message: err instanceof Error ? err.message : String(err),
-                retryable: false,
-              },
-              summary: "permission resolver failed",
-            };
-            yield* emit({
-              type: "tool.call.finished",
-              id: call.id,
-              tool: call.tool,
-              result,
-            });
-            deps.transcript.appendTool(call.id, result, deps.clock());
-            continue;
-          }
-
-          yield* emit({
-            type: "permission.resolved",
-            id: decision.request.id,
-            decision: resolved,
-          });
-
-          if (resolved === "deny") {
-            const result: ToolResult = {
-              ok: false,
-              error: {
-                code: "permission_denied",
-                message: `User denied ${call.tool}`,
-                retryable: false,
-              },
-              suggestion: "Choose a read-only inspection path or ask the user.",
-              summary: "denied",
-            };
-            yield* emit({
-              type: "tool.call.finished",
-              id: call.id,
-              tool: call.tool,
-              result,
-            });
-            deps.transcript.appendTool(call.id, result, deps.clock());
-            continue;
-          }
-          // resolved === "allow" → fall through to existing tool-run code path
         }
 
         yield* emit({
@@ -684,13 +692,21 @@ export async function* runBackendTurnLoop(
         // same way, and a test run went invisible to Herta on every default
         // session for a week. A tool-name gate on a per-contract tool is the
         // bug; the shape of the result is the honest condition.
+        const testRun = (
+          result.data as { testRun?: { status?: unknown } } | undefined
+        )?.testRun;
         if (
           (call.tool === "run_command" || call.tool === "bash") &&
           result.ok &&
-          (result.data as { testRun?: unknown } | undefined)?.testRun !==
-            undefined
+          testRun !== undefined
         ) {
-          yield* emit({ type: "verification.finished", result: {} });
+          // `passed` rides along (2026-09-03) so the beat classifier can
+          // leave a green run to Herta's synthesis and react only to a red
+          // one — the detector's status is "passed" or "failed".
+          yield* emit({
+            type: "verification.finished",
+            result: { passed: testRun.status === "passed" },
+          });
         }
       }
     }
@@ -714,7 +730,7 @@ export async function* runBackendTurnLoop(
     }
     const error: AgentError = {
       kind: "internal",
-      message: err instanceof Error ? err.message : String(err),
+      message: errorMessage(err),
       cause: err,
     };
     yield* emit({ type: "turn.failed", error });
@@ -808,7 +824,7 @@ function crashedResult(toolName: string, err: unknown): ToolResult {
     ok: false,
     error: {
       code: "tool_crashed",
-      message: err instanceof Error ? err.message : String(err),
+      message: errorMessage(err),
       retryable: false,
     },
     suggestion:
@@ -951,10 +967,6 @@ export function summarizeInput(
         const path = str(obj.path);
         if (path !== null) return cap(path);
         break; // malformed → fall through to JSON fallback
-      }
-      case "list_files": {
-        const path = str(obj.path);
-        return cap(path ?? ".");
       }
       case "show_excerpt": {
         // Was the JSON fallback until 2026-08-17 — the record read

@@ -1,13 +1,15 @@
-import { mkdirSync, readdirSync, renameSync, writeFileSync } from "node:fs";
-import { join, resolve, sep } from "node:path";
+import { existsSync, mkdirSync, readdirSync, renameSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { isPathInside, writeFileAtomicSync } from "@herta/core";
 import { nextFeianIndex } from "./feian-format.js";
 
-/** D4 guard: throws unless `target` resolves to a path inside `root`. */
+/** D4 guard: throws unless `target` resolves to a path inside `root` (core's
+ *  one containment rule). */
 export function assertUnderDreamRoot(target: string, root: string): void {
-  const r = resolve(root);
-  const t = resolve(target);
-  if (t !== r && !t.startsWith(r + sep)) {
-    throw new Error(`dream: refusing to write outside ${r}: ${t}`);
+  if (!isPathInside(root, target)) {
+    throw new Error(
+      `dream: refusing to write outside ${resolve(root)}: ${resolve(target)}`,
+    );
   }
 }
 
@@ -46,12 +48,11 @@ export function promoteCandidate(input: PromoteInput): PromoteResult {
     /^### 废案(?:_\d+)?：.*$/m,
     `### 废案_${pad(nn)}：${input.title}`,
   );
-  // Fix 1 (D4 guard): target path must be inside narrativeDir.
-  assertUnderDreamRoot(join(input.narrativeDir, file), input.narrativeDir);
-  // Fix 3: temp file is unique per candidate (nn included).
-  const tmp = join(input.narrativeDir, `.dream-tmp-${input.runId}-${pad(nn)}`);
-  writeFileSync(tmp, body, "utf8");
-  renameSync(tmp, join(input.narrativeDir, file));
+  // Fix 1 (D4 guard): target path must be inside narrativeDir. The atomic
+  // write's temp sits beside the target, so it is inside too.
+  const target = join(input.narrativeDir, file);
+  assertUnderDreamRoot(target, input.narrativeDir);
+  writeFileAtomicSync(target, body);
   return { nn, file };
 }
 
@@ -62,13 +63,35 @@ export interface ArchiveInput {
   reason: string;
 }
 
-export function archiveLiveRecord(input: ArchiveInput): void {
+/** Move a live file into the dream archive. Returns the name it has THERE —
+ *  its own, unless an earlier archived file already held it. */
+export function archiveLiveRecord(input: ArchiveInput): string {
   const archiveDir = join(input.dreamDir, "archive");
   mkdirSync(archiveDir, { recursive: true });
   // Fix 1 (D4 guard): archive target must be inside dreamDir.
   assertUnderDreamRoot(join(archiveDir, input.file), input.dreamDir);
+  const archivedAs = freeArchiveName(archiveDir, input.file);
   renameSync(
     join(input.narrativeDir, input.file),
-    join(archiveDir, input.file),
+    join(archiveDir, archivedAs),
   );
+  return archivedAs;
+}
+
+/**
+ * A name in the archive nothing holds yet. A later 废案 can take an archived
+ * one's exact `NN：title`, and a rename onto an existing name REPLACES it on
+ * every platform this ships on — the earlier archived memory was overwritten,
+ * breaking "archive, never delete" (dream review 2026-09-22, finding 19). The
+ * second copy gets ` (2)` before the extension, then ` (3)`, and so on.
+ */
+function freeArchiveName(archiveDir: string, file: string): string {
+  if (!existsSync(join(archiveDir, file))) return file;
+  const dot = file.lastIndexOf(".");
+  const stem = dot > 0 ? file.slice(0, dot) : file;
+  const ext = dot > 0 ? file.slice(dot) : "";
+  for (let n = 2; ; n++) {
+    const candidate = `${stem} (${n})${ext}`;
+    if (!existsSync(join(archiveDir, candidate))) return candidate;
+  }
 }

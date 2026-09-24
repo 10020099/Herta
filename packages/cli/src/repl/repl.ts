@@ -1,10 +1,11 @@
 import type {
   ProjectCommandRuleStore,
   SessionApprovalCache,
+  TerminalRecord,
   ToolRegistry,
   V2RecordPersister,
 } from "@herta/core";
-import { isAbortError } from "@herta/core";
+import { errorMessage, isAbortError } from "@herta/core";
 import type { PromptLang, V2ActorDriver } from "@herta/herta";
 import { ProviderError } from "@herta/providers";
 import { aliasBrickInput } from "../render/banzhuan-alias.js";
@@ -26,6 +27,8 @@ export interface ReplDeps {
   approvalCache?: SessionApprovalCache;
   /** Threaded into SlashContext for /permissions (project rules, ADR 0030). */
   commandRules?: ProjectCommandRuleStore;
+  /** Threaded into SlashContext for /resume (ADR 0069 §3). */
+  rebindSession?: (sessionId: string, record: TerminalRecord) => Promise<void>;
   /** Threaded into SlashContext for /resume. */
   transcriptDir?: string;
   /** Threaded into SlashContext for /resume. */
@@ -64,6 +67,9 @@ export async function repl(deps: ReplDeps): Promise<void> {
         approvalCache: deps.approvalCache,
         commandRules: deps.commandRules,
         driver: deps.actor,
+        ...(deps.rebindSession !== undefined
+          ? { rebindSession: deps.rebindSession }
+          : {}),
         transcriptDir: deps.transcriptDir,
         currentWorkspaceRoot: deps.currentWorkspaceRoot,
         workspaceHolder: deps.workspaceHolder,
@@ -94,7 +100,7 @@ export async function repl(deps: ReplDeps): Promise<void> {
       if (typeof rendererWithCancel.cancelStream === "function") {
         rendererWithCancel.cancelStream();
       }
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errorMessage(err);
       // Classify before printing (audit 2026-07-24, 1.13). Ctrl+C — which the
       // greeting advertises — printed a red `✗ internal: turn aborted`,
       // indistinguishable from a crash, and a 401 sent the user to debug

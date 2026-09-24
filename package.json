@@ -13,6 +13,8 @@
     "build:clean": "tsc -b --clean",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:changed": "vitest run --changed",
+    "test:branch": "vitest run --changed origin/main",
     "lint": "biome check .",
     "format": "biome format --write .",
     "typecheck:apps": "pnpm --filter @herta/gui typecheck && pnpm --filter @herta/website typecheck",
@@ -34,7 +36,8 @@
       ]
     },
     "overrides": {
-      "@napi-rs/canvas": "-"
+      "@napi-rs/canvas": "-",
+      "js-yaml": "^4.3.2"
     }
   }
 }

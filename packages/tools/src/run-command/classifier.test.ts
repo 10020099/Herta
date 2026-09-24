@@ -59,6 +59,227 @@ describe("classifyCommand — block phase", () => {
   });
 });
 
+describe("classifyCommand — the macOS / Linux block tier (platform review 2026-09-23)", () => {
+  const kind = (argv: string[]) => classifyCommand(argv).kind;
+
+  it("rm's recursive + force is read from any flag cluster, and $HOME is home", () => {
+    for (const argv of [
+      ["rm", "-rfv", "/"],
+      ["rm", "-Rfi", "~"],
+      ["rm", "-vfr", "/*"],
+      ["rm", "-rf", "$HOME"],
+      ["rm", "-rf", "${HOME}/"],
+      ["rm", "-r", "-f", "$HOME/*"],
+    ]) {
+      expect(kind(argv), argv.join(" ")).toBe("block");
+    }
+    // Option parsing ends at `--`: a FILE named -f is not the force flag.
+    expect(kind(["rm", "-r", "--", "-f", "/"])).not.toBe("block");
+  });
+
+  it("an extra slash, a trailing /. or another user's ~ is still root or home (adversarial review)", () => {
+    for (const argv of [
+      ["rm", "-rf", "//*"],
+      ["rm", "-rf", "~//"],
+      ["rm", "-rf", "$HOME//"],
+      ["rm", "-rf", "$HOME/."],
+    ]) {
+      expect(kind(argv), argv.join(" ")).toBe("block");
+    }
+    // Ordinary directories stay asks — and so does `~name`: cmd and
+    // PowerShell never expand it, so on Windows it is a literal file name.
+    for (const argv of [
+      ["rm", "-rf", "~-"],
+      ["rm", "-rf", "~bob"],
+      ["rm", "-rf", "~/build"],
+      ["rm", "-rf", "./"],
+      ["rm", "-rf", "dist/"],
+      ["del", "~WRL0001.tmp"],
+      ["Remove-Item", "-Recurse", "-Force", "~backup"],
+    ]) {
+      expect(kind(argv), argv.join(" ")).toBe("ask");
+    }
+  });
+
+  it("blocks the macOS and Linux spellings of disk destruction", () => {
+    for (const argv of [
+      ["diskutil", "eraseDisk", "APFS", "X", "disk2"],
+      ["diskutil", "zeroDisk", "disk2"],
+      ["diskutil", "partitionDisk", "disk2", "GPT", "APFS", "X", "100%"],
+      ["diskutil", "apfs", "deleteContainer", "disk3"],
+      ["newfs_apfs", "/dev/disk2s1"],
+      ["wipefs", "-a", "/dev/sdb"],
+      ["wipefs", "--all", "/dev/sdb"],
+      ["blkdiscard", "/dev/nvme0n1"],
+      ["sgdisk", "--zap-all", "/dev/sdb"],
+      ["shred", "-n", "1", "/dev/sda"],
+    ]) {
+      expect(kind(argv), argv.join(" ")).toBe("block");
+    }
+  });
+
+  it("…while the look-only forms of the same tools are not blocked", () => {
+    for (const argv of [
+      ["diskutil", "list"],
+      ["diskutil", "info", "disk0"],
+      ["wipefs", "/dev/sdb"], // lists signatures only
+      ["shred", "-u", "secret.txt"], // a file, not a device
+      // An image file is not a device (review 2026-09-23).
+      ["wipefs", "-a", "build/disk.img"],
+      ["sgdisk", "--zap-all", "build/disk.img"],
+      ["blkdiscard", "--help"],
+    ]) {
+      expect(kind(argv), argv.join(" ")).not.toBe("block");
+    }
+  });
+
+  it("blocks systemctl / loginctl power verbs — AS the verb", () => {
+    expect(kind(["systemctl", "poweroff"])).toBe("block");
+    expect(kind(["systemctl", "--no-wall", "reboot"])).toBe("block");
+    expect(kind(["systemctl", "-H", "box", "reboot"])).toBe("block");
+    expect(kind(["loginctl", "poweroff"])).toBe("block");
+    // A unit, a host or prose named `reboot` is not the verb.
+    expect(kind(["systemctl", "status", "reboot"])).not.toBe("block");
+    expect(kind(["systemctl", "can", "reboot", "the", "box"])).not.toBe(
+      "block",
+    );
+  });
+
+  it("blocks reading keychain SECRETS (credential exfiltration), not keychain metadata", () => {
+    for (const argv of [
+      ["security", "find-generic-password", "-s", "github", "-w"],
+      ["security", "find-internet-password", "-g", "-s", "x.com"],
+      ["security", "dump-keychain", "-d"],
+      [
+        "security",
+        "export",
+        "-k",
+        "login.keychain",
+        "-t",
+        "privKeys",
+        "-o",
+        "k.p12",
+      ],
+    ]) {
+      expect(kind(argv), argv.join(" ")).toBe("block");
+    }
+    expect(kind(["security", "find-certificate", "-a"])).not.toBe("block");
+  });
+
+  it("finds the subcommand past the options in front of it (adversarial review)", () => {
+    for (const argv of [
+      ["security", "-q", "dump-keychain"],
+      ["security", "-v", "find-generic-password", "-s", "x", "-w"],
+      ["security", "-p", "prompt", "export", "-k", "login.keychain"],
+      ["security", "-qp", "prompt", "dump-keychain"],
+      ["security", "--", "dump-keychain"],
+      ["diskutil", "quiet", "eraseDisk", "APFS", "X", "disk2"],
+      ["diskutil", "quiet", "apfs", "deleteContainer", "disk3"],
+      ["diskutil", "splitPartition", "disk2s1", "2", "APFS", "A", "50%"],
+    ]) {
+      expect(kind(argv), argv.join(" ")).toBe("block");
+    }
+  });
+
+  it("a wipefs dry run (-n / --no-act) erases nothing and is not blocked", () => {
+    expect(kind(["wipefs", "-n", "-a", "/dev/sdb"])).not.toBe("block");
+    expect(kind(["wipefs", "--no-act", "--all", "/dev/sdb"])).not.toBe("block");
+    expect(kind(["wipefs", "-an", "/dev/sdb"])).not.toBe("block");
+  });
+
+  it("blocks inside a shell body too", () => {
+    expect(
+      kind(["bash", "-c", "cd /tmp && diskutil eraseDisk APFS X disk2"]),
+    ).toBe("block");
+    expect(kind(["sh", "-c", "rm -rfv $HOME"])).toBe("block");
+  });
+});
+
+describe("classifyCommand — command_ask_system: machine-level changes, asked every time (2026-09-23)", () => {
+  const code = (argv: string[]) => {
+    const r = classifyCommand(argv);
+    return r.kind === "ask" ? r.code : r.kind;
+  };
+
+  it("routes the macOS / Linux system changers to their own never-remembered class", () => {
+    for (const argv of [
+      ["osascript", "-e", 'tell application "System Events" to keystroke "x"'],
+      ["launchctl", "load", "~/Library/LaunchAgents/x.plist"],
+      ["defaults", "write", "com.apple.dock", "autohide", "-bool", "true"],
+      ["crontab", "-r"],
+      ["crontab", "jobs.txt"],
+      ["spctl", "--master-disable"],
+      ["xattr", "-d", "com.apple.quarantine", "App.app"],
+      ["tccutil", "reset", "All"],
+      ["systemctl", "--user", "enable", "x.service"],
+      ["security", "add-generic-password", "-s", "x", "-w", "y"],
+    ]) {
+      expect(code(argv), argv.join(" ")).toBe("command_ask_system");
+    }
+    const r = classifyCommand(["osascript", "-e", "x"]);
+    if (r.kind === "ask") expect(r.risk).toBe("workspace_destructive");
+  });
+
+  it("sees through exec-wrappers (adversarial review)", () => {
+    for (const argv of [
+      ["sudo", "defaults", "write", "com.apple.x", "k", "v"],
+      ["env", "osascript", "-e", "x"],
+      ["sudo", "-u", "root", "launchctl", "bootout", "system/x"],
+    ]) {
+      expect(code(argv), argv.join(" ")).toBe("command_ask_system");
+    }
+    // A wrapper around a look-only form stays whatever the wrapper was.
+    expect(code(["sudo", "defaults", "read", "x"])).not.toBe(
+      "command_ask_system",
+    );
+  });
+
+  it("leaves the look-only forms where they were", () => {
+    for (const argv of [
+      ["defaults", "read", "com.apple.dock"],
+      ["crontab", "-l"],
+      ["crontab", "-l", "-u", "bob"],
+      ["spctl", "--status"],
+      ["launchctl", "list"],
+      ["launchctl", "print-disabled", "system"],
+      ["launchctl", "getenv", "PATH"],
+      ["launchctl", "procinfo", "1"],
+      ["systemctl", "status", "nginx"],
+      ["xattr", "-l", "App.app"],
+      ["csrutil", "status"],
+      ["security", "-v", "list-keychains"],
+      // Review 2026-09-23: an option's value is not the verb, and the rest
+      // of these only look.
+      ["systemctl", "-t", "service", "--state=running"],
+      ["systemctl", "--state", "failed"],
+      ["systemctl", "-p", "ActiveState", "show", "nginx"],
+      ["systemctl", "get-default"],
+      ["security", "cms", "-D", "-i", "x.mobileprovision"],
+      ["security", "find-generic-password", "-s", "github"],
+      ["security", "default-keychain"],
+    ]) {
+      expect(code(argv), argv.join(" ")).not.toBe("command_ask_system");
+    }
+  });
+
+  it("running the user's own services is an ordinary ask; enabling one is not", () => {
+    expect(code(["systemctl", "--user", "restart", "myapp"])).toBe(
+      "command_ask_unknown",
+    );
+    expect(code(["systemctl", "--user", "daemon-reload"])).toBe(
+      "command_ask_unknown",
+    );
+    for (const argv of [
+      ["systemctl", "--user", "enable", "myapp"],
+      ["systemctl", "restart", "nginx"], // a SYSTEM service
+      ["security", "default-keychain", "-s", "other.keychain"],
+      ["defaults", "-host", "mac", "write", "com.x", "k", "v"],
+    ]) {
+      expect(code(argv), argv.join(" ")).toBe("command_ask_system");
+    }
+  });
+});
+
 describe("classifyCommand — ask destructive", () => {
   it("asks for rm -rf inside repo", () => {
     const r = classifyCommand(["rm", "-rf", "build/"]);
@@ -265,7 +486,6 @@ describe("classifyCommand — allow", () => {
       ["git", "stash"],
       ["git", "stash", "pop"],
       ["git", "mv", "a", "b"],
-      ["git", "push"],
       ["git", "branch", "feat/x"],
       ["git", "branch", "-d", "feat/x"],
     ]) {
@@ -273,6 +493,8 @@ describe("classifyCommand — allow", () => {
         "command_ask_vcs/workspace_write",
       );
     }
+    // A push reaches the remote — the network tier since ADR 0064 L1.
+    expect(code(["git", "push"])).toBe("command_ask_network/network");
     // listing forms of branch stay allowed
     expect(classifyCommand(["git", "branch"]).kind).toBe("allow");
     expect(classifyCommand(["git", "branch", "-a"]).kind).toBe("allow");
@@ -318,8 +540,9 @@ describe("classifyCommand — allow", () => {
     expect(code(["frobnicate", "--now"])).toBe(
       "command_ask_unknown/workspace_write",
     );
+    // …but a program that lives IN the workspace is named (ADR 0064 L1).
     expect(code(["./bin/notesd.sh", "list"])).toBe(
-      "command_ask_unknown/workspace_write",
+      "command_ask_local_exec/workspace_write",
     );
   });
 
@@ -821,9 +1044,6 @@ describe("git shapes that discard work or rewrite history (2026-08-25)", () => {
       ["git", "checkout", "main"],
       ["git", "merge", "main"],
       ["git", "cherry-pick", "abc123"],
-      ["git", "fetch", "origin"],
-      ["git", "pull"],
-      ["git", "push", "origin", "main"],
       ["git", "mv", "a", "b"],
       ["git", "tag", "-a", "v1", "-m", "one"],
       ["git", "rebase", "--abort"],
@@ -831,6 +1051,21 @@ describe("git shapes that discard work or rewrite history (2026-08-25)", () => {
     ]) {
       expect(code(argv), argv.join(" ")).toBe("command_ask_vcs");
     }
+    // The remote-touching shapes are the network tier (ADR 0064 L1): a
+    // trusted workspace auto-allows vcs, and a push must not ride that.
+    for (const argv of [
+      ["git", "fetch", "origin"],
+      ["git", "pull"],
+      ["git", "push", "origin", "main"],
+      ["git", "clone", "https://x/y.git"],
+      ["git", "remote", "update"],
+    ]) {
+      expect(code(argv), argv.join(" ")).toBe("command_ask_network");
+    }
+    // `git remote add` is local config — still vcs.
+    expect(code(["git", "remote", "add", "origin", "https://x/y.git"])).toBe(
+      "command_ask_vcs",
+    );
   });
 
   it("a tree-ish plus a path is path mode, without needing `--`", () => {
@@ -854,6 +1089,79 @@ describe("git shapes that discard work or rewrite history (2026-08-25)", () => {
     ]) {
       expect(code(argv), argv.join(" ")).toBe("command_ask_vcs");
     }
+  });
+
+  it("each destructive git shape carries its consequence note (ADR 0049 §5)", () => {
+    const consequence = (argv: string[]) => {
+      const v = classifyCommand(argv);
+      return v.kind === "ask" ? v.consequence : v.kind;
+    };
+    expect(consequence(["git", "reset", "--hard"])).toBe(
+      "discards_uncommitted",
+    );
+    expect(consequence(["git", "checkout", "--", "."])).toBe(
+      "discards_uncommitted",
+    );
+    expect(consequence(["git", "restore", "."])).toBe("discards_uncommitted");
+    expect(consequence(["git", "clean", "-fdx"])).toBe("deletes_untracked");
+    expect(consequence(["git", "stash", "drop"])).toBe("deletes_stash");
+    expect(consequence(["git", "commit", "--amend", "-m", "x"])).toBe(
+      "rewrites_local_history",
+    );
+    expect(consequence(["git", "rebase", "-i", "HEAD~2"])).toBe(
+      "rewrites_local_history",
+    );
+    expect(consequence(["git", "push", "--force"])).toBe(
+      "rewrites_remote_history",
+    );
+    expect(
+      consequence(["git", "push", "--force-with-lease", "origin", "main"]),
+    ).toBe("rewrites_remote_history");
+    // Ordinary vcs asks carry none.
+    expect(consequence(["git", "add", "-A"])).toBeUndefined();
+    expect(consequence(["git", "push", "origin", "main"])).toBeUndefined();
+  });
+
+  it("a commit-concluding shape mid-merge carries the note; the tier is unchanged (ADR 0049 §5)", () => {
+    const midMerge = { repoInProgress: () => "merge" as const };
+    const clean = { repoInProgress: () => null };
+    for (const argv of [
+      ["git", "commit", "-m", "x"],
+      ["git", "merge", "--continue"],
+      ["git", "cherry-pick", "--continue"],
+      ["git", "revert", "--continue"],
+    ]) {
+      const v = classifyCommand(argv, midMerge);
+      expect(v.kind, argv.join(" ")).toBe("ask");
+      if (v.kind !== "ask") continue;
+      expect(v.consequence, argv.join(" ")).toBe(
+        "concludes_in_progress_operation",
+      );
+      // Note only — the class and risk stay exactly what they were.
+      expect(v.code, argv.join(" ")).toBe("command_ask_vcs");
+      expect(v.risk, argv.join(" ")).toBe("workspace_write");
+      const calm = classifyCommand(argv, clean);
+      expect(
+        calm.kind === "ask" ? calm.consequence : calm.kind,
+        argv.join(" "),
+      ).toBeUndefined();
+    }
+  });
+
+  it("the in-progress probe is LAZY — never consulted for non-concluding shapes", () => {
+    let called = 0;
+    const spy = {
+      repoInProgress: () => {
+        called += 1;
+        return "merge" as const;
+      },
+    };
+    classifyCommand(["npm", "test"], spy);
+    classifyCommand(["git", "status"], spy);
+    classifyCommand(["git", "add", "-A"], spy);
+    expect(called).toBe(0);
+    classifyCommand(["git", "commit", "-m", "x"], spy);
+    expect(called).toBe(1);
   });
 
   it("`git clean` force is a BUNDLED short flag, not the exact token `-f`", () => {
@@ -1037,7 +1345,6 @@ describe("classifyCommand — default", () => {
     for (const argv of [
       ["node", "src/index.mjs", "sample.txt"],
       ["python", "build.py"],
-      ["python3", "-m", "pytest"],
       ["deno", "run", "main.ts"],
       ["bun", "test.ts"],
     ]) {
@@ -1047,6 +1354,10 @@ describe("classifyCommand — default", () => {
       expect(r.risk).toBe("workspace_write");
       expect(r.code).toBe("command_ask_interpreter");
     }
+    // A module (`-m`) is not a workspace script: inline class (ADR 0064 L1).
+    const mod = classifyCommand(["python3", "-m", "pytest"]);
+    if (mod.kind !== "ask") throw new Error();
+    expect(mod.code).toBe("command_ask_interpreter_inline");
   });
 
   it("interpreter detection is basename/.exe-normalized", () => {
@@ -1060,5 +1371,224 @@ describe("classifyCommand — default", () => {
     const sh = classifyCommand(["bash", "-c", "echo hi"]);
     if (sh.kind !== "ask") throw new Error();
     expect(sh.code).not.toBe("command_ask_interpreter");
+  });
+});
+
+describe("classifyCommand — the named shapes (ADR 0064 L1)", () => {
+  const code = (
+    argv: string[],
+    opts?: { shell: boolean; unresolved: boolean },
+  ) => {
+    const r = classifyCommand(argv, opts);
+    return r.kind === "ask" ? r.code : r.kind;
+  };
+  const live = { shell: true, unresolved: true };
+
+  it("a loopback curl/wget is a local smoke test and allows; a real host, a file flag or an unreadable URL is the network", () => {
+    for (const argv of [
+      ["curl", "-s", "http://localhost:4642/notes"],
+      [
+        "curl",
+        "-sS",
+        "-X",
+        "POST",
+        "-H",
+        "content-type: application/json",
+        "-d",
+        '{"text":"x"}',
+        "127.0.0.1:4642/notes",
+      ],
+      ["curl", "-i", "http://[::1]:3000/"],
+      ["curl", "--max-time", "2", "http://0.0.0.0:8080/health"],
+      ["wget", "-q", "-O", "-", "http://localhost:4642/"],
+      ["wget", "--spider", "localhost:8080"],
+    ]) {
+      expect(code(argv), argv.join(" ")).toBe("allow");
+    }
+    for (const argv of [
+      ["curl", "https://example.com/"],
+      ["curl", "-s", "http://localhost:4642/", "https://example.com/"],
+      ["curl", "-o", "out.json", "http://localhost:4642/"],
+      ["curl", "-d", "@secrets.json", "http://localhost:4642/"],
+      ["curl", "-T", "a.txt", "http://localhost:4642/"],
+      ["curl", "-K", "curlrc", "http://localhost:4642/"],
+      ["curl", "--unknown-flag", "http://localhost:4642/"],
+      ["curl", "http://localhost.evil.com/"],
+      ["wget", "-O", "x.html", "http://localhost/"],
+      ["curl"],
+    ]) {
+      expect(code(argv), argv.join(" ")).toBe("command_ask_network");
+    }
+    // Under a live shell an expansion in any token cannot be read.
+    expect(code(["curl", "http://localhost:$PORT/"], live)).not.toBe("allow");
+  });
+
+  it("an interpreter names what it runs: a workspace script, inline code, or a script outside", () => {
+    expect(code(["node", "src/cli.mjs", "list"])).toBe(
+      "command_ask_interpreter",
+    );
+    expect(code(["python3", "scripts/stats.py", "--json"])).toBe(
+      "command_ask_interpreter",
+    );
+    expect(code(["node", "--experimental-vm-modules", "test/run.mjs"])).toBe(
+      "command_ask_interpreter",
+    );
+    for (const argv of [
+      ["node", "-e", "console.log(1)"],
+      ["node", "--eval", "1"],
+      ["node", "-p", "1+1"],
+      ["python", "-c", "print(1)"],
+      ["python3", "-"],
+      ["python3", "-m", "http.server"],
+      ["node", "--input-type=module", "-e", "1"],
+      ["node"],
+      ["deno", "eval", "1"],
+      ["bun", "x", "cowsay"],
+    ]) {
+      expect(code(argv), argv.join(" ")).toBe("command_ask_interpreter_inline");
+    }
+    for (const argv of [
+      ["node", "/tmp/x.mjs"],
+      ["node", "../other/x.mjs"],
+      ["python", "~/tools/t.py"],
+      ["node", "C:\\tools\\x.js"],
+    ]) {
+      expect(code(argv), argv.join(" ")).toBe("command_ask_outside");
+    }
+    // deno/bun: the subcommand is skipped, the script is judged.
+    expect(code(["deno", "run", "main.ts"])).toBe("command_ask_interpreter");
+    expect(code(["bun", "run", "../x.ts"])).toBe("command_ask_outside");
+  });
+
+  it("fs and delete verbs split on WHERE they act — an operand outside the workspace is its own class", () => {
+    expect(code(["cp", "src/a.mjs", "src/b.mjs"])).toBe("command_ask_fs");
+    expect(code(["mkdir", "-p", "out/reports"])).toBe("command_ask_fs");
+    expect(code(["rm", "-f", "notes.json"])).toBe("command_ask_delete");
+    for (const argv of [
+      ["cp", "-r", "src", "/tmp/src_before"],
+      ["mv", "a.txt", "../a.txt"],
+      ["ln", "-s", "/usr/bin/node", "node"],
+      ["touch", "~/.hushlogin"],
+      ["rm", "-f", "/tmp/x.log"],
+      ["mkdir", "C:\\Temp\\x"],
+    ]) {
+      expect(code(argv), argv.join(" ")).toBe("command_ask_outside");
+    }
+    // Live shell: an operand the harness cannot read counts as outside.
+    expect(code(["cp", "a", "$TMPD/"], live)).not.toBe("command_ask_fs");
+  });
+
+  it("tee and sed -i are writes to the files they name; sed scripts that could execute or write elsewhere stay unknown", () => {
+    expect(code(["tee", "out.txt"])).toBe("command_ask_write");
+    expect(code(["tee", "-a", "logs/a.log", "logs/b.log"])).toBe(
+      "command_ask_write",
+    );
+    expect(code(["tee"])).toBe("allow");
+    expect(code(["tee", "/tmp/x"])).toBe("command_ask_outside");
+    expect(
+      code(["sed", "-i", "s/console\\.log/console.info/g", "src/a.mjs"]),
+    ).toBe("command_ask_write");
+    expect(code(["sed", "-i.bak", "-e", "1,3d", "-e", "s/a/b/", "x.txt"])).toBe(
+      "command_ask_write",
+    );
+    expect(code(["sed", "-i", "s/a/b/", "/etc/hosts"])).toBe(
+      "command_ask_outside",
+    );
+    // `e` runs the pattern space, `w` writes another file, `-f` loads a script.
+    for (const argv of [
+      ["sed", "-i", "s/a/b/e", "x.txt"],
+      ["sed", "-i", "s/a/b/w out", "x.txt"],
+      ["sed", "-i", "1e echo hi", "x.txt"],
+      ["sed", "-i", "-f", "script.sed", "x.txt"],
+      ["sed", "-i", "s/a/b/", ""],
+    ]) {
+      expect(code(argv), argv.join(" ")).toBe("command_ask_unknown");
+    }
+    // The read-only sed idiom is untouched.
+    expect(code(["sed", "-n", "1,20p", "x.txt"])).toBe("allow");
+  });
+
+  it("diff and npm ls are reads; npm run is a project script; a workspace-local program is named", () => {
+    expect(code(["diff", "-r", "before", "after"])).toBe("allow");
+    expect(code(["diff", "-u", "a.txt", "b.txt"])).toBe("allow");
+    expect(code(["diff", "a.txt", "/etc/passwd"])).toBe(
+      "command_ask_reader_path",
+    );
+    expect(code(["npm", "ls", "prettier", "--depth=0"])).toBe("allow");
+    expect(code(["pnpm", "list"])).toBe("allow");
+    expect(code(["npm", "run", "format"])).toBe("command_ask_script");
+    expect(code(["npm", "run", "build", "--", "--watch"])).toBe(
+      "command_ask_script",
+    );
+    expect(code(["pnpm", "start"])).toBe("command_ask_script");
+    expect(code(["npm", "run"])).toBe("allow");
+    // …while the allowed test/lint scripts and the network installs are as before.
+    expect(code(["npm", "run", "test"])).toBe("allow");
+    expect(code(["npm", "install", "left-pad"])).toBe("command_ask_network");
+    expect(code(["./bin/notesd.sh", "add", "x"])).toBe(
+      "command_ask_local_exec",
+    );
+    expect(code(["scripts/run.sh"])).toBe("command_ask_local_exec");
+    expect(code(["bin/x", "--flag"])).toBe("command_ask_local_exec");
+    // Not local: absolute, escaping, a bare word, or an expansion.
+    expect(code(["/usr/local/bin/x"])).toBe("command_ask_unknown");
+    expect(code(["../x/run.sh"])).toBe("command_ask_unknown");
+    expect(code(["frobnicate"])).toBe("command_ask_unknown");
+    expect(code(["./bin/$X"], live)).toBe("command_ask_unresolved");
+    // A path-qualified known verb keeps its own class.
+    expect(code(["./bin/rm", "-rf", "build"])).toBe("command_ask_destructive");
+  });
+
+  it("the second lab run's leftovers: git config reads, plain readers, curl -o /dev/null", () => {
+    expect(code(["git", "config", "core.autocrlf"])).toBe("allow");
+    expect(code(["git", "config", "--get", "user.name"])).toBe("allow");
+    expect(code(["git", "config", "--list"])).toBe("allow");
+    expect(code(["git", "config", "-l", "--show-origin"])).toBe("allow");
+    for (const argv of [
+      ["git", "config", "core.autocrlf", "false"],
+      ["git", "config", "--unset", "core.autocrlf"],
+      ["git", "config", "--add", "a.b", "c"],
+      ["git", "config", "-e"],
+      ["git", "config", "--file", "../x", "a.b"],
+      ["git", "config", "--list", "a.b"],
+    ]) {
+      expect(code(argv), argv.join(" ")).toBe("command_ask_vcs");
+    }
+    for (const argv of [
+      ["od", "-c", "README.md"],
+      ["hexdump", "-C", "a.bin"],
+      ["file", "src/a.mjs", "scripts/x.mjs"],
+      ["stat", "package.json"],
+      ["du", "-sh", "node_modules"],
+      ["sha256sum", "dist/app.js"],
+      ["tac", "CHANGELOG.md"],
+      ["paste", "-d,", "a.txt", "b.txt"],
+      ["basename", "src/a.mjs"],
+    ]) {
+      expect(code(argv), argv.join(" ")).toBe("allow");
+    }
+    expect(code(["od", "-c", "/etc/passwd"])).toBe("command_ask_reader_path");
+    expect(code(["stat", "~/.ssh/id_rsa"])).toBe("command_ask_reader_path");
+    // The readers' own knobs stay asks.
+    expect(code(["file", "-C", "-m", "magic"])).toBe("command_ask_unknown");
+    expect(code(["xxd", "-r", "in.hex", "out.bin"])).toBe(
+      "command_ask_unknown",
+    );
+    expect(code(["sha256sum", "-c", "sums.txt"])).toBe("command_ask_unknown");
+    // The status-code idiom discards the body; a real output file is a write.
+    expect(
+      code([
+        "curl",
+        "-sS",
+        "-o",
+        "/dev/null",
+        "-w",
+        "%{http_code}\n",
+        "http://localhost:4642/x",
+      ]),
+    ).toBe("allow");
+    expect(code(["curl", "-o", "out.html", "http://localhost:4642/x"])).toBe(
+      "command_ask_network",
+    );
   });
 });

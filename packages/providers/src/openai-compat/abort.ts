@@ -1,21 +1,9 @@
 /**
- * Provider-side abort predicate. Wider than `@herta/core`'s `isAbortError`
- * (name only): undici surfaces some interrupts with `code === "ABORT_ERR"`
- * and a different name, and every provider seam below must treat those as
- * the user's interrupt in flight — never re-badge one as a network failure,
- * an SSE error, or an HTTP status. One definition, used by the retry loop,
- * the SSE reader and the deadline helpers.
+ * The abort predicate and constructor every provider seam uses — the retry
+ * loop, the SSE reader and the deadline helpers — so an interrupt in flight
+ * is never re-badged as a network failure, an SSE error, or an HTTP status.
+ * Since 2026-09-03 the predicate IS `@herta/core`'s `isAbortError` (name
+ * "AbortError" or code "ABORT_ERR"), and since 2026-09-11 the constructor is
+ * core's too; this file kept copies of its own until they were folded.
  */
-export function isAbortError(e: unknown): boolean {
-  return (
-    e instanceof Error &&
-    (e.name === "AbortError" || (e as { code?: string }).code === "ABORT_ERR")
-  );
-}
-
-/** A fresh AbortError, named so `isAbortError` (both flavors) classifies it. */
-export function abortError(message = "aborted"): Error {
-  const e = new Error(message);
-  e.name = "AbortError";
-  return e;
-}
+export { abortError, isAbortError } from "@herta/core";

@@ -14,6 +14,28 @@ describe("classifyBeatTrigger — event → trigger", () => {
     expect(classifyBeatTrigger(ev)).toBeNull();
   });
 
+  it("a steer (actor-layer user.steer) earns one beat, keyed by its id (ADR 0063)", () => {
+    const steer: AgentEvent = {
+      type: "user.steer",
+      layer: "actor",
+      id: "s-1",
+      text: "also rename the test file",
+    };
+    expect(classifyBeatTrigger(steer)).toEqual({ signature: "steer:s-1" });
+    // Any other actor-layer event stays silent.
+    const delta: AgentEvent = {
+      type: "assistant.delta",
+      layer: "actor",
+      text: "…",
+    };
+    expect(classifyBeatTrigger(delta)).toBeNull();
+    // The policy dedups by signature: the same steer staged twice fires once.
+    const policy = new BeatPolicy({ clock: () => 0 });
+    expect(policy.shouldStage(steer)).toEqual({ signature: "steer:s-1" });
+    policy.markFired("steer:s-1", 0);
+    expect(policy.shouldStage(steer)).toBeNull();
+  });
+
   it("returns null on backend tool.call.started for any workflow kind (N2, 2026-05-23)", () => {
     // 2026-05-23 N2 tightening: beats no longer fire on workflow
     // start events. The model has no useful content to comment on
@@ -43,8 +65,8 @@ describe("classifyBeatTrigger — event → trigger", () => {
       type: "tool.call.started",
       layer: "backend",
       id: "t2",
-      tool: "list_files",
-      inputSummary: "src",
+      tool: "glob",
+      inputSummary: "src/**",
     };
     expect(classifyBeatTrigger(a)).toBeNull();
     expect(classifyBeatTrigger(b)).toBeNull();
@@ -142,11 +164,11 @@ describe("classifyBeatTrigger — event → trigger", () => {
     expect(classifyBeatTrigger(ev)?.signature).toBe("patch.preview:first");
   });
 
-  it("fires on verification.finished", () => {
+  it("fires on a red verification.finished", () => {
     const ev: AgentEvent = {
       type: "verification.finished",
       layer: "backend",
-      result: {} as never,
+      result: { passed: false },
     };
     expect(classifyBeatTrigger(ev)?.signature).toBe("verification.finished");
   });
@@ -188,13 +210,33 @@ describe("classifyBeatTrigger — event → trigger", () => {
     expect(ordinary?.signature).toBe("tool.fail:glob:invalid_pattern");
   });
 
-  it("fires on verification.finished (test-result beat — producer added 2026-07-23)", () => {
+  it("fires on a FAILED verification.finished (test-result beat — producer added 2026-07-23)", () => {
     const trigger = classifyBeatTrigger({
       type: "verification.finished",
       layer: "backend",
-      result: {},
+      result: { passed: false },
     });
     expect(trigger?.signature).toBe("verification.finished");
+  });
+
+  it("a green test run earns no beat — the synthesis reports it (owner 2026-09-03)", () => {
+    // A passing run that ended the brief drew a beat and then the same news
+    // again from Herta's wrap-up. An emitter that does not know the outcome
+    // gets no beat either.
+    expect(
+      classifyBeatTrigger({
+        type: "verification.finished",
+        layer: "backend",
+        result: { passed: true },
+      }),
+    ).toBeNull();
+    expect(
+      classifyBeatTrigger({
+        type: "verification.finished",
+        layer: "backend",
+        result: {},
+      }),
+    ).toBeNull();
   });
 
   it("returns null on plan.updated (redundant with tool.started:plan)", () => {
@@ -256,17 +298,11 @@ describe("BeatPolicy — staging, dedup, and fire-time throttle", () => {
     };
   }
   function verificationEv(): AgentEvent {
+    // Red: a green run classifies to null since 2026-09-03.
     return {
       type: "verification.finished",
       layer: "backend",
-      result: {
-        kind: "test",
-        ok: true,
-        command: "pnpm test",
-        exitCode: 0,
-        durationMs: 100,
-        summary: "passed",
-      },
+      result: { passed: false },
     };
   }
   // Unknown event type that won't classify (always returns null

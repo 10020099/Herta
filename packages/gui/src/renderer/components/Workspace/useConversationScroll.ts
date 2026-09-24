@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { GLIDE_WINDOW_MS, OUTGOING_FLIGHT_MS } from "./conversation-timing.js";
 import { type ScrollGlideHandle, startScrollGlide } from "./scroll-glide.js";
-import { headroomFor, releasedExtent } from "./turn-headroom.js";
+import {
+  headroomFor,
+  needsRoom,
+  preGlideScrollTop,
+  releasedExtent,
+  targetExtentFor,
+} from "./turn-headroom.js";
 import { useScrollEdges } from "./useScrollEdges.js";
 
 // How close to the bottom (px) still counts as "pinned" for autoscroll —
@@ -17,17 +24,29 @@ const PIN_THRESHOLD_PX = 48;
  * need. Moved out of `Conversation` verbatim on 2026-08-19 (ADR 0041): it
  * was ~450 lines of refs, callbacks and four effects that shared nothing
  * with the rest of the component except the two clone flags it takes here.
- * Every ref/callback the rest of the component reads is returned; effect
- * order is unchanged (the hook is called where the first of these lines
- * used to be, and no other effect sat inside the moved range).
+ * Effect order is unchanged (the hook is called where the first of these
+ * lines used to be, and no other effect sat inside the moved range).
+ *
+ * Reworked on 2026-09-03 (owner's request — Conversation.tsx hosted five
+ * state machines, and this hook handed back a bag of ~29 raw refs the
+ * component wrote directly): every ref is now PRIVATE, and callers get an
+ * intent surface instead — `rePin` / `releasePin` / `followSend` /
+ * `noteNewBelow` / `dropTurnTravel` … — plus the DOM anchors the JSX needs.
+ * The flag choreography each intent performs is byte-for-byte what the
+ * component's effects used to write inline. The 回到底部 chip's click
+ * (`jumpToLatest`) and the unmount cleanup of the jump timers moved in
+ * from Conversation.tsx with it. Effect order inside is unchanged.
  */
 export function useConversationScroll(opts: {
   /** The outgoing send morph's clone (null when none is in flight). */
   outgoingClone: { text: string } | null;
   /** Whether the incoming reply morph's clone is in flight. */
   incomingClone: boolean;
+  /** prefers-reduced-motion: the chip's hop and the send's climb are
+   *  instant under it. */
+  reduced: boolean;
 }) {
-  const { outgoingClone, incomingClone } = opts;
+  const { outgoingClone, incomingClone, reduced } = opts;
   const endRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fog = useScrollEdges(scrollRef);
@@ -63,9 +82,10 @@ export function useConversationScroll(opts: {
   // The old unconditional scrollIntoView fired on every reveal frame, so
   // scrolling up to reread during a streaming reply was impossible — the
   // pane snapped back to the bottom ~60×/s. `pinned` flips false when the
-  // user scrolls away from the bottom and true when they return; sending a
-  // message and switching sessions re-pin explicitly (your own actions
-  // always land you at the bottom).
+  // user scrolls away from the bottom and true when they return — by
+  // scrolling, or by a layout change that lands them there with no scroll
+  // event (`rederivePin` below); sending a message and switching sessions
+  // re-pin explicitly (your own actions always land you at the bottom).
   const pinnedRef = useRef(true);
   // Jump-to-latest chip (2026-07-11): `pinnedRef` mirrored as STATE plus
   // "new content arrived below" together mount the 回到底部 chip. The ref
@@ -83,8 +103,8 @@ export function useConversationScroll(opts: {
   // chip although the reader never left the bottom). A synthetic unpin keeps
   // the follow OFF (its whole purpose) but must not light the chip; the
   // FIRST real scroll event hands control back to geometry and re-arms the
-  // chip machinery. loadEarlier / jumpToTopic set pinnedRef directly — their
-  // unpins are user navigation and keep lighting the chip as before.
+  // chip machinery. loadEarlier / jumpToTopic unpin through `releasePin` —
+  // their unpins are user navigation and keep lighting the chip as before.
   const syntheticUnpinRef = useRef(false);
   const jumpTimerRef = useRef<number | null>(null);
   /** Handle for the topic-jump's anchor poll, so a session change can cancel
@@ -201,12 +221,90 @@ export function useConversationScroll(opts: {
   // the conversation's end, past the just-expanded content — the "expands
   // upward" read (user 2026-07-14). See ConversationPin.tsx.
   const unpin = useCallback((): void => {
+    // Already away from the bottom by their own doing (a scroll, a topic
+    // jump, load-earlier): the disclosure changes nothing about where they
+    // are, and marking THIS unpin synthetic would silence the chip for
+    // growth below a reader who genuinely left — the 2026-08-10 rule in
+    // reverse (expand-then-scroll keeps the chip; so must scroll-then-expand).
+    if (!pinnedRef.current) return;
     pinnedRef.current = false;
     setPinnedState(false);
     // Disclosure unpin, not a user scroll — suppress the jump chip until a
     // real scroll event hands control back to geometry (see syntheticUnpinRef).
     syntheticUnpinRef.current = true;
   }, []);
+  /** User navigation away from the bottom (load-earlier, a topic jump):
+   *  drops the pin so the append-follow cannot yank the view when the
+   *  prepend lands, and — unlike the disclosure `unpin` — leaves
+   *  `syntheticUnpinRef` alone, so the chip keeps lighting for growth
+   *  below a reader who genuinely left. */
+  const releasePin = useCallback((): void => {
+    pinnedRef.current = false;
+    setPinnedState(false);
+  }, []);
+  /** Re-derive the pin from GEOMETRY after a layout change that fires no
+   *  scroll event. The scroll handler was the only place `pinned` was ever
+   *  recomputed, so a change that put an unpinned reader at the bottom
+   *  without scrolling — a disclosure collapsing under them, the pane
+   *  growing on a maximize, the approval reserve going away — left
+   *  `pinnedRef` stale-false and the chip's `newBelow` stale-true: the
+   *  回到底部 chip stayed up over a bubble that was entirely on screen, and
+   *  the follow stayed off (owner 2026-09-02: scrolled up while Herta
+   *  speaks, expand a 板砖 detail row, collapse it — the chip never left).
+   *  Only the unpinned→pinned direction: growth cannot bring a reader TO
+   *  the bottom, and pinned→unpinned is the disclosure unpin's job. Stands
+   *  down for a chip glide / jump, which own the pin until they land. */
+  const rederivePin = useCallback((): void => {
+    const el = scrollRef.current;
+    if (el === null || pinnedRef.current) return;
+    if (glidingRef.current || jumpingRef.current) return;
+    if (el.scrollTop + el.clientHeight < el.scrollHeight - PIN_THRESHOLD_PX)
+      return;
+    pinnedRef.current = true;
+    setPinnedState(true);
+    setNewBelow(false);
+    syntheticUnpinRef.current = false;
+  }, []);
+  /** New content arrived below: light the 回到底部 chip — but only for a
+   *  reader who is away from the bottom by their own doing (not a
+   *  disclosure unpin) and not mid-jump (growth DURING the chip's glide must
+   *  not re-light it). The reveal's growth frames and appended blocks both
+   *  come through here. */
+  const noteNewBelow = useCallback((): void => {
+    if (
+      !pinnedRef.current &&
+      !jumpingRef.current &&
+      !syntheticUnpinRef.current
+    ) {
+      setNewBelow(true);
+    }
+  }, []);
+  // The chip's click: glide back to the latest content. The scroll handler
+  // re-pins when the glide lands at the bottom; `jumpingRef` keeps mid-glide
+  // growth from re-lighting the chip, with a timeout fallback for a glide
+  // interrupted by the user wheeling away.
+  const jumpToLatest = useCallback((): void => {
+    jumpingRef.current = true;
+    setNewBelow(false);
+    if (jumpTimerRef.current !== null)
+      window.clearTimeout(jumpTimerRef.current);
+    jumpTimerRef.current = window.setTimeout(() => {
+      jumpTimerRef.current = null;
+      jumpingRef.current = false;
+    }, 1000);
+    const el = scrollRef.current;
+    if (el === null) return;
+    // The TRUE bottom, for the same reason `scrollToBottom` exists: aligning
+    // `endRef` leaves the approval reserve unscrolled, so with a gate open the
+    // chip would land short of the bottom, leave the chip's own condition
+    // still true, and spend reserved room on the way (2026-07-30). Smooth is
+    // native here — this is a short hop the reader asked for, not the send's
+    // page-sized climb (scroll-glide.ts).
+    el.scrollTo({
+      top: el.scrollHeight - el.clientHeight,
+      behavior: reduced ? "auto" : "smooth",
+    });
+  }, [reduced]);
   // ── Turn headroom (2026-07-29) ─────────────────────────────────────────
   // A send that needs room fixes a target scrollable EXTENT; the spacer
   // below the flow is whatever is left of it, so "the bottom" is "your
@@ -437,6 +535,125 @@ export function useConversationScroll(opts: {
     beginGlide();
     return true;
   }, [beginGlide, syncHeadroom]);
+  /** Your own send lands you at the bottom — the body of the send effect
+   *  that used to live in Conversation (see useTurnFollow for the trigger
+   *  and the history of why it only re-pins a reader who was already AT the
+   *  bottom). `flightArmed`: whether the outgoing morph will fly a clone for
+   *  this send, which decides whether the climb into reserved room is handed
+   *  to the flight's settle or travels now. */
+  const followSend = useCallback(
+    (flightArmed: boolean): void => {
+      // A DISCLOSURE unpin is not "reading history" (owner 2026-08-10). Opening
+      // an activity history or a detail pane unpins on purpose — the follow must
+      // not yank the viewport past what was just opened — but the reader is
+      // still sitting at the bottom, and sending IS a request to see their own
+      // message. Treated as scrolled-away it lost both halves of the send at
+      // once: no flight (the clone declines to fly into a blind spot) and the
+      // jump chip lit while the reader had never left. `syntheticUnpinRef` is
+      // cleared by the first real scroll event, so a reader who expands and THEN
+      // scrolls away is genuinely reading history and still gets the chip.
+      if (!pinnedRef.current && !syntheticUnpinRef.current) {
+        // Reading history. The message still lands in the flow below; the chip
+        // says so. No re-pin, no headroom reservation (its measurements describe
+        // an anchor that is off screen), no travel — and the detection effect
+        // above has already declined to fly a clone into the same blind spot.
+        setNewBelow(true);
+        return;
+      }
+      rePin();
+      // Fix the extent BEFORE the scroll, so "the end" is already the anchored
+      // position when we land there — one scroll, not a jump followed by a
+      // correction. The morph clone mounts on the next commit and measures a
+      // slot that is final in both axes.
+      //
+      // The question is what the reader can SEE: is there already blank pane
+      // under the conversation for this answer to land in? A short previous
+      // answer leaves most of its reservation unused, and re-anchoring there
+      // scrolled the thread up to make room that was already on screen (user
+      // 2026-07-29). Holding the extent instead drops this message into that
+      // blank without moving anything, and only re-fixes it once the answers
+      // have actually eaten the room.
+      //
+      // LATCHED here, for this turn. Asked continuously, a growing reply would
+      // cross the threshold mid-answer and reserve underneath it — a jump,
+      // from a decision that belongs to the moment you pressed send.
+      const el = scrollRef.current;
+      const anchorTop = measureAnchorTop();
+      const reserve =
+        el !== null &&
+        anchorTop !== null &&
+        needsRoom({
+          contentBottom: measureContentBottom(),
+          maxScroll: el.scrollHeight - el.clientHeight,
+          viewport: el.clientHeight,
+        });
+      if (reserve && el !== null && anchorTop !== null) {
+        headroomExtentRef.current = targetExtentFor({
+          anchorTop,
+          viewport: el.clientHeight,
+        });
+      }
+      syncHeadroom();
+      // Making room moves the view a long way — most of a pane — so it GLIDES.
+      // An instant landing reads as the page having been replaced rather than
+      // scrolled (user 2026-07-29). Landing in room that already existed has
+      // nothing to travel, and keeps the immediate landing it always had.
+      const glide = reserve && !reduced;
+      // ONE MOVE AT A TIME (user 2026-07-30). The climb and the bubble's flight
+      // used to start together, so the page slid upward while the bubble was
+      // still crossing it — two motions competing for the same eye, and the
+      // flight had to aim at a slot that was moving. Sequenced: park at the
+      // bottom of the REAL content, where the message lands flush against the
+      // bottom edge with the reserved room still off screen, and hand the climb
+      // to the flight's settle (see runPendingGlide).
+      if (glide && el !== null && flightArmed) {
+        pendingGlideRef.current = true;
+        // The scroller is OURS from here until the climb lands, and saying so
+        // before parking is load-bearing: parking is a scroll AWAY from the
+        // bottom, and the scroll handler's ratchet reads exactly that as the
+        // reader stepping out of the reserved room and spends it (measured live
+        // 2026-07-30 — the reservation evaporated on the park and the climb then
+        // had 0px to travel). The fallback release covers a flight that never
+        // settles; `beginGlide` replaces it with the real window when the climb
+        // actually starts.
+        glidingRef.current = true;
+        jumpingRef.current = true;
+        if (jumpTimerRef.current !== null) {
+          window.clearTimeout(jumpTimerRef.current);
+        }
+        jumpTimerRef.current = window.setTimeout(() => {
+          jumpTimerRef.current = null;
+          jumpingRef.current = false;
+          glidingRef.current = false;
+          pendingGlideRef.current = false;
+          scrollToEndIfPinned();
+        }, OUTGOING_FLIGHT_MS + GLIDE_WINDOW_MS);
+        el.scrollTop = preGlideScrollTop({
+          contentBottom: measureContentBottom(),
+          viewport: el.clientHeight,
+        });
+        // Record the parked position (post-assignment, so it carries the
+        // browser's clamp): the scroll handler treats any OTHER position seen
+        // during the park as the reader taking over.
+        parkedScrollTopRef.current = el.scrollTop;
+        return;
+      }
+      // Nothing is going to fly (no overlay/composer, or reduced motion), so
+      // there is no settle to wait for: travel now, as it always did.
+      if (glide) beginGlide();
+      else scrollToBottom();
+    },
+    [
+      reduced,
+      rePin,
+      measureAnchorTop,
+      measureContentBottom,
+      syncHeadroom,
+      scrollToEndIfPinned,
+      beginGlide,
+      scrollToBottom,
+    ],
+  );
   // Bug 2026-07-09 (sidebar-toggle vertical shift): the grid-column
   // animations (220ms sidebar collapse, 800ms connect rail slide) re-wrap
   // any bubble narrower than its fixed cap, changing heights ABOVE the
@@ -448,7 +665,38 @@ export function useConversationScroll(opts: {
     const el = scrollRef.current;
     if (el === null || typeof ResizeObserver === "undefined") return;
     let lastHeight = el.clientHeight;
-    const ro = new ResizeObserver(() => {
+    /** Last content-box height per observed child (the flow wrapper), for
+     *  the shrink test below. */
+    const lastChildHeight = new Map<Element, number>();
+    const ro = new ResizeObserver((entries) => {
+      // Two signals share the observer (2026-09-02). The scroller's OWN box
+      // (a viewport resize, the approval reserve) runs the follow below, as
+      // it always has. Its direct children — the flow wrapper, the same
+      // level useScrollEdges watches — report content changes, of which
+      // only a SHRINK matters here: a disclosure collapsing can land an
+      // unpinned reader at the bottom with no scroll event (rederivePin),
+      // while growth never can — and growth arrives on every reveal frame,
+      // so that branch is one number compare and nothing else. A callback
+      // with no entries (the tests' fake observer) is the scroller path.
+      const list: readonly ResizeObserverEntry[] = Array.isArray(entries)
+        ? entries
+        : [];
+      let scroller = list.length === 0;
+      let shrank = false;
+      for (const entry of list) {
+        if (entry.target === el) {
+          scroller = true;
+          continue;
+        }
+        const h = entry.contentRect.height;
+        const prev = lastChildHeight.get(entry.target);
+        lastChildHeight.set(entry.target, h);
+        if (prev !== undefined && h < prev) shrank = true;
+      }
+      // Before the follow, so a resize that lands an unpinned reader at the
+      // bottom is followed in the same frame.
+      if (scroller || shrank) rederivePin();
+      if (!scroller) return;
       // Viewport-delta re-derive (deferred-fix 2026-07-31): an armed extent
       // baked in the send-time viewport — `anchorTop − GAP + viewport` — so
       // a maximize mid-hold left the anchored message viewport-delta below
@@ -468,8 +716,9 @@ export function useConversationScroll(opts: {
       scrollToEndIfPinned();
     });
     ro.observe(el);
+    for (const child of Array.from(el.children)) ro.observe(child);
     return () => ro.disconnect();
-  }, [scrollToEndIfPinned]);
+  }, [scrollToEndIfPinned, rederivePin]);
   morphInFlightRef.current = outgoingClone !== null || incomingClone;
   // Settle catch-up: growth frozen during the flight scrolls into view the
   // moment the last clone lands — or, when the send deferred its climb into the
@@ -492,36 +741,145 @@ export function useConversationScroll(opts: {
     if (runPendingGlide()) return;
     if (!incomingClone) scrollToEndIfPinned();
   }, [outgoingClone, incomingClone, scrollToEndIfPinned, runPendingGlide]);
+  // Unmount: the chip's glide fallback and the topic jump's anchor poll are
+  // this hook's timers (moved in from Conversation.tsx on 2026-09-03; it sat
+  // among the chip effects there — an unmount-only cleanup, so its place in
+  // the effect order carries nothing).
+  useEffect(
+    () => () => {
+      if (jumpTimerRef.current !== null)
+        window.clearTimeout(jumpTimerRef.current);
+      if (jumpPollRef.current !== null)
+        window.clearTimeout(jumpPollRef.current);
+    },
+    [],
+  );
+
+  // ── Intent surface (2026-09-03) ────────────────────────────────────────
+  // What the rest of Conversation may ask of the scroller. The refs above
+  // stay private: every caller that used to write them says WHAT it wants,
+  // and the flag choreography lives here, once. Each body is exactly the
+  // lines the caller used to run inline.
+  /** Scrolled away from the bottom by their own doing — a scroll, a topic
+   *  jump, load-earlier. A disclosure unpin does NOT count (owner
+   *  2026-08-10): the reader is still sitting at the bottom. The outgoing
+   *  morph and `followSend` must agree on this, or the send hands its
+   *  travel to a flight that was never armed. */
+  const isReadingHistory = useCallback(
+    (): boolean => !pinnedRef.current && !syntheticUnpinRef.current,
+    [],
+  );
+  const isPinned = useCallback((): boolean => pinnedRef.current, []);
+  const isGliding = useCallback((): boolean => glidingRef.current, []);
+  const isJumping = useCallback((): boolean => jumpingRef.current, []);
+  const isMorphInFlight = useCallback(
+    (): boolean => morphInFlightRef.current,
+    [],
+  );
+  /** A topic-jump anchor poll has been scheduled and not cancelled. (The
+   *  handle is only ever cleared by a cancel, not by the tick firing —
+   *  preserved as it was.) */
+  const hasJumpPoll = useCallback(
+    (): boolean => jumpPollRef.current !== null,
+    [],
+  );
+  const hasHeadroom = useCallback(
+    (): boolean => headroomExtentRef.current !== null,
+    [],
+  );
+  /** Scroll still owed by a running send climb (0 when none is running):
+   *  every pixel of it lifts the incoming clone's landing slot by one, so
+   *  the incoming rise aims at where the slot WILL be. */
+  const owedScroll = useCallback((): number => {
+    const pane = scrollRef.current;
+    return pane === null || !glidingRef.current
+      ? 0
+      : Math.max(0, pane.scrollHeight - pane.clientHeight - pane.scrollTop);
+  }, []);
+  /** Arm one tick of the topic jump's anchor poll (a TIMER, deliberately
+   *  not rAF — see useTopicJump). */
+  const scheduleJumpPoll = useCallback(
+    (tick: () => void, delayMs: number): void => {
+      jumpPollRef.current = window.setTimeout(tick, delayMs);
+    },
+    [],
+  );
+  /** Cancel a still-pending anchor poll tick (audit 2026-07-24, M4). */
+  const cancelJumpPoll = useCallback((): void => {
+    if (jumpPollRef.current !== null) {
+      window.clearTimeout(jumpPollRef.current);
+      jumpPollRef.current = null;
+    }
+  }, []);
+  /** Drop a chip glide / park in progress: the jump flag and its fallback
+   *  timer (session transients — see useRecordWindow). */
+  const cancelJump = useCallback((): void => {
+    jumpingRef.current = false;
+    if (jumpTimerRef.current !== null) {
+      window.clearTimeout(jumpTimerRef.current);
+      jumpTimerRef.current = null;
+    }
+  }, []);
+  /** Flag the next sync to slide an armed extent down past a trim (see
+   *  `headroomRebaseRef` and the pinned trim in useRecordWindow). */
+  const armHeadroomRebase = useCallback((): void => {
+    if (headroomExtentRef.current !== null) {
+      headroomRebaseRef.current = true;
+    }
+  }, []);
+  /** Release a held reservation, spacer and all, in the calling commit. */
+  const releaseHeadroom = useCallback((): void => {
+    if (headroomExtentRef.current !== null) {
+      headroomExtentRef.current = null;
+      syncHeadroom();
+    }
+  }, [syncHeadroom]);
+  /** Entering (or blanking to) another session: the reservation, the
+   *  parked/pending climb and a RUNNING climb all belonged to the turn you
+   *  sent in the session you are leaving — see useSessionEntrance. */
+  const dropTurnTravel = useCallback((): void => {
+    headroomExtentRef.current = null;
+    glidingRef.current = false;
+    pendingGlideRef.current = false;
+    scrollGlideRef.current?.cancel();
+    scrollGlideRef.current = null;
+    syncHeadroom();
+  }, [syncHeadroom]);
 
   return {
+    // DOM anchors for the JSX, and the fog edges.
     endRef,
     scrollRef,
+    headroomRef,
     fog,
-    scrollToBottom,
-    pinnedRef,
+    // The chip's render inputs (state mirrors of the private refs).
     pinnedState,
-    setPinnedState,
     newBelow,
-    setNewBelow,
-    jumpingRef,
-    syntheticUnpinRef,
-    jumpTimerRef,
-    jumpPollRef,
-    morphInFlightRef,
-    glidingRef,
-    pendingGlideRef,
-    parkedScrollTopRef,
-    scrollGlideRef,
+    // Intents.
+    scrollToBottom,
+    scrollToEndIfPinned,
     rePin,
     unpin,
-    headroomRef,
-    headroomExtentRef,
-    measureAnchorTop,
-    measureContentBottom,
-    headroomRebaseRef,
-    syncHeadroom,
-    scrollToEndIfPinned,
-    beginGlide,
-    runPendingGlide,
+    releasePin,
+    noteNewBelow,
+    jumpToLatest,
+    followSend,
+    isReadingHistory,
+    isPinned,
+    isGliding,
+    isJumping,
+    isMorphInFlight,
+    hasJumpPoll,
+    hasHeadroom,
+    owedScroll,
+    scheduleJumpPoll,
+    cancelJumpPoll,
+    cancelJump,
+    armHeadroomRebase,
+    releaseHeadroom,
+    dropTurnTravel,
   };
 }
+
+/** The engine handle the conversation's other hooks take. */
+export type ConversationScroll = ReturnType<typeof useConversationScroll>;

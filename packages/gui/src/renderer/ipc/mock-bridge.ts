@@ -5,19 +5,23 @@ import type {
   CreateSessionOpts,
   OverlayEvent,
   RecordEvent,
+  RepoEvent,
   ResolveApprovalOpts,
   RewindResult,
   SessionAgentEvent,
   SessionDeletedEvent,
   SessionMetadata,
   SessionSearchHit,
+  SteerTextResult,
   SubmitTextResult,
   TerminalRecord,
   TitleEvent,
   TurnLifecycleEvent,
   VoiceCueEvent,
   WorkspaceEvent,
+  WorkspaceTrustState,
 } from "@herta/app-server";
+import type { WorkspaceTrust } from "@herta/core";
 import type {
   BackendConfig,
   ContextCompactionConfig,
@@ -27,21 +31,30 @@ import type {
   InteractionLanguageChoice,
   McpConfig,
   McpConnectionStatusMap,
+  MiniMaxRefusalState,
+  MiniMaxVoiceState,
   ModelConfig,
   NavBlockedEvent,
   ProjectRuleFile,
+  RealtimeVoiceState,
   SessionError,
   SessionNoSession,
   SessionOpenFailure,
   SessionSnapshot,
   SpeechControlEvent,
+  StagedImageInfo,
+  StageImagesReply,
   ThemePref,
   UpdateState,
+  VoiceEngine,
+  VoiceModelState,
 } from "./bridge-types.js";
 
 export interface MockHertaBridgeOpts {
   readonly submitTextResult?: SubmitTextResult;
   readonly interruptResult?: { readonly ok: boolean };
+  /** What `steerText` answers (ADR 0063); default accepted on "mock-turn". */
+  readonly steerTextResult?: SteerTextResult;
   readonly rewindLastTurnResult?: RewindResult;
   readonly listSessionsResult?: readonly SessionMetadata[];
   /** Seed for searchSessions (transcript content search). Default []. */
@@ -58,6 +71,9 @@ export interface MockHertaBridgeOpts {
    *  is mutated by removeCommandRule so tests observe the round-trip.
    *  Default []. */
   readonly commandRules?: readonly string[];
+  /** Seed for getWorkspaceTrust (ADR 0064); setWorkspaceTrust mutates it so
+   *  tests observe the round-trip. Default: a real project, asking. */
+  readonly workspaceTrust?: WorkspaceTrustState;
   readonly pickWorkspaceResult?: string | null;
   readonly setWorkspaceResult?: { ok: boolean; message?: string };
   /** Seed for the attachment picker (ADR 0033). Null = cancelled. */
@@ -68,6 +84,10 @@ export interface MockHertaBridgeOpts {
   readonly contextUsageResult?: ContextUsage | null;
   readonly requestContextCompactionResult?: ContextCompactionRequestResult;
   readonly removeAttachmentResult?: { ok: boolean; message?: string };
+  /** Seed for stageImages (ADR 0048 §4). Default: every input stages, with a
+   *  synthetic id/path — enough for the composer strip to render. */
+  readonly stageImagesResult?: StageImagesReply;
+  readonly unstageImageResult?: boolean;
   readonly getDreamConfigResult?: DreamConfig;
   /** Seed for getBackendConfig (Settings → Coprocessor). Default
    *  `{ thinking: "high", contract: "minimal" }` (the real handler's
@@ -78,7 +98,7 @@ export interface MockHertaBridgeOpts {
    *  error-note paths are testable. */
   readonly failSetBackendConfig?: boolean;
   /** Seed for getModelConfig (Settings → DeepSeek → 模型). Default
-   *  actor Pro / backend flash (the real handler's defaults). */
+   *  actor Pro / backend the VISION flash (the real handler's defaults). */
   readonly getModelConfigResult?: ModelConfig;
   /** When true, setModelConfig rejects — same seam as failSetBackendConfig. */
   readonly failSetModelConfig?: boolean;
@@ -109,6 +129,12 @@ export interface MockHertaBridgeOpts {
   readonly failSetCloseToTray?: boolean;
   /** Seed for getTheme (Settings → Window appearance). Default "light". */
   readonly themeResult?: ThemePref;
+  /** Seed for getDeviceScene (Settings → 差分协处理器 → 3D device, ADR
+   *  0057). UNDEFINED (the default) omits the surface entirely — the row
+   *  hides and the rail card stays flat, like the website demo's bridge. */
+  readonly deviceSceneResult?: boolean;
+  /** When true, setDeviceScene rejects (simulates a failed settings write). */
+  readonly failSetDeviceScene?: boolean;
   /** Seed for getInteractionLanguage (Settings → Language, slice 4).
    *  Default "follow" (no stored choice). Mutated by setInteractionLanguage
    *  so tests observe the round-trip. */
@@ -122,17 +148,50 @@ export interface MockHertaBridgeOpts {
   readonly platform?: string;
   /** Seed for windowIsMaximized. Default false. */
   readonly windowIsMaximizedResult?: boolean;
+  /** Seed for windowIsFullScreen. Default false. */
+  readonly windowIsFullScreenResult?: boolean;
   /** Seed for getUpdateState (Settings → Update). Default idle. */
   readonly updateState?: UpdateState;
   /** Seed for getAppVersion. Default "0.1.0". */
   readonly appVersion?: string;
+  /** Seed for getRealtimeVoice (Settings → Voice, ADR 0042). Default: on,
+   *  with the assets present. Mutated by setRealtimeVoice so tests observe
+   *  the round-trip. */
+  readonly realtimeVoiceResult?: Omit<
+    RealtimeVoiceState,
+    "model" | "engine" | "minimax"
+  > & {
+    readonly model?: VoiceModelState;
+    readonly engine?: VoiceEngine;
+    readonly minimax?: {
+      readonly key?: DeepSeekKeyStatus;
+      readonly planKey?: DeepSeekKeyStatus;
+      readonly voice?: MiniMaxVoiceState;
+      readonly refusal?: MiniMaxRefusalState | null;
+    };
+  };
+  /** When true, setMiniMaxKey rejects every key (neither platform accepts
+   *  it) — `{ ok: false, reason: "rejected" }`, status unchanged. */
+  readonly rejectMiniMaxKey?: boolean;
+  /** When true, MiniMax cannot be reached: a key is stored `unverified`
+   *  and every clone attempt fails with `network`. */
+  readonly offlineMiniMax?: boolean;
+  /** When true, setRealtimeVoice rejects — same seam as
+   *  failSetInteractionLanguage, so the snap-back + error-note path is
+   *  testable. */
+  readonly failSetRealtimeVoice?: boolean;
 }
 
 export interface MockHertaBridge {
   readonly bridge: HertaBridge;
   readonly calls: {
     submitText: string[];
+    /** The staged-image ids sent WITH each submitText, positionally paired
+     *  with `submitText` (ADR 0048 §4). */
+    submitTextStaged: Array<readonly string[] | undefined>;
     interrupt: Array<string | undefined>;
+    /** The texts steered while 板砖 ran (ADR 0063). */
+    steerText: string[];
     rewindLastTurn: number;
     maybePlayEasterEgg: number;
     openSession: string[];
@@ -141,20 +200,35 @@ export interface MockHertaBridge {
     resolveApproval: ResolveApprovalOpts[];
     listCommandRules: number;
     removeCommandRule: string[];
+    getWorkspaceTrust: number;
+    setWorkspaceTrust: Array<WorkspaceTrust | null>;
     resyncRecord: number;
     getContextUsage: string[];
     requestContextCompaction: string[];
     checkForUpdate: number;
     restartAndInstall: number;
+    openExternal: string[];
     listSessions: number;
     searchSessions: string[];
     recordSlice: Array<[string, number, number]>;
     pickWorkspace: number;
     setWorkspace: Array<[string, string]>;
     resetWorkspace: string[];
+    refreshRepo: number;
     pickAttachments: number;
     attachFiles: Array<[string, readonly string[]]>;
     removeAttachment: Array<[string, string]>;
+    stageImages: Array<
+      [
+        string,
+        readonly {
+          readonly path?: string;
+          readonly bytes?: Uint8Array;
+          readonly name?: string;
+        }[],
+      ]
+    >;
+    unstageImage: Array<[string, string]>;
     pathForFile: number;
     getDreamConfig: number;
     setDreamConfig: DreamConfig[];
@@ -177,13 +251,28 @@ export interface MockHertaBridge {
     getCloseToTray: number;
     setCloseToTray: boolean[];
     setTheme: ThemePref[];
+    setDeviceScene: boolean[];
     getInteractionLanguage: number;
     setInteractionLanguage: InteractionLanguageChoice[];
+    getRealtimeVoice: number;
+    setRealtimeVoice: boolean[];
+    downloadVoiceModel: number;
+    cancelVoiceModelDownload: number;
+    removeVoiceModel: number;
+    setVoiceEngine: VoiceEngine[];
+    setMiniMaxKey: string[];
+    clearMiniMaxKey: number;
+    setMiniMaxPlanKey: string[];
+    clearMiniMaxPlanKey: number;
+    prepareMiniMaxVoice: number;
     windowMinimize: number;
     windowToggleMaximize: number;
     windowClose: number;
   };
   emitWindowMaximized(maximized: boolean): void;
+  emitWindowFullScreen(fullScreen: boolean): void;
+  /** The application menu's Settings… item. */
+  emitOpenSettings(): void;
   emitRecord(e: RecordEvent): void;
   emitOverlay(e: OverlayEvent): void;
   emitSpeech(e: SpeechControlEvent): void;
@@ -195,7 +284,15 @@ export interface MockHertaBridge {
   emitWorkspace(e: WorkspaceEvent): void;
   emitVoice(e: VoiceCueEvent): void;
   emitUpdate(e: UpdateState): void;
+  /** The voice model's stream (ADR 0061) — a progress tick, a phase change. */
+  emitVoiceModel(e: VoiceModelState): void;
+  /** The cloud clone's stream (ADR 0062). */
+  emitMiniMaxVoice(e: MiniMaxVoiceState): void;
+  /** A speech refusal recorded or cleared mid-reply (ADR 0062 §5). */
+  emitMiniMaxSpeech(e: MiniMaxRefusalState | null): void;
   emitNavBlocked(e: NavBlockedEvent): void;
+  /** The repository card's stream (ADR 0058). */
+  emitRepo(e: RepoEvent): void;
 }
 
 const DEFAULT_SNAPSHOT: SessionSnapshot = {
@@ -222,13 +319,16 @@ export function createMockHertaBridge(
   const titleCbs = new Set<(e: TitleEvent) => void>();
   const deletedCbs = new Set<(e: SessionDeletedEvent) => void>();
   const workspaceCbs = new Set<(e: WorkspaceEvent) => void>();
+  const repoCbs = new Set<(e: RepoEvent) => void>();
   const voiceCbs = new Set<(e: VoiceCueEvent) => void>();
   const updateCbs = new Set<(e: UpdateState) => void>();
   const navBlockedCbs = new Set<(e: NavBlockedEvent) => void>();
 
   const calls: MockHertaBridge["calls"] = {
     submitText: [],
+    submitTextStaged: [],
     interrupt: [],
+    steerText: [],
     rewindLastTurn: 0,
     maybePlayEasterEgg: 0,
     openSession: [],
@@ -237,11 +337,14 @@ export function createMockHertaBridge(
     resolveApproval: [],
     listCommandRules: 0,
     removeCommandRule: [],
+    getWorkspaceTrust: 0,
+    setWorkspaceTrust: [],
     resyncRecord: 0,
     getContextUsage: [],
     requestContextCompaction: [],
     checkForUpdate: 0,
     restartAndInstall: 0,
+    openExternal: [],
     listSessions: 0,
     searchSessions: [],
     recordSlice: [],
@@ -267,16 +370,31 @@ export function createMockHertaBridge(
     getCloseToTray: 0,
     setCloseToTray: [],
     setTheme: [],
+    setDeviceScene: [],
     getInteractionLanguage: 0,
     setInteractionLanguage: [],
+    getRealtimeVoice: 0,
+    setRealtimeVoice: [],
+    downloadVoiceModel: 0,
+    cancelVoiceModelDownload: 0,
+    removeVoiceModel: 0,
+    setVoiceEngine: [],
+    setMiniMaxKey: [],
+    clearMiniMaxKey: 0,
+    setMiniMaxPlanKey: [],
+    clearMiniMaxPlanKey: 0,
+    prepareMiniMaxVoice: 0,
     windowMinimize: 0,
     windowToggleMaximize: 0,
     windowClose: 0,
     setWorkspace: [],
     resetWorkspace: [],
+    refreshRepo: 0,
     pickAttachments: 0,
     attachFiles: [],
     removeAttachment: [],
+    stageImages: [],
+    unstageImage: [],
     pathForFile: 0,
   };
 
@@ -306,6 +424,113 @@ export function createMockHertaBridge(
   // Live project command rules (ADR 0030), seeded then mutated by
   // removeCommandRule so tests observe the round-trip.
   const commandRules: string[] = [...(opts.commandRules ?? [])];
+  // Live workspace trust (ADR 0064), seeded then mutated by setWorkspaceTrust.
+  let workspaceTrust: WorkspaceTrustState = opts.workspaceTrust ?? {
+    effective: "ask",
+    explicit: null,
+    isDefaultWorkspace: false,
+  };
+
+  // Live real-time-voice state (ADR 0042), seeded then mutated by
+  // setRealtimeVoice. The default is the healthy install: on, assets present.
+  const seededVoice = opts.realtimeVoiceResult ?? {
+    enabled: true,
+    bundle: true,
+    runtime: true,
+    failed: false,
+  };
+  // The downloadable model (ADR 0061): ready by default (the healthy
+  // install); seeded per test, mutated by download/cancel/remove, pushed to
+  // onVoiceModel subscribers like main does.
+  let voiceModel: VoiceModelState = seededVoice.model ?? {
+    phase: seededVoice.bundle ? "ready" : "absent",
+    receivedBytes: 0,
+    totalBytes: 60_000_000,
+    unpackedBytes: 116_000_000,
+  };
+  // The cloud engine (ADR 0062): the masked MiniMax key and the clone,
+  // seeded per test, mutated by the key/engine/prepare/reset calls, pushed
+  // to onMiniMaxVoice subscribers like main does.
+  let minimaxKey: DeepSeekKeyStatus = seededVoice.minimax?.key ?? {
+    set: false,
+    hint: null,
+    encrypted: false,
+  };
+  let minimaxPlanKey: DeepSeekKeyStatus = seededVoice.minimax?.planKey ?? {
+    set: false,
+    hint: null,
+    encrypted: false,
+  };
+  let minimaxVoice: MiniMaxVoiceState = seededVoice.minimax?.voice ?? {
+    phase: "absent",
+  };
+  let voiceEngine: VoiceEngine = seededVoice.engine ?? "local";
+  const minimaxCbs = new Set<(e: MiniMaxVoiceState) => void>();
+  const pushMiniMax = (next: MiniMaxVoiceState): void => {
+    minimaxVoice = next;
+    for (const cb of minimaxCbs) cb(next);
+  };
+  let minimaxRefusal: MiniMaxRefusalState | null =
+    seededVoice.minimax?.refusal ?? null;
+  const minimaxSpeechCbs = new Set<(e: MiniMaxRefusalState | null) => void>();
+  const pushMiniMaxSpeech = (next: MiniMaxRefusalState | null): void => {
+    minimaxRefusal = next;
+    for (const cb of minimaxSpeechCbs) cb(next);
+  };
+  /** The clone as main makes it: preparing, then ready — or failed without
+   *  a key, or with only the plan key on an account that has no clone to
+   *  adopt (the mock's account is empty). */
+  const mockPrepare = (): void => {
+    if (!minimaxKey.set && !minimaxPlanKey.set) {
+      pushMiniMax({ phase: "failed", error: "no_key" });
+      return;
+    }
+    pushMiniMax({ phase: "preparing" });
+    if (opts.offlineMiniMax === true) {
+      pushMiniMax({ phase: "failed", error: "network" });
+      return;
+    }
+    if (!minimaxKey.set) {
+      pushMiniMax({ phase: "failed", error: "no_clone_key" });
+      return;
+    }
+    pushMiniMax({
+      phase: "ready",
+      voiceId: "herta_mock000001",
+      host: "https://api.minimaxi.com",
+      clonedAt: "2026-09-08T10:00:00.000Z",
+    });
+  };
+  const minimaxView = (): RealtimeVoiceState["minimax"] => ({
+    key: minimaxKey,
+    planKey: minimaxPlanKey,
+    voice: minimaxVoice,
+    refusal: minimaxRefusal,
+  });
+  const voiceView = (): RealtimeVoiceState => ({
+    ...seededVoice,
+    bundle: realtimeVoice.bundle,
+    enabled: realtimeVoice.enabled,
+    model: voiceModel,
+    engine: voiceEngine,
+    minimax: minimaxView(),
+  });
+  let realtimeVoice: RealtimeVoiceState = {
+    ...seededVoice,
+    model: voiceModel,
+    engine: voiceEngine,
+    minimax: minimaxView(),
+  };
+  const voiceModelCbs = new Set<(e: VoiceModelState) => void>();
+  const pushVoiceModel = (next: VoiceModelState): void => {
+    voiceModel = next;
+    realtimeVoice = {
+      ...realtimeVoice,
+      bundle: next.phase === "ready",
+      model: next,
+    };
+    for (const cb of voiceModelCbs) cb(next);
+  };
 
   function sub<T>(set: Set<(e: T) => void>, cb: (e: T) => void): () => void {
     set.add(cb);
@@ -313,6 +538,8 @@ export function createMockHertaBridge(
   }
 
   const windowMaximizedCbs = new Set<(maximized: boolean) => void>();
+  const windowFullScreenCbs = new Set<(fullScreen: boolean) => void>();
+  const openSettingsCbs = new Set<() => void>();
 
   const bridge: HertaBridge = {
     platform: opts.platform ?? "win32",
@@ -330,8 +557,12 @@ export function createMockHertaBridge(
       windowMaximizedCbs.add(cb);
       return () => windowMaximizedCbs.delete(cb);
     },
-    submitText: async (text) => {
+    windowIsFullScreen: async () => opts.windowIsFullScreenResult ?? false,
+    onWindowFullScreen: (cb) => sub(windowFullScreenCbs, cb),
+    onOpenSettings: (cb) => sub(openSettingsCbs, cb),
+    submitText: async (text, stagedImageIds) => {
       calls.submitText.push(text);
+      calls.submitTextStaged.push(stagedImageIds);
       return opts.submitTextResult ?? { turnId: "mock-turn" };
     },
     interrupt: async (turnId) => {
@@ -345,6 +576,10 @@ export function createMockHertaBridge(
     requestContextCompaction: async (sessionId) => {
       calls.requestContextCompaction.push(sessionId);
       return opts.requestContextCompactionResult ?? { ok: true };
+    },
+    steerText: async (text) => {
+      calls.steerText.push(text);
+      return opts.steerTextResult ?? { accepted: "mock-turn" };
     },
     rewindLastTurn: async (_sessionId) => {
       calls.rewindLastTurn += 1;
@@ -392,6 +627,17 @@ export function createMockHertaBridge(
       commandRules.splice(i, 1);
       return true;
     },
+    getWorkspaceTrust: async () => {
+      calls.getWorkspaceTrust += 1;
+      return workspaceTrust;
+    },
+    setWorkspaceTrust: async (value) => {
+      calls.setWorkspaceTrust.push(value);
+      const effective =
+        value ?? (workspaceTrust.isDefaultWorkspace ? "workspace" : "ask");
+      workspaceTrust = { ...workspaceTrust, explicit: value, effective };
+      return workspaceTrust;
+    },
     resyncRecord: async () => {
       calls.resyncRecord += 1;
     },
@@ -400,6 +646,9 @@ export function createMockHertaBridge(
     },
     restartAndInstall: async () => {
       calls.restartAndInstall += 1;
+    },
+    openExternal: async (url) => {
+      calls.openExternal.push(url);
     },
     getUpdateState: async () => opts.updateState ?? { phase: "idle" },
     getAppVersion: async () => opts.appVersion ?? "0.1.0",
@@ -427,6 +676,46 @@ export function createMockHertaBridge(
     removeAttachment: async (sid, path) => {
       calls.removeAttachment.push([sid, path]);
       return opts.removeAttachmentResult ?? { ok: true };
+    },
+    stageImages: async (sid, inputs) => {
+      calls.stageImages.push([sid, inputs]);
+      if (opts.stageImagesResult !== undefined) return opts.stageImagesResult;
+      // The per-message picture cap, whole-batch like the real handler. The
+      // real one also counts what is ALREADY staged; this mock is stateless
+      // across calls, so a cross-call accumulation test seeds
+      // `stageImagesResult` instead.
+      if (inputs.length > 5) {
+        return { ok: false, message: "five images per message" };
+      }
+      // Default: split by EXTENSION. The real main process decides by magic
+      // bytes — a mock cannot, and must not pretend to — but it does have to
+      // route documents to `not_image` the way the real one does, or every
+      // document test here would silently stage instead of ingesting.
+      const staged: StagedImageInfo[] = [];
+      const rejected: { name: string; reason: string }[] = [];
+      inputs.forEach((input, i) => {
+        const name =
+          input.name ??
+          (input.path ?? "").split(/[\\/]/).at(-1) ??
+          `image-${i}.png`;
+        if (!/\.(png|jpe?g|gif|webp|bmp)$/i.test(name)) {
+          rejected.push({ name, reason: "not_image" });
+          return;
+        }
+        staged.push({
+          // Positional ids so a test can predict them.
+          id: `staged-${staged.length}`,
+          name,
+          path: `.herta/attachments/${sid}/${name}`,
+          width: 800,
+          height: 600,
+        });
+      });
+      return { ok: true, staged, rejected };
+    },
+    unstageImage: async (sid, id) => {
+      calls.unstageImage.push([sid, id]);
+      return opts.unstageImageResult ?? true;
     },
     // jsdom Files have no real path; the mock returns the name so a drop test
     // can assert what got forwarded without pretending to know a temp path.
@@ -470,7 +759,8 @@ export function createMockHertaBridge(
     },
     getDreamConfig: async () => {
       calls.getDreamConfig += 1;
-      return opts.getDreamConfigResult ?? { enabled: true };
+      // The shipped default: Dream is opt-in (2026-09-21).
+      return opts.getDreamConfigResult ?? { enabled: false };
     },
     setDreamConfig: async (cfg) => {
       calls.setDreamConfig.push(cfg);
@@ -505,8 +795,9 @@ export function createMockHertaBridge(
       return (
         opts.getModelConfigResult ?? {
           actor: "deepseek-v4-pro",
-          // Mirrors the real handler's default (owner flip 2026-08-17).
-          backend: "deepseek-v4-flash",
+          // Mirrors the real handler's default: the flash, which reads
+          // images since the 2026-09 rename (ADR 0048 §5a/§5b).
+          backend: "deepseek-flash",
         }
       );
     },
@@ -585,6 +876,17 @@ export function createMockHertaBridge(
     setTheme: async (theme) => {
       calls.setTheme.push(theme);
     },
+    ...(opts.deviceSceneResult !== undefined
+      ? {
+          getDeviceScene: async () => opts.deviceSceneResult === true,
+          setDeviceScene: async (enabled: boolean) => {
+            calls.setDeviceScene.push(enabled);
+            if (opts.failSetDeviceScene === true) {
+              throw new Error("write failed");
+            }
+          },
+        }
+      : {}),
     getInteractionLanguage: async () => {
       calls.getInteractionLanguage += 1;
       return interactionLanguage;
@@ -596,7 +898,115 @@ export function createMockHertaBridge(
       }
       interactionLanguage = choice;
     },
+    getRealtimeVoice: async () => {
+      calls.getRealtimeVoice += 1;
+      return voiceView();
+    },
+    setRealtimeVoice: async (enabled) => {
+      calls.setRealtimeVoice.push(enabled);
+      if (opts.failSetRealtimeVoice === true) throw new Error("write failed");
+      realtimeVoice = { ...realtimeVoice, enabled };
+    },
+    downloadVoiceModel: async () => {
+      calls.downloadVoiceModel += 1;
+      pushVoiceModel({ ...voiceModel, phase: "downloading", receivedBytes: 0 });
+      pushVoiceModel({
+        ...voiceModel,
+        phase: "ready",
+        receivedBytes: voiceModel.totalBytes,
+      });
+      return voiceModel;
+    },
+    cancelVoiceModelDownload: async () => {
+      calls.cancelVoiceModelDownload += 1;
+      pushVoiceModel({ ...voiceModel, phase: "absent", receivedBytes: 0 });
+    },
+    removeVoiceModel: async () => {
+      calls.removeVoiceModel += 1;
+      pushVoiceModel({ ...voiceModel, phase: "absent", receivedBytes: 0 });
+      return voiceModel;
+    },
+    onVoiceModel: (cb) => sub(voiceModelCbs, cb),
+    setVoiceEngine: async (engine) => {
+      calls.setVoiceEngine.push(engine);
+      voiceEngine = engine;
+      // Main makes the clone unasked when the cloud is chosen with a key.
+      if (
+        engine === "minimax" &&
+        (minimaxKey.set || minimaxPlanKey.set) &&
+        minimaxVoice.phase !== "ready"
+      ) {
+        mockPrepare();
+      }
+    },
+    getMiniMaxKeyStatus: async () => minimaxKey,
+    setMiniMaxKey: async (key) => {
+      calls.setMiniMaxKey.push(key);
+      if (opts.rejectMiniMaxKey === true) {
+        return { ok: false, reason: "rejected" };
+      }
+      const trimmed = key.trim();
+      minimaxKey = {
+        set: true,
+        hint: trimmed.slice(-4),
+        encrypted: true,
+      };
+      // Main forgets the old clone and, with the cloud chosen, makes a new
+      // one right away.
+      pushMiniMax({ phase: "absent" });
+      if (voiceEngine === "minimax") mockPrepare();
+      return {
+        ok: true,
+        encrypted: true,
+        unverified: opts.offlineMiniMax === true,
+        status: minimaxKey,
+      };
+    },
+    clearMiniMaxKey: async () => {
+      calls.clearMiniMaxKey += 1;
+      minimaxKey = { set: false, hint: null, encrypted: false };
+      return { ok: true, status: minimaxKey };
+    },
+    getMiniMaxPlanKeyStatus: async () => minimaxPlanKey,
+    setMiniMaxPlanKey: async (key) => {
+      calls.setMiniMaxPlanKey.push(key);
+      if (opts.rejectMiniMaxKey === true) {
+        return { ok: false, reason: "rejected" };
+      }
+      minimaxPlanKey = {
+        set: true,
+        hint: key.trim().slice(-4),
+        encrypted: true,
+      };
+      // The plan key never touches an existing clone; with none, main
+      // tries for one (adoption on a real account).
+      if (voiceEngine === "minimax" && minimaxVoice.phase !== "ready") {
+        mockPrepare();
+      }
+      return {
+        ok: true,
+        encrypted: true,
+        unverified: opts.offlineMiniMax === true,
+        status: minimaxPlanKey,
+      };
+    },
+    clearMiniMaxPlanKey: async () => {
+      calls.clearMiniMaxPlanKey += 1;
+      minimaxPlanKey = { set: false, hint: null, encrypted: false };
+      return { ok: true, status: minimaxPlanKey };
+    },
+    prepareMiniMaxVoice: async () => {
+      calls.prepareMiniMaxVoice += 1;
+      mockPrepare();
+      return minimaxVoice;
+    },
+    onMiniMaxVoice: (cb) => sub(minimaxCbs, cb),
+    onMiniMaxSpeech: (cb) => sub(minimaxSpeechCbs, cb),
     onWorkspace: (cb) => sub(workspaceCbs, cb),
+    onRepo: (cb) => sub(repoCbs, cb),
+    refreshRepo: async () => {
+      calls.refreshRepo += 1;
+    },
     onRecord: (cb) => sub(recordCbs, cb),
     onOverlay: (cb) => sub(overlayCbs, cb),
     onSpeech: (cb) => sub(speechCbs, cb),
@@ -639,17 +1049,29 @@ export function createMockHertaBridge(
     emitWorkspace: (e) => {
       for (const cb of workspaceCbs) cb(e);
     },
+    emitRepo: (e) => {
+      for (const cb of repoCbs) cb(e);
+    },
     emitVoice: (e) => {
       for (const cb of voiceCbs) cb(e);
     },
     emitUpdate: (e) => {
       for (const cb of updateCbs) cb(e);
     },
+    emitVoiceModel: (e) => pushVoiceModel(e),
+    emitMiniMaxVoice: (e) => pushMiniMax(e),
+    emitMiniMaxSpeech: (e) => pushMiniMaxSpeech(e),
     emitNavBlocked: (e) => {
       for (const cb of navBlockedCbs) cb(e);
     },
     emitWindowMaximized: (maximized) => {
       for (const cb of windowMaximizedCbs) cb(maximized);
+    },
+    emitWindowFullScreen: (fullScreen) => {
+      for (const cb of windowFullScreenCbs) cb(fullScreen);
+    },
+    emitOpenSettings: () => {
+      for (const cb of openSettingsCbs) cb();
     },
   };
 }

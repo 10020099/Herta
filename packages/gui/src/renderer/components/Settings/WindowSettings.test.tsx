@@ -8,8 +8,10 @@ import { WindowSettings } from "./WindowSettings.js";
 
 afterEach(resetThemeForTest);
 
-function setup() {
-  const mock = createMockHertaBridge();
+function setup(platform?: string) {
+  const mock = createMockHertaBridge(
+    platform !== undefined ? { platform } : {},
+  );
   renderWithLocale(
     <HertaBridgeProvider bridge={mock.bridge}>
       <WindowSettings />
@@ -23,6 +25,13 @@ describe("WindowSettings appearance row (night-mode slice 2)", () => {
     setup();
     expect(screen.getByLabelText("Appearance")).toBeInTheDocument();
     expect(screen.getByLabelText("Close to tray")).toBeInTheDocument();
+  });
+
+  it("on a Mac the row says menu bar, and does not claim that turning it off quits (2026-09-23)", () => {
+    setup("darwin");
+    expect(screen.getByLabelText("Close to menu bar")).toBeInTheDocument();
+    expect(screen.queryByText(/system tray/)).toBeNull();
+    expect(screen.getByText(/stays in the Dock until you quit/)).toBeTruthy();
   });
 
   it("picking Dark stamps <html data-theme> LIVE and persists via the bridge", () => {

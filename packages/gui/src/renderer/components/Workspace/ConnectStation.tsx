@@ -48,6 +48,12 @@ export function ConnectStation(props: ConnectStationProps): JSX.Element | null {
       setMounted(true);
       return undefined;
     }
+    // A failure belongs to the attempt it answered. Once the station hides
+    // (a session opened, by this button or any other path) it is over; the
+    // component stays mounted, and a later, unrelated disconnect used to
+    // show "connect failed" for an attempt nobody made (UX review
+    // 2026-09-22, item 22).
+    setCreateFailed(false);
     if (props.instantExit) {
       setMounted(false);
       return undefined;

@@ -385,3 +385,155 @@ describe("resolveSafePath", () => {
     },
   );
 });
+
+/** Run `fn` as if on `platform` (path-safety reads process.platform per call). */
+async function onPlatform<T>(
+  platform: NodeJS.Platform,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const real = Object.getOwnPropertyDescriptor(process, "platform");
+  Object.defineProperty(process, "platform", {
+    value: platform,
+    configurable: true,
+  });
+  try {
+    return await fn();
+  } finally {
+    if (real !== undefined) Object.defineProperty(process, "platform", real);
+  }
+}
+
+describe("resolveSafePath — POSIX tool credentials (platform review 2026-09-23)", () => {
+  beforeEach(async () => {
+    ws = await mkTmpWorkspace({ "src/a.ts": "x" });
+  });
+
+  it("denies the credential FILE of a home layout, wherever the workspace holds one", async () => {
+    for (const p of [
+      ".docker/config.json",
+      ".kube/config",
+      ".config/gh/hosts.yml",
+      ".config/gcloud/credentials.db",
+      ".local/share/keyrings/login.keyring",
+      "Library/Keychains/login.keychain-db",
+      ".pypirc",
+      ".dockercfg",
+    ]) {
+      const r = await resolveSafePath(ws.root, p);
+      expect(r.ok, `expected ${p} denied`).toBe(false);
+      if (!r.ok) expect(r.code).toBe("path_denied");
+    }
+  });
+
+  it("leaves the look-alikes that are ordinary repo content alone", async () => {
+    for (const p of [
+      ".docker/Dockerfile",
+      ".kube/deploy.yaml",
+      "debian/usr/share/keyrings/archive.gpg", // a package's PUBLIC keys
+      "config/gh.ts",
+      // Review 2026-09-23: the tool's settings, not its secret, and code
+      // that merely shares the keychain folder's name.
+      "dotfiles/.config/gh/config.yml",
+      "dotfiles/.config/gcloud/configurations/config_default",
+      "Sources/Library/Keychains/KeychainStore.swift",
+    ]) {
+      const r = await resolveSafePath(ws.root, p);
+      expect(r.ok, `expected ${p} allowed`).toBe(true);
+    }
+  });
+});
+
+describe("resolveSafePath — macOS folds case like the filesystem (platform review 2026-09-23)", () => {
+  it("a new `.GIT` directory is a `.git` on macOS, and an unrelated name on Linux", async () => {
+    ws = await mkTmpWorkspace({ "sub/.keep": "" });
+    const target = "sub/.GIT/hooks/pre-commit";
+    const mac = await onPlatform("darwin", () =>
+      resolveSafePath(ws.root, target, { mutation: true }),
+    );
+    expect(mac.ok).toBe(false);
+    if (!mac.ok) expect(mac.code).toBe("path_denied");
+    const linux = await onPlatform("linux", () =>
+      resolveSafePath(ws.root, target, { mutation: true }),
+    );
+    expect(linux.ok).toBe(true);
+  });
+
+  it("a `Head` file completes the bare-repo shape on macOS", async () => {
+    ws = await mkTmpWorkspace({ "objects/.keep": "", "refs/.keep": "" });
+    const mac = await onPlatform("darwin", () =>
+      resolveSafePath(ws.root, "Head", { mutation: true }),
+    );
+    expect(mac.ok).toBe(false);
+    if (!mac.ok) expect(mac.message).toContain("bare-repository");
+  });
+});
+
+describe("resolveSafePath — bare-repo shape guard (ADR 0049 §6)", () => {
+  // The vector: git treats any directory holding HEAD + objects/ + refs/ as
+  // a BARE REPO and runs hooks from it. No segment is `.git`, so the
+  // per-segment tree denial never fires — these writes all passed the jail
+  // before the guard existed (fails-pre-fix).
+  it("denies the write that completes the triple — from either side", async () => {
+    ws = await mkTmpWorkspace({
+      "objects/.keep": "",
+      "refs/.keep": "",
+    });
+    // objects/ and refs/ exist; writing HEAD is the final piece.
+    const head = await resolveSafePath(ws.root, "HEAD", { mutation: true });
+    expect(head.ok).toBe(false);
+    if (!head.ok) expect(head.code).toBe("path_denied");
+
+    // And from the other side: HEAD + refs/ exist, writing into objects/.
+    const ws2 = await mkTmpWorkspace({
+      HEAD: "ref: refs/heads/main\n",
+      "refs/.keep": "",
+    });
+    try {
+      const obj = await resolveSafePath(ws2.root, "objects/aa/bb", {
+        mutation: true,
+      });
+      expect(obj.ok).toBe(false);
+    } finally {
+      await ws2.cleanup();
+    }
+  });
+
+  it("denies hooks writes into an already-shaped directory, root or subdir", async () => {
+    ws = await mkTmpWorkspace({
+      "bare.git/HEAD": "ref: refs/heads/main\n",
+      "bare.git/objects/.keep": "",
+      "bare.git/refs/.keep": "",
+    });
+    const r = await resolveSafePath(ws.root, "bare.git/hooks/pre-commit", {
+      mutation: true,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.message).toContain("hooks");
+  });
+
+  it("an incomplete shape stays writable — no name blocklist", async () => {
+    // Honest projects have objects/ or hooks/ directories; only the
+    // completed triple is dangerous.
+    ws = await mkTmpWorkspace({ "objects/.keep": "" });
+    expect(
+      (await resolveSafePath(ws.root, "HEAD", { mutation: true })).ok,
+    ).toBe(true); // no refs/ — not the final piece
+    expect(
+      (await resolveSafePath(ws.root, "objects/model.obj", { mutation: true }))
+        .ok,
+    ).toBe(true); // no HEAD file
+    expect(
+      (await resolveSafePath(ws.root, "hooks/deploy.ts", { mutation: true }))
+        .ok,
+    ).toBe(true); // root is not shaped
+  });
+
+  it("reads are untouched — the guard is mutation-only", async () => {
+    ws = await mkTmpWorkspace({
+      HEAD: "data\n",
+      "objects/.keep": "",
+      "refs/.keep": "",
+    });
+    expect((await resolveSafePath(ws.root, "HEAD")).ok).toBe(true);
+  });
+});

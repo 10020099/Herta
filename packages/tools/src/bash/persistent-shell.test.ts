@@ -26,6 +26,53 @@ afterEach(async () => {
 });
 
 d("PersistentShell (real bash)", () => {
+  it.skipIf(process.platform === "win32")(
+    "a job backgrounded before the shell EXITED is still counted and killed at brief end (2026-09-23)",
+    async () => {
+      // The dev-server shape: background it, then a later call ends the
+      // shell (`set -e` + a failure, or a plain `exit`).
+      const r = await shell.run("sleep 60 >/dev/null 2>&1 & echo $!", {
+        timeoutMs: 10_000,
+      });
+      const jobPid = Number(r.output.trim());
+      expect(jobPid).toBeGreaterThan(0);
+      const exited = await shell.run("exit 1", { timeoutMs: 10_000 });
+      expect(exited.shellExited).toBe(true);
+      const alive = (pid: number): boolean => {
+        try {
+          process.kill(pid, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      expect(alive(jobPid)).toBe(true);
+      // The shell is gone, but what it started is not: the BackgroundHost
+      // must still see this entry as running, or stopAll skips it.
+      expect(shell.isRunning()).toBe(true);
+      await shell.kill();
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(alive(jobPid)).toBe(false);
+      expect(shell.isRunning()).toBe(false);
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "a shell that exits with nothing behind it, or that kill() ended, leaves no group id to reuse (review 2026-09-23)",
+    async () => {
+      const exited = await shell.run("exit 1", { timeoutMs: 10_000 });
+      expect(exited.shellExited).toBe(true);
+      // Nothing was backgrounded: the empty group is not remembered, so no
+      // stale id sits there for a later, unrelated group to take over.
+      expect(shell.isRunning()).toBe(false);
+      await shell.run("true", { timeoutMs: 10_000 });
+      expect(shell.isRunning()).toBe(true);
+      await shell.kill();
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(shell.isRunning()).toBe(false);
+    },
+  );
+
   it("runs a command, merges stderr in order, reports the exit code", async () => {
     // Natural output — the command's own trailing newline is kept. `(exit 3)`
     // in a subshell: a top-level `exit` really exits the shell (bash
@@ -133,6 +180,49 @@ d("PersistentShell (real bash)", () => {
       await small.kill();
     }
   });
+
+  it("the pump looks only at the newest window, and the totals stay EXACT — several cuts, a marker behind megabytes, then an ordinary command (perf audit 2026-09-20)", async () => {
+    // The pump used to search the whole buffer on every chunk (a flatten — a
+    // copy — of everything received so far). It now tests the newest window
+    // and trims in amortized steps; nothing about the RESULT may move.
+    // 40 000 lines × 32 bytes (31 characters + the newline) = 1 280 000 bytes
+    // through a 50 000-byte cap: many amortized cuts, the marker arriving
+    // long after the first chunk.
+    const small = new PersistentShell({
+      bashPath: BASH as string,
+      workspaceRoot: ws,
+      maxOutputBytes: 50_000,
+    });
+    try {
+      const r = await small.run(
+        "for i in $(seq -w 1 40000); do echo line-$i-xxxxxxxxxxxxxxxxxxxx; done",
+        { timeoutMs: 60_000 },
+      );
+      expect(r.exitCode).toBe(0);
+      expect(r.capped).toBe(true);
+      // Exact accounting: every byte is either kept or counted as dropped.
+      expect(r.outputBytes).toBe(40_000 * 32);
+      expect(r.output.startsWith("[earlier output dropped")).toBe(true);
+      expect(
+        r.output.trimEnd().endsWith("line-40000-xxxxxxxxxxxxxxxxxxxx"),
+      ).toBe(true);
+      const body = r.output.slice(r.output.indexOf("\n") + 1);
+      expect(Buffer.byteLength(body, "utf8")).toBeLessThanOrEqual(50_000);
+      // The lines that survived are the LAST ones, contiguous and in order.
+      const kept = body.split("\n").filter((l) => /^line-\d{5}-x+$/.test(l));
+      expect(kept.length).toBeGreaterThan(1_500);
+      const first = Number(kept[0]?.slice(5, 10));
+      kept.forEach((l, i) => {
+        expect(Number(l.slice(5, 10))).toBe(first + i);
+      });
+      // The shell is still in step: the next command's output is its own.
+      const next = await small.run("echo after", { timeoutMs: 10_000 });
+      expect(next.output).toBe("after\n");
+      expect(next.capped).toBe(false);
+    } finally {
+      await small.kill();
+    }
+  }, 90_000);
 
   it("registers as an INTERNAL background process and kill() is idempotent", async () => {
     expect(shell.internal).toBe(true);

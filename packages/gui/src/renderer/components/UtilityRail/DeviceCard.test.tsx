@@ -1,11 +1,70 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { HertaBridgeProvider } from "../../context/HertaBridgeContext.js";
 import { renderWithLocale } from "../../i18n/test-util.js";
 import { createMockHertaBridge } from "../../ipc/mock-bridge.js";
 import { DeviceCard } from "./DeviceCard.js";
+import { resetDeviceSceneBackendForTest } from "./device-scene/capability.js";
+import { resetDeviceScenePrefForTest } from "./device-scene/device-scene-prefs.js";
+import { IDLE_MOUNT_SETTLE_MS } from "./device-scene/use-idle-mount.js";
+
+// The 3D pref and GPU probe are module-level caches (ADR 0057); every spec
+// starts from "unknown" so a seeded bridge in one cannot leak into the next.
+afterEach(() => {
+  resetDeviceScenePrefForTest();
+  resetDeviceSceneBackendForTest();
+  // A spec that fails under fake timers must not leave them installed for
+  // the `waitFor`-based specs after it (six timeouts from one failure).
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 describe("DeviceCard", () => {
+  it("never mounts the 3D scene where there is no GPU path — the flat stack and the glow stay in charge from the first answer (ADR 0057 §6.1)", async () => {
+    // jsdom has no WebGL2: silence its "not implemented" and take the
+    // no-GPU path, which is the honest one here.
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(
+      (() => null) as typeof HTMLCanvasElement.prototype.getContext,
+    );
+    const off = createMockHertaBridge(); // no surface at all
+    const first = renderWithLocale(
+      <HertaBridgeProvider bridge={off.bridge}>
+        <DeviceCard />
+      </HertaBridgeProvider>,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(first.container.querySelector(".device-scene-canvas")).toBeNull();
+    first.unmount();
+    resetDeviceScenePrefForTest();
+
+    vi.useFakeTimers();
+    const on = createMockHertaBridge({ deviceSceneResult: true });
+    const { container } = renderWithLocale(
+      <HertaBridgeProvider bridge={on.bridge}>
+        <DeviceCard />
+      </HertaBridgeProvider>,
+    );
+    await act(async () => {
+      for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    });
+    // The setting is on, but the card's own probe at mount (2026-09-10)
+    // found no GPU path: no scene is mounted — not now, and not after the
+    // idle gate's delay either — and no glass is shown while waiting.
+    expect(container.querySelector(".device-scene-canvas")).toBeNull();
+    await act(async () => {
+      vi.advanceTimersByTime(IDLE_MOUNT_SETTLE_MS);
+    });
+    expect(container.querySelector(".device-scene-canvas")).toBeNull();
+    // Never live: the flat renders and the glow stay in charge.
+    const card = container.querySelector(".device-card");
+    expect(card?.getAttribute("data-scene")).toBeNull();
+    expect(card?.classList.contains("has-frost")).toBe(false);
+    expect(container.querySelector("img.agent-device-img")).not.toBeNull();
+    expect(container.querySelector(".device-glow-canvas")).not.toBeNull();
+  });
+
   it("renders the 4-layer composite (2 imgs + 2 divs) inside .agent-preview", () => {
     const mock = createMockHertaBridge();
     const { container } = renderWithLocale(
@@ -132,12 +191,48 @@ describe("DeviceCard", () => {
     const toggle = screen.getByLabelText("device card info");
     fireEvent.click(toggle);
     await waitFor(() =>
-      expect(screen.queryByText("No commands remembered yet.")).toBeTruthy(),
+      expect(screen.queryByText("No commands remembered")).toBeTruthy(),
     );
     expect(mock.calls.listCommandRules).toBe(1);
     fireEvent.click(toggle); // close
     fireEvent.click(toggle); // reopen → fresh fetch
     await waitFor(() => expect(mock.calls.listCommandRules).toBe(2));
+  });
+
+  it("an open ⋯ menu closes with its session — a keyboard or tray switch never shows the next session through a stale menu (UX review 2026-09-22, item 11)", async () => {
+    const mock = createMockHertaBridge({
+      commandRules: ["node src/index.mjs:*"],
+    });
+    renderWithLocale(
+      <HertaBridgeProvider bridge={mock.bridge}>
+        <DeviceCard />
+      </HertaBridgeProvider>,
+    );
+    const reset = (sessionId: string): void =>
+      act(() => {
+        mock.emitReset({
+          sessionId,
+          workspaceRoot: "/r",
+          record: [],
+          overlay: null,
+          title: null,
+          backendWorkspace: `/ws/${sessionId}`,
+          backendWorkspaceIsDefault: false,
+        });
+      });
+    reset("s-1");
+    fireEvent.click(screen.getByLabelText("device card info"));
+    await waitFor(() =>
+      expect(screen.queryByText("node src/index.mjs:*")).toBeTruthy(),
+    );
+    reset("s-2");
+    expect(
+      screen.getByLabelText("device card info").getAttribute("aria-expanded"),
+    ).toBe("false");
+    // Reopening fetches the new session's rules.
+    fireEvent.click(screen.getByLabelText("device card info"));
+    await waitFor(() => expect(mock.calls.listCommandRules).toBe(2));
+    expect(screen.getByText("/ws/s-2")).toBeInTheDocument();
   });
 
   it("⋯ menu hides the rules section when the bridge lacks the surface", async () => {
@@ -153,7 +248,9 @@ describe("DeviceCard", () => {
       </HertaBridgeProvider>,
     );
     fireEvent.click(screen.getByLabelText("device card info"));
-    expect(container.querySelector(".card-menu-rules")).toBeNull();
+    // The menu renders through a portal at the body (2026-09-17), so the
+    // absence is asserted document-wide, not inside the render container.
+    expect(document.querySelector(".card-menu-rules")).toBeNull();
     // The workspace half of the menu is untouched by the gate.
     expect(screen.getByRole("button", { name: /Set workspace/ })).toBeTruthy();
   });
@@ -300,6 +397,46 @@ describe("DeviceCard", () => {
     vi.unstubAllGlobals();
   });
 
+  it("a press outside the device's silhouette starts no lift; one on it does (owner 2026-09-07)", () => {
+    vi.stubGlobal("matchMedia", () => ({
+      matches: false,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    }));
+    const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
+    const mock = createMockHertaBridge();
+    const { container } = renderWithLocale(
+      <HertaBridgeProvider bridge={mock.bridge}>
+        <DeviceCard />
+      </HertaBridgeProvider>,
+    );
+    const preview = container.querySelector(".agent-preview") as HTMLElement;
+    // jsdom lays nothing out: give the preview the card's real box.
+    preview.getBoundingClientRect = () =>
+      ({ left: 100, top: 100, width: 216, height: 270 }) as DOMRect;
+    const lift = container.querySelector(".agent-lift-group") as HTMLElement;
+
+    // The top-left corner: the wall behind the device.
+    fireEvent.mouseDown(preview, { clientX: 110, clientY: 110 });
+    act(() => {
+      fireEvent(window, new MouseEvent("mousemove", { clientY: 80 }));
+    });
+    expect(lift.style.transform).toBe("");
+    expect(mock.calls.maybePlayEasterEgg).toBe(0);
+    fireEvent.mouseUp(window);
+
+    // The device's centre.
+    fireEvent.mouseDown(preview, { clientX: 208, clientY: 235 });
+    act(() => {
+      fireEvent(window, new MouseEvent("mousemove", { clientY: 215 }));
+    });
+    expect(lift.style.transform).toMatch(/translateY/);
+    expect(mock.calls.maybePlayEasterEgg).toBe(1);
+    fireEvent.mouseUp(window);
+    randomSpy.mockRestore();
+    vi.unstubAllGlobals();
+  });
+
   it("resets the workspace to default", () => {
     const mock = createMockHertaBridge();
     renderWithLocale(
@@ -321,5 +458,64 @@ describe("DeviceCard", () => {
     fireEvent.click(screen.getByLabelText("device card info"));
     fireEvent.click(screen.getByRole("button", { name: /Reset to default/ }));
     expect(mock.calls.resetWorkspace).toEqual(["s-1"]);
+  });
+
+  it("⋯ menu shows workspace trust and toggles it through the bridge (ADR 0064)", async () => {
+    const mock = createMockHertaBridge({
+      workspaceTrust: {
+        effective: "workspace",
+        explicit: null,
+        isDefaultWorkspace: true,
+      },
+    });
+    renderWithLocale(
+      <HertaBridgeProvider bridge={mock.bridge}>
+        <DeviceCard />
+      </HertaBridgeProvider>,
+    );
+    fireEvent.click(screen.getByLabelText("device card info"));
+    await waitFor(() =>
+      expect(
+        screen.queryByText("Sandbox workspace, trusted by default"),
+      ).toBeTruthy(),
+    );
+    expect(mock.calls.getWorkspaceTrust).toBe(1);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Confirm each operation instead" }),
+    );
+    await waitFor(() =>
+      expect(screen.queryByText("Confirms each operation")).toBeTruthy(),
+    );
+    expect(mock.calls.setWorkspaceTrust).toEqual(["ask"]);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Trust this workspace" }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByText(
+          "Trusted: writes, git operations and scripts within it no longer request confirmation",
+        ),
+      ).toBeTruthy(),
+    );
+    expect(mock.calls.setWorkspaceTrust).toEqual(["ask", "workspace"]);
+  });
+
+  it("⋯ menu hides the trust row when the bridge lacks the surface", async () => {
+    const mock = createMockHertaBridge();
+    const {
+      getWorkspaceTrust: _a,
+      setWorkspaceTrust: _b,
+      ...rest
+    } = mock.bridge;
+    const { container } = renderWithLocale(
+      <HertaBridgeProvider bridge={rest as typeof mock.bridge}>
+        <DeviceCard />
+      </HertaBridgeProvider>,
+    );
+    fireEvent.click(screen.getByLabelText("device card info"));
+    await waitFor(() =>
+      expect(screen.queryByText("No commands remembered")).toBeTruthy(),
+    );
+    expect(document.querySelector(".card-menu-trust")).toBeNull();
   });
 });

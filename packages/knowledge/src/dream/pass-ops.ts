@@ -24,11 +24,23 @@ export function recordEpisode(
   });
 }
 
+/** What an archive attempt did: moved (the name it has in the archive, or
+ *  null when the file had already gone), or not moved — still live. */
+export type ArchiveOutcome =
+  | { readonly archived: true; readonly archivedAs: string | null }
+  | { readonly archived: false; readonly code: string };
+
 /** Move one live record's file to the archive and flip its manifest state,
  *  recording the demotion in the episode ledger. Shared by cap-eviction,
- *  stale-floor forgetting, and the reconsolidation junction. Best-effort on the
- *  file move (a vanished file still flips the manifest state so the cap stops
- *  counting it). */
+ *  stale-floor forgetting, and the reconsolidation junction.
+ *
+ *  A file that has already vanished still flips the state, so the cap stops
+ *  counting it. Any OTHER failure leaves the record LIVE and untouched: the
+ *  move used to be swallowed whole and the state flipped anyway, so a file
+ *  an antivirus scan or OneDrive held kept loading into every prefix while
+ *  the manifest called it archived — untracked, un-evictable, its gist
+ *  already folded as dying (dream review 2026-09-22, finding 7). The caller
+ *  learns which it was. */
 export function archiveDreamRecord(
   manifest: DreamManifest,
   target: DreamCreatedRecord,
@@ -36,11 +48,18 @@ export function archiveDreamRecord(
   dreamDir: string,
   reason: string,
   now: () => Date,
-): void {
+): ArchiveOutcome {
+  let archivedAs: string | null = null;
   try {
-    archiveLiveRecord({ narrativeDir, dreamDir, file: target.file, reason });
-  } catch {
-    // File may have already been removed; still flip the manifest state.
+    archivedAs = archiveLiveRecord({
+      narrativeDir,
+      dreamDir,
+      file: target.file,
+      reason,
+    });
+  } catch (err) {
+    const code = (err as { code?: string }).code ?? "unknown";
+    if (code !== "ENOENT") return { archived: false, code };
   }
   const idx = manifest.created.indexOf(target);
   if (idx !== -1) {
@@ -59,6 +78,7 @@ export function archiveDreamRecord(
     reason,
     now,
   );
+  return { archived: true, archivedAs };
 }
 
 /** Read a text file from `dir`. undefined on any error (missing, unreadable). */

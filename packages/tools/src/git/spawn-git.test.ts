@@ -1,7 +1,28 @@
 import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { mkTmpWorkspace } from "../testing/tmp-workspace.js";
-import { spawnGit } from "./spawn-git.js";
+import { gitChildEnv, spawnGit } from "./spawn-git.js";
+
+describe("gitChildEnv (platform review 2026-09-23)", () => {
+  it("forces git's MESSAGES to English, so 'not a git repository' is still recognised under a Chinese locale — and only its messages", () => {
+    const env = gitChildEnv({
+      PATH: "/usr/bin",
+      LANG: "zh_CN.UTF-8",
+      LC_ALL: "zh_CN.UTF-8",
+    });
+    // LC_MESSAGES wins over LANG; LANGUAGE is what gettext reads when LC_ALL
+    // pins a non-C locale (and "en" has no catalogue: the English original).
+    expect(env.LC_MESSAGES).toBe("C");
+    expect(env.LANGUAGE).toBe("en");
+    // The character set stays the user's: paths and commit messages decode
+    // exactly as before.
+    expect(env.LANG).toBe("zh_CN.UTF-8");
+    expect(env.LC_ALL).toBe("zh_CN.UTF-8");
+    // …and the prompts stay off.
+    expect(env.GIT_TERMINAL_PROMPT).toBe("0");
+    expect(env.GIT_ASKPASS).toBe("");
+  });
+});
 
 const GIT_AVAILABLE = (() => {
   try {
@@ -115,3 +136,33 @@ describe.skipIf(!GIT_AVAILABLE)("spawnGit", { timeout: 20_000 }, () => {
     }
   });
 });
+
+describe.skipIf(!GIT_AVAILABLE)(
+  "spawnGit — the output cap ends the command (ADR 0058 §7.7)",
+  { timeout: 20_000 },
+  () => {
+    it("a writer that never stops is stopped at the cap: its prefix comes back as truncated, well inside the deadline", async () => {
+      const ws = await mkTmpWorkspace({});
+      try {
+        const t0 = Date.now();
+        // A git alias that streams forever. Without the cap ending it, the
+        // deadline would — and a 250 MB patch would read as a timeout
+        // instead of the prefix the viewer can show.
+        const r = await spawnGit(
+          ws.root,
+          ["-c", "alias.spew=!yes herta", "spew"],
+          new AbortController().signal,
+          { maxBufBytes: 4096, timeoutMs: 5_000 },
+        );
+        expect(r.ok).toBe(true);
+        if (!r.ok) return;
+        expect(r.truncated).toBe(true);
+        expect(r.stdout.length).toBeLessThanOrEqual(4096);
+        expect(r.stdout.startsWith("herta")).toBe(true);
+        expect(Date.now() - t0).toBeLessThan(4_000);
+      } finally {
+        await ws.cleanup();
+      }
+    });
+  },
+);

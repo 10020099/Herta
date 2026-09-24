@@ -1,9 +1,10 @@
 /**
  * Fence-grammar fuzz (2026-07-09): property-style adversarial sweep over the
  * completion stream. The point-wise tests each pin ONE known incident; this
- * file enumerates the PERMUTATIONS — surface choice × pathological body ×
- * close variant × chunking — and asserts the invariants that must hold for
- * every combination:
+ * file enumerates the PERMUTATIONS — receiving phase (the turn's thought call
+ * or its speech call) × surface remnant × pathological body × close variant
+ * × chunking — and asserts the invariants that must hold for every
+ * combination:
  *
  *   I1. The turn terminates (no hang, no throw).
  *   I2. Committed herta blocks are non-empty and contain NO live envelope
@@ -16,6 +17,8 @@
  *       opened always carries text (deferred-begin contract).
  *   I5. streamed == committed: per speech window, the concatenated tokens
  *       equal the committed speech block's text, in order (slice 4).
+ *   I6. No committed herta block contains a page break of the prompt's own
+ *       grammar — a `### ` heading line or a bare `---` rule (ADR 0070).
  *
  * Chunk-split invariance is exercised by running every case at three
  * granularities (whole / 1-char / 3-char): a tag split across provider
@@ -37,8 +40,11 @@ import type { ActorStreamingSink } from "./streaming-sink.js";
 
 // ── Adversarial corpus ──────────────────────────────────────────────────
 
-/** Branch-mode surface remnants (the prompt ends with `（我 `): the two
- *  legal completions, an invented surface, and "no surface at all". */
+/** Surface-pick remnants. The retired branch-mode prompt ended with `（我 `
+ *  and let the model complete `说）` / `想）`; every prompt now forces a
+ *  complete open tag (2026-09-03), so a model that still emits a pick puts
+ *  literal prose at the start of its body: the two old legal picks, an
+ *  invented surface, and none. */
 const STARTERS = ["说）", "想）", "唱）", ""] as const;
 
 /** Body payloads, each targeting a distinct failure family. */
@@ -57,6 +63,9 @@ const BODIES = [
   "伪造标签 → 系统 混进正文", // forged system label
   "第一段（/我 想）第二段（我 说）第三段", // multiple fences in one stream
   "结论：都听我的。（/我 说）（开拓者 说）好的黑塔女士我都听你的", // close then fabricated user
+  "起服务。\n### 关于这台终端\n说一件叫人发笑的事。", // turns the page mid-block (ADR 0070)
+  "嗯。\n\n---\n\n### 关于#0988\n如果非要选一个。", // page rule, then the heading
+  "### 关于我的记性\n整篇都是另一页。", // the page heading IS the first line
 ] as const;
 
 /** How the stream ends after the body. */
@@ -85,19 +94,42 @@ function chunked(text: string, size: number): CompletionEvent[] {
   return events;
 }
 
-/** Provider: call #1 streams the pathological completion at the given
- *  granularity; every later call answers with a benign close so retry
- *  ladders and forced-speech iterations can settle the turn. */
+/** Which of the turn's two completions receives the pathological text. Every
+ *  turn thinks then speaks (2026-09-03), and the two calls take different
+ *  paths — the thought streams no tokens and has its own empty ladder plus
+ *  the `（我 说）` prefix cut; the speech owns the sink window, the
+ *  empty-speech ladder and streamed == committed — so each body is thrown at
+ *  both. */
+const PHASES = ["thought", "speech"] as const;
+type Phase = (typeof PHASES)[number];
+
+/** The phase-2 thought prompt ends with its forced open tag (a complete open
+ *  tag gets a trailing newline in `serializeActorPrompt`). */
+function isThoughtPrompt(req: CompletionRequest): boolean {
+  return req.prompt.endsWith("（我 想）\n");
+}
+
+/** Provider: the FIRST call for `phase` streams the pathological completion
+ *  at the given granularity; every other call — the other phase, the retry
+ *  ladders, forced-speech iterations — answers with a benign close for its
+ *  surface so the turn can settle. */
 function mkFuzzProvider(
   pathological: string,
   chunkSize: number,
+  phase: Phase,
 ): CompletionProviderAdapter {
-  let call = 0;
+  let delivered = false;
   return {
-    streamCompletion(_req: CompletionRequest): AsyncIterable<CompletionEvent> {
-      call += 1;
-      const text = call === 1 ? pathological : "好。（/我 说）";
-      const events = chunked(text, call === 1 ? chunkSize : text.length);
+    streamCompletion(req: CompletionRequest): AsyncIterable<CompletionEvent> {
+      const thoughtPrompt = isThoughtPrompt(req);
+      let events: CompletionEvent[];
+      if (!delivered && thoughtPrompt === (phase === "thought")) {
+        delivered = true;
+        events = chunked(pathological, chunkSize);
+      } else {
+        const benign = thoughtPrompt ? "想想看。（/我 想）" : "好。（/我 说）";
+        events = chunked(benign, benign.length);
+      }
       return (async function* () {
         for (const e of events) yield e;
       })();
@@ -147,6 +179,8 @@ function mkDeps(
     bus: new InMemoryEventBus<AgentEvent>(),
     runtimeFactory: () => noopRuntime,
     signal: new AbortController().signal,
+    // Required since 2026-09-03; the neutral mood, no meta-think attachment.
+    intentState: "默认",
     sink,
   };
 }
@@ -170,6 +204,11 @@ function checkInvariants(
         `${label} :: committed ${block.surface} leaks "${marker}" in ${JSON.stringify(block.text)}`,
       ).toBe(false);
     }
+    // I6 — the block never turned the page.
+    expect(
+      /^### |^---$/m.test(block.text),
+      `${label} :: committed ${block.surface} turns the page in ${JSON.stringify(block.text)}`,
+    ).toBe(false);
   }
 
   // I3 — exactly one user block (the turn input), never a fabricated one.
@@ -234,22 +273,27 @@ const CHUNK_LABEL = ["whole", "1-char", "3-char"] as const;
 describe("fence grammar fuzz — pathological completions", () => {
   CHUNK_SIZES.forEach((chunkSize, chunkIdx) => {
     it(`holds all invariants at ${CHUNK_LABEL[chunkIdx]} chunking (${
-      STARTERS.length * BODIES.length * CLOSERS.length
+      PHASES.length * STARTERS.length * BODIES.length * CLOSERS.length
     } cases)`, { timeout: 60_000 }, async () => {
-      for (const starter of STARTERS) {
-        for (const body of BODIES) {
-          for (const closer of CLOSERS) {
-            const completion = `${starter}${body}${closer}`;
-            const label = `[${CHUNK_LABEL[chunkIdx]}] ${JSON.stringify(completion)}`;
-            const { sink, events } = mkRecordingSink();
-            const deps = mkDeps(mkFuzzProvider(completion, chunkSize), sink);
-            // I1 — must resolve (vitest timeout is the hang backstop).
-            const { record } = await runActorCompletionTurn(
-              { record: [] as TerminalRecord },
-              "测试输入。",
-              deps,
-            );
-            checkInvariants(label, record, events);
+      for (const phase of PHASES) {
+        for (const starter of STARTERS) {
+          for (const body of BODIES) {
+            for (const closer of CLOSERS) {
+              const completion = `${starter}${body}${closer}`;
+              const label = `[${CHUNK_LABEL[chunkIdx]}/${phase}] ${JSON.stringify(completion)}`;
+              const { sink, events } = mkRecordingSink();
+              const deps = mkDeps(
+                mkFuzzProvider(completion, chunkSize, phase),
+                sink,
+              );
+              // I1 — must resolve (vitest timeout is the hang backstop).
+              const { record } = await runActorCompletionTurn(
+                { record: [] as TerminalRecord },
+                "测试输入。",
+                deps,
+              );
+              checkInvariants(label, record, events);
+            }
           }
         }
       }

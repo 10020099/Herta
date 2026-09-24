@@ -118,6 +118,9 @@ export function makeBashRule(deps: BashRuleDeps): PermissionRule {
           files: preview.files,
           ...(argv !== null ? { argv } : {}),
           ...(programs !== null && programs.length > 0 ? { programs } : {}),
+          ...(verdict.consequence !== undefined
+            ? { consequence: verdict.consequence }
+            : {}),
         };
       }
       return {
@@ -128,6 +131,9 @@ export function makeBashRule(deps: BashRuleDeps): PermissionRule {
         ...(codes !== undefined && codes.length > 1 ? { codes } : {}),
         ...(argv !== null ? { argv } : {}),
         ...(programs !== null && programs.length > 0 ? { programs } : {}),
+        ...(verdict.consequence !== undefined
+          ? { consequence: verdict.consequence }
+          : {}),
       };
     }
     // allow → realpath the reader operands of every segment (async guard).
@@ -149,7 +155,15 @@ export function makeBashRule(deps: BashRuleDeps): PermissionRule {
         peelReaderHead(words),
       );
       if (denial !== null) {
-        return { kind: "deny", code: denial.code, reason: denial.message };
+        // A refused READ (2026-08-26): the reader guard only runs on
+        // read-classified segments, so this deny withholds information, not
+        // a mutation — the status gate must not cap a completed brief on it.
+        return {
+          kind: "deny",
+          code: denial.code,
+          reason: denial.message,
+          risk: "workspace_read",
+        };
       }
     }
     return { kind: "allow" };

@@ -1,3 +1,4 @@
+import { existsSync, statSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import {
   basename,
@@ -8,7 +9,9 @@ import {
   resolve,
   sep,
 } from "node:path";
+import { isPathInside } from "@herta/core";
 import {
+  hasCredentialSequence,
   isCredentialBasename,
   isSensitiveSegment,
 } from "./credential-denylist.js";
@@ -162,8 +165,18 @@ async function realpathViaExistingAncestor(candidate: string): Promise<string> {
   }
 }
 
+/**
+ * Fold the case the FILESYSTEM folds. Windows always; macOS too (platform
+ * review 2026-09-23): APFS and HFS+ are case-insensitive by default, so there
+ * `.GIT/hooks/…` IS `.git/hooks/…` and a `Head` file completes a bare-repo
+ * shape git will run hooks from — while the old Windows-only fold compared
+ * them case-sensitively and let both through. A case-SENSITIVE APFS volume
+ * (a rare, deliberate format) makes this stricter than needed: an unrelated
+ * `.GIT` directory is denied there, which is the fail-closed direction.
+ * Linux filesystems are case-sensitive, so nothing folds.
+ */
 function caseNormalize(s: string): string {
-  return isWindows() ? s.toLowerCase() : s;
+  return isWindows() || process.platform === "darwin" ? s.toLowerCase() : s;
 }
 
 /** The name Win32 will ACTUALLY open for a path component (audit T3.4 review):
@@ -178,6 +191,93 @@ function caseNormalize(s: string): string {
 function winCanonicalizeSegment(seg: string): string {
   if (!isWindows()) return seg;
   return seg.replace(/:.*$/, "").replace(/[. ]+$/, "");
+}
+
+/** git's own `is_git_directory` shape: a HEAD file beside `objects/` and
+ *  `refs/` directories. A directory shaped like this is a bare repo to git —
+ *  it will happily run hooks from it. Sync and cheap (three stats), callable
+ *  from the sync shell classifier. */
+function isGitDirShaped(dir: string): boolean {
+  try {
+    const head = join(dir, "HEAD");
+    return (
+      existsSync(head) &&
+      statSync(head).isFile() &&
+      existsSync(join(dir, "objects")) &&
+      statSync(join(dir, "objects")).isDirectory() &&
+      existsSync(join(dir, "refs")) &&
+      statSync(join(dir, "refs")).isDirectory()
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** True when `dir` holds an entry named `name` matching `kind` — name folded
+ *  the way the filesystem folds it (Windows opens `head` for `HEAD`). */
+function hasEntry(dir: string, name: string, kind: "file" | "dir"): boolean {
+  try {
+    const p = join(dir, name);
+    if (!existsSync(p)) return false;
+    const st = statSync(p);
+    return kind === "file" ? st.isFile() : st.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Denial message when WRITING `resolvedAbsolute` would create — or feed —
+ * a bare-repo shape outside `.git` (ADR 0049 §6), else null.
+ *
+ * The vector: git treats any directory holding the `HEAD`+`objects/`+`refs/`
+ * triple as a bare repository and runs hooks from it, so a write that
+ * completes the triple at the workspace root (or any subdirectory the shell
+ * can cd into) plus one ordinary git command is code execution — and the
+ * per-segment `.git` denial never fires because no segment is `.git`.
+ *
+ * Deliberately the PRECISE rule, not a name blocklist: plenty of honest
+ * projects have `objects/` or `hooks/` directories, so a write is denied only
+ * when it is the FINAL missing piece of the triple or lands in the hooks /
+ * internals of a directory that already has the whole shape. Sync fs, bounded
+ * by path depth. Exported for the bash redirect guard.
+ */
+export function gitDirShapeWriteDenial(
+  workspaceRoot: string,
+  resolvedAbsolute: string,
+): string | null {
+  if (!isPathInside(workspaceRoot, resolvedAbsolute, { strict: true })) {
+    return null;
+  }
+  const rel = relativePath(workspaceRoot, resolvedAbsolute);
+  const raw = rel.split(sep);
+  let dir = workspaceRoot;
+  for (let i = 0; i < raw.length; i++) {
+    const seg = caseNormalize(winCanonicalizeSegment(raw[i] as string));
+    const isLast = i === raw.length - 1;
+    // Writing HEAD where objects/ and refs/ already sit completes the triple.
+    // POSIX git wants the exact spelling `HEAD`; a case-insensitive
+    // filesystem opens `head` for it, which caseNormalize mirrors.
+    if (isLast && seg === caseNormalize("HEAD")) {
+      if (hasEntry(dir, "objects", "dir") && hasEntry(dir, "refs", "dir")) {
+        return `writing ${rel} would complete a bare-repository shape (HEAD beside objects/ and refs/) — git would run hooks from this directory`;
+      }
+    }
+    // Writing INTO objects/ or refs/ where HEAD and the other half already
+    // exist completes it from the other side.
+    if (!isLast && (seg === "objects" || seg === "refs")) {
+      const sibling = seg === "objects" ? "refs" : "objects";
+      if (hasEntry(dir, "HEAD", "file") && hasEntry(dir, sibling, "dir")) {
+        return `writing ${rel} would complete a bare-repository shape at ${dir === workspaceRoot ? "the workspace root" : dir} — git would run hooks from this directory`;
+      }
+    }
+    // Hooks inside an already-complete shape are the payload itself.
+    if (!isLast && seg === "hooks" && isGitDirShaped(dir)) {
+      return `writing ${rel} targets the hooks of a bare-repository-shaped directory — git runs these as programs`;
+    }
+    dir = join(dir, raw[i] as string);
+  }
+  return null;
 }
 
 export interface ResolveSafePathOpts {
@@ -206,11 +306,19 @@ export interface ResolveSafePathOpts {
   /**
    * Allow DISCOVERY (listing / searching) of the redacted log directory
    * itself — `.herta/logs` and anything beneath it, nothing else under
-   * `.herta`. Passed by list_files and search_text so the backend can find
-   * the receipt it is about to read; without it the log filenames are
-   * unguessable. See EVIDENCE_DISCOVERY_ROOT.
+   * `.herta`. Passed by search_text and glob (list_files' successor since
+   * 2026-09-18, ADR 0067) so the backend can find the receipt it is about
+   * to read; without it the log filenames are unguessable. See
+   * EVIDENCE_DISCOVERY_ROOT.
    */
   allowEvidenceDiscoveryPaths?: boolean;
+  /**
+   * The caller intends to WRITE this path (ADR 0049 §6). Passed by the three
+   * editors (edit_file, write_new_file, str_replace_editor's writing
+   * commands) — never by readers. Adds the bare-repo-shape denial
+   * ({@link gitDirShapeWriteDenial}) on top of the structural checks.
+   */
+  mutation?: boolean;
 }
 
 export async function resolveSafePath(
@@ -243,11 +351,9 @@ export async function resolveSafePath(
     resolved = await realpathViaExistingAncestor(candidate);
   }
 
-  const rootCmp = caseNormalize(workspaceRoot);
-  const resolvedCmp = caseNormalize(resolved);
-  const isInside =
-    resolvedCmp === rootCmp || resolvedCmp.startsWith(rootCmp + sep);
-  if (!isInside) {
+  // The ONE containment rule (core): the platform's own case policy, which
+  // is what the win32-only lowercase fold here used to spell by hand.
+  if (!isPathInside(workspaceRoot, resolved)) {
     return {
       ok: false,
       code: "path_outside_workspace",
@@ -274,8 +380,8 @@ export async function resolveSafePath(
           canonicalRel.length > p.length,
       );
     // Discovery matches the log ROOT itself as well as anything beneath it —
-    // the one carve-out that has to, since `list_files .herta/logs` names a
-    // directory rather than a file strictly inside one.
+    // the one carve-out that has to, since a glob rooted at `.herta/logs`
+    // names a directory rather than a file strictly inside one.
     const atOrBeneath = (root: string): boolean => {
       const rel = caseNormalize(canonicalRel);
       const r = caseNormalize(root);
@@ -295,11 +401,12 @@ export async function resolveSafePath(
       const seg = segments[i] as string;
       const segLower = caseNormalize(seg);
 
-      // `.git` / `.herta` are STRUCTURAL tree denials kept case-sensitive on
-      // POSIX (a repo could hold an unrelated `.GIT` dir, and denying it would
-      // break legit work) — caseNormalize only folds on Windows. Either read
-      // carve-out (see above) skips exactly this check; credential denials
-      // below are never skipped, for either.
+      // `.git` / `.herta` are STRUCTURAL tree denials, matched with the
+      // filesystem's own case policy: folded on Windows and macOS (where
+      // `.GIT` IS `.git`), exact on Linux (where a repo could hold an
+      // unrelated `.GIT` dir, and denying it would break legit work). Either
+      // read carve-out (see above) skips exactly this check; credential
+      // denials below are never skipped, for either.
       if (!inReadCarveOut) {
         for (const denied of DENY_SEGMENTS_EXACT) {
           if (caseNormalize(denied) === segLower) {
@@ -333,6 +440,24 @@ export async function resolveSafePath(
         code: "path_denied",
         message: `denied credential basename: ${base}`,
       };
+    }
+    // Tool credentials that are only credentials in their home layout
+    // (`.docker/config.json`, `.kube/config`, `.config/gh`, …) — shared list.
+    if (hasCredentialSequence(segments)) {
+      return {
+        ok: false,
+        code: "path_denied",
+        message: `denied credential location: ${canonicalRel}`,
+      };
+    }
+
+    // Bare-repo shape guard (ADR 0049 §6) — mutations only. Runs on the
+    // post-realpath resolved path, so a symlink hop is already collapsed.
+    if (opts.mutation === true) {
+      const shapeDenial = gitDirShapeWriteDenial(workspaceRoot, resolved);
+      if (shapeDenial !== null) {
+        return { ok: false, code: "path_denied", message: shapeDenial };
+      }
     }
   }
 

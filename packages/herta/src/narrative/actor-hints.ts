@@ -3,6 +3,7 @@ import type { PromptLang } from "./prompt-lang.js";
 import {
   actorHintTexts,
   BEAT_HINT_PATCH_PREVIEW,
+  BEAT_HINT_STEER,
   BEAT_HINT_TOOL_FAIL,
   BEAT_HINT_VERIFICATION_FINISHED,
   PHASE_TWO_SPEECH_HINT,
@@ -11,7 +12,6 @@ import {
   PHASE_TWO_THOUGHT_HINT,
   PHASE_TWO_THOUGHT_RETRY_HINTS,
   PHASE_TWO_THOUGHT_SLOT_RETRY_HINTS,
-  THOUGHT_HINT_LINE,
 } from "./thought-hint.js";
 
 /**
@@ -25,7 +25,6 @@ import {
  * `{{reason}}` placeholder (substituted by `buildSupervisorVetoHint`).
  */
 export interface ActorHints {
-  readonly thoughtHintLine: string;
   readonly phase2Thought: string;
   readonly phase2Speech: string;
   readonly speechRetry: readonly [string, string, string];
@@ -42,6 +41,8 @@ export interface ActorHints {
   readonly beatPatchPreview: string;
   readonly beatVerification: string;
   readonly beatToolFail: string;
+  /** The steer beat (ADR 0063 §1.4): the user cut in while 板砖 works. */
+  readonly beatSteer: string;
   readonly supervisorVetoTemplate: string;
   /** Rethink-respeak stage 1 (2026-07-18): the fresh （我 想） that digests
    *  a supervisor veto before the respeak. Carries `{{reason}}`. */
@@ -82,7 +83,6 @@ const SUPERVISOR_RESPEAK_TEXT: Record<PromptLang, string> = {
  *  change) falls back to its value here, so the format contract degrades
  *  to a working default rather than breaking. */
 export const DEFAULT_ACTOR_HINTS: ActorHints = {
-  thoughtHintLine: THOUGHT_HINT_LINE,
   phase2Thought: PHASE_TWO_THOUGHT_HINT,
   phase2Speech: PHASE_TWO_SPEECH_HINT,
   speechRetry: PHASE_TWO_SPEECH_RETRY_HINTS,
@@ -92,6 +92,7 @@ export const DEFAULT_ACTOR_HINTS: ActorHints = {
   beatPatchPreview: BEAT_HINT_PATCH_PREVIEW,
   beatVerification: BEAT_HINT_VERIFICATION_FINISHED,
   beatToolFail: BEAT_HINT_TOOL_FAIL,
+  beatSteer: BEAT_HINT_STEER,
   supervisorVetoTemplate: SUPERVISOR_VETO_TEMPLATE,
   supervisorRethinkTemplate: SUPERVISOR_RETHINK_TEMPLATE_TEXT.zh,
   supervisorRespeak: SUPERVISOR_RESPEAK_TEXT.zh,
@@ -108,7 +109,6 @@ export function defaultActorHintsFor(lang: PromptLang = "zh"): ActorHints {
   if (lang === "zh") return DEFAULT_ACTOR_HINTS;
   const t = actorHintTexts(lang);
   return {
-    thoughtHintLine: t.thoughtHintLine,
     phase2Thought: t.phase2Thought,
     phase2Speech: t.phase2Speech,
     speechRetry: t.speechRetry,
@@ -118,6 +118,7 @@ export function defaultActorHintsFor(lang: PromptLang = "zh"): ActorHints {
     beatPatchPreview: t.beatPatchPreview,
     beatVerification: t.beatVerification,
     beatToolFail: t.beatToolFail,
+    beatSteer: t.beatSteer,
     supervisorVetoTemplate: SUPERVISOR_VETO_TEMPLATE_TEXT[lang],
     supervisorRethinkTemplate: SUPERVISOR_RETHINK_TEMPLATE_TEXT[lang],
     supervisorRespeak: SUPERVISOR_RESPEAK_TEXT[lang],
@@ -150,6 +151,8 @@ export function selectBeatHint(
     return hints.beatVerification;
   }
   if (triggerSignature.startsWith("tool.fail:")) return hints.beatToolFail;
+  // The user cut in (ADR 0063): `steer:<id>`, one per interjection.
+  if (triggerSignature.startsWith("steer:")) return hints.beatSteer;
   return hints.phase2Speech;
 }
 
@@ -172,8 +175,6 @@ export function loadActorHints(lang: PromptLang = "zh"): ActorHints {
   const splice = (raw: string | null, def: string): string =>
     (raw ?? def).split("{{no_banzhuan}}").join(clause);
   return {
-    thoughtHintLine:
-      asset(hints, "thought_hint_line") ?? defaults.thoughtHintLine,
     phase2Thought: asset(hints, "phase2_thought") ?? defaults.phase2Thought,
     phase2Speech: asset(hints, "phase2_speech") ?? defaults.phase2Speech,
     speechRetry: [
@@ -205,6 +206,7 @@ export function loadActorHints(lang: PromptLang = "zh"): ActorHints {
       defaults.beatVerification,
     ),
     beatToolFail: splice(asset(hints, "beat_tool_fail"), defaults.beatToolFail),
+    beatSteer: splice(asset(hints, "beat_steer"), defaults.beatSteer),
     supervisorVetoTemplate:
       asset(hints, "supervisor_veto") ?? defaults.supervisorVetoTemplate,
     supervisorRethinkTemplate:

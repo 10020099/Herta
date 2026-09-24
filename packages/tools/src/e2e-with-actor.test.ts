@@ -169,7 +169,6 @@ describe("MVP tools end-to-end with CodingAgentRuntime", () => {
       "git_diff",
       "git_status",
       "glob",
-      "list_files",
       "read_file",
       "search_text",
       // show_excerpt reads and presents; it mutates nothing (ADR 0027).
@@ -191,7 +190,7 @@ describe("MVP tools end-to-end with CodingAgentRuntime", () => {
     }
   });
 
-  it("registers all sixteen MVP tools via createMvpTools (fifteen + digest_document, ADR 0043)", () => {
+  it("registers all fifteen MVP tools via createMvpTools (list_files left on 2026-09-18, ADR 0067)", () => {
     const tools = createMvpTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
       "command_output",
@@ -201,7 +200,6 @@ describe("MVP tools end-to-end with CodingAgentRuntime", () => {
       "git_diff",
       "git_status",
       "glob",
-      "list_files",
       "memory_save",
       "read_file",
       "report_finding",
@@ -213,7 +211,27 @@ describe("MVP tools end-to-end with CodingAgentRuntime", () => {
     ]);
   });
 
-  it("createMinimalTools (ADR 0040): the trained pair plus the record channels (and the digest tool, ADR 0043), and the record channels accept the shell's path spelling", async () => {
+  it("view_image mounts ONLY on a vision-capable model (ADR 0048 §5)", () => {
+    // A model without vision answers 400 to an image part, and a tool the
+    // model is told it has but cannot use is worse than no tool: it invites a
+    // call that fails, and invites the model to believe it looked.
+    expect(createMvpTools().map((t) => t.name)).not.toContain("view_image");
+    expect(
+      createMvpTools({ digestModel: null, vision: true }).map((t) => t.name),
+    ).toContain("view_image");
+
+    const minimal = (vision: boolean) =>
+      createMinimalTools({
+        bashPath: "/nonexistent/bash",
+        workspaceShellPath: () => "/ws",
+        digestModel: null,
+        vision,
+      }).map((t) => t.name);
+    expect(minimal(false)).not.toContain("view_image");
+    expect(minimal(true)).toContain("view_image");
+  });
+
+  it("createMinimalTools (ADR 0040): the trained pair plus the record channels (digest ADR 0043, todo_write ADR 0047 §4), and the record channels accept the shell's path spelling", async () => {
     ws = await mkTmpWorkspace({ "src/a.ts": "one\ntwo\nthree\n" });
     const tools = createMinimalTools({
       bashPath: "/nonexistent/bash",
@@ -226,6 +244,10 @@ describe("MVP tools end-to-end with CodingAgentRuntime", () => {
       "report_finding",
       "show_excerpt",
       "str_replace_editor",
+      // ADR 0047 §4 (owner, 2026-08-26): without it the 待办 lane was
+      // structurally empty on the default contract and the GUI plan card
+      // never lit for a minimal dispatch.
+      "todo_write",
     ]);
     // Native and forward-slash spellings of the workspace pass; a relative
     // path passes; on Windows the /e/… MSYS form is understood too (live GUI

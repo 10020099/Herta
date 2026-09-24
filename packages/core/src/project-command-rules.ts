@@ -1,11 +1,6 @@
-import {
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { writeFileAtomicSync } from "./atomic-write.js";
 
 /**
  * Project-scoped command allow rules (ADR 0030).
@@ -44,7 +39,23 @@ const RULE_ELIGIBLE_ASK_CODES: ReadonlySet<string> = new Set([
   "command_ask_interpreter",
   "command_ask_vcs",
   "command_ask_fs",
+  // ADR 0064: a workspace-local executable (`./bin/x add:*`) and a project
+  // script (`npm run:*`) are the two shapes a project most repeats.
+  "command_ask_local_exec",
+  "command_ask_script",
 ]);
+
+/**
+ * Workspace trust (ADR 0064), persisted beside the rules: `"workspace"` —
+ * the classes whose effects stay inside the workspace auto-allow;
+ * `"ask"` — every ask is a card. Absent → the policy's default for the
+ * workspace kind (the managed sandbox trusts, a real project asks).
+ */
+export type WorkspaceTrust = "workspace" | "ask";
+
+function validTrust(v: unknown): v is WorkspaceTrust {
+  return v === "workspace" || v === "ask";
+}
 
 export function isRuleEligibleAskCode(code: string | undefined): boolean {
   return code !== undefined && RULE_ELIGIBLE_ASK_CODES.has(code);
@@ -242,13 +253,11 @@ export function normalizeRuleCwd(cwd: string | undefined): string {
   return trimmed === "." || trimmed === "" ? "" : trimmed;
 }
 
-/** Per-process counter for temp-file names, so two writes in the same
- *  millisecond cannot pick the same path. */
-let writeSeq = 0;
-
 interface PermissionsFile {
   readonly version: 1;
   readonly commandAllow: readonly ProjectCommandRule[];
+  /** ADR 0064; absent on files written before it. */
+  readonly trust?: WorkspaceTrust;
 }
 
 function validRule(entry: unknown): entry is ProjectCommandRule {
@@ -286,21 +295,48 @@ export class ProjectCommandRuleStore {
     return join(this.rootProvider(), ".herta", "permissions.json");
   }
 
-  list(): ProjectCommandRule[] {
+  /** The file as loaded — tolerant: missing/malformed → empty, no throw. */
+  private load(): {
+    rules: ProjectCommandRule[];
+    trust: WorkspaceTrust | null;
+  } {
     let raw: string;
     try {
       raw = readFileSync(this.filePath(), "utf8");
     } catch {
-      return [];
+      return { rules: [], trust: null };
     }
     let parsed: Partial<PermissionsFile>;
     try {
       parsed = JSON.parse(raw) as Partial<PermissionsFile>;
     } catch {
-      return [];
+      return { rules: [], trust: null };
     }
-    if (parsed.version !== 1 || !Array.isArray(parsed.commandAllow)) return [];
-    return parsed.commandAllow.filter(validRule);
+    if (parsed.version !== 1) return { rules: [], trust: null };
+    return {
+      rules: Array.isArray(parsed.commandAllow)
+        ? parsed.commandAllow.filter(validRule)
+        : [],
+      trust: validTrust(parsed.trust) ? parsed.trust : null,
+    };
+  }
+
+  list(): ProjectCommandRule[] {
+    return this.load().rules;
+  }
+
+  /** The workspace's explicit trust choice (ADR 0064), or null when the
+   *  owner never chose — the policy then applies its default. */
+  trust(): WorkspaceTrust | null {
+    return this.load().trust;
+  }
+
+  /** Persist the trust choice; null clears it back to the default. Only
+   *  ever called from the owner's explicit choice on a card or the device
+   *  card's menu. */
+  setTrust(value: WorkspaceTrust | null): void {
+    const { rules } = this.load();
+    this.write(rules, value);
   }
 
   /** True when a persisted rule covers `argv` run from `cwd`. Callers MUST
@@ -349,7 +385,7 @@ export class ProjectCommandRuleStore {
       return;
     }
     if (!validRule(entry)) return; // fail-closed: never persist a refused shape
-    this.write([...existing, entry]);
+    this.write([...existing, entry], this.trust());
   }
 
   /** Removes the rule whose display form matches (Settings / CLI delete). */
@@ -357,30 +393,27 @@ export class ProjectCommandRuleStore {
     const existing = this.list();
     const kept = existing.filter((r) => ruleDisplay(r) !== display);
     if (kept.length === existing.length) return false;
-    this.write(kept);
+    this.write(kept, this.trust());
     return true;
   }
 
-  private write(rules: readonly ProjectCommandRule[]): void {
+  private write(
+    rules: readonly ProjectCommandRule[],
+    trust: WorkspaceTrust | null,
+  ): void {
     const dir = join(this.rootProvider(), ".herta");
     mkdirSync(dir, { recursive: true });
-    const payload: PermissionsFile = { version: 1, commandAllow: rules };
-    // tmp + rename (audit BL7). A torn write here fails CLOSED — the loader
-    // drops an unparseable file and everything re-prompts — so this is about
-    // not silently losing the user's grants, not about safety. The unique
-    // suffix keeps two concurrent writes from clobbering each other's temp.
-    const target = join(dir, "permissions.json");
-    const tmp = `${target}.${process.pid}.${writeSeq++}.tmp`;
-    try {
-      writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
-      renameSync(tmp, target);
-    } catch (err) {
-      try {
-        rmSync(tmp, { force: true });
-      } catch {
-        /* the temp is already gone, or undeletable — nothing left to do */
-      }
-      throw err;
-    }
+    const payload: PermissionsFile = {
+      version: 1,
+      commandAllow: rules,
+      ...(trust !== null ? { trust } : {}),
+    };
+    // Atomic (audit BL7). A torn write here fails CLOSED — the loader drops
+    // an unparseable file and everything re-prompts — so this is about not
+    // silently losing the user's grants, not about safety.
+    writeFileAtomicSync(
+      join(dir, "permissions.json"),
+      `${JSON.stringify(payload, null, 2)}\n`,
+    );
   }
 }

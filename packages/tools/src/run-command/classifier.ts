@@ -1,32 +1,79 @@
-import { type RiskLevel, SCRIPT_INTERPRETERS } from "@herta/core";
+import {
+  type CommandConsequence,
+  type RepoInProgressState,
+  type RiskLevel,
+  SCRIPT_INTERPRETERS,
+} from "@herta/core";
 import { isCredentialPath } from "../credential-denylist.js";
 
 export type Verdict =
   | { kind: "allow" }
-  | { kind: "ask"; risk: RiskLevel; reason: string; code: string }
+  | {
+      kind: "ask";
+      risk: RiskLevel;
+      reason: string;
+      code: string;
+      /** Consequence note for the card (ADR 0049 §5) — display-only, never
+       *  part of the tier decision. */
+      consequence?: CommandConsequence;
+    }
   | { kind: "block"; reason: string; code: "command_blocked" };
 
-const ROOT_PATHS = new Set(["/", "//", "/*"]);
-const HOME_PATHS = new Set(["~", "~/", "~/*"]);
+/** Home, every way a shell spells it (platform review 2026-09-23: the `$HOME`
+ *  spellings of `rm -rf ~` dropped from block to an ordinary ask). Compared
+ *  after `rootForm`, so the trailing `/`, `/*` spellings need no entries. */
+const HOME_PATHS = new Set(["~", "$HOME", "${HOME}"]);
+
+/**
+ * A root or home spelling reduced to its bare form: runs of `/` collapsed and
+ * every trailing `/`, `/.` and `/*` stripped, so `/`, `//*`, `~//` and
+ * `$HOME/.` compare as ``, ``, `~` and `$HOME`. Matching exact strings let
+ * each extra slash walk `rm -rf` from the block tier down to an ask (probe
+ * 2026-09-23).
+ *
+ * `~name` (another user's home) is deliberately NOT here: cmd and PowerShell
+ * never expand it, so on Windows `del ~WRL0001.tmp` names Word's temp file —
+ * and a block has no override. `rm -rf ~bob` stays a destructive ask, asked
+ * every time.
+ */
+function rootForm(a: string): string {
+  let s = a.replace(/\/{2,}/g, "/");
+  for (;;) {
+    const next = s.replace(/\/(?:\.|\*)?$/, "");
+    if (next === s) return s;
+    s = next;
+  }
+}
 
 /** System-root-ish paths across platforms. Windows shells name roots as
  *  `C:\` / `C:/` / bare `\`, never `/` — the decoded shell bodies below hand
  *  these to the catastrophic check, so the POSIX-only set was a blind spot. */
 function isSystemRootPath(a: string): boolean {
-  if (ROOT_PATHS.has(a) || HOME_PATHS.has(a)) return true;
+  const bare = rootForm(a);
+  if (a !== "" && (bare === "" || HOME_PATHS.has(bare))) return true;
   if (/^[A-Za-z]:[\\/]?\*?$/.test(a)) return true;
   return a === "\\" || a === "\\*" || a === "\\\\";
 }
 
+/**
+ * `rm`'s recursive + force, however the flags are clustered (platform review
+ * 2026-09-23): only the exact `-rf` / `-fr` / `-Rf` / `-fR` tokens and the
+ * separate `-r -f` used to count, so `rm -rfv /` and `rm -Rfi ~` dropped from
+ * the block tier to an ordinary ask (and past the destructive ask, which
+ * shares this helper). A short-option cluster carries every letter in it;
+ * option parsing ends at `--`.
+ */
 function hasRecursiveForce(argv: readonly string[]): boolean {
-  for (const a of argv) {
-    if (a === "-rf" || a === "-fr" || a === "-Rf" || a === "-fR") return true;
-  }
   let r = false;
   let f = false;
-  for (const a of argv) {
-    if (a === "-r" || a === "-R" || a === "--recursive") r = true;
-    if (a === "-f" || a === "--force") f = true;
+  for (const a of argv.slice(1)) {
+    if (a === "--") break;
+    if (a === "--recursive") r = true;
+    else if (a === "--force") f = true;
+    else if (/^-[A-Za-z]+$/.test(a)) {
+      if (/[rR]/.test(a)) r = true;
+      if (a.includes("f")) f = true;
+    }
   }
   return r && f;
 }
@@ -299,6 +346,20 @@ const PATH_READER_CMDS = new Set([
   "head",
   "tail",
   "wc",
+  "diff",
+  "od",
+  "hexdump",
+  "xxd",
+  "file",
+  "stat",
+  "du",
+  "md5sum",
+  "sha1sum",
+  "sha256sum",
+  "tac",
+  "rev",
+  "paste",
+  "comm",
   "grep",
   "rg",
   "ripgrep",
@@ -740,7 +801,192 @@ function isCatastrophic(argv: readonly string[]): {
   if (a0 === "init" && (argv[1] === "0" || argv[1] === "6")) {
     return { hit: true, reason: `init runlevel: ${argv[1]}` };
   }
+  const posix = posixCatastrophe(a0, argv);
+  if (posix !== null) return { hit: true, reason: posix };
   return { hit: false, reason: "" };
+}
+
+/** `diskutil` verbs that destroy data or a partition map. Lowercased. */
+const DISKUTIL_DESTROY = new Set([
+  "erasedisk",
+  "erasevolume",
+  "zerodisk",
+  "randomdisk",
+  "secureerase",
+  "partitiondisk",
+  "splitpartition",
+  "mergepartitions",
+  "reformat",
+]);
+/** `diskutil apfs …` verbs that destroy a container or volume. */
+const DISKUTIL_APFS_DESTROY = new Set([
+  "deletecontainer",
+  "deletevolume",
+  "deletevolumegroup",
+  "erasevolume",
+]);
+
+/**
+ * Where a program's SUBCOMMAND sits, past the options it takes in front of it:
+ * `security [-hilqv] [-p prompt] <command>` and `diskutil [quiet] <verb>`.
+ * Reading `args[0]` let `security -q dump-keychain` and `diskutil quiet
+ * eraseDisk …` out of the block tier (probe 2026-09-23).
+ */
+function subcommandAt(id: string, args: readonly string[]): number {
+  let i = 0;
+  if (id === "security") {
+    while (i < args.length) {
+      const t = args[i] as string;
+      if (t === "--") return i + 1;
+      if (!t.startsWith("-")) break;
+      // `-p` takes the prompt as the next word, clustered or not (`-qp x`).
+      i += /^-[A-Za-z]*p$/.test(t) ? 2 : 1;
+    }
+  } else if (id === "diskutil" && (args[0] ?? "").toLowerCase() === "quiet") {
+    i = 1;
+  }
+  return i;
+}
+/** `systemctl` / `loginctl` verbs that stop or restart the machine. */
+const POWER_VERBS = new Set(["poweroff", "reboot", "halt", "kexec"]);
+/** `systemctl` / `loginctl` options that take the NEXT word as their value —
+ *  only those whose value is required, so a flag is never mistaken for one
+ *  and allowed to hide the verb behind it. */
+const SYSTEMCTL_VALUE_OPTS = new Set([
+  "-t",
+  "--type",
+  "-p",
+  "--property",
+  "-P",
+  "-H",
+  "--host",
+  "-M",
+  "--machine",
+  "-n",
+  "--lines",
+  "-o",
+  "--output",
+  "-s",
+  "--signal",
+  "--state",
+  "--root",
+  "--image",
+  "--kill-whom",
+  "--kill-value",
+  "--job-mode",
+  "--what",
+  "--timestamp",
+  "--message",
+  "--when",
+  "--boot-loader-entry",
+  "--boot-loader-menu",
+  "--reboot-argument",
+  "--check-inhibitors",
+  "--preset-mode",
+  "--drop-in",
+]);
+
+/**
+ * The verb: the first word that is neither an option nor an option's value,
+ * lowercased (review 2026-09-23). Taking any argument as the verb blocked
+ * `systemctl status reboot` and a heredoc line of prose; taking the first
+ * non-dash word read `systemctl -t service …`'s `service` as the verb.
+ */
+function firstOperand(
+  args: readonly string[],
+  valueOpts: ReadonlySet<string>,
+): string {
+  for (let i = 0; i < args.length; i += 1) {
+    const a = args[i] as string;
+    if (a === "--") return (args[i + 1] ?? "").toLowerCase();
+    if (a.startsWith("-") && a.length > 1) {
+      if (valueOpts.has(a)) i += 1;
+      continue;
+    }
+    return a.toLowerCase();
+  }
+  return "";
+}
+
+/**
+ * The macOS and Linux members of the block tier (platform review 2026-09-23).
+ * The tier named `mkfs`, `dd of=/dev/…` and `shutdown`, and everything below
+ * fell through to `command_ask_unknown` — an ordinary, cacheable,
+ * rule-eligible approval card, one click from an erased disk or a leaked
+ * keychain. CLAUDE.md's Block list ("mkfs, raw block-device writes …,
+ * credential exfiltration, shutdown/reboot") is the policy; these are its
+ * spellings on the other two platforms:
+ *
+ *   - disk destruction: `diskutil erase*|zeroDisk|partitionDisk…` and its
+ *     `apfs delete*`, `newfs_*` (macOS's mkfs), and on a `/dev/` device:
+ *     `wipefs` that erases, `blkdiscard`, `sgdisk --zap*`, `shred`;
+ *   - power: `systemctl|loginctl poweroff|reboot|halt|kexec` as the verb;
+ *   - keychain secrets: `security find-*-password -w|-g` (prints the
+ *     password), `security dump-keychain`, `security export` (exports keys).
+ */
+function posixCatastrophe(a0: string, argv: readonly string[]): string | null {
+  const args = argv.slice(1);
+  const at = subcommandAt(a0, args);
+  const sub = (args[at] ?? "").toLowerCase();
+  if (a0 === "diskutil") {
+    if (DISKUTIL_DESTROY.has(sub)) return `diskutil ${args[at]}: erases a disk`;
+    if (
+      sub === "apfs" &&
+      DISKUTIL_APFS_DESTROY.has((args[at + 1] ?? "").toLowerCase())
+    ) {
+      return `diskutil apfs ${args[at + 1]}: deletes a container or volume`;
+    }
+  }
+  if (a0.startsWith("newfs")) return `newfs variant: ${argv[0]}`;
+  // The block-device tools block on a DEVICE, as `dd of=/dev/…` and `shred`
+  // always did: `wipefs -a build/disk.img` and `sgdisk --zap-all disk.img`
+  // are routine in an image-build repo (review 2026-09-23) and stay asks.
+  const onDevice = args.some((a) => a.startsWith("/dev/"));
+  if (a0 === "wipefs" && onDevice) {
+    // `wipefs /dev/x` alone only LISTS signatures; -a / -o erase them — unless
+    // `-n` / `--no-act` makes the whole run a dry run.
+    const short = (letters: RegExp): boolean =>
+      args.some((a) => /^-[A-Za-z]+$/.test(a) && letters.test(a));
+    const erases =
+      args.some(
+        (a) => a === "--all" || a === "--offset" || a.startsWith("--offset="),
+      ) || short(/[ao]/);
+    const dryRun = args.includes("--no-act") || short(/n/);
+    if (erases && !dryRun) return "wipefs erasing filesystem signatures";
+  }
+  if (a0 === "blkdiscard" && onDevice) {
+    return "blkdiscard discards every block on a device";
+  }
+  if (
+    a0 === "sgdisk" &&
+    onDevice &&
+    args.some(
+      (a) =>
+        a === "--zap" ||
+        a === "--zap-all" ||
+        (/^-[A-Za-z]+$/.test(a) && /[zZ]/.test(a)),
+    )
+  ) {
+    return "sgdisk --zap destroys a partition table";
+  }
+  if (a0 === "shred" && onDevice) return "shred on a raw device";
+  if (a0 === "systemctl" || a0 === "loginctl") {
+    const verb = firstOperand(args, SYSTEMCTL_VALUE_OPTS);
+    if (POWER_VERBS.has(verb)) return `system control: ${a0} ${verb}`;
+  }
+  if (a0 === "security") {
+    if (
+      (sub === "find-generic-password" || sub === "find-internet-password") &&
+      args.some(
+        (a) => a === "-w" || a === "-g" || /^-[A-Za-z]*[wg][A-Za-z]*$/.test(a),
+      )
+    ) {
+      return `security ${args[at]} prints a keychain password`;
+    }
+    if (sub === "dump-keychain") return "security dump-keychain";
+    if (sub === "export") return "security export writes keychain items out";
+  }
+  return null;
 }
 
 /**
@@ -855,6 +1101,188 @@ function hasShortFlag(args: readonly string[], letter: string): boolean {
   );
 }
 
+/** `systemctl` verbs that only look. */
+const SYSTEMCTL_READ = new Set([
+  "status",
+  "show",
+  "cat",
+  "help",
+  "list-units",
+  "list-unit-files",
+  "list-timers",
+  "list-sockets",
+  "list-dependencies",
+  "list-jobs",
+  "is-active",
+  "is-enabled",
+  "is-failed",
+  "is-system-running",
+  "get-default",
+  "show-environment",
+  "list-machines",
+  "list-paths",
+  "list-automounts",
+]);
+/** `systemctl --user` verbs that run, stop or reload the user's OWN services
+ *  — everyday dev on Linux, left an ordinary ask (review 2026-09-23).
+ *  Enabling, masking, editing or linking a unit is autostart and persistence,
+ *  and stays a system change even under `--user`. */
+const SYSTEMCTL_USER_RUN = new Set([
+  "start",
+  "stop",
+  "restart",
+  "reload",
+  "try-restart",
+  "reload-or-restart",
+  "try-reload-or-restart",
+  "kill",
+  "reset-failed",
+  "daemon-reload",
+]);
+/** `launchctl` subcommands that only look. */
+const LAUNCHCTL_READ = new Set([
+  "list",
+  "print",
+  "print-cache",
+  "print-disabled",
+  "version",
+  "help",
+  "blame",
+  "getenv",
+  "error",
+  "managerpid",
+  "manageruid",
+  "managername",
+  "procinfo",
+  "hostinfo",
+]);
+/** `security` subcommands that only look. The password lookups are here
+ *  because the secret-printing forms (`-w` / `-g`) never get this far — they
+ *  are blocked in `posixCatastrophe`; what remains prints metadata. */
+const SECURITY_READ = new Set([
+  "find-certificate",
+  "find-identity",
+  "find-key",
+  "find-generic-password",
+  "find-internet-password",
+  "list-keychains",
+  "list-smartcards",
+  "show-keychain-info",
+  "verify-cert",
+  "dump-trust-settings",
+  "help",
+]);
+
+/** Whether a `security` subcommand only looks (review 2026-09-23). */
+function securityOnlyLooks(sub: string, rest: readonly string[]): boolean {
+  if (SECURITY_READ.has(sub)) return true;
+  // `default-keychain` / `login-keychain` PRINT unless `-s` sets one.
+  if (sub === "default-keychain" || sub === "login-keychain") {
+    return !rest.some((a) => /^-[A-Za-z]*s[A-Za-z]*$/.test(a));
+  }
+  // `security cms -D -i x.mobileprovision` decodes a provisioning profile —
+  // the standard iOS step. Signing or encrypting uses a keychain identity.
+  if (sub === "cms") {
+    return rest.includes("-D") && !rest.some((a) => /^-[SEC]$/.test(a));
+  }
+  if (sub === "authorizationdb") return (rest[0] ?? "") === "read";
+  return false;
+}
+/** `defaults` options that take the next word as their value. */
+const DEFAULTS_VALUE_OPTS = new Set(["-host"]);
+/** `spctl` flags that change Gatekeeper's policy. */
+const SPCTL_WRITE = new Set([
+  "--master-disable",
+  "--master-enable",
+  "--global-disable",
+  "--global-enable",
+  "--add",
+  "--remove",
+  "--enable",
+  "--disable",
+  "--reset-default",
+]);
+
+/**
+ * Commands that change the MACHINE rather than the workspace — Gatekeeper,
+ * launch agents, the keychain, cron, other apps (platform review 2026-09-23).
+ * They landed on `command_ask_unknown`, which is cacheable and rule-eligible:
+ * the task cache keys on the PROGRAM, so approving a harmless `defaults read`
+ * waved every later `defaults write` in that brief through with no card, and
+ * one "always allow" on a `defaults write` saved `defaults write:*`, which
+ * covered every domain for good. Their own class
+ * (`command_ask_system`, danger styling) is asked every time — it is absent
+ * from RULE_ELIGIBLE_ASK_CODES, and the session cache only keeps
+ * `workspace_write`. `osascript` in particular can type into and drive any
+ * app the user has granted automation, including a keychain prompt.
+ *
+ * The look-only forms (`defaults read`, `crontab -l`, `spctl --status`,
+ * `systemctl status`, `security find-certificate`, `xattr -l`) stay where
+ * they were. Returns the card's reason, or null.
+ */
+function systemAlteringShape(
+  id: string,
+  argv: readonly string[],
+): string | null {
+  const args = argv.slice(1);
+  const verb = (args.find((a) => !a.startsWith("-")) ?? "").toLowerCase();
+  const cluster = (letters: RegExp): boolean =>
+    args.some((a) => /^-[A-Za-z]+$/.test(a) && letters.test(a));
+  switch (id) {
+    case "osascript":
+      return "osascript drives other apps (AppleScript / JXA)";
+    case "tccutil":
+      return "tccutil resets privacy permissions";
+    case "csrutil":
+      return verb === "status" ? null : `csrutil ${verb || args.join(" ")}`;
+    case "launchctl":
+      return LAUNCHCTL_READ.has(verb) ? null : `launchctl ${args.join(" ")}`;
+    case "defaults": {
+      // `defaults -host <name> write …`: the host is not the verb.
+      const v = firstOperand(args, DEFAULTS_VALUE_OPTS);
+      return v === "write" || v === "delete" || v === "import" || v === "rename"
+        ? `defaults ${v} changes app or system preferences`
+        : null;
+    }
+    case "crontab": {
+      // `crontab -l` (optionally `-u <user>`) only lists. Anything else —
+      // -e, -r, -i, a file operand, or bare `crontab` reading stdin —
+      // replaces the table.
+      const rest = args.filter(
+        (a, i) => a !== "-l" && a !== "-u" && args[i - 1] !== "-u",
+      );
+      return args.includes("-l") && rest.length === 0
+        ? null
+        : `crontab ${args.join(" ")}`.trim();
+    }
+    case "spctl":
+      return args.some((a) => SPCTL_WRITE.has(a))
+        ? `spctl ${args.join(" ")} changes Gatekeeper policy`
+        : null;
+    case "xattr":
+      return cluster(/[dcw]/)
+        ? `xattr ${args.join(" ")} (e.g. removing the quarantine flag)`
+        : null;
+    case "systemctl": {
+      const v = firstOperand(args, SYSTEMCTL_VALUE_OPTS);
+      if (v === "" || SYSTEMCTL_READ.has(v)) return null;
+      if (args.includes("--user") && SYSTEMCTL_USER_RUN.has(v)) return null;
+      return `systemctl ${args.join(" ")}`;
+    }
+    case "security": {
+      const at = subcommandAt(id, args);
+      return securityOnlyLooks(
+        (args[at] ?? "").toLowerCase(),
+        args.slice(at + 1),
+      )
+        ? null
+        : `security ${args[at] ?? ""} changes the keychain or trust settings`.trim();
+    }
+    default:
+      return null;
+  }
+}
+
 /**
  * git shapes that DISCARD uncommitted work or REWRITE history, described so
  * the card says which — or null for the ordinary repository changes, which
@@ -878,7 +1306,9 @@ function hasShortFlag(args: readonly string[], letter: string): boolean {
  * everyday `add`/`commit`/`merge`/`fetch`/`pull`/`mv`/`rm`/`checkout -b`,
  * so ADR 0030's `git commit:*` rules still derive exactly as before.
  */
-function destructiveGitShape(argv: readonly string[]): string | null {
+function destructiveGitShape(
+  argv: readonly string[],
+): { reason: string; consequence: CommandConsequence } | null {
   const at = gitSubcommandIndex(argv);
   if (at === null) return null;
   const sub = argv[at] as string;
@@ -902,7 +1332,10 @@ function destructiveGitShape(argv: readonly string[]): string | null {
       (!creating &&
         (operands.length >= 2 || rest.some((a) => a === "." || a === "*")));
     if (pathMode) {
-      return `git ${sub} in path mode overwrites uncommitted changes in those paths`;
+      return {
+        reason: `git ${sub} in path mode overwrites uncommitted changes in those paths`,
+        consequence: "discards_uncommitted",
+      };
     }
     // A SINGLE operand stays ordinary, deliberately: `git checkout main` and
     // `git checkout main.ts` are the same string shape, and git itself decides
@@ -916,25 +1349,44 @@ function destructiveGitShape(argv: readonly string[]): string | null {
   if (sub === "restore") {
     // `--staged` alone only unstages; anything else rewrites the worktree.
     const stagedOnly = has("--staged", "-S") && !has("--worktree", "-W");
-    if (!stagedOnly) return "git restore overwrites uncommitted changes";
+    if (!stagedOnly)
+      return {
+        reason: "git restore overwrites uncommitted changes",
+        consequence: "discards_uncommitted",
+      };
     return null;
   }
   if (sub === "stash" && (rest[0] === "drop" || rest[0] === "clear")) {
-    return `git stash ${rest[0]} deletes stashed work`;
+    return {
+      reason: `git stash ${rest[0]} deletes stashed work`,
+      consequence: "deletes_stash",
+    };
   }
 
   // ── rewrites history or a ref ──
   if (sub === "commit" && has("--amend")) {
-    return "git commit --amend rewrites the last commit";
+    return {
+      reason: "git commit --amend rewrites the last commit",
+      consequence: "rewrites_local_history",
+    };
   }
   if (sub === "rebase" && rest[0] !== "--abort" && rest[0] !== "--quit") {
-    return "git rebase rewrites history";
+    return {
+      reason: "git rebase rewrites history",
+      consequence: "rewrites_local_history",
+    };
   }
   if (sub === "push" && has("-f", "--force")) {
-    return "git push --force overwrites the remote branch";
+    return {
+      reason: "git push --force overwrites the remote branch",
+      consequence: "rewrites_remote_history",
+    };
   }
   if (sub === "push" && rest.some((a) => a.startsWith("--force-with-lease"))) {
-    return "git push --force-with-lease overwrites the remote branch";
+    return {
+      reason: "git push --force-with-lease overwrites the remote branch",
+      consequence: "rewrites_remote_history",
+    };
   }
   if (
     // NOT `--delete`/`-d`: that refuses an unmerged branch, and the 2026-08-25
@@ -945,7 +1397,11 @@ function destructiveGitShape(argv: readonly string[]): string | null {
       hasShortFlag(rest, "M") ||
       hasShortFlag(rest, "f"))
   ) {
-    return "git branch -D/-M/-f force-deletes, force-renames or moves a branch";
+    return {
+      reason:
+        "git branch -D/-M/-f force-deletes, force-renames or moves a branch",
+      consequence: "rewrites_local_history",
+    };
   }
   if (
     sub === "tag" &&
@@ -953,18 +1409,61 @@ function destructiveGitShape(argv: readonly string[]): string | null {
       hasShortFlag(rest, "d") ||
       hasShortFlag(rest, "f"))
   ) {
-    return "git tag -d/-f deletes or moves a tag";
+    return {
+      reason: "git tag -d/-f deletes or moves a tag",
+      consequence: "rewrites_local_history",
+    };
   }
   if (sub === "update-ref" && has("-d", "--delete")) {
-    return "git update-ref -d deletes a ref";
+    return {
+      reason: "git update-ref -d deletes a ref",
+      consequence: "rewrites_local_history",
+    };
   }
   if (sub === "reflog" && rest[0] === "expire") {
-    return "git reflog expire discards the recovery log";
+    return {
+      reason: "git reflog expire discards the recovery log",
+      consequence: "rewrites_local_history",
+    };
   }
   if (sub === "filter-branch" || sub === "filter-repo") {
-    return `git ${sub} rewrites the whole history`;
+    return {
+      reason: `git ${sub} rewrites the whole history`,
+      consequence: "rewrites_local_history",
+    };
   }
   return null;
+}
+
+/**
+ * A commit-concluding git shape while a merge/rebase/cherry-pick/revert is
+ * mid-flight CONCLUDES that operation — an ordinary-looking `git commit`
+ * card can close out the user's half-finished merge with the backend's
+ * edits inside (ADR 0049 §5). The probe is LAZY and supplied by the caller
+ * (only rules know the effective cwd); no caller, no note. Display-only.
+ */
+function concludesInProgressOperation(
+  argv: readonly string[],
+  opts: ClassifyCommandOpts | undefined,
+): boolean {
+  if (opts?.repoInProgress === undefined) return false;
+  const at = gitSubcommandIndex(argv);
+  if (at === null) return false;
+  const sub = argv[at];
+  const rest = argv.slice(at + 1);
+  const concluding =
+    sub === "commit" ||
+    ((sub === "merge" ||
+      sub === "rebase" ||
+      sub === "cherry-pick" ||
+      sub === "revert") &&
+      rest.includes("--continue"));
+  if (!concluding) return false;
+  try {
+    return opts.repoInProgress() !== null;
+  } catch {
+    return false;
+  }
 }
 
 /** How many interpreter layers the block scan will unwrap before it refuses
@@ -1002,6 +1501,15 @@ const ESCAPE_HATCH_FLAGS: ReadonlyMap<string, ReadonlySet<string>> = new Map<
   string,
   ReadonlySet<string>
 >([
+  // ADR 0064 L1 readers with a writing or list-reading knob.
+  [
+    "file",
+    new Set(["-C", "--compile", "-m", "--magic-file", "-f", "--files-from"]),
+  ],
+  ["xxd", new Set(["-r", "-revert"])],
+  ["md5sum", new Set(["-c", "--check"])],
+  ["sha1sum", new Set(["-c", "--check"])],
+  ["sha256sum", new Set(["-c", "--check"])],
   [
     "git",
     new Set([
@@ -1252,6 +1760,12 @@ export interface ClassifyCommandOpts {
    *  has the raw text (`sed -n '$p'` expands nothing). Defaults to false, so
    *  `run_command`'s literal argv is never treated as expanding. */
   unresolved?: boolean;
+  /** LAZY probe for a repo operation mid-flight at the command's effective
+   *  cwd (ADR 0049 §5) — supplied by callers that know the cwd, called only
+   *  when the argv is a commit-concluding git shape, so non-git commands pay
+   *  nothing. Feeds the `concludes_in_progress_operation` consequence note;
+   *  absent → the note is simply never attached. */
+  repoInProgress?: () => RepoInProgressState | null;
 }
 
 export function classifyCommand(
@@ -1323,6 +1837,7 @@ export function classifyCommand(
       risk: "workspace_destructive",
       code: "command_ask_destructive",
       reason: "git reset --hard",
+      consequence: "discards_uncommitted",
     };
   }
   if (
@@ -1334,6 +1849,7 @@ export function classifyCommand(
       risk: "workspace_destructive",
       code: "command_ask_destructive",
       reason: "git clean -f deletes untracked files",
+      consequence: "deletes_untracked",
     };
   }
   if (id === "git") {
@@ -1343,7 +1859,8 @@ export function classifyCommand(
         kind: "ask",
         risk: "workspace_destructive",
         code: "command_ask_destructive",
-        reason: destructiveGit,
+        reason: destructiveGit.reason,
+        consequence: destructiveGit.consequence,
       };
     }
   }
@@ -1355,9 +1872,31 @@ export function classifyCommand(
       reason: `chmod: ${argv.slice(1).join(" ")}`,
     };
   }
+  // Through exec-wrappers too (`sudo defaults write …`, `env osascript …`):
+  // this class is never remembered, so peeling can only escalate the card.
+  const peeled = peelExecWrappers(argv);
+  const system =
+    systemAlteringShape(id, argv) ??
+    (peeled === null || peeled.length === 0
+      ? null
+      : systemAlteringShape(commandIdentity(peeled[0] as string), peeled));
+  if (system !== null) {
+    return {
+      kind: "ask",
+      risk: "workspace_destructive",
+      code: "command_ask_system",
+      reason: system,
+    };
+  }
 
   // PHASE 3 — ASK network
   if (a0 === "curl" || a0 === "wget") {
+    // A fetch of the LOOPBACK address is the model poking the server it just
+    // started, not the network (ADR 0064 L1; permission lab 2026-09-16: every
+    // `curl` in the server briefs was `localhost:4642`). Allowed only when
+    // every URL is loopback and every flag is one that neither reads nor
+    // writes a file — anything else is the network ask it always was.
+    if (loopbackFetchOnly(a0, argv, live)) return { kind: "allow" };
     return {
       kind: "ask",
       risk: "network",
@@ -1582,6 +2121,12 @@ export function classifyCommand(
   if (a0 === "go" && argv[1] === "test") {
     return readerArgvGuard(argv, live) ?? { kind: "allow" };
   }
+  // `git config` that only READS (ADR 0064 L1): `--get`/`--list` forms, or a
+  // bare key. A value operand, an unset/add/edit flag, or a `--file`/`--blob`
+  // source is a write or a read of somewhere else and stays vcs below.
+  if (a0 === "git" && gitSubName === "config" && gitConfigReads(gitSubArgs)) {
+    return { kind: "allow" };
+  }
   if (
     a0 === "git" &&
     typeof argv[1] === "string" &&
@@ -1678,12 +2223,34 @@ export function classifyCommand(
   // rule-eligibility as unknown (`git commit:*` project rules still derive),
   // an honest class. Network-touching subcommands are still git (the remote
   // is the repo's own); the destructive shapes were classified above.
+  // The subcommands that reach the REMOTE are the network, not the working
+  // tree (ADR 0064 L1): a trusted workspace auto-allows `command_ask_vcs`,
+  // and a push that leaves the machine must not ride that. The destructive
+  // shapes (`push --force`, history rewrites) were classified above.
+  if (
+    a0 === "git" &&
+    gitSubName !== null &&
+    reachesRemote(gitSubName, gitSubArgs)
+  ) {
+    return {
+      kind: "ask",
+      risk: "network",
+      code: "command_ask_network",
+      reason: `git ${gitSubName} reaches the remote`,
+    };
+  }
   if (a0 === "git" && typeof argv[1] === "string") {
     return {
       kind: "ask",
       risk: "workspace_write",
       code: "command_ask_vcs",
       reason: `git ${argv[1]} changes the repository`,
+      // A plain `git commit` (or `--continue`) mid-merge/rebase concludes
+      // the user's half-finished operation — the card should say so
+      // (ADR 0049 §5; note only, the tier is unchanged).
+      ...(concludesInProgressOperation(argv, opts)
+        ? { consequence: "concludes_in_progress_operation" as const }
+        : {}),
     };
   }
   if (a0 === "grep" || a0 === "rg" || a0 === "ripgrep") {
@@ -1725,12 +2292,39 @@ export function classifyCommand(
       "pwd",
       "date",
       "whoami",
+      // Plain readers the lab kept filing as unknown (ADR 0064 L1): dumps,
+      // checksums, metadata, and string filters. `file` and `xxd` carry
+      // escape hatches (`file -C` compiles a magic file, `xxd -r` writes)
+      // that ESCAPE_HATCH_FLAGS turns into asks ahead of this branch.
+      "od",
+      "hexdump",
+      "xxd",
+      "file",
+      "stat",
+      "du",
+      "md5sum",
+      "sha1sum",
+      "sha256sum",
+      "tac",
+      "rev",
+      "paste",
+      "comm",
+      "basename",
+      "dirname",
     ].includes(a0)
   ) {
     return readerArgvGuard(argv, live) ?? { kind: "allow" };
   }
 
   // PHASE 6 — DEFAULT
+  // The shapes the lab kept filing under 「未识别的命令」 that the harness can
+  // name (ADR 0064 L1): `diff` and `npm ls` are reads; `tee` and `sed -i`
+  // are writes to the files they name; `npm run <script>` is a project
+  // script; a `./bin/x` is a workspace program. A named class is an honest
+  // card today and the unit the trust tier can cover tomorrow.
+  const named = namedProgramVerdict(id, argv, live);
+  if (named !== null) return named;
+
   // Known script interpreters get an HONEST ask class before the generic
   // fallback (owner 2026-08-04): `node src/index.mjs` is not "unrecognized" —
   // the harness knows exactly what it is, and asks because an interpreter
@@ -1738,7 +2332,24 @@ export function classifyCommand(
   // approval surface say so (and gates project-rule derivation, ADR 0030)
   // instead of the prompt reading as ignorance. Same ask tier, same risk —
   // only the classification is more truthful.
+  //
+  // Three shapes since ADR 0064, because the trust tier covers only the
+  // first: a WORKSPACE script (`node src/cli.mjs`), whose code the record's
+  // diffs track; INLINE code (`node -e …`, `python -`, `python -m x`), which
+  // no diff ever showed; and a script OUTSIDE the workspace.
   if (SCRIPT_INTERPRETERS.has(interpreterName(a0))) {
+    const shape = interpreterShape(argv, live);
+    if (shape.kind === "inline") {
+      return {
+        kind: "ask",
+        risk: "workspace_write",
+        code: "command_ask_interpreter_inline",
+        reason: `${a0} runs inline code the record never showed — review it`,
+      };
+    }
+    if (shape.kind === "outside") {
+      return outsideAsk(a0, shape.script);
+    }
     return {
       kind: "ask",
       risk: "workspace_write",
@@ -1756,7 +2367,13 @@ export function classifyCommand(
   //   - process (kill / pkill / killall / taskkill): NOT rule-eligible.
   //   - fs (mkdir / touch / cp / mv / ln / rename): rule-eligible exactly as
   //     unknown was, so nothing that could be persisted before cannot now.
+  // The filesystem verbs split on WHERE they act (ADR 0064 L1): an operand
+  // outside the workspace — absolute, `..`, `~`, or unknowable under a live
+  // shell — is its own class, so a trusted workspace never auto-allows
+  // `cp secrets /tmp/x` on the strength of `cp` being "fs".
   if (id === "rm" || id === "rmdir" || id === "unlink") {
+    const out = outsideOperand(argv, live);
+    if (out !== null) return outsideAsk(id, out);
     return {
       kind: "ask",
       risk: "workspace_write",
@@ -1773,11 +2390,25 @@ export function classifyCommand(
     };
   }
   if (["mkdir", "touch", "cp", "mv", "ln", "rename"].includes(id)) {
+    const out = outsideOperand(argv, live);
+    if (out !== null) return outsideAsk(id, out);
     return {
       kind: "ask",
       risk: "workspace_write",
       code: "command_ask_fs",
       reason: `${id}: ${argv.slice(1).join(" ")}`,
+    };
+  }
+  // A program that lives IN the workspace — `./bin/x`, `scripts/run.sh` —
+  // named by a relative path with a separator and no escape. The harness
+  // knows what it is (a file the record's diffs track) even if not what it
+  // does; rule-eligible like an interpreter script (ADR 0064 L1).
+  if (isWorkspaceLocalProgram(a0, live)) {
+    return {
+      kind: "ask",
+      risk: "workspace_write",
+      code: "command_ask_local_exec",
+      reason: `runs a workspace program: ${a0}`,
     };
   }
   return {
@@ -1786,4 +2417,410 @@ export function classifyCommand(
     code: "command_ask_unknown",
     reason: "unrecognized command — review carefully",
   };
+}
+
+// ───────────────────────── ADR 0064 L1 helpers ─────────────────────────
+
+/** A path operand that leaves the workspace: absolute, home, drive, a `..`
+ *  escape, or — under a live shell — one the harness cannot read. In the
+ *  bash lane in-workspace absolute paths were relativized before this, so
+ *  an absolute here IS outside; run_command's argv is not relativized, so
+ *  there an in-workspace absolute path asks under this class too (an
+ *  honest ask, a less precise label). */
+function escapesWorkspaceOperand(a: string, live: boolean): boolean {
+  if (a.includes("__SUBST__")) return true;
+  if (live && /[$`]/.test(a)) return true;
+  if (/^([A-Za-z]:|[\\/]|~)/.test(a)) return true;
+  return a === ".." || a.includes("../") || a.includes("..\\") || a === "...";
+}
+
+/** The first non-flag operand that escapes the workspace, or null. */
+function outsideOperand(argv: readonly string[], live: boolean): string | null {
+  for (const a of argv.slice(1)) {
+    if (a === "--") continue;
+    if (a.startsWith("-") && a.length > 1) continue;
+    if (escapesWorkspaceOperand(a, live)) return a;
+  }
+  return null;
+}
+
+function outsideAsk(program: string, operand: string): Verdict {
+  return {
+    kind: "ask",
+    risk: "workspace_write",
+    code: "command_ask_outside",
+    reason: `${program} touches a path outside the workspace: ${operand}`,
+  };
+}
+
+/** `./x`, `bin/x`, `scripts/run.sh`: a relative path WITH a separator that
+ *  stays inside the workspace. A bare word is a PATH lookup (unknown); an
+ *  absolute path or a `..` is outside; an expansion is unresolvable. */
+function isWorkspaceLocalProgram(a0: string, live: boolean): boolean {
+  if (!/[\\/]/.test(a0)) return false;
+  if (escapesWorkspaceOperand(a0, live)) return false;
+  return !/[*?[\]{}$`]/.test(a0);
+}
+
+/** Flags of curl that neither read nor write a file. Fail closed: a flag not
+ *  here (or one that takes a file) keeps the network ask. */
+const CURL_INERT_FLAGS: ReadonlySet<string> = new Set([
+  "-s",
+  "--silent",
+  "-S",
+  "--show-error",
+  "-i",
+  "--include",
+  "-I",
+  "--head",
+  "-L",
+  "--location",
+  "-f",
+  "--fail",
+  "--fail-with-body",
+  "-v",
+  "--verbose",
+  "-N",
+  "--no-buffer",
+  "-k",
+  "--insecure",
+  "--compressed",
+  "-4",
+  "-6",
+  "-g",
+  "--globoff",
+  "--http1.1",
+  "--http2",
+  "--no-progress-meter",
+]);
+/** curl flags whose VALUE is inline text (never a file). `-d @file`,
+ *  `--cookie file`, `-F name=@file` and every output/upload/config flag are
+ *  deliberately absent — the value must not name a file. */
+const CURL_INERT_VALUE_FLAGS: ReadonlySet<string> = new Set([
+  "-X",
+  "--request",
+  "-H",
+  "--header",
+  "-d",
+  "--data",
+  "--data-raw",
+  "--data-binary",
+  "--data-urlencode",
+  "--json",
+  "-w",
+  "--write-out",
+  "-m",
+  "--max-time",
+  "--connect-timeout",
+  "--retry",
+  "--retry-delay",
+  "--retry-all-errors",
+  "-A",
+  "--user-agent",
+  "-e",
+  "--referer",
+  "-u",
+  "--user",
+]);
+const WGET_INERT_FLAGS: ReadonlySet<string> = new Set([
+  "-q",
+  "--quiet",
+  "-nv",
+  "--no-verbose",
+  "-S",
+  "--server-response",
+  "--spider",
+  "-4",
+  "-6",
+  "--no-check-certificate",
+]);
+const WGET_INERT_VALUE_FLAGS: ReadonlySet<string> = new Set([
+  "-t",
+  "--tries",
+  "-T",
+  "--timeout",
+  "--method",
+  "--header",
+  "--post-data",
+  "--body-data",
+  "--user-agent",
+  "-U",
+]);
+const LOOPBACK_URL =
+  /^(?:https?:\/\/)?(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d{1,5})?(?:[/?#]|$)/i;
+
+/**
+ * Every URL the command names is loopback and every flag is one of the
+ * inert ones: a local smoke test. A value that could be a FILE (`@…`, a
+ * cookie file, `-o`), a URL the harness cannot read (an expansion), or a
+ * flag it does not know all fall through to the network ask.
+ */
+function loopbackFetchOnly(
+  a0: string,
+  argv: readonly string[],
+  live: boolean,
+): boolean {
+  const inert = a0 === "curl" ? CURL_INERT_FLAGS : WGET_INERT_FLAGS;
+  const inertValue =
+    a0 === "curl" ? CURL_INERT_VALUE_FLAGS : WGET_INERT_VALUE_FLAGS;
+  let urls = 0;
+  for (let i = 1; i < argv.length; i += 1) {
+    const a = argv[i] as string;
+    if (live && /[$`]/.test(a)) return false;
+    if (a.includes("__SUBST__")) return false;
+    if (a === "--") continue;
+    if (a.startsWith("-") && a.length > 1) {
+      // `--flag=value` and `-Xvalue` spellings.
+      const eq = a.indexOf("=");
+      const name = eq > 0 && a.startsWith("--") ? a.slice(0, eq) : a;
+      if (inert.has(name)) continue;
+      // A bundle of short flags (`-sS`, `-sSL`, `-si`): every letter must be
+      // an inert flag of its own; a value-taking letter in a bundle is not
+      // modelled and fails closed.
+      if (/^-[a-zA-Z]{2,}$/.test(a)) {
+        if ([...a.slice(1)].every((ch) => inert.has(`-${ch}`))) continue;
+        return false;
+      }
+      if (inertValue.has(name)) {
+        const value =
+          eq > 0 && a.startsWith("--") ? a.slice(eq + 1) : argv[++i];
+        if (value === undefined || value.startsWith("@")) return false;
+        continue;
+      }
+      // wget's `-O -` (stdout) is inert; `-O file` is a write.
+      if (a0 === "wget" && (a === "-O" || a === "--output-document")) {
+        if (argv[i + 1] === "-") {
+          i += 1;
+          continue;
+        }
+        return false;
+      }
+      if (a0 === "wget" && a === "-O-") continue;
+      // curl's `-o /dev/null` (the status-code idiom, with `-w`) discards the
+      // body; any other output target is a file write.
+      if (a0 === "curl" && (a === "-o" || a === "--output")) {
+        if (/^(\/dev\/null|NUL|nul)$/.test(argv[i + 1] ?? "")) {
+          i += 1;
+          continue;
+        }
+        return false;
+      }
+      return false;
+    }
+    if (!LOOPBACK_URL.test(a)) return false;
+    urls += 1;
+  }
+  return urls > 0;
+}
+
+const GIT_CONFIG_READ_FLAGS: ReadonlySet<string> = new Set([
+  "--get",
+  "--get-all",
+  "--get-regexp",
+  "--list",
+  "-l",
+  "--global",
+  "--local",
+  "--system",
+  "--worktree",
+  "--show-origin",
+  "--show-scope",
+  "--name-only",
+  "--type",
+  "--bool",
+  "--int",
+  "--null",
+  "-z",
+]);
+
+/** `git config` arguments that only read: read flags plus at most one bare
+ *  operand (the key). Anything else — a second operand (a value), an
+ *  editing flag, another file — is not a read. */
+function gitConfigReads(subArgs: readonly string[]): boolean {
+  let operands = 0;
+  let listing = false;
+  for (const a of subArgs) {
+    if (a.startsWith("-")) {
+      const name = a.includes("=") ? a.slice(0, a.indexOf("=")) : a;
+      if (!GIT_CONFIG_READ_FLAGS.has(name)) return false;
+      if (name === "--list" || name === "-l") listing = true;
+      continue;
+    }
+    operands += 1;
+  }
+  return listing ? operands === 0 : operands === 1;
+}
+
+/** git subcommands that reach the remote (ADR 0064 L1) — the network tier. */
+function reachesRemote(sub: string, subArgs: readonly string[]): boolean {
+  if (["push", "fetch", "pull", "clone", "ls-remote"].includes(sub))
+    return true;
+  if (sub === "remote") {
+    return subArgs.some((a) => a === "update" || a === "prune");
+  }
+  if (sub === "submodule") {
+    return subArgs.some((a) => a === "update" || a === "add" || a === "sync");
+  }
+  return false;
+}
+
+/** Interpreter flags that carry CODE (or select a module) rather than name
+ *  a workspace script. */
+const INLINE_CODE_FLAGS: ReadonlySet<string> = new Set([
+  "-e",
+  "--eval",
+  "-p",
+  "--print",
+  "-c",
+  "--command",
+  "-m",
+  "-i",
+  "--interactive",
+  "--input-type",
+  "-",
+]);
+
+/** How an interpreter invocation names what it runs (ADR 0064 L1). */
+function interpreterShape(
+  argv: readonly string[],
+  live: boolean,
+):
+  | { kind: "script"; script: string }
+  | { kind: "outside"; script: string }
+  | { kind: "inline" } {
+  const name = interpreterName(argv[0] as string);
+  let i = 1;
+  // deno / bun take a SUBCOMMAND first: `deno run x.ts`, `bun test`.
+  if ((name === "deno" || name === "bun") && argv.length > 1) {
+    const sub = argv[1] as string;
+    if (["eval", "repl", "x", "exec"].includes(sub)) return { kind: "inline" };
+    if (["run", "test"].includes(sub)) i = 2;
+  }
+  for (; i < argv.length; i += 1) {
+    const a = argv[i] as string;
+    if (a === "--") {
+      i += 1;
+      break;
+    }
+    const flag =
+      a.startsWith("--") && a.includes("=") ? a.slice(0, a.indexOf("=")) : a;
+    if (INLINE_CODE_FLAGS.has(flag)) return { kind: "inline" };
+    if (a.startsWith("-") && a.length > 1) continue;
+    break;
+  }
+  const script = argv[i];
+  if (script === undefined) return { kind: "inline" }; // a REPL
+  if (escapesWorkspaceOperand(script, live)) {
+    return { kind: "outside", script };
+  }
+  return { kind: "script", script };
+}
+
+/** A sed script made only of line-address substitutions, deletes and prints
+ *  — the shapes that touch nothing but the addressed file. The `e` flag or
+ *  command (runs the pattern space!), `w`/`W`/`r`/`R` file commands, `-f`
+ *  script files and any spelling this cannot parse stay unknown. */
+const SED_ADDR = "(?:\\d+|\\$|/(?:\\\\.|[^/])*/)";
+const SED_SAFE_COMMAND = new RegExp(
+  `^\\s*(?:${SED_ADDR}(?:,${SED_ADDR})?\\s*)?(?:s/(?:\\\\.|[^/])*/(?:\\\\.|[^/])*/[gipI0-9]*|y/(?:\\\\.|[^/])*/(?:\\\\.|[^/])*/|d|p)\\s*$`,
+);
+function isSafeSedScript(script: string): boolean {
+  // Split on `;` only where it is not inside an s/// body: a body may hold a
+  // `;`, and then the split produces a piece the regex refuses — which is
+  // the safe direction (the command stays unknown).
+  return script.split(";").every((piece) => SED_SAFE_COMMAND.test(piece));
+}
+
+/** The lab's recurring 「未识别的命令」 shapes, named (ADR 0064 L1). Null
+ *  when `argv` is none of them. */
+function namedProgramVerdict(
+  id: string,
+  argv: readonly string[],
+  live: boolean,
+): Verdict | null {
+  const writeAsk = (files: readonly string[], what: string): Verdict => {
+    for (const f of files) {
+      if (escapesWorkspaceOperand(f, live)) return outsideAsk(id, f);
+    }
+    return {
+      kind: "ask",
+      risk: "workspace_write",
+      code: "command_ask_write",
+      reason: `${what} ${files.join(", ")}`,
+    };
+  };
+  if (id === "diff") {
+    return readerArgvGuard(argv, live) ?? { kind: "allow" };
+  }
+  if (id === "tee") {
+    const files = argv
+      .slice(1)
+      .filter((a) => !(a.startsWith("-") && a.length > 1));
+    if (files.length === 0) return { kind: "allow" }; // stdout only
+    return writeAsk(files, "tee writes");
+  }
+  if (id === "sed") {
+    const inPlace = argv
+      .slice(1)
+      .some(
+        (a) =>
+          a === "--in-place" ||
+          a.startsWith("--in-place=") ||
+          /^-[a-zA-Z]*i/.test(a),
+      );
+    if (!inPlace) return null;
+    const scripts: string[] = [];
+    const files: string[] = [];
+    for (let i = 1; i < argv.length; i += 1) {
+      const a = argv[i] as string;
+      if (a === "-e" || a === "--expression") {
+        const s = argv[++i];
+        if (s === undefined) return null;
+        scripts.push(s);
+        continue;
+      }
+      if (a.startsWith("--expression=")) {
+        scripts.push(a.slice("--expression=".length));
+        continue;
+      }
+      if (a === "-f" || a === "--file" || a.startsWith("--file=")) return null;
+      if (a === "--") {
+        files.push(...argv.slice(i + 1));
+        break;
+      }
+      if (a.startsWith("-") && a.length > 1) continue;
+      if (scripts.length === 0) scripts.push(a);
+      else files.push(a);
+    }
+    // An empty operand is not a file the harness can name — stay unknown.
+    if (scripts.length === 0 || files.length === 0) return null;
+    if (files.some((f) => f.trim().length === 0)) return null;
+    if (!scripts.every(isSafeSedScript)) return null;
+    return writeAsk(files, "sed -i edits");
+  }
+  if (id === "npm" || id === "pnpm" || id === "yarn") {
+    const sub = argv[1];
+    if (sub === "ls" || sub === "list" || sub === "ll") {
+      return readerArgvGuard(argv, live) ?? { kind: "allow" };
+    }
+    if (sub === "run" || sub === "run-script") {
+      const script = argv.slice(2).find((a) => !a.startsWith("-"));
+      if (script === undefined) return { kind: "allow" }; // lists the scripts
+      return {
+        kind: "ask",
+        risk: "workspace_write",
+        code: "command_ask_script",
+        reason: `${id} run ${script} runs a project script`,
+      };
+    }
+    if (sub === "start" || sub === "stop" || sub === "restart") {
+      return {
+        kind: "ask",
+        risk: "workspace_write",
+        code: "command_ask_script",
+        reason: `${id} ${sub} runs a project script`,
+      };
+    }
+  }
+  return null;
 }

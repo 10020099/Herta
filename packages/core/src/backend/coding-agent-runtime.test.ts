@@ -4,7 +4,12 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { HertaToAgentBrief } from "../bridge/types.js";
 import { InMemoryEventBus } from "../event-bus.js";
-import { NoopMemoryManager } from "../memory-manager.js";
+import {
+  type MemoryItem,
+  type MemoryManager,
+  type MemoryQuery,
+  NoopMemoryManager,
+} from "../memory-manager.js";
 import {
   NoopPermissionEngine,
   type PermissionEngine,
@@ -14,9 +19,27 @@ import { InMemoryToolRegistry } from "../tool-registry.js";
 import type { AgentEvent } from "../types/events.js";
 import type { ProviderPromptFrame } from "../types/provider.js";
 import { BackendContextBuilder } from "./backend-context-builder.js";
-import { CodingAgentRuntime } from "./coding-agent-runtime.js";
+import { CodingAgentRuntime, summarizeDiff } from "./coding-agent-runtime.js";
 
 const sampleBrief: HertaToAgentBrief = { taskId: "t-1" };
+
+describe("summarizeDiff", () => {
+  it("counts a deleted line that begins with `--` (a fifth copy of the header-by-prefix defect, 2026-09-03)", () => {
+    // The shared counter skips the two file headers by POSITION; the old
+    // private copy skipped every line starting with `---`, so a removed
+    // YAML front-matter rule or SQL comment vanished from the count.
+    const diff = [
+      "--- a/x.sql",
+      "+++ b/x.sql",
+      "@@ -1,3 +1,2 @@",
+      "-- keep",
+      "--- old comment",
+      "+++i",
+      " x",
+    ].join("\n");
+    expect(summarizeDiff(diff)).toBe("+1 -2");
+  });
+});
 
 // Each brief idempotently ensures its workspaceRoot exists, so the suite uses
 // a real tmp dir (cleaned per-test) instead of a hardcoded path.
@@ -523,6 +546,156 @@ describe("CodingAgentRuntime.runBrief", () => {
     }
   });
 
+  describe("project memory recall (ADR 0060)", () => {
+    // What memory_save leaves in `.herta/memory/project.jsonl` — one item,
+    // the shape the tool writes.
+    const savedItem: MemoryItem = {
+      id: "m-1",
+      scope: "repo",
+      kind: "test_command",
+      text: "pnpm vitest run --project core",
+      sourceSession: "s-0",
+      createdAt: "2026-09-01T00:00:00.000Z",
+      lastSeen: "2026-09-01T00:00:00.000Z",
+      confidence: 1,
+    };
+
+    class StubMemory implements MemoryManager {
+      recalls = 0;
+      constructor(private readonly items: MemoryItem[]) {}
+      async recall(_q: MemoryQuery): Promise<MemoryItem[]> {
+        this.recalls += 1;
+        return this.items;
+      }
+      async save(_item: MemoryItem): Promise<void> {}
+      currentItems(): readonly MemoryItem[] {
+        return this.items;
+      }
+    }
+
+    function makeRuntimeWith(
+      provider: FakeProvider,
+      memory: MemoryManager,
+    ): CodingAgentRuntime {
+      const tools = new InMemoryToolRegistry();
+      return new CodingAgentRuntime({
+        sessionId: "s-1",
+        provider,
+        tools,
+        permissions: new NoopPermissionEngine(),
+        backendBuilder: new BackendContextBuilder({ tools }),
+        bus: new InMemoryEventBus<AgentEvent>(),
+        clock: () => new Date("2026-05-07T00:00:00.000Z"),
+        workspaceRoot: wsRoot,
+        memory,
+      });
+    }
+
+    function captureFirstFrame(): {
+      provider: FakeProvider;
+      frame: () => ProviderPromptFrame | undefined;
+    } {
+      let captured: ProviderPromptFrame | undefined;
+      const provider = new FakeProvider({
+        turns: [
+          (frame) => {
+            captured = frame;
+            return [{ type: "finish", reason: "stop" }];
+          },
+        ],
+      });
+      return { provider, frame: () => captured };
+    }
+
+    it("a saved item reaches the FIRST provider call's scopedMemory when the caller supplies none", async () => {
+      // Pre-fix the runtime read `opts.scopedMemory ?? ""` and never touched
+      // the store: memory_save was write-only for four months (Codex study
+      // 2026-08-24 #43). The production dispatch passes no scopedMemory.
+      const { provider, frame } = captureFirstFrame();
+      const memory = new StubMemory([savedItem]);
+      const runtime = makeRuntimeWith(provider, memory);
+
+      await runtime.runBrief(sampleBrief, {
+        userMessages: [{ text: "run the core tests" }],
+      });
+
+      const captured = frame();
+      expect(captured).toBeDefined();
+      if (captured === undefined || !("backendSystem" in captured)) {
+        throw new Error("expected a backend frame");
+      }
+      expect(memory.recalls).toBe(1);
+      expect(captured.scopedMemory).toContain(
+        "- [test_command] pnpm vitest run --project core",
+      );
+      // Chinese by default (no lang given), the header in the session's
+      // language.
+      expect(captured.scopedMemory.split("\n")[0]).toContain("项目记忆");
+    });
+
+    it("an EN session gets the English header", async () => {
+      const { provider, frame } = captureFirstFrame();
+      const runtime = makeRuntimeWith(provider, new StubMemory([savedItem]));
+
+      await runtime.runBrief(sampleBrief, { lang: "en" });
+
+      const captured = frame();
+      if (captured === undefined || !("backendSystem" in captured)) {
+        throw new Error("expected a backend frame");
+      }
+      expect(captured.scopedMemory.split("\n")[0]).toContain("Project memory");
+    });
+
+    it("an empty store leaves scopedMemory empty — the wire is byte-identical to before", async () => {
+      const { provider, frame } = captureFirstFrame();
+      const runtime = makeRuntimeWith(provider, new StubMemory([]));
+
+      await runtime.runBrief(sampleBrief);
+
+      const captured = frame();
+      if (captured === undefined || !("backendSystem" in captured)) {
+        throw new Error("expected a backend frame");
+      }
+      expect(captured.scopedMemory).toBe("");
+    });
+
+    it("an explicit scopedMemory — even the empty string — is the caller's decision; the store is not read", async () => {
+      const { provider, frame } = captureFirstFrame();
+      const memory = new StubMemory([savedItem]);
+      const runtime = makeRuntimeWith(provider, memory);
+
+      await runtime.runBrief(sampleBrief, { scopedMemory: "" });
+
+      const captured = frame();
+      if (captured === undefined || !("backendSystem" in captured)) {
+        throw new Error("expected a backend frame");
+      }
+      expect(memory.recalls).toBe(0);
+      expect(captured.scopedMemory).toBe("");
+    });
+
+    it("a store that fails to read costs the brief its hints, not the brief", async () => {
+      const { provider, frame } = captureFirstFrame();
+      const broken: MemoryManager = {
+        recall: async () => {
+          throw new Error("EACCES: project.jsonl");
+        },
+        save: async () => {},
+        currentItems: () => [],
+      };
+      const runtime = makeRuntimeWith(provider, broken);
+
+      const report = await runtime.runBrief(sampleBrief);
+
+      expect(report.status).toBe("partial");
+      const captured = frame();
+      if (captured === undefined || !("backendSystem" in captured)) {
+        throw new Error("expected a backend frame");
+      }
+      expect(captured.scopedMemory).toBe("");
+    });
+  });
+
   it("captures the actual tool name and risk in permission events", async () => {
     const requestedRisk = "workspace_write" as const;
     const requestedTool = "edit_file";
@@ -825,6 +998,240 @@ describe("CodingAgentRuntime.runBrief", () => {
     expect(blocked?.tool).toBe("run_command");
   });
 
+  it("a WITHHELD READ does not cap the status (git-dev lab 2026-08-26)", async () => {
+    // The reader guard denying a `.git` / `.herta` probe the model then
+    // routed around capped fully completed briefs at 部分完成. The status
+    // gate's intent has always named MUTATIONS; a read-tier rule-deny now
+    // says so on the event and stays out of the count.
+    const provider = new FakeProvider({
+      turns: [
+        [
+          {
+            type: "tool-call-request",
+            call: {
+              id: "tc1",
+              tool: "write_new_file",
+              input: { path: "src/x.ts" },
+            },
+          },
+          { type: "finish", reason: "tool_calls" },
+        ],
+        [
+          {
+            type: "tool-call-request",
+            call: {
+              id: "tc2",
+              tool: "run_command",
+              input: { argv: ["ls", ".git"] },
+            },
+          },
+          { type: "finish", reason: "tool_calls" },
+        ],
+        [
+          { type: "text-delta", text: "done without it" },
+          { type: "finish", reason: "stop" },
+        ],
+      ],
+    });
+    const tools = new InMemoryToolRegistry();
+    tools.register({
+      name: "write_new_file",
+      schema: () => ({
+        name: "write_new_file",
+        description: "write",
+        inputSchema: { type: "object", properties: {} },
+      }),
+      run: async () => ({
+        ok: true,
+        summary: "wrote src/x.ts",
+        data: { relPath: "src/x.ts", created: true },
+      }),
+    });
+    tools.register({
+      name: "run_command",
+      schema: () => ({
+        name: "run_command",
+        description: "run",
+        inputSchema: { type: "object", properties: {} },
+      }),
+      run: async () => ({ ok: true, summary: "should never run" }),
+    });
+    const readDenyingEngine: PermissionEngine = {
+      check: async (call) =>
+        call.tool === "run_command"
+          ? {
+              kind: "deny",
+              reason: "read-only command targets ./.git",
+              code: "path_denied",
+              risk: "workspace_read",
+            }
+          : { kind: "allow" },
+      resolve: () => {},
+    };
+    const runtime = new CodingAgentRuntime({
+      sessionId: "s-1",
+      provider,
+      tools,
+      permissions: readDenyingEngine,
+      backendBuilder: new BackendContextBuilder({ tools }),
+      bus: new InMemoryEventBus<AgentEvent>(),
+      clock: () => new Date("2026-05-07T00:00:00.000Z"),
+      workspaceRoot: wsRoot,
+      memory: new NoopMemoryManager(),
+    });
+
+    const report = await runtime.runBrief(sampleBrief);
+
+    // The refusal still reaches the report's permission trail…
+    expect(report.permissions.some((p) => p.decision === "blocked")).toBe(true);
+    // …but a withheld read is not a refused mutation: the run completed.
+    expect(report.status).toBe("completed");
+  });
+
+  it("an invalid_input rule-deny does not cap the status — malformed, not refused", async () => {
+    // The study's L3 finding, reproduced shape: a bad argument shape is
+    // retried, not a permission the harness withheld.
+    const provider = new FakeProvider({
+      turns: [
+        [
+          {
+            type: "tool-call-request",
+            call: {
+              id: "tc1",
+              tool: "write_new_file",
+              input: { path: "src/x.ts" },
+            },
+          },
+          { type: "finish", reason: "tool_calls" },
+        ],
+        [
+          {
+            type: "tool-call-request",
+            call: { id: "tc2", tool: "run_command", input: { argv: 42 } },
+          },
+          { type: "finish", reason: "tool_calls" },
+        ],
+        [
+          { type: "text-delta", text: "recovered" },
+          { type: "finish", reason: "stop" },
+        ],
+      ],
+    });
+    const tools = new InMemoryToolRegistry();
+    tools.register({
+      name: "write_new_file",
+      schema: () => ({
+        name: "write_new_file",
+        description: "write",
+        inputSchema: { type: "object", properties: {} },
+      }),
+      run: async () => ({
+        ok: true,
+        summary: "wrote src/x.ts",
+        data: { relPath: "src/x.ts", created: true },
+      }),
+    });
+    tools.register({
+      name: "run_command",
+      schema: () => ({
+        name: "run_command",
+        description: "run",
+        inputSchema: { type: "object", properties: {} },
+      }),
+      run: async () => ({ ok: true, summary: "should never run" }),
+    });
+    const invalidInputEngine: PermissionEngine = {
+      check: async (call) =>
+        call.tool === "run_command"
+          ? {
+              kind: "deny",
+              reason: "argv must be an array",
+              code: "invalid_input",
+            }
+          : { kind: "allow" },
+      resolve: () => {},
+    };
+    const runtime = new CodingAgentRuntime({
+      sessionId: "s-1",
+      provider,
+      tools,
+      permissions: invalidInputEngine,
+      backendBuilder: new BackendContextBuilder({ tools }),
+      bus: new InMemoryEventBus<AgentEvent>(),
+      clock: () => new Date("2026-05-07T00:00:00.000Z"),
+      workspaceRoot: wsRoot,
+      memory: new NoopMemoryManager(),
+    });
+
+    const report = await runtime.runBrief(sampleBrief);
+    expect(report.status).toBe("completed");
+  });
+
+  it("a USER-denied read-only ask does not cap the status either", async () => {
+    // Same mutation-only intent on the user path: the request's own risk
+    // tier is already in hand via permission.requested.
+    const provider = new FakeProvider({
+      turns: [
+        [
+          {
+            type: "tool-call-request",
+            call: { id: "tc1", tool: "read_file", input: { path: "a.ts" } },
+          },
+          { type: "finish", reason: "tool_calls" },
+        ],
+        [
+          { type: "text-delta", text: "done" },
+          { type: "finish", reason: "stop" },
+        ],
+      ],
+    });
+    const tools = new InMemoryToolRegistry();
+    tools.register({
+      name: "read_file",
+      schema: () => ({
+        name: "read_file",
+        description: "read",
+        inputSchema: { type: "object", properties: {} },
+      }),
+      run: async () => ({ ok: true, summary: "read 1 file" }),
+    });
+    // A REAL user-path deny: the engine returns an ask whose decision
+    // resolves "deny", and the LOOP emits requested + resolved — so the
+    // request's own risk tier is what the status gate sees.
+    const denyingReadEngine = {
+      check: async (call: { id: string; tool: string }) =>
+        call.tool !== "read_file"
+          ? { kind: "allow" as const }
+          : {
+              kind: "ask" as const,
+              request: {
+                id: "perm-r",
+                call,
+                risk: "workspace_read",
+                reason: "recursive read",
+              },
+              decision: Promise.resolve("deny" as const),
+            },
+    } as unknown as PermissionEngine;
+    const runtime = new CodingAgentRuntime({
+      sessionId: "s-1",
+      provider,
+      tools,
+      permissions: denyingReadEngine,
+      backendBuilder: new BackendContextBuilder({ tools }),
+      bus: new InMemoryEventBus<AgentEvent>(),
+      clock: () => new Date("2026-05-07T00:00:00.000Z"),
+      workspaceRoot: wsRoot,
+      memory: new NoopMemoryManager(),
+    });
+
+    const report = await runtime.runBrief(sampleBrief);
+    // No mutation was refused and no ok-evidence exists — a read-only run
+    // that was declined lands at partial via the ordinary evidence route,
+    // NOT at blocked.
+    expect(report.status).not.toBe("blocked");
+  });
+
   it("populates report.tests[] when run_command emits a testRun", async () => {
     const provider = new FakeProvider({
       turns: [
@@ -1051,9 +1458,95 @@ describe("CodingAgentRuntime.runBrief", () => {
  * can delete at all, so the highest-blast-radius operation was the one the
  * attribution was structurally blind to.
  */
+describe("the repo snapshot header (ADR 0049 §2)", () => {
+  it("threads the injected repoContext into the frame the provider receives", async () => {
+    let seenSystem = "";
+    const provider = new FakeProvider({
+      turns: [
+        (frame) => {
+          seenSystem =
+            "backendSystem" in frame ? (frame.backendSystem ?? "") : "";
+          return [{ type: "finish", reason: "stop" }];
+        },
+      ],
+    });
+    const runtime = new CodingAgentRuntime({
+      sessionId: "s-1",
+      provider,
+      tools: new InMemoryToolRegistry(),
+      permissions: new NoopPermissionEngine(),
+      backendBuilder: new BackendContextBuilder({
+        tools: new InMemoryToolRegistry(),
+      }),
+      bus: new InMemoryEventBus<AgentEvent>(),
+      clock: () => new Date("2026-05-07T00:00:00.000Z"),
+      workspaceRoot: wsRoot,
+      memory: new NoopMemoryManager(),
+      repoContext: async () => ({
+        root: wsRoot,
+        prefix: "",
+        gitDir: null,
+        branch: "main",
+        detached: false,
+        headShort: "abc1234",
+        upstream: "origin/main",
+        ahead: 1,
+        behind: 0,
+        upstreamGone: false,
+        defaultBranch: "main",
+        inProgress: null,
+        conflicted: [],
+        dirty: [],
+        dirtyTotal: 0,
+        recentSubjects: ["abc1234 seed"],
+        recentCommits: [],
+      }),
+    });
+    await runtime.runBrief(sampleBrief, { userMessages: [{ text: "go" }] });
+    expect(seenSystem).toContain("# 仓库快照");
+    expect(seenSystem).toContain("分支: main → origin/main（领先 1，落后 0）");
+  });
+
+  it("a null describer leaves the frame without the section", async () => {
+    let seenSystem = "";
+    const provider = new FakeProvider({
+      turns: [
+        (frame) => {
+          seenSystem =
+            "backendSystem" in frame ? (frame.backendSystem ?? "") : "";
+          return [{ type: "finish", reason: "stop" }];
+        },
+      ],
+    });
+    const runtime = new CodingAgentRuntime({
+      sessionId: "s-1",
+      provider,
+      tools: new InMemoryToolRegistry(),
+      permissions: new NoopPermissionEngine(),
+      backendBuilder: new BackendContextBuilder({
+        tools: new InMemoryToolRegistry(),
+      }),
+      bus: new InMemoryEventBus<AgentEvent>(),
+      clock: () => new Date("2026-05-07T00:00:00.000Z"),
+      workspaceRoot: wsRoot,
+      memory: new NoopMemoryManager(),
+      repoContext: async () => null,
+    });
+    await runtime.runBrief(sampleBrief, { userMessages: [{ text: "go" }] });
+    expect(seenSystem).not.toContain("仓库快照");
+  });
+});
+
 describe("the dispatch baseline (2026-08-25)", () => {
   const runWith = async (
     snapshots: Array<{ head: string | null; dirty: string[] } | null>,
+    rangeDiff?: (
+      fromHead: string,
+      toHead: string,
+    ) => Promise<
+      | readonly { path: string; kind: "created" | "modified" | "deleted" }[]
+      | null
+    >,
   ) => {
     const provider = new FakeProvider({
       turns: [[{ type: "finish", reason: "stop" }]],
@@ -1072,6 +1565,7 @@ describe("the dispatch baseline (2026-08-25)", () => {
       workspaceRoot: wsRoot,
       memory: new NoopMemoryManager(),
       repoProbe: async () => snapshots[call++] ?? null,
+      ...(rangeDiff !== undefined ? { repoRangeDiff: rangeDiff } : {}),
     });
     return runtime.runBrief(sampleBrief, { userMessages: [{ text: "go" }] });
   };
@@ -1100,13 +1594,70 @@ describe("the dispatch baseline (2026-08-25)", () => {
     expect(report.residualRisks.join(" ")).toContain("src/mine.ts");
   });
 
-  it("refuses to attribute anything when HEAD moved under it", async () => {
+  it("refuses to attribute anything when HEAD moved and no range differ is wired", async () => {
     // A commit or checkout means "dirty vs HEAD" no longer describes the same
     // tree at both ends, so the difference would be meaningless.
     const report = await runWith([
       { head: "abc", dirty: [] },
       { head: "def", dirty: ["src/x.ts"] },
     ]);
+    expect(report.changedFiles).toEqual([]);
+    expect(report.residualRisks.join(" ")).toContain("HEAD moved");
+  });
+
+  it("attributes the committed range when HEAD moved FORWARD (2026-08-26)", async () => {
+    // The git-dev lab: the blanket refusal above fired on every brief that
+    // ended in a commit — the normal ending of a git brief — so shell writes
+    // vanished from changedFiles the moment the model committed them. A new
+    // head that descends from the old one is this dispatch's own work.
+    const report = await runWith(
+      [
+        { head: "abc", dirty: ["pre.ts"] },
+        { head: "def", dirty: ["pre.ts", "loose.ts"] },
+      ],
+      async (from, to) =>
+        from === "abc" && to === "def"
+          ? [
+              { path: "src/a.ts", kind: "modified" },
+              { path: "src/new.ts", kind: "created" },
+              // Pre-dirty at brief start: partly the user's edit even though
+              // this dispatch committed it — must NOT be attributed.
+              { path: "pre.ts", kind: "modified" },
+            ]
+          : null,
+    );
+    const byPath = new Map(report.changedFiles.map((f) => [f.path, f.kind]));
+    expect(byPath.get("src/a.ts")).toBe("modified");
+    expect(byPath.get("src/new.ts")).toBe("created");
+    // The still-uncommitted delta attributes exactly as in the same-head case.
+    expect(byPath.get("loose.ts")).toBe("modified");
+    expect(byPath.has("pre.ts")).toBe(false);
+    expect(report.residualRisks.join(" ")).toContain("pre.ts");
+    expect(report.residualRisks.join(" ")).not.toContain("HEAD moved");
+  });
+
+  it("keeps the honest refusal when the range is not attributable (rebase/amend)", async () => {
+    const report = await runWith(
+      [
+        { head: "abc", dirty: [] },
+        { head: "def", dirty: [] },
+      ],
+      async () => null,
+    );
+    expect(report.changedFiles).toEqual([]);
+    expect(report.residualRisks.join(" ")).toContain("HEAD moved");
+  });
+
+  it("survives a range differ that throws — attribution can never fail a brief", async () => {
+    const report = await runWith(
+      [
+        { head: "abc", dirty: [] },
+        { head: "def", dirty: [] },
+      ],
+      async () => {
+        throw new Error("git exploded");
+      },
+    );
     expect(report.changedFiles).toEqual([]);
     expect(report.residualRisks.join(" ")).toContain("HEAD moved");
   });

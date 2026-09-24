@@ -15,12 +15,14 @@ function subscribe<T>(channel: string, cb: (e: T) => void): () => void {
 
 const bridge: HertaBridge = {
   platform: process.platform,
-  submitText: (text) => ipcRenderer.invoke(CMD.submitText, text),
+  submitText: (text, stagedImageIds) =>
+    ipcRenderer.invoke(CMD.submitText, text, stagedImageIds),
   interrupt: (turnId) => ipcRenderer.invoke(CMD.interrupt, turnId),
   getContextUsage: (sessionId) =>
     ipcRenderer.invoke(CMD.getContextUsage, sessionId),
   requestContextCompaction: (sessionId) =>
     ipcRenderer.invoke(CMD.requestContextCompaction, sessionId),
+  steerText: (text) => ipcRenderer.invoke(CMD.steerText, text),
   rewindLastTurn: (sessionId) =>
     ipcRenderer.invoke(CMD.rewindLastTurn, sessionId),
   maybePlayEasterEgg: () => ipcRenderer.invoke(CMD.maybePlayEasterEgg),
@@ -35,7 +37,12 @@ const bridge: HertaBridge = {
   listCommandRules: () => ipcRenderer.invoke(CMD.listCommandRules),
   removeCommandRule: (display) =>
     ipcRenderer.invoke(CMD.removeCommandRule, display),
+  getWorkspaceTrust: () => ipcRenderer.invoke(CMD.getWorkspaceTrust),
+  setWorkspaceTrust: (value) =>
+    ipcRenderer.invoke(CMD.setWorkspaceTrust, value),
   resyncRecord: () => ipcRenderer.invoke(CMD.resyncRecord),
+  requestSessionSync: () => ipcRenderer.invoke(CMD.requestSync),
+  refreshRepo: () => ipcRenderer.invoke(CMD.refreshRepo),
   checkForUpdate: () => ipcRenderer.invoke(CMD.updateCheck),
   restartAndInstall: () => ipcRenderer.invoke(CMD.updateRestart),
   getUpdateState: () => ipcRenderer.invoke(CMD.updateStatus),
@@ -51,6 +58,24 @@ const bridge: HertaBridge = {
     ipcRenderer.invoke(CMD.attachFiles, sessionId, paths),
   removeAttachment: (sessionId, path) =>
     ipcRenderer.invoke(CMD.removeAttachment, sessionId, path),
+  stageImages: (sessionId, inputs) =>
+    ipcRenderer.invoke(CMD.stageImages, sessionId, inputs),
+  unstageImage: (sessionId, id) =>
+    ipcRenderer.invoke(CMD.unstageImage, sessionId, id),
+  readWorkspaceFile: (sessionId, path) =>
+    ipcRenderer.invoke(CMD.readWorkspaceFile, sessionId, path),
+  readWorkspaceBytes: (sessionId, path) =>
+    ipcRenderer.invoke(CMD.readWorkspaceBytes, sessionId, path),
+  readWorkspaceCommit: (sessionId, ref) =>
+    ipcRenderer.invoke(CMD.readWorkspaceCommit, sessionId, ref),
+  readWorkspaceDiff: (sessionId, path) =>
+    ipcRenderer.invoke(CMD.readWorkspaceDiff, sessionId, path),
+  readWorkspaceLog: (sessionId, opts) =>
+    ipcRenderer.invoke(CMD.readWorkspaceLog, sessionId, opts),
+  readWorkspaceBranches: (sessionId) =>
+    ipcRenderer.invoke(CMD.readWorkspaceBranches, sessionId),
+  openWorkspaceFile: (sessionId, path) =>
+    ipcRenderer.invoke(CMD.openWorkspaceFile, sessionId, path),
   // Electron 43 removed `File.path`, and this preload is CJS + sandboxed
   // (main/index.ts:266 records why it must stay that way), so a dropped
   // file's real path is only reachable through webUtils here. The renderer
@@ -85,6 +110,28 @@ const bridge: HertaBridge = {
   setAutoUpdate: (enabled) => ipcRenderer.invoke(CMD.setAutoUpdate, enabled),
   getTheme: () => ipcRenderer.invoke(CMD.getTheme),
   setTheme: (theme) => ipcRenderer.invoke(CMD.setTheme, theme),
+  getDeviceScene: () => ipcRenderer.invoke(CMD.getDeviceScene),
+  setDeviceScene: (enabled) => ipcRenderer.invoke(CMD.setDeviceScene, enabled),
+  getRealtimeVoice: () => ipcRenderer.invoke(CMD.getRealtimeVoice),
+  setRealtimeVoice: (enabled) =>
+    ipcRenderer.invoke(CMD.setRealtimeVoice, enabled),
+  downloadVoiceModel: () => ipcRenderer.invoke(CMD.downloadVoiceModel),
+  cancelVoiceModelDownload: () =>
+    ipcRenderer.invoke(CMD.cancelVoiceModelDownload),
+  removeVoiceModel: () => ipcRenderer.invoke(CMD.removeVoiceModel),
+  onVoiceModel: (cb) => subscribe(EVT.voiceModel, cb),
+  setVoiceEngine: (engine) => ipcRenderer.invoke(CMD.setVoiceEngine, engine),
+  getMiniMaxKeyStatus: () => ipcRenderer.invoke(CMD.getMiniMaxKeyStatus),
+  setMiniMaxKey: (key) => ipcRenderer.invoke(CMD.setMiniMaxKey, key),
+  clearMiniMaxKey: () => ipcRenderer.invoke(CMD.clearMiniMaxKey),
+  openExternal: (url) => ipcRenderer.invoke(CMD.openExternal, url),
+  getMiniMaxPlanKeyStatus: () =>
+    ipcRenderer.invoke(CMD.getMiniMaxPlanKeyStatus),
+  setMiniMaxPlanKey: (key) => ipcRenderer.invoke(CMD.setMiniMaxPlanKey, key),
+  clearMiniMaxPlanKey: () => ipcRenderer.invoke(CMD.clearMiniMaxPlanKey),
+  prepareMiniMaxVoice: () => ipcRenderer.invoke(CMD.prepareMiniMaxVoice),
+  onMiniMaxVoice: (cb) => subscribe(EVT.voiceMinimax, cb),
+  onMiniMaxSpeech: (cb) => subscribe(EVT.voiceMinimaxSpeech, cb),
   getDeepSeekKeyStatus: () => ipcRenderer.invoke(CMD.getDeepSeekKeyStatus),
   setDeepSeekKey: (key) => ipcRenderer.invoke(CMD.setDeepSeekKey, key),
   clearDeepSeekKey: () => ipcRenderer.invoke(CMD.clearDeepSeekKey),
@@ -103,7 +150,11 @@ const bridge: HertaBridge = {
   windowClose: () => ipcRenderer.send(CMD.windowClose),
   windowIsMaximized: () => ipcRenderer.invoke(CMD.windowIsMaximized),
   onWindowMaximized: (cb) => subscribe(EVT.windowMaximized, cb),
+  windowIsFullScreen: () => ipcRenderer.invoke(CMD.windowIsFullScreen),
+  onWindowFullScreen: (cb) => subscribe(EVT.windowFullScreen, cb),
+  onOpenSettings: (cb) => subscribe(EVT.openSettings, () => cb()),
   onWorkspace: (cb) => subscribe(EVT.workspace, cb),
+  onRepo: (cb) => subscribe(EVT.repo, cb),
   onRecord: (cb) => subscribe(EVT.record, cb),
   onOverlay: (cb) => subscribe(EVT.overlay, cb),
   onSpeech: (cb) => subscribe(EVT.speech, cb),

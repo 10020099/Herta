@@ -20,6 +20,7 @@
 import {
   ApprovalPolicy,
   type AskResolver,
+  abortError,
   type PendingPermissionApproval,
   type PermissionRequest,
   type ProjectCommandRuleStore,
@@ -55,6 +56,12 @@ export interface OverlayAskResolverDeps {
    * their pre-0030 behavior.
    */
   readonly rules?: ProjectCommandRuleStore;
+  /**
+   * Whether the CURRENT workspace trusts by default (ADR 0064): the
+   * session's managed sandbox does, a real project does not. A provider —
+   * the workspace can move mid-session. Absent → never by default.
+   */
+  readonly defaultTrust?: () => boolean;
 }
 
 export type ResolveExternalResult =
@@ -64,14 +71,11 @@ export type ResolveExternalResult =
       readonly reason: "stale_request" | "no_pending_overlay";
     };
 
-/** Constructed (not `signal.reason`) so the name is ALWAYS "AbortError" —
- *  `isAbortError` classifies by name, and a reason-less abort() or a custom
- *  reason must not demote the interrupt to `permission_failed`. */
-function gateAbortError(): Error {
-  const e = new Error("permission gate aborted by interrupt");
-  e.name = "AbortError";
-  return e;
-}
+/** Constructed (core's `abortError`, not `signal.reason`) so the name is
+ *  ALWAYS "AbortError" — a reason-less abort() or a custom reason must not
+ *  demote the interrupt to `permission_failed`. */
+const gateAbortError = (): Error =>
+  abortError("permission gate aborted by interrupt");
 
 export class OverlayAskResolver implements AskResolver {
   private pending: {
@@ -83,7 +87,17 @@ export class OverlayAskResolver implements AskResolver {
   private readonly policy: ApprovalPolicy;
 
   constructor(private readonly deps: OverlayAskResolverDeps) {
-    this.policy = new ApprovalPolicy(deps.cache, deps.rules);
+    this.policy = new ApprovalPolicy(deps.cache, deps.rules, {
+      ...(deps.defaultTrust !== undefined
+        ? { defaultTrust: deps.defaultTrust }
+        : {}),
+    });
+  }
+
+  /** The policy's view of workspace trust (ADR 0064) — the session's
+   *  trust surface reads it here so the two never disagree. */
+  get workspaceTrusted(): boolean {
+    return this.policy.workspaceTrusted();
   }
 
   present(
@@ -143,6 +157,9 @@ export class OverlayAskResolver implements AskResolver {
         ...(request.codes !== undefined && request.codes.length > 1
           ? { codes: request.codes }
           : {}),
+        ...(request.consequence !== undefined
+          ? { consequence: request.consequence }
+          : {}),
         command: extractCommand(request),
         diff: request.diff,
         files: request.files,
@@ -156,6 +173,9 @@ export class OverlayAskResolver implements AskResolver {
         // Same contract for the 「本项目允许」 button (ADR 0030): present only
         // when persistence:"always" would actually save this exact rule.
         projectRule: pre.projectRule,
+        // And for 「信任此工作区」 (ADR 0064): only when the tier would
+        // cover this class and the workspace does not trust yet.
+        ...(pre.showTrust ? { trustable: true } : {}),
       };
       this.deps.setPendingOverlay(overlay);
     });
@@ -180,7 +200,7 @@ export class OverlayAskResolver implements AskResolver {
   resolveExternal(opts: {
     readonly requestId: string;
     readonly decision: "allow" | "deny";
-    readonly persistence?: "once" | "session" | "always";
+    readonly persistence?: "once" | "session" | "always" | "trust";
   }): ResolveExternalResult {
     if (this.pending === null) {
       return { ok: false, reason: "no_pending_overlay" };

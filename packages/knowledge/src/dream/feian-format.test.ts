@@ -1,7 +1,10 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { TerminalRecordBlock } from "@herta/core";
+import { promptAssetsFor } from "@herta/herta";
 import { describe, expect, it } from "vitest";
+import { buildEpisodeDigest, DIGEST_MAX_SYSTEM_ROWS } from "./digest.js";
 import {
   countFeianFiles,
   extractNarrativeOpening,
@@ -95,6 +98,192 @@ describe("validateFeian — rejects", () => {
     ));
 });
 
+describe("validateFeian — what the prefix would drop is never promoted (dream review 2026-09-22, finding 15)", () => {
+  it("rejects nested fences — the load gate is one-deep", () => {
+    const nested = GOOD.replace(
+      "在。说吧。",
+      "在。（开拓者 说）你好（/开拓者 说）说吧。",
+    );
+    const r = validateFeian(nested);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.errors.join(" ")).toContain("prefix load gate");
+  });
+
+  it("rejects an all-CJK page over the gate's token cap", () => {
+    // 15 500 Han characters: above the gate's 10 000 estimated tokens (Han
+    // ≈ 0.65 tokens a character), and under the retired 16 000-char cap that
+    // this validator used to keep beside it.
+    const long = GOOD.replace("阮·梅难得主动联系我。", "黑".repeat(15_500));
+    const r = validateFeian(long);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.errors.join(" ")).toContain("prefix load gate");
+  });
+
+  it("the gate's token cap is the only ceiling, so an EN-length page validates (ADR 0014 §6, amended 2026-09-23)", () => {
+    // ~28k ASCII chars is ~7k estimated tokens, the size of the EN 00
+    // anchor. The retired 16 000-char cap rejected it while a zh page of
+    // the same token size passed.
+    const prose = "the same content runs three times the chars in english. ";
+    const long = GOOD.replace("阮·梅难得主动联系我。", prose.repeat(500));
+    expect(long.length).toBeGreaterThan(16_000);
+    expect(validateFeian(long)).toEqual({ ok: true });
+  });
+});
+
+describe("validateFeian — the session digest's notation is not record grammar (ADR 0069, lab for §8 and §9)", () => {
+  // Every 〔…〕 line comes from `buildEpisodeDigest` itself, so a marker
+  // shape the digest learns later is caught here, not by a live lab.
+  const marker = (
+    body: string,
+    state?: "completed" | "failed" | "interrupted" | "blocked" | "partial",
+  ): TerminalRecordBlock => ({
+    kind: "system",
+    label: "差分协处理器",
+    body,
+    role: "done-marker",
+    ...(state !== undefined
+      ? {
+          markerSummary: {
+            kind: "done" as const,
+            state,
+            fileCount: 0,
+            riskCount: 0,
+          },
+        }
+      : {}),
+  });
+  const digest = buildEpisodeDigest([
+    { kind: "user", text: "把 parser 修了" },
+    {
+      kind: "herta",
+      surface: "speech",
+      text: "@板砖 修 parser。",
+      selfCorrection: "把 lexer 说成了 parser，已更正",
+    },
+    {
+      kind: "system",
+      label: "系统",
+      body: "↳ edit_file failed: stale_read: file changed since read",
+      digest: { kind: "tool-fail", tool: "edit_file", code: "stale_read" },
+    },
+    {
+      kind: "system",
+      label: "差分协处理器",
+      body: "Writing a.ts ↳ +2 −1",
+      digest: { kind: "op", verb: "Writing", arg: "a.ts" },
+    },
+    ...Array.from(
+      { length: DIGEST_MAX_SYSTEM_ROWS },
+      (_, i): TerminalRecordBlock => ({
+        kind: "system",
+        label: "差分协处理器",
+        body: `Reading src/f${i}.ts`,
+        digest: { kind: "op", verb: "Reading", arg: `src/f${i}.ts` },
+      }),
+    ),
+    marker("中断 · 0 个文件", "interrupted"),
+    marker("失败 · 运行异常中止", "failed"),
+    marker("部分完成 · 1 个文件", "partial"),
+    marker("受阻 · 缺依赖"),
+    marker("完成 · 1 个文件", "completed"),
+    { kind: "herta", surface: "speech", text: "只修了一半。" },
+  ]);
+  // One line per shape: the label-and-tag head (the elision line has no
+  // colon, so it is its own key).
+  const markerLines = [
+    ...new Map(
+      digest
+        .split("\n")
+        .filter((l) => l.startsWith("〔"))
+        .map((l) => [l.split("：")[0], l]),
+    ).values(),
+  ];
+  const inDialogue = (line: string) =>
+    GOOD.replace("（我 说）\n在。说吧。", `${line}\n\n（我 说）\n在。说吧。`);
+
+  it("the fixture carries every marker the digest writes", () => {
+    for (const needle of [
+      "〔黑塔的自我更正：",
+      "〔……此处略去",
+      "〔系统（失败）：",
+      "〔差分协处理器（已核实）：",
+      "〔差分协处理器（中断）：",
+      "〔差分协处理器（失败）：",
+      "〔差分协处理器（受阻）：",
+      "〔差分协处理器（部分完成）：",
+    ]) {
+      expect(
+        markerLines.some((l) => l.startsWith(needle)),
+        needle,
+      ).toBe(true);
+    }
+  });
+
+  it.each(
+    markerLines.map((l) => [l]),
+  )("rejects a page that copies the digest line %s", (line) => {
+    const r = validateFeian(inDialogue(line));
+    expect(r.ok).toBe(false);
+    // The copied line is the page's only fault: nothing else caught it.
+    if (!r.ok) {
+      expect(r.errors).toHaveLength(1);
+      expect(r.errors[0]).toContain("digest marker");
+    }
+  });
+
+  it("rejects a marker copied into the middle of a narrative line", () => {
+    const r = validateFeian(
+      GOOD.replace(
+        "阮·梅难得主动联系我。",
+        "阮·梅难得主动联系我。板砖回了一句〔差分协处理器（已核实）：完成 · 1 个文件〕。",
+      ),
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.errors.join(" ")).toContain("digest marker");
+  });
+
+  it("rejects a tag the digest never writes — the shape is the leak", () =>
+    expect(
+      validateFeian(inDialogue("〔差分协处理器（已完成）：Writing a.ts〕")).ok,
+    ).toBe(false));
+
+  it("names the line, so the refine step knows what to rewrite", () => {
+    const r = validateFeian(inDialogue("〔系统（失败）：↳ edit_file failed〕"));
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.errors[0]).toContain("〔系统（失败）：↳ edit_file failed〕");
+      expect(r.errors[0]).toContain("→ 差分协处理器");
+    }
+  });
+
+  it("still accepts the record's own furniture — → 系统 / → 差分协处理器 rows", () => {
+    const withRows = inDialogue(
+      [
+        "→ 系统",
+        "",
+        "```text",
+        "Writing a.ts ↳ +2 −1",
+        "```",
+        "",
+        "→ 差分协处理器",
+        "",
+        "```text",
+        "中断 · 0 个文件",
+        "```",
+      ].join("\n"),
+    );
+    expect(validateFeian(withRows)).toEqual({ ok: true });
+  });
+
+  it("accepts a self-correction told in her own words, the way the prompt asks", () => {
+    expect(
+      validateFeian(
+        GOOD.replace("在。说吧。", "是 lexer，不是 parser——刚才说错了。说吧。"),
+      ),
+    ).toEqual({ ok: true });
+  });
+});
+
 describe("validateFeian — exemptions", () => {
   it("allows CJK numerals and the （其N）series suffix in the title", () => {
     expect(
@@ -138,6 +327,25 @@ describe("validateFeian — real seed corpus", () => {
     for (const f of files) {
       const text = readFileSync(join(root, f), "utf8");
       expect(validateFeian(text), `seed: ${f}`).toEqual({ ok: true });
+    }
+  });
+
+  // The compiled bundles are what materializes into a workspace, in both
+  // languages. The EN 00 and 02 anchors (27k / 21k chars, 7.6k / 6.5k
+  // estimated tokens) failed the retired 16 000-char ceiling; the length
+  // cap is the load gate's estimated tokens now (ADR 0014 §6, amended
+  // 2026-09-23), so every seed passes the whole validator, the digest-marker
+  // check included. A dream page the size of an anchor is promotable in
+  // either language.
+  it("accepts every compiled seed, zh and en", () => {
+    for (const lang of ["zh", "en"] as const) {
+      const seeds = promptAssetsFor(lang).feianSeeds;
+      expect(Object.keys(seeds).length).toBeGreaterThan(0);
+      for (const [name, body] of Object.entries(seeds)) {
+        expect(validateFeian(body), `${lang} seed: ${name}`).toEqual({
+          ok: true,
+        });
+      }
     }
   });
 });

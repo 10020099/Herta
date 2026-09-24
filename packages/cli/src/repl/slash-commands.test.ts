@@ -443,6 +443,57 @@ describe("handleSlashCommand", () => {
       expect(out.full()).toContain("loaded session bbbb2222");
     });
 
+    it("/resume rebinds the loaded session's own prefix and recap before swapping the record (ADR 0069 §3)", async () => {
+      writeSession("bbbb2222", "/proj/x");
+      const out = new MockWritable();
+      const { loaded, swapped, driver } = mkDriverStub();
+      const order: string[] = [];
+      const rebound: { sessionId: string; blocks: number }[] = [];
+      const ctx = {
+        ...mkCtx({ out }),
+        driver: {
+          ...driver,
+          loadRecord: (r: TerminalRecord): void => {
+            order.push("loadRecord");
+            driver.loadRecord(r);
+          },
+        } as unknown as V2ActorDriver,
+        rebindSession: async (
+          sessionId: string,
+          record: TerminalRecord,
+        ): Promise<void> => {
+          order.push("rebind");
+          rebound.push({ sessionId, blocks: record.length });
+        },
+        transcriptDir: tmp,
+        currentWorkspaceRoot: "/proj/x",
+      };
+      await handleSlashCommand("/resume latest", ctx);
+      expect(rebound).toEqual([{ sessionId: "bbbb2222", blocks: 1 }]);
+      expect(order).toEqual(["rebind", "loadRecord"]);
+      expect(loaded).toHaveLength(1);
+      expect(swapped).toHaveLength(1);
+    });
+
+    it("/resume that cannot prepare the session's prefix stays on the current session", async () => {
+      writeSession("bbbb2222", "/proj/x");
+      const out = new MockWritable();
+      const { loaded, swapped, driver } = mkDriverStub();
+      const ctx = {
+        ...mkCtx({ out }),
+        driver,
+        rebindSession: async (): Promise<void> => {
+          throw new Error("narrative dir unreadable");
+        },
+        transcriptDir: tmp,
+        currentWorkspaceRoot: "/proj/x",
+      };
+      await handleSlashCommand("/resume latest", ctx);
+      expect(loaded).toHaveLength(0);
+      expect(swapped).toHaveLength(0);
+      expect(out.full()).toContain("could not prepare bbbb2222");
+    });
+
     it("/resume latest prints empty state when no workspace sessions", async () => {
       const out = new MockWritable();
       const { loaded, driver } = mkDriverStub();

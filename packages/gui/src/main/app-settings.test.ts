@@ -3,9 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  dreamEnabled,
   isBackendContract,
   isBackendThinking,
   isModelChoice,
+  normalizeModelChoice,
   readAppSettings,
   writeAppSettings,
 } from "./app-settings.js";
@@ -22,6 +24,21 @@ describe("app-settings", () => {
 
   it("returns {} for a missing file", async () => {
     expect(await readAppSettings(mk())).toEqual({});
+  });
+
+  it("Dream is opt-in: no recorded choice reads as OFF, a recorded one is kept (2026-09-21)", async () => {
+    // The ONE resolver the bootstrap and the Settings pane both read — the
+    // pane can never show a default the app is not running with.
+    expect(dreamEnabled({})).toBe(false);
+    expect(dreamEnabled({ backend: { thinking: "low" } })).toBe(false);
+    expect(dreamEnabled({ dream: {} })).toBe(false);
+    expect(dreamEnabled({ dream: { enabled: true } })).toBe(true);
+    expect(dreamEnabled({ dream: { enabled: false } })).toBe(false);
+    // …and through the file: a missing one, then a written choice.
+    const ws = mk();
+    expect(dreamEnabled(await readAppSettings(ws))).toBe(false);
+    await writeAppSettings(ws, { dream: { enabled: true } });
+    expect(dreamEnabled(await readAppSettings(ws))).toBe(true);
   });
 
   it("write then read round-trips", async () => {
@@ -93,13 +110,13 @@ describe("app-settings", () => {
     expect(isBackendThinking(5)).toBe(false);
   });
 
-  it("models round-trips, a malformed models section falls back to {}, and isModelChoice accepts exactly the two names (2026-08-17)", async () => {
+  it("models round-trips, a malformed models section falls back to {}, and isModelChoice accepts exactly the two names (2026-08-17; renamed 2026-09-10)", async () => {
     const ws = mk();
     await writeAppSettings(ws, {
-      models: { actor: "deepseek-v4-flash", backend: "deepseek-v4-pro" },
+      models: { actor: "deepseek-flash", backend: "deepseek-v4-pro" },
     });
     expect(await readAppSettings(ws)).toEqual({
-      models: { actor: "deepseek-v4-flash", backend: "deepseek-v4-pro" },
+      models: { actor: "deepseek-flash", backend: "deepseek-v4-pro" },
     });
     writeFileSync(
       join(ws, ".herta", "settings.json"),
@@ -108,11 +125,37 @@ describe("app-settings", () => {
     );
     expect(await readAppSettings(ws)).toEqual({});
     expect(isModelChoice("deepseek-v4-pro")).toBe(true);
-    expect(isModelChoice("deepseek-v4-flash")).toBe(true);
+    expect(isModelChoice("deepseek-flash")).toBe(true);
     // The completion endpoint 400s on anything else (deepseek-v4-base did).
     expect(isModelChoice("deepseek-v4-base")).toBe(false);
     expect(isModelChoice("flash")).toBe(false);
     expect(isModelChoice(undefined)).toBe(false);
+    // The 2026-08 names are not CURRENT names — this guard is for what the
+    // pane may write; readers fold them through normalizeModelChoice.
+    expect(isModelChoice("deepseek-v4-flash")).toBe(false);
+    expect(isModelChoice("deepseek-v4-flash-vision-exp")).toBe(false);
+  });
+
+  it("a settings.json from before the 2026-09 rename reads as the flash — never as the Pro default (normalizeModelChoice)", async () => {
+    // DeepSeek retired `deepseek-v4-flash` and `deepseek-v4-flash-vision-exp`
+    // (both served by V4.1 Flash now). A file the 2026-08 pane wrote keeps
+    // meaning "flash", and the old 板砖-only vision row folds into the same
+    // name, since the flash itself reads images (ADR 0048 §5b).
+    expect(normalizeModelChoice("deepseek-v4-flash")).toBe("deepseek-flash");
+    expect(normalizeModelChoice("deepseek-v4-flash-vision-exp")).toBe(
+      "deepseek-flash",
+    );
+    expect(normalizeModelChoice("deepseek-flash")).toBe("deepseek-flash");
+    expect(normalizeModelChoice("deepseek-v4-pro")).toBe("deepseek-v4-pro");
+    expect(normalizeModelChoice("deepseek-v4-base")).toBeUndefined();
+    expect(normalizeModelChoice(undefined)).toBeUndefined();
+    expect(normalizeModelChoice(5)).toBeUndefined();
+
+    const ws = mk();
+    await writeAppSettings(ws, {
+      models: { actor: "deepseek-v4-pro", backend: "deepseek-flash" },
+    });
+    expect((await readAppSettings(ws)).models?.backend).toBe("deepseek-flash");
   });
 
   it("read + merge + write preserves unrelated keys (the handler pattern)", async () => {

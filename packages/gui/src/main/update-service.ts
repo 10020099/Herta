@@ -1,3 +1,4 @@
+import { errorMessage } from "@herta/core";
 import { app } from "electron";
 import type { AppUpdater, UpdateInfo } from "electron-updater";
 // The state shape lives with the IPC contract (bridge-types is deliberately
@@ -27,6 +28,17 @@ export interface UpdateServiceDeps {
    *  (Settings → Update, persisted; default true). Manual checks are
    *  unaffected. Live-toggled via setAutoEnabled. */
   readonly autoEnabled?: boolean;
+  /** Runs right before `quitAndInstall` hands over, and only when it does.
+   *  On macOS the native updater CLOSES THE WINDOWS FIRST and emits
+   *  `before-quit` only afterwards (Electron's documented order for
+   *  `autoUpdater.quitAndInstall`), so the window's close-to-tray guard saw
+   *  no quit in progress, hid the window, and the restart never happened
+   *  (platform review 2026-09-23). The app marks the quit as real here. */
+  readonly beforeQuitAndInstall?: () => void;
+  /** This install cannot update itself (Linux outside an AppImage — see
+   *  `UpdateState.unsupported`). Nothing is wired or checked, and the state
+   *  says so from the start. */
+  readonly unsupported?: boolean;
 }
 
 export interface UpdateService {
@@ -55,9 +67,23 @@ export interface UpdateService {
  * Settings check reports `error`. Never installs mid-session on its own:
  * autoInstallOnAppQuit rides the existing before-quit flush hold.
  */
+/** Whether an updater error means the feed could not be reached at all —
+ *  Chromium's `net::ERR_*`, Node's socket errors, a TLS handshake that did
+ *  not complete — as opposed to an answer it did not like (404, a bad
+ *  signature). The feed is GitHub; from some networks it is simply not
+ *  there. Exported for tests. */
+export function isUnreachable(message: string): boolean {
+  return /net::ERR_|ECONN|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|socket hang up|timed? ?out|fetch failed|handshake|certificate|getaddrinfo|ERR_NETWORK/i.test(
+    message,
+  );
+}
+
 export function createUpdateService(deps: UpdateServiceDeps): UpdateService {
   const { updater, send } = deps;
-  let state: UpdateState = { phase: "idle" };
+  const unsupported = deps.unsupported === true;
+  let state: UpdateState = unsupported
+    ? { phase: "idle", unsupported: true }
+    : { phase: "idle" };
   let manualCheck = false;
   let launchTimer: NodeJS.Timeout | null = null;
   let interval: NodeJS.Timeout | null = null;
@@ -120,15 +146,27 @@ export function createUpdateService(deps: UpdateServiceDeps): UpdateService {
     updater.on("update-downloaded", (info: UpdateInfo) =>
       set({ phase: "ready", version: info.version }),
     );
-    updater.on("error", (err: Error) => {
-      // Silent on automatic checks (private feed / offline are normal);
-      // loud on a user-initiated one.
-      if (manualCheck) {
-        set({ phase: "error", message: err.message });
-      } else {
-        set({ phase: "idle" });
-      }
-    });
+    updater.on("error", (err: Error) => report(err));
+  };
+
+  /**
+   * One failure, one report. A feed that cannot be REACHED (offline, a
+   * blocked region — GitHub is the feed; owner 2026-09-09: "正在检查…" then
+   * "尚未检查更新" was all a user behind a wall ever saw) is said so on the
+   * automatic path too, with `network` set so the pane can point at the
+   * VPN and the netdisk: nothing to nag about, and the pane is the only
+   * place it shows. Any other automatic failure (a private feed's 404)
+   * stays silent as before; a manual check reports whatever it hit.
+   */
+  const report = (err: unknown): void => {
+    const message = errorMessage(err);
+    if (isUnreachable(message)) {
+      set({ phase: "error", message, network: true });
+    } else if (manualCheck) {
+      set({ phase: "error", message });
+    } else {
+      set({ phase: "idle" });
+    }
   };
 
   const check = async (): Promise<void> => {
@@ -139,15 +177,12 @@ export function createUpdateService(deps: UpdateServiceDeps): UpdateService {
       // flight, and its outcome must keep the manual/auto distinction.
       // set() clears the latch at the next terminal phase.
     } catch (err) {
-      // checkForUpdates can reject as well as emit "error" — same policy.
-      if (manualCheck) {
-        set({
-          phase: "error",
-          message: err instanceof Error ? err.message : String(err),
-        });
-      } else {
-        set({ phase: "idle" });
-      }
+      // checkForUpdates rejects AND emits "error" for the same failure. The
+      // event lands first and, being terminal, clears the manual latch — so
+      // this catch used to take the silent branch and overwrite a reported
+      // error with idle (owner 2026-09-09). The event's report stands.
+      if (state.phase === "error") return;
+      report(err);
     }
   };
 
@@ -156,6 +191,9 @@ export function createUpdateService(deps: UpdateServiceDeps): UpdateService {
       // Dev runs have no app-update.yml — checking throws noise. The dry-run
       // override re-enables checks in dev against a localhost feed.
       if (!deps.isPackaged && deps.feedUrlOverride === undefined) return;
+      // An install that cannot update itself is left alone entirely: its
+      // checks resolve to nothing, and wiring them would only make noise.
+      if (unsupported) return;
       wire();
       started = true;
       // Events are wired regardless (manual checks need them); the AUTOMATIC
@@ -183,6 +221,10 @@ export function createUpdateService(deps: UpdateServiceDeps): UpdateService {
         set({ phase: "error", message: "dev build (no update feed)" });
         return;
       }
+      if (unsupported) {
+        set({ phase: "idle", unsupported: true });
+        return;
+      }
       manualCheck = true;
       await check();
     },
@@ -195,6 +237,7 @@ export function createUpdateService(deps: UpdateServiceDeps): UpdateService {
       // (audit 2026-07-10, finding 7). before-quit now starts the session
       // dispose eagerly for exactly this shape (main/index.ts), so the
       // mid-turn transcript lands before the installer takes over.
+      deps.beforeQuitAndInstall?.();
       updater.quitAndInstall();
     },
     current: () => state,

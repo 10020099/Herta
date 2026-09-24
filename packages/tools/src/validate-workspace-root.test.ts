@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveSafePath } from "./path-safety.js";
 import {
   canonicalWorkspaceRoot,
+  isRefusedSystemDir,
   validateWorkspaceRoot,
 } from "./validate-workspace-root.js";
 
@@ -27,9 +28,20 @@ describe("validateWorkspaceRoot", () => {
   });
 
   it("accepts an existing directory outside protected roots", () => {
-    const r = validateWorkspaceRoot(tmp, { home: join(tmp, "home") });
+    // Home is a SIBLING here: a home inside the workspace is now refused.
+    const r = validateWorkspaceRoot(tmp, {
+      home: join(tmpdir(), "herta-ws-val-elsewhere-home"),
+    });
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.resolved).toBe(tmp);
+  });
+  it("rejects a directory that CONTAINS home — /home, /Users, C:\\Users (2026-09-23)", () => {
+    const r = validateWorkspaceRoot(tmp, { home: join(tmp, "someone") });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.code).toBe("ws_forbidden_root");
+      expect(r.message).toContain("contains the home directory");
+    }
   });
   it("rejects a non-existent path", () => {
     const r = validateWorkspaceRoot(join(tmp, "nope"), { home: tmp });
@@ -64,6 +76,48 @@ describe("validateWorkspaceRoot", () => {
     });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.code).toBe("ws_forbidden_root");
+  });
+});
+
+describe("isRefusedSystemDir — layouts a test machine cannot build (2026-09-23)", () => {
+  it("Fedora's atomic desktops: a project under /home → /var/home is the user's, not the system's", () => {
+    // Silverblue / Kinoite / Bazzite / Bluefin: canonicalization turns
+    // `/home/u/proj` into `/var/home/u/proj`, which matched the `/var` entry —
+    // and not one folder could be opened.
+    expect(
+      isRefusedSystemDir("/var/home/u/proj", "/home/u/proj", "/var/home/u"),
+    ).toBe(false);
+  });
+
+  it("the rest of /var and the other system trees are still refused", () => {
+    expect(
+      isRefusedSystemDir("/var/lib/docker", "/var/lib/docker", "/home/u"),
+    ).toBe(true);
+    expect(isRefusedSystemDir("/etc/nginx", "/etc/nginx", "/home/u")).toBe(
+      true,
+    );
+    expect(isRefusedSystemDir("/usr/lib", "/usr/lib", "/var/home/u")).toBe(
+      true,
+    );
+  });
+
+  it("/var/www holds web projects, like /var/folders holds macOS scratch", () => {
+    expect(
+      isRefusedSystemDir("/var/www/site", "/var/www/site", "/home/u"),
+    ).toBe(false);
+    expect(
+      isRefusedSystemDir(
+        "/var/folders/ab/T/x",
+        "/var/folders/ab/T/x",
+        "/Users/u",
+      ),
+    ).toBe(false);
+  });
+
+  it("without a home, nothing is exempt", () => {
+    expect(isRefusedSystemDir("/var/home/u/proj", "/var/home/u/proj", "")).toBe(
+      true,
+    );
   });
 });
 

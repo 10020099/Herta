@@ -59,6 +59,128 @@ describe("ActivityStep", () => {
     );
   });
 
+  it("the file NAME — not the row — becomes the viewer's click target (ADR 0050)", () => {
+    const onOpen = vi.fn();
+    const { container } = renderWithLocale(
+      <ActivityStep
+        body="Writing src/a.ts"
+        t={tEn}
+        active={false}
+        file={{ path: "src/a.ts", onOpen, ariaLabel: "View file src/a.ts" }}
+      />,
+    );
+    const name = container.querySelector(".file-open-name");
+    expect(name?.textContent).toBe("src/a.ts");
+    // The verb stays outside the control.
+    expect(container.querySelector(".activity-step__body")?.textContent).toBe(
+      "Writing src/a.ts",
+    );
+    fireEvent.click(name as Element);
+    expect(onOpen).toHaveBeenCalledTimes(1);
+  });
+
+  it("an attachment row splits on the display NAME and opens the stored path", () => {
+    const onOpen = vi.fn();
+    const { container } = renderWithLocale(
+      <ActivityStep
+        body="文本文件 notes.txt · 12 行"
+        t={tEn}
+        active={false}
+        file={{
+          path: ".herta/attachments/ab12-notes.txt",
+          name: "notes.txt",
+          onOpen,
+          ariaLabel: "View file notes.txt",
+        }}
+      />,
+    );
+    const name = container.querySelector(".file-open-name");
+    expect(name?.textContent).toBe("notes.txt");
+    fireEvent.click(name as Element);
+    expect(onOpen).toHaveBeenCalledTimes(1);
+  });
+
+  it("a finding row's cites each become their own target (ADR 0050 v1.5)", () => {
+    const openA = vi.fn();
+    const openB = vi.fn();
+    const { container } = renderWithLocale(
+      <ActivityStep
+        body="↳ 结论: the bug lives here — src/x.ts:12-30, src/y.ts:5"
+        t={tEn}
+        active={false}
+        links={[
+          { text: "src/x.ts:12-30", onOpen: openA, ariaLabel: "View src/x.ts" },
+          { text: "src/y.ts:5", onOpen: openB, ariaLabel: "View src/y.ts" },
+        ]}
+      />,
+    );
+    const spans = container.querySelectorAll(".file-open-name");
+    expect(spans.length).toBe(2);
+    fireEvent.click(spans[1] as Element);
+    expect(openB).toHaveBeenCalledTimes(1);
+    expect(openA).not.toHaveBeenCalled();
+  });
+
+  it("detailLinks make the 改动文件 paths in the detail pane clickable", () => {
+    const onOpen = vi.fn();
+    const { container } = renderWithLocale(
+      <ConversationPinProvider unpin={() => {}}>
+        <ActivityStep
+          body="detail"
+          t={tEn}
+          active={false}
+          detail={"↳ 改动文件: src/a.ts, src/b.ts"}
+          detailLinks={[
+            { text: "src/a.ts", onOpen, ariaLabel: "View src/a.ts" },
+            { text: "src/b.ts", onOpen: vi.fn(), ariaLabel: "View src/b.ts" },
+          ]}
+        />
+      </ConversationPinProvider>,
+    );
+    fireEvent.click(
+      container.querySelector(".activity-step__detail-toggle") as Element,
+    );
+    const spans = container.querySelectorAll(
+      ".activity-step__detail .file-open-name",
+    );
+    expect(spans.length).toBe(2);
+    fireEvent.click(spans[0] as Element);
+    expect(onOpen).toHaveBeenCalledTimes(1);
+  });
+
+  it("a body that no longer carries the path degrades to plain text", () => {
+    const { container } = renderWithLocale(
+      <ActivityStep
+        body="Writing something else entirely"
+        t={tEn}
+        active={false}
+        file={{ path: "src/a.ts", onOpen: vi.fn(), ariaLabel: "View file" }}
+      />,
+    );
+    expect(container.querySelector(".file-open-name")).toBeNull();
+  });
+
+  it("inside a patch row, clicking the name opens the viewer WITHOUT toggling the fold", () => {
+    const onOpen = vi.fn();
+    const { container } = renderWithLocale(
+      <ConversationPinProvider unpin={() => {}}>
+        <ActivityStep
+          body="已编辑 src/a.ts"
+          t={tEn}
+          active={false}
+          patch={{ stat: { add: 2, del: 0 }, diff: "-a\n+b" }}
+          file={{ path: "src/a.ts", onOpen, ariaLabel: "View file src/a.ts" }}
+        />
+      </ConversationPinProvider>,
+    );
+    const head = container.querySelector(".activity-step__fold-head");
+    expect(head?.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(container.querySelector(".file-open-name") as Element);
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    // stopPropagation held: the fold did not open on the name click.
+    expect(head?.getAttribute("aria-expanded")).toBe("false");
+  });
+
   it("marks failure rows with is-failure and the ✗ icon (2026-07-23)", () => {
     const { container } = renderWithLocale(
       <ActivityStep
@@ -96,6 +218,31 @@ describe("ActivityStep", () => {
     expect(
       container.querySelector(".activity-step__detail")?.textContent,
     ).toContain("hello world");
+  });
+
+  it("the detail pane rides the same animated fold as the patch (2026-08-26)", () => {
+    // It used to mount/unmount bare — popping open and vanishing next to a
+    // diff that eased through .activity-step__fold. Same wrapper now: open
+    // marks the fold, close keeps the pane mounted so the collapse can
+    // animate out.
+    const { container } = renderWithLocale(
+      <ActivityStep
+        body="↳ exit 0 · 3 lines"
+        t={tEn}
+        active={false}
+        detail={"↳ 输出:\nhello world"}
+      />,
+    );
+    const toggle = container.querySelector(
+      ".activity-step__detail-toggle",
+    ) as HTMLButtonElement;
+    fireEvent.click(toggle); // open
+    const fold = container.querySelector(".activity-step__fold.is-open");
+    expect(fold).not.toBeNull();
+    expect(fold?.querySelector(".activity-step__detail")).not.toBeNull();
+    fireEvent.click(toggle); // close
+    expect(container.querySelector(".activity-step__fold.is-open")).toBeNull();
+    expect(container.querySelector(".activity-step__detail")).not.toBeNull();
   });
 
   it("shows no detail toggle without evidenceDetail", () => {

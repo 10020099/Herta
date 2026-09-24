@@ -19,10 +19,26 @@
 export type {
   AgentEvent,
   ApprovalOverlayState,
+  RepoContextDirtyFile,
+  RepoContextSnapshot,
+  RepoInProgressState,
+  RepoRecentCommit,
   SessionTopic,
   TerminalRecord,
   TerminalRecordBlock,
 } from "@herta/core";
+// The viewer's commit tab (ADR 0059) reads these through the same boundary.
+export type {
+  BranchEntry,
+  BranchList,
+  CommitDescription,
+  CommitFileChange,
+  CommitFileStatus,
+  LogEntry,
+  LogPage,
+  LogQuery,
+  WorkingDiff,
+} from "@herta/tools";
 // The attachment ingest (ADR 0033) is deliberately NOT re-exported here: it is
 // called only by SessionImpl inside this package, and `_public-api.test.ts`
 // pins this barrel to the four symbols consumers actually need. Its own tests

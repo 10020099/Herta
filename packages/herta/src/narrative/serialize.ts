@@ -4,7 +4,12 @@ import {
   type TerminalRecordBlock,
 } from "@herta/core";
 import { findLastDispatchBoundary } from "./backend-record-slices.js";
-import { compactRecordForPrompt } from "./compact-record.js";
+import {
+  type AttachmentFolds,
+  compactRecordForPrompt,
+  decideAttachmentFolds,
+  foldAttachments,
+} from "./compact-record.js";
 import {
   collapseLongDiffs,
   resolveDiffPromptMaxLines,
@@ -62,6 +67,22 @@ export interface SerializeOptions {
    * window and serializes verbatim — byte-identical to the old flags.
    * When set, `compressDiffs` / `compactBridgeOutput` are ignored (the
    * per-region treatment above is the whole point).
+   *
+   * One lane is exempt from "verbatim" (ADR 0033 §6g amendment,
+   * 2026-09-22): the ATTACHMENT fold. The opt-outs were written for the
+   * current run's diffs and board output; an attachment is the user's
+   * document, and its fold is a window counted over the whole record.
+   * Applied blanket-verbatim to the fresh window, the beat re-inflated
+   * every head excerpt the main turn had already folded — up to ~4K chars
+   * per document per beat, a prompt that stopped matching the turn's at
+   * the document rather than at the current run, and a beat that could
+   * quote what Herta's next turn cannot read (the hazard §6g exists to
+   * keep out). The fold is now decided ONCE over the whole record and
+   * applied to both halves: the head (whose compaction would otherwise
+   * decide from the head alone) and the tail (which is otherwise
+   * verbatim). Attachments fold in a beat exactly as in the main turn —
+   * a document inside its window, the one the dispatch is about, stays
+   * verbatim in both.
    */
   readonly verbatimSinceLastDispatch?: boolean;
   /**
@@ -192,15 +213,22 @@ export function serializeTerminalRecord(
     // accepted so the marker's outcome stays legible to the beat.
     const boundary = findLastDispatchBoundary(guarded);
     const lang = opts?.lang ?? "zh";
+    // The attachment fold is decided over the WHOLE record before the split
+    // (ADR 0033 §6g amendment): its window counts user turns and later
+    // mentions on both sides of the boundary, so neither half may decide
+    // from what it alone can see. See the option's JSDoc.
+    const attachmentFolds = decideAttachmentFolds(guarded);
     const head = renderRun(guarded.slice(0, boundary + 1), {
       compress: true,
       compact: true,
       lang,
+      attachmentFolds,
     });
     const tail = renderRun(guarded.slice(boundary + 1), {
       compress: false,
       compact: false,
       lang,
+      attachmentFolds,
     });
     return [head, tail].filter((s) => s.length > 0).join("\n\n");
   }
@@ -211,14 +239,31 @@ export function serializeTerminalRecord(
   });
 }
 
-/** Shared projection tail: optional compaction, then per-block render. */
+/**
+ * Shared projection tail: optional compaction, then per-block render.
+ * `attachmentFolds` (beat mode) carries the whole-record fold decisions
+ * into whichever projection this piece gets: the compaction takes them in
+ * place of its own, and an otherwise-verbatim piece applies just that lane.
+ */
 function renderRun(
   blocks: TerminalRecord,
-  treatment: { compress: boolean; compact: boolean; lang: PromptLang },
+  treatment: {
+    compress: boolean;
+    compact: boolean;
+    lang: PromptLang;
+    attachmentFolds?: AttachmentFolds;
+  },
 ): string {
   const projected = treatment.compact
-    ? compactRecordForPrompt(blocks, { lang: treatment.lang })
-    : blocks;
+    ? compactRecordForPrompt(blocks, {
+        lang: treatment.lang,
+        ...(treatment.attachmentFolds !== undefined
+          ? { attachmentFolds: treatment.attachmentFolds }
+          : {}),
+      })
+    : treatment.attachmentFolds !== undefined
+      ? foldAttachments(blocks, treatment.attachmentFolds, treatment.lang)
+      : blocks;
   return projected
     .map((b) =>
       serializeBlock(b, {

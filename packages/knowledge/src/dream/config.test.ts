@@ -13,6 +13,15 @@ describe("resolveDreamConfig", () => {
     expect(c.model).toBe(DEFAULT_DREAM_CONFIG.model);
   });
 
+  // The automatic pass spends the USER's tokens while they are away, so it is
+  // opt-in (owner 2026-09-21). A default that drifts back to ON must break a
+  // test, not someone's bill.
+  it("Dream's automatic pass is off unless asked for", () => {
+    expect(DEFAULT_DREAM_CONFIG.enabled).toBe(false);
+    expect(resolveDreamConfig().enabled).toBe(false);
+    expect(resolveDreamConfig({ enabled: true }).enabled).toBe(true);
+  });
+
   // Lock the load-bearing trigger-cadence defaults so a silent edit to
   // config.ts (e.g. dropping a zero from cooldownMs, or moving the 25-turn
   // threshold) breaks a test rather than quietly changing how often Dream runs.

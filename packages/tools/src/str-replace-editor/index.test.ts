@@ -528,6 +528,9 @@ describe("str_replace_editor rule", () => {
     if (notFound.kind === "deny") {
       expect(notFound.code).toBe("edit_not_found");
       expect(notFound.modelText).toContain("did not appear verbatim");
+      // The corrective half (2026-09-18): the rule-deny names the move that
+      // fixes it, and the turn loop's gate forwards it to the model.
+      expect(notFound.suggestion).toContain("copy `old_str` verbatim");
     }
     const outside = await engine.check(
       call({

@@ -37,7 +37,7 @@ export interface GlobData {
  * Find files by glob pattern, newest first (ADR 0025 slice 3 — the CC
  * mtime-sort pattern re-derived: recently-touched files are almost always
  * the relevant ones). Same walker and per-entry safety filters as
- * list_files/search_text: skips .git/node_modules/dist/build/coverage and
+ * search_text: skips .git/node_modules/dist/build/coverage and
  * harness dirs, drops credential-shaped entries, never follows directory
  * symlinks.
  */
@@ -88,7 +88,14 @@ export function globTool(): HertaTool {
         };
       }
 
-      const safe = await resolveSafePath(ctx.workspaceRoot, path);
+      // The redacted log directory is discoverable BY NAME here (ADR 0036):
+      // the receipts are `<uuid>-call_NN_<op>.log`, unguessable without a
+      // listing, and since list_files left (2026-09-18, ADR 0067) a glob
+      // rooted at `.herta/logs` is the listing. Nothing else under `.herta`
+      // opens — the walker never descends into it from the workspace root.
+      const safe = await resolveSafePath(ctx.workspaceRoot, path, {
+        allowEvidenceDiscoveryPaths: true,
+      });
       if (!safe.ok) {
         return {
           ok: false,
@@ -137,7 +144,12 @@ export function globTool(): HertaTool {
           rootRel === "" ? entry.path : entry.path.slice(rootRel.length + 1);
         if (!regex.test(target)) continue;
         // Same per-entry gate as search_text: realpath + credential denylist.
-        const safeEntry = await resolveSafePath(ctx.workspaceRoot, entry.path);
+        // The discovery carve-out must match the root gate above, or a glob
+        // INTO the log dir would pass the root check and then silently drop
+        // every entry it walked.
+        const safeEntry = await resolveSafePath(ctx.workspaceRoot, entry.path, {
+          allowEvidenceDiscoveryPaths: true,
+        });
         if (!safeEntry.ok) continue;
         matched.push(entry.path);
         if (matched.length >= SCAN_MATCH_CAP) {

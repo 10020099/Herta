@@ -23,13 +23,12 @@ function mkConfig(): AppServerConfig {
     transcriptDir: join(root, ".herta", "transcript", "v2"),
     projectMemoryDir: join(root, ".herta", "memory"),
     userMemoryDir: join(root, ".herta", "user-memory"),
-    capsulesDir: join(root, ".herta", "capsules"),
     narrativeDir: join(root, ".herta", "narrative"),
     providers: {
       apiKey: "sk-test",
       actorModel: "deepseek-v4-base",
       backendModel: "deepseek-v4-chat",
-      routerModel: "deepseek-v4-flash",
+      routerModel: "deepseek-flash",
     },
   };
 }
@@ -56,7 +55,9 @@ async function mkSlowSession(cfg: AppServerConfig): Promise<{
 
   // Slow actor: yields deltas with 30 ms gaps so interrupt() can fire
   // mid-stream. The provider checks the signal before each delay and
-  // throws AbortError immediately on abort.
+  // throws AbortError immediately on abort. The turn's thought phase is
+  // answered instantly by the stub; the paced speech phase is what keeps
+  // the turn in flight.
   const actorStub = slowStubCompletionProvider({
     deltas: ["你好。", "（/我 说）"],
     delayMs: 30,
@@ -88,7 +89,7 @@ async function mkSlowSession(cfg: AppServerConfig): Promise<{
 }
 
 /** M-prompts-1: compiled assets are always present, so scripted-provider
- *  tests opt out explicitly — empty meta-think (single-phase actor), no
+ *  tests opt out explicitly — empty meta-think (no preamble spliced), no
  *  supervisor, no opening seed (the stubs count exact provider calls). */
 function scriptedPostureDeps(): {
   metaThinkOverride: import("@herta/herta").MetaThinkCorpus;
@@ -191,6 +192,36 @@ describe("Session — interrupt", () => {
     const failed = events[1] as { kind: string; error: { code: string } };
     expect(failed.error.code.toLowerCase()).toContain("abort");
 
+    await cleanup();
+  });
+
+  it("`failed` is emitted even when the turn's failure bookkeeping throws (UX review 2026-09-22, item 6)", async () => {
+    // The failure hook flushes a missing record tail and appends the turn-end
+    // marker — disk writes. A throw there used to skip the `failed` event:
+    // the window stayed busy with a Stop that answered nothing.
+    const cfg = mkConfig();
+    const { session, cleanup } = await mkSlowSession(cfg);
+    (
+      session as unknown as { reconcileRecordAfterFailure: () => void }
+    ).reconcileRecordAfterFailure = () => {
+      throw new Error("ENOSPC: no space left on device");
+    };
+    const events: { kind: string }[] = [];
+    const sub = session.subscribeTurnLifecycle();
+    const consumer = (async () => {
+      for await (const ev of sub) {
+        events.push(ev as { kind: string });
+        if (events.length >= 2) break;
+      }
+    })();
+    const turnP = session.submitText("slow turn");
+    await new Promise((r) => setTimeout(r, 50));
+    await session.interrupt();
+    await turnP.catch(() => undefined);
+    await consumer;
+    expect(events.map((e) => e.kind)).toEqual(["started", "failed"]);
+    // The session is usable again: the slot was released.
+    expect(session.turnInFlight).toBe(false);
     await cleanup();
   });
 

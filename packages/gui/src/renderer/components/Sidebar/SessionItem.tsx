@@ -12,6 +12,7 @@ import {
   aliasBanzhuanPlain,
   stripInlineCodeTicks,
 } from "../../lib/banzhuan-mention.js";
+import { isRepeatClick } from "../../lib/repeat-click.js";
 import { TitleText } from "../TitleText.js";
 import { TrashIcon } from "./icons.js";
 import { PreviewText } from "./PreviewText.js";
@@ -293,7 +294,12 @@ export function SessionItem(props: SessionItemProps): JSX.Element {
     armSwitch();
   }, [navBlockSeq]);
 
-  const open = (): void => {
+  const open = (repeat = false): void => {
+    // A repeat click (the second click of a double-click) is never a new
+    // intent: the first click already opened, jumped or armed. Taking it as
+    // the arm's confirm interrupted the running reply (UX review
+    // 2026-09-22, item 3).
+    if (repeat) return;
     closeTip();
     // isActive: re-opening the already-open session re-points forwarders and
     // sends a reset that wipes streamingText/status to idle while the turn
@@ -352,7 +358,7 @@ export function SessionItem(props: SessionItemProps): JSX.Element {
       className={`session-item${isActive ? " is-active" : ""}${
         pendingApproval ? " is-pending-approval" : ""
       }`}
-      onClick={open}
+      onClick={(e) => open(isRepeatClick(e))}
       onFocus={() => {
         // Keyboard focus reveals the tip immediately (mouse focus is
         // excluded — a click's focus would flash a tip open() removes).
@@ -536,6 +542,10 @@ export function SessionItem(props: SessionItemProps): JSX.Element {
               }`}
               onClick={(e) => {
                 e.stopPropagation();
+                // The pill mounts in the trash's own slot: a double-click on
+                // the trash lands its second click here (UX review
+                // 2026-09-22, item 3). Only a fresh click deletes.
+                if (isRepeatClick(e)) return;
                 void bridge.deleteSession(props.session.sessionId);
               }}
             >

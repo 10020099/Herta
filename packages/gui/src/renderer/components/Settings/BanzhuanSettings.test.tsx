@@ -7,6 +7,10 @@ import {
   createMockHertaBridge,
   type MockHertaBridge,
 } from "../../ipc/mock-bridge.js";
+import {
+  deviceScenePref,
+  resetDeviceScenePrefForTest,
+} from "../UtilityRail/device-scene/device-scene-prefs.js";
 import { BanzhuanSettings } from "./BanzhuanSettings.js";
 
 const captionName = (c: HTMLElement): string | null =>
@@ -88,7 +92,7 @@ describe("BanzhuanSettings", () => {
       expect(mock.calls.setBackendConfig).toEqual([{ thinking: "max" }]);
       // No appearing note — it re-flowed the pane height (owner 2026-08-03);
       // "Applies on the next launch" lives in the row description instead.
-      expect(queryByText("Restart to apply.")).toBeNull();
+      expect(queryByText("Restart to apply")).toBeNull();
       // (both the thinking and the tool-contract descriptions carry it)
       expect(screen.queryAllByText(/next launch/).length).toBeGreaterThan(0);
     });
@@ -115,11 +119,11 @@ describe("BanzhuanSettings", () => {
       fireEvent.click(trigger);
       fireEvent.click(screen.getByRole("option", { name: "Low" }));
       await waitFor(() =>
-        expect(queryByText("Couldn't save — try again.")).toBeTruthy(),
+        expect(queryByText("Could not save — try again.")).toBeTruthy(),
       );
       // Snapped back to the value on disk; no restart note for a failed write.
       expect(trigger.textContent).toContain("High");
-      expect(queryByText("Restart to apply.")).toBeNull();
+      expect(queryByText("Restart to apply")).toBeNull();
     });
 
     it("hides the row entirely when the bridge lacks the surface (fakes / website demo)", () => {
@@ -172,14 +176,22 @@ describe("BanzhuanSettings", () => {
       expect(queryByText(/Install Git for Windows/)).toBeTruthy();
     });
 
-    it("hides the row when the bridge's config carries no contract (older bridge / website demo)", async () => {
+    it("is on the FIRST paint beside the thinking row — never two rows then three (owner 2026-09-07); a config without `contract` keeps the default", async () => {
       const mock = createMockHertaBridge({
         getBackendConfigResult: { thinking: "high" },
       });
-      renderPane(mock);
+      const { container } = renderPane(mock);
+      // Synchronously, before the config read resolves: both backend rows
+      // (the 3D row hides on this mock, which lacks its surface).
+      expect(screen.getByLabelText("Tool contract")).toBeInTheDocument();
+      expect(container.querySelectorAll(".settings-row")).toHaveLength(2);
       const thinking = screen.getByLabelText("Thinking effort");
       await waitFor(() => expect(thinking.textContent).toContain("High"));
-      expect(screen.queryByLabelText("Tool contract")).toBeNull();
+      // The row stays, on the handler's default, when the config says nothing.
+      expect(screen.getByLabelText("Tool contract").textContent).toContain(
+        "Minimal",
+      );
+      expect(container.querySelectorAll(".settings-row")).toHaveLength(2);
     });
 
     it("a failed write snaps back and surfaces the error", async () => {
@@ -192,9 +204,61 @@ describe("BanzhuanSettings", () => {
       fireEvent.click(trigger);
       fireEvent.click(screen.getByRole("option", { name: "Standard" }));
       await waitFor(() =>
-        expect(queryByText("Couldn't save — try again.")).toBeTruthy(),
+        expect(queryByText("Could not save — try again.")).toBeTruthy(),
       );
       expect(trigger.textContent).toContain("Minimal");
+    });
+  });
+
+  describe("3D device row (ADR 0057)", () => {
+    afterEach(() => resetDeviceScenePrefForTest());
+
+    it("hides the row when the bridge lacks the surface (fakes / website demo)", () => {
+      renderPane(createMockHertaBridge());
+      expect(screen.queryByLabelText("3D device")).toBeNull();
+    });
+
+    it("loads the persisted value, and a flip persists via the bridge and the shared pref", async () => {
+      const mock = createMockHertaBridge({ deviceSceneResult: false });
+      renderPane(mock);
+      const toggle = await screen.findByLabelText("3D device");
+      await waitFor(() =>
+        expect(toggle.getAttribute("aria-checked")).toBe("false"),
+      );
+      fireEvent.click(toggle);
+      expect(toggle.getAttribute("aria-checked")).toBe("true");
+      expect(deviceScenePref()).toBe(true);
+      await waitFor(() => expect(mock.calls.setDeviceScene).toEqual([true]));
+    });
+
+    it("a failed write snaps back and surfaces the error", async () => {
+      const mock = createMockHertaBridge({
+        deviceSceneResult: true,
+        failSetDeviceScene: true,
+      });
+      const { queryByText } = renderPane(mock);
+      const toggle = await screen.findByLabelText("3D device");
+      await waitFor(() =>
+        expect(toggle.getAttribute("aria-checked")).toBe("true"),
+      );
+      fireEvent.click(toggle);
+      await waitFor(() =>
+        expect(queryByText("Could not save — try again.")).toBeTruthy(),
+      );
+      expect(toggle.getAttribute("aria-checked")).toBe("true");
+      expect(deviceScenePref()).toBe(true);
+    });
+
+    it("the demo card below stays on the flat renders — one GPU scene per app", async () => {
+      const mock = createMockHertaBridge({ deviceSceneResult: true });
+      const { container } = renderPane(mock);
+      await screen.findByLabelText("3D device");
+      expect(
+        container.querySelector(".settings-bz-card .device-scene-canvas"),
+      ).toBeNull();
+      expect(
+        container.querySelector(".settings-bz-card img.agent-device-img"),
+      ).not.toBeNull();
     });
   });
 

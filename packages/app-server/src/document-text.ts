@@ -177,10 +177,12 @@ async function loadPdfJs(): Promise<PdfJs> {
   if (pdfjsPromise === undefined) {
     pdfjsPromise = (async () => {
       installRenderingGlobalStubs();
-      const [worker, lib] = await Promise.all([
-        import("pdfjs-dist/legacy/build/pdf.worker.mjs"),
-        import("pdfjs-dist/legacy/build/pdf.mjs"),
-      ]);
+      const [worker, lib] = await withoutCanvasWarning(() =>
+        Promise.all([
+          import("pdfjs-dist/legacy/build/pdf.worker.mjs"),
+          import("pdfjs-dist/legacy/build/pdf.mjs"),
+        ]),
+      );
       (
         globalThis as { pdfjsWorker?: { WorkerMessageHandler: unknown } }
       ).pdfjsWorker = { WorkerMessageHandler: worker.WorkerMessageHandler };
@@ -212,6 +214,32 @@ async function loadPdfJs(): Promise<PdfJs> {
  * surface as `parse_error`, not as wrong output. Installed only when absent,
  * so a real DOM (a jsdom test, a renderer) is never shadowed.
  */
+/**
+ * pdfjs also `require`s `@napi-rs/canvas` at MODULE SCOPE under Node and
+ * `console.warn`s when it is absent — synchronously, during evaluation, so
+ * `setVerbosityLevel` (which lives inside the module) cannot run first. The
+ * absence is the packaged app's designed state (§3 above), so the line is
+ * noise that reads as an error in the launch log (owner 2026-09-03, a second
+ * machine). For the span of the import only, that one known line is dropped;
+ * every other warning still reaches the console, and the original `warn` is
+ * restored whether the import resolves or throws.
+ */
+const CANVAS_WARNING =
+  /Cannot (load "@napi-rs\/canvas" package|polyfill `(DOMMatrix|Path2D)`)/;
+
+async function withoutCanvasWarning<T>(load: () => Promise<T>): Promise<T> {
+  const original = console.warn;
+  console.warn = (...args: unknown[]): void => {
+    if (typeof args[0] === "string" && CANVAS_WARNING.test(args[0])) return;
+    original.apply(console, args);
+  };
+  try {
+    return await load();
+  } finally {
+    console.warn = original;
+  }
+}
+
 function installRenderingGlobalStubs(): void {
   const g = globalThis as { DOMMatrix?: unknown; Path2D?: unknown };
   // A bare class: JS constructors accept (and ignore) any arguments, so the
@@ -255,6 +283,14 @@ async function extractPdfText(
     let nextLine = 1;
     let body = 0;
     for (let p = 1; p <= pages; p += 1) {
+      // Back to the event loop between pages. pdfjs runs here on its
+      // in-process "fake worker", whose message port dispatches through
+      // `Promise.then` alone (LoopbackPort, pdfjs 6.2) — so every `await`
+      // below yields a MICROtask and the whole document parsed as one
+      // uninterrupted turn of the loop. In the desktop app that loop is the
+      // main thread: a few hundred pages froze the window, its drag region
+      // and every IPC for the length of the parse (perf audit 2026-09-20).
+      if (p > 1) await new Promise<void>((next) => setImmediate(next));
       const page = await doc.getPage(p);
       try {
         const content = await page.getTextContent();

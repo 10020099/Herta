@@ -2,6 +2,7 @@ import { act, render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HertaBridgeProvider } from "../../context/HertaBridgeContext.js";
 import { createMockHertaBridge } from "../../ipc/mock-bridge.js";
+import { renderWithSession } from "../../testing/renderWithSession.js";
 import { AuraVisual } from "./AuraVisual.js";
 
 afterEach(() => {
@@ -12,12 +13,20 @@ afterEach(() => {
 /** Recording WebGL-context stub — jsdom has no real WebGL. Query methods return
  *  truthy stand-ins so program/shader setup "succeeds"; everything else is a
  *  call-counting no-op (so we can assert drawArrays per frame). */
-function mockWebgl(): { calls: Record<string, number> } {
+function mockWebgl(renderer?: string): { calls: Record<string, number> } {
   const calls: Record<string, number> = {};
   const gl = new Proxy(
     {},
     {
       get(_t, prop: string) {
+        // The renderer string, when a test names one (a software rasterizer).
+        if (renderer !== undefined && prop === "getExtension")
+          return (name: string) =>
+            name === "WEBGL_debug_renderer_info"
+              ? { UNMASKED_RENDERER_WEBGL: 0x9246 }
+              : null;
+        if (renderer !== undefined && prop === "getParameter")
+          return () => renderer;
         if (prop === "getShaderParameter" || prop === "getProgramParameter")
           return () => true;
         if (
@@ -117,6 +126,23 @@ describe("AuraVisual", () => {
     expect((calls.drawArrays ?? 0) - drawn).toBeLessThanOrEqual(1);
   });
 
+  it("a CPU rasterizer gets the static CSS aura, not a display-rate shader (platform review 2026-09-23)", () => {
+    vi.useFakeTimers();
+    mockAsyncRaf();
+    const { calls } = mockWebgl(
+      "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero)))",
+    );
+    const { container } = renderAura();
+    act(() => {
+      vi.advanceTimersByTime(16 * 5);
+    });
+    const canvas = container.querySelector(
+      "canvas.aura-canvas",
+    ) as HTMLCanvasElement;
+    expect(canvas.dataset.fallback).toBe("true");
+    expect(calls.drawArrays ?? 0).toBe(0);
+  });
+
   it("stops + reveals the fallback on context loss, rebuilds + resumes on restore (audit 2026-07-13 T2.1)", () => {
     vi.useFakeTimers();
     mockAsyncRaf();
@@ -154,6 +180,35 @@ describe("AuraVisual", () => {
     expect(calls.linkProgram ?? 0).toBe(linked + 1);
     expect(canvas.dataset.fallback).toBeUndefined();
     expect(calls.drawArrays ?? 0).toBeGreaterThan(during + 2);
+  });
+
+  it("parks once calm with the window unfocused, and a focus wakes it (perf 2026-09-03)", () => {
+    vi.useFakeTimers();
+    mockAsyncRaf();
+    const { calls } = mockWebgl();
+    // A live session so the aura is LISTENING (calm is judged on that
+    // state); the mock clock only advances on drawn frames.
+    const mock = createMockHertaBridge();
+    const h = renderWithSession(<AuraVisual />, { mock });
+    h.openSession("s1");
+    act(() => {
+      window.dispatchEvent(new Event("blur"));
+      // Well past CALM_HOLD_MS + PARK_UNFOCUSED_MS of drawn-frame time (the
+      // governor sleeps ~14ms of every 30ms, so wall time runs ~2× ahead).
+      vi.advanceTimersByTime(20_000);
+    });
+    const parkedAt = calls.drawArrays ?? 0;
+    expect(parkedAt).toBeGreaterThan(50);
+    act(() => {
+      vi.advanceTimersByTime(3_000);
+    });
+    // Parked: nothing drawn while unfocused and calm.
+    expect((calls.drawArrays ?? 0) - parkedAt).toBe(0);
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+      vi.advanceTimersByTime(16 * 5);
+    });
+    expect(calls.drawArrays ?? 0).toBeGreaterThan(parkedAt + 1);
   });
 
   it("pauses while document.hidden and resumes on visibilitychange", () => {

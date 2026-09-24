@@ -1,21 +1,14 @@
 import type { PromptLang } from "./prompt-lang.js";
 
 /**
- * Constants for the Slice 10 thought/speech branch in main-loop prompts.
+ * Constants for the thought/speech fences of the actor's prompts.
  *
- * `BRANCH_OPEN_TAG` is used in normal main-loop calls — its trailing space
- * lets DeepSeek autoregressively complete with `想）` (thought) or `说）`
- * (speech). The model picks based on the preceding context (record + hint).
- *
- * `FORCED_SPEECH_OPEN_TAG` is used in two cases:
- *   (a) Soft guard: after 2 consecutive thoughts, force speech.
- *   (b) Beats: in-turn reactions to backend events are always speech
- *       (SPEC §3 H). Beat prompts do not include the hint either.
- *
- * `THOUGHT_HINT_LINE` is appended to main-loop prompts right before the
- * open tag. It is NEVER persisted — recomputed per call. Its purpose is
- * to constrain the surface space to {思考, 说话} so the model doesn't
- * invent `（我 唱）` / `（我 写）` / etc.
+ * `FORCED_SPEECH_OPEN_TAG` opens every speech call: the forced-speech
+ * phase that follows each thought (the only rhythm since 2026-09-03, ADR
+ * 0055) and the in-turn beats (reactions to backend events are always
+ * speech, SPEC §3 H). The thought phase opens with `（我 想）` spelled out
+ * by its caller. (The Slice 10 partial tag `（我 ` and its surface-choice
+ * hint line went with the single-phase path — ADR 0055 §3.)
  *
  * Language (EN interaction slice 3b): every `〔…〕` hint below exists in
  * zh + en, co-located in a `Record<PromptLang, string>` and selected via
@@ -24,25 +17,17 @@ import type { PromptLang } from "./prompt-lang.js";
  * unchanged. Structural narrative-grammar tokens stay CN in BOTH
  * variants (D2/D7/D8): the （我 想）/（我 说）/（/我 想）/（/我 说）
  * fences, the @板砖 dispatch token and inert 板砖, and the `〔…〕`
- * hint brackets. The open/close tags themselves (`BRANCH_OPEN_TAG`
- * etc.) and `FINAL_RETRY_BODY_SEED` are grammar/record content, not
- * instructional prose — single-variant by design.
+ * hint brackets. The open/close tags themselves and
+ * `FINAL_RETRY_BODY_SEED` are grammar/record content, not instructional
+ * prose — single-variant by design.
  *
  * SPEC v0.2 Slice 10 §3 (C, E, H), §5.1.
  */
 
-export const BRANCH_OPEN_TAG = "（我 ";
 export const FORCED_SPEECH_OPEN_TAG = "（我 说）";
 
 export const STOP_SPEECH_CLOSE = "（/我 说）";
 export const STOP_THOUGHT_CLOSE = "（/我 想）";
-
-const THOUGHT_HINT_LINE_TEXT: Record<PromptLang, string> = {
-  zh: "〔接下来：（我 想）思考 或（我 说）说话〕",
-  en: "〔Next: （我 想） to think, or （我 说） to speak〕",
-};
-
-export const THOUGHT_HINT_LINE = THOUGHT_HINT_LINE_TEXT.zh;
 
 /**
  * Body seed appended to the open tag on the FINAL empty-output retry
@@ -78,9 +63,9 @@ export const FINAL_RETRY_BODY_SEED = "……";
  * before the corresponding open tag in two-phase prompts so the model
  * knows exactly what bracketing to produce.
  *
- * Stronger than `THOUGHT_HINT_LINE` (which only narrows the surface
- * space to {思考, 说话}): these spell out the exact open AND close
- * tags. Originally needed because the meta-think `## 注释` /
+ * These spell out the exact open AND close tags (the former single-phase
+ * hint line only narrowed the surface to {思考, 说话}). Originally
+ * needed because the meta-think `## 注释` /
  * `## 注释完` section markers had a tendency to leak into the model's
  * output (mimicked formatting, stray closes, etc.). Those heading
  * markers have since been dropped — the meta-think text is now
@@ -413,6 +398,22 @@ const BEAT_HINT_TOOL_FAIL_TEXT: Record<PromptLang, string> = {
 export const BEAT_HINT_TOOL_FAIL = BEAT_HINT_TOOL_FAIL_TEXT.zh;
 
 /**
+ * The steer beat (ADR 0063 §1.4, hint 2026-09-16): the user cut in while
+ * 板砖 works. Without its own hint the beat fell through to the generic
+ * speech hint, and Herta could promise on 板砖's behalf or narrate as if
+ * she had relayed the message herself. This one keeps her to what is
+ * true: 板砖 reads the line at its next step; she heard it, and may have a
+ * take on it. Written in her own voice like every hint — how she carries
+ * herself, not an order handed to her (owner 2026-09-16).
+ */
+const BEAT_HINT_STEER_TEXT: Record<PromptLang, string> = {
+  zh: `〔开拓者刚插了一句进来，就在上面。板砖手里的活没停，这条插入的消息它下一步就能收到——不用我转达，也不需要我替它处理。我也简单附和一下他，如果他插的这句话有值得说的，就说我的看法。一句。不复述原话，不装作已经做完。${BEAT_NO_BANZHUAN_CLAUSE_TEXT.zh}必须以（我 说）开始，以（/我 说）结束。〕`,
+  en: `〔The Trailblazer just cut in — the line is right above. 板砖 hasn't stopped; it receives that inserted message at its next step — I don't relay it, and I don't need to handle it for it. I give them a brief word back too; if what they cut in with deserves a take, my take. One line. Don't repeat their words back, don't pretend it's already done. ${BEAT_NO_BANZHUAN_CLAUSE_TEXT.en} Must start with （我 说） and end with （/我 说）.〕`,
+};
+
+export const BEAT_HINT_STEER = BEAT_HINT_STEER_TEXT.zh;
+
+/**
  * The full set of language-selectable actor hint texts (EN interaction
  * slice 3b). Shape mirrors `ActorHints` in `actor-hints.ts` minus
  * `supervisorVetoTemplate` (that default lives there), plus the shared
@@ -421,7 +422,6 @@ export const BEAT_HINT_TOOL_FAIL = BEAT_HINT_TOOL_FAIL_TEXT.zh;
  * point for building an EN default-hint set.
  */
 export interface ActorHintTexts {
-  readonly thoughtHintLine: string;
   readonly phase2Thought: string;
   readonly phase2Speech: string;
   readonly speechRetry: readonly [string, string, string];
@@ -435,11 +435,11 @@ export interface ActorHintTexts {
   readonly beatPatchPreview: string;
   readonly beatVerification: string;
   readonly beatToolFail: string;
+  readonly beatSteer: string;
 }
 
 export function actorHintTexts(lang: PromptLang = "zh"): ActorHintTexts {
   return {
-    thoughtHintLine: THOUGHT_HINT_LINE_TEXT[lang],
     phase2Thought: PHASE_TWO_THOUGHT_HINT_TEXT[lang],
     phase2Speech: PHASE_TWO_SPEECH_HINT_TEXT[lang],
     speechRetry: [
@@ -466,5 +466,6 @@ export function actorHintTexts(lang: PromptLang = "zh"): ActorHintTexts {
     beatPatchPreview: BEAT_HINT_PATCH_PREVIEW_TEXT[lang],
     beatVerification: BEAT_HINT_VERIFICATION_FINISHED_TEXT[lang],
     beatToolFail: BEAT_HINT_TOOL_FAIL_TEXT[lang],
+    beatSteer: BEAT_HINT_STEER_TEXT[lang],
   };
 }

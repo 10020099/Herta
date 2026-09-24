@@ -7,6 +7,7 @@ import { InMemoryEventBus } from "../event-bus.js";
 import { NoopMemoryManager } from "../memory-manager.js";
 import {
   NoopPermissionEngine,
+  type PermissionEngine,
   RulePermissionEngine,
 } from "../permission-engine.js";
 import { ReadLedger } from "../read-ledger.js";
@@ -77,6 +78,125 @@ describe("runBackendTurnLoop", () => {
     expect(types).toContain("turn.started");
     expect(types).toContain("assistant.delta");
     expect(types).toContain("assistant.final");
+    expect(types).toContain("turn.finished");
+    expect(types).not.toContain("turn.failed");
+  });
+
+  it("a steer taken at the loop head lands in the NEXT iteration's frame as the newest user message, never in the one already running (ADR 0063)", async () => {
+    const tools = new InMemoryToolRegistry();
+    tools.register({
+      name: "read_file",
+      schema: () => ({
+        name: "read_file",
+        description: "read",
+        inputSchema: { type: "object", properties: {} },
+      }),
+      run: async () => ({ ok: true, data: { content: "x" }, summary: "read" }),
+    });
+    const frames: ProviderPromptFrame[] = [];
+    // Two iterations: the first asks for a tool, the second stops. The
+    // steer arrives WHILE the first inference is being answered — after the
+    // loop head drained nothing — so it must be absent from frame 1 and
+    // present in frame 2, after the tool result.
+    const pending: string[] = [];
+    const provider = new FakeProvider({
+      turns: [
+        (frame) => {
+          frames.push(frame);
+          pending.push("also rename the test file");
+          return [
+            {
+              type: "tool-call-request",
+              call: { id: "c1", tool: "read_file", input: { path: "a.ts" } },
+            },
+            { type: "finish", reason: "tool_calls" },
+          ];
+        },
+        (frame) => {
+          frames.push(frame);
+          return [{ type: "finish", reason: "stop" }];
+        },
+      ],
+    });
+    const deps = {
+      ...buildDeps(provider),
+      tools,
+      backendBuilder: new BackendContextBuilder({ tools }),
+    };
+    let drains = 0;
+    for await (const _ of runBackendTurnLoop(deps, sampleBrief, {
+      signal: new AbortController().signal,
+      userMessages: sampleUserMessages,
+      takePendingUserInput: () => {
+        drains += 1;
+        return pending.splice(0);
+      },
+    })) {
+      // drain
+    }
+    // Drained at the head of BOTH iterations, plus once at the exit after
+    // the second (no-tool-call) answer — the late-steer check of §1.8 —
+    // and nowhere else (never mid-batch).
+    expect(drains).toBe(3);
+    expect(JSON.stringify(frames[0])).not.toContain(
+      "also rename the test file",
+    );
+    expect(JSON.stringify(frames[1])).toContain("also rename the test file");
+    // The transcript keeps it as a user message AFTER the tool result, so
+    // every later iteration sees it in place.
+    const roles = deps.transcript.all().map((m) => m.role);
+    expect(roles.indexOf("user")).toBeGreaterThan(roles.indexOf("tool"));
+    const user = deps.transcript.all().find((m) => m.role === "user");
+    expect(user?.role === "user" ? user.text : "").toBe(
+      "also rename the test file",
+    );
+  });
+
+  it("a steer that lands during the FINAL inference is not lost: the loop drains once more and runs another iteration with it (ADR 0063 §1.8)", async () => {
+    const frames: ProviderPromptFrame[] = [];
+    const pending: string[] = [];
+    // Two inferences: the first declares itself done (no tool calls) while
+    // the steer arrives mid-answer; the second is the extra round the steer
+    // earns, and it stops.
+    const provider = new FakeProvider({
+      turns: [
+        (frame) => {
+          frames.push(frame);
+          pending.push("顺便再建一个 d.txt");
+          return [
+            { type: "text-delta", text: "done" },
+            { type: "finish", reason: "stop" },
+          ];
+        },
+        (frame) => {
+          frames.push(frame);
+          return [{ type: "finish", reason: "stop" }];
+        },
+      ],
+    });
+    const deps = buildDeps(provider);
+    let drains = 0;
+    const types: string[] = [];
+    for await (const ev of runBackendTurnLoop(deps, sampleBrief, {
+      signal: new AbortController().signal,
+      userMessages: sampleUserMessages,
+      takePendingUserInput: () => {
+        drains += 1;
+        return pending.splice(0);
+      },
+    })) {
+      types.push(ev.type);
+    }
+    // Head 1 (empty), the late drain after "done" (the steer), head 2
+    // (empty), the late drain after the second stop (empty).
+    expect(drains).toBe(4);
+    expect(frames).toHaveLength(2);
+    expect(JSON.stringify(frames[0])).not.toContain("顺便再建一个 d.txt");
+    expect(JSON.stringify(frames[1])).toContain("顺便再建一个 d.txt");
+    // The transcript keeps it as a user message AFTER the assistant's
+    // "done", and the turn still ends cleanly.
+    const roles = deps.transcript.all().map((m) => m.role);
+    expect(roles.indexOf("user")).toBeGreaterThan(roles.indexOf("assistant"));
     expect(types).toContain("turn.finished");
     expect(types).not.toContain("turn.failed");
   });
@@ -237,8 +357,8 @@ describe("runBackendTurnLoop", () => {
       run: async () => ok,
     });
     tools.register({
-      name: "list_files",
-      schema: schemaFor("list_files"),
+      name: "glob",
+      schema: schemaFor("glob"),
       summarize: () => {
         throw new Error("boom");
       },
@@ -257,7 +377,7 @@ describe("runBackendTurnLoop", () => {
           },
           {
             type: "tool-call-request",
-            call: { id: "c3", tool: "list_files", input: { path: "src" } },
+            call: { id: "c3", tool: "glob", input: { pattern: "src/**" } },
           },
           { type: "finish", reason: "tool_calls" },
         ],
@@ -288,7 +408,7 @@ describe("runBackendTurnLoop", () => {
     }
     expect(headers.get("own")).toBe("own:hdr second line @ /repo");
     expect(headers.get("read_file")).toBe("a.ts");
-    expect(headers.get("list_files")).toBe("src");
+    expect(headers.get("glob")).toBe('"src/**"');
   });
 
   it("builds the base frame ONCE per turn; iterations only refresh messages (audit L2)", async () => {
@@ -1360,9 +1480,10 @@ describe("summarizeInput (tool-aware working-state argument)", () => {
     );
   });
 
-  it("returns the dir for list_files, defaulting to '.'", () => {
-    expect(summarizeInput("list_files", { recursive: true })).toBe(".");
-    expect(summarizeInput("list_files", { path: "src" })).toBe("src");
+  it("returns the quoted pattern for glob (list_files left the set 2026-09-18, ADR 0067)", () => {
+    expect(summarizeInput("glob", { pattern: "src/**/*.ts" })).toBe(
+      '"src/**/*.ts"',
+    );
   });
 
   it("returns the quoted pattern for search_text, plus `in <path>` when scoped (2026-08-17)", () => {
@@ -1827,5 +1948,142 @@ describe("runBackendTurnLoop — provider error resilience", () => {
         expect(finished.result.error?.code).toBe("command_blocked");
       }
     }
+  });
+});
+
+describe("one permission gate for the serial and the parallel path (2026-09-03)", () => {
+  function denyEngine(code: string): PermissionEngine {
+    return {
+      check: async () => ({ kind: "deny", reason: `refused: ${code}`, code }),
+      resolve: () => {},
+    };
+  }
+
+  function registry(names: readonly string[], readOnly: boolean) {
+    const tools = new InMemoryToolRegistry();
+    for (const name of names) {
+      tools.register({
+        name,
+        readOnly,
+        schema: () => ({
+          name,
+          description: `tool ${name}`,
+          inputSchema: { type: "object", properties: {} },
+        }),
+        run: async () => ({ ok: true, data: {}, summary: "ok" }),
+      });
+    }
+    return tools;
+  }
+
+  async function finishedResults(
+    tools: InMemoryToolRegistry,
+    permissions: PermissionEngine,
+    calls: readonly string[],
+  ) {
+    const provider = new FakeProvider({
+      turns: [
+        [
+          ...calls.map((tool, i) => ({
+            type: "tool-call-request" as const,
+            call: { id: `call-${i}`, tool, input: {} },
+          })),
+          { type: "finish" as const, reason: "tool_calls" as const },
+        ],
+        [{ type: "finish" as const, reason: "stop" as const }],
+      ],
+    });
+    const deps = { ...buildDeps(provider), tools, permissions };
+    deps.backendBuilder = new BackendContextBuilder({ tools });
+    const events: AgentEvent[] = [];
+    for await (const e of runBackendTurnLoop(deps, sampleBrief, {
+      signal: new AbortController().signal,
+      userMessages: sampleUserMessages,
+    })) {
+      events.push(e);
+    }
+    const results = events.flatMap((e) =>
+      e.type === "tool.call.finished" ? [e.result] : [],
+    );
+    const resolved = events.filter((e) => e.type === "permission.resolved");
+    return { results, resolved };
+  }
+
+  it("an invalid_input refusal on the SERIAL path tells the model it is not a permission denial", async () => {
+    const { results, resolved } = await finishedResults(
+      registry(["write_file"], false),
+      denyEngine("invalid_input"),
+      ["write_file"],
+    );
+    expect(results).toHaveLength(1);
+    const r = results[0];
+    expect(r?.ok).toBe(false);
+    expect(r?.error?.code).toBe("invalid_input");
+    expect(r?.suggestion).toContain("not a permission denial");
+    expect(resolved).toHaveLength(1);
+  });
+
+  it("a permission_denied refusal points at the read-only path on both paths", async () => {
+    const serial = await finishedResults(
+      registry(["write_file"], false),
+      denyEngine("permission_denied"),
+      ["write_file"],
+    );
+    const parallel = await finishedResults(
+      registry(["read_a", "read_b"], true),
+      denyEngine("permission_denied"),
+      ["read_a", "read_b"],
+    );
+    for (const r of [...serial.results, ...parallel.results]) {
+      expect(r.ok).toBe(false);
+      expect(r.error?.code).toBe("permission_denied");
+      expect(r.suggestion).toContain("read-only");
+    }
+    expect(parallel.results).toHaveLength(2);
+    expect(parallel.resolved).toHaveLength(2);
+  });
+
+  it("a rule-deny's own suggestion reaches the model, and wins over the loop's table (2026-09-18)", async () => {
+    // An editor's `edit_not_found` is a rule-deny (the edit is planned at
+    // rule time) whose code the loop's table does not know; the rule names
+    // the fixing move itself and the gate forwards it.
+    const engine: PermissionEngine = {
+      check: async () => ({
+        kind: "deny",
+        reason: "old_str did not appear verbatim",
+        code: "edit_not_found",
+        suggestion: "view the file and copy old_str verbatim",
+      }),
+      resolve: () => {},
+    };
+    const own = await finishedResults(registry(["write_file"], false), engine, [
+      "write_file",
+    ]);
+    expect(own.results[0]?.error?.code).toBe("edit_not_found");
+    expect(own.results[0]?.suggestion).toBe(
+      "view the file and copy old_str verbatim",
+    );
+    // A rule that says nothing extra on a shared code keeps the table's hint.
+    const table = await finishedResults(
+      registry(["write_file"], false),
+      denyEngine("invalid_input"),
+      ["write_file"],
+    );
+    expect(table.results[0]?.suggestion).toContain("not a permission denial");
+  });
+
+  it("the parallel path renders an unknown deny code exactly like the serial path", async () => {
+    const serial = await finishedResults(
+      registry(["write_file"], false),
+      denyEngine("command_blocked"),
+      ["write_file"],
+    );
+    const parallel = await finishedResults(
+      registry(["read_a"], true),
+      denyEngine("command_blocked"),
+      ["read_a"],
+    );
+    expect(parallel.results[0]).toEqual(serial.results[0]);
+    expect(serial.results[0]?.suggestion).toBeUndefined();
   });
 });

@@ -15,6 +15,10 @@ export function KeyPrompt(): JSX.Element | null {
   const t = useT();
   const { bridge, sessionStore } = useHertaBridge();
   const needsKeyText = useSessionSelector((s) => s.needsKeyText);
+  // Pictures held with the message (ADR 0048 §4): the key check refused
+  // before their staged copies were consumed, so the re-send carries them
+  // and a cancel returns them to the composer strip.
+  const needsKeyImages = useSessionSelector((s) => s.needsKeyImages);
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -27,8 +31,15 @@ export function KeyPrompt(): JSX.Element | null {
   // Escape leak to the approval panel's deny below.
   const isTop = useModalOverlay("key-prompt", open, OVERLAY_Z.keyPrompt);
 
+  // One number per opening of the card: a verification answers into the
+  // opening that asked, never a later one. The answer used to set
+  // rejected/failed unconditionally — after "Not now" the next prompt opened
+  // with a stale error over an empty field (UX review 2026-09-22, item 16).
+  const openingSeq = useRef(0);
+
   // Focus the input on open; reset transient state when it closes.
   useEffect(() => {
+    openingSeq.current += 1;
     if (open) {
       inputRef.current?.focus();
     } else {
@@ -71,21 +82,29 @@ export function KeyPrompt(): JSX.Element | null {
   if (!open) return null;
 
   function cancel(): void {
+    // Read BOTH before clearKeyPrompt: the emit guard drops the images the
+    // moment their carrier (needsKeyText) clears.
     const text = needsKeyText;
+    const staged = needsKeyImages ?? undefined;
     sessionStore.clearKeyPrompt();
-    if (text !== null) sessionStore.requestComposerDraft(text, null);
+    if (text !== null) sessionStore.requestComposerDraft(text, null, staged);
   }
 
   function save(): void {
     const key = draft.trim();
     if (key.length === 0 || saving) return;
     const text = needsKeyText;
+    const staged = needsKeyImages ?? undefined;
+    const opening = openingSeq.current;
     setSaving(true);
     setFailed(false);
     setRejected(false);
     void bridge
       .setDeepSeekKey(key)
       .then((r) => {
+        // The card closed (or closed and reopened) while the call was out:
+        // the key was still saved, but nothing here is this answer's to set.
+        if (openingSeq.current !== opening) return;
         setSaving(false);
         if (!r.ok) {
           // DeepSeek rejected the key — keep the card open so the user can fix
@@ -100,9 +119,11 @@ export function KeyPrompt(): JSX.Element | null {
         if (sessionStore.getSnapshot().needsKeyText !== text) return;
         sessionStore.clearKeyPrompt();
         // Re-send the held message — the live key now lets the turn run.
-        if (text !== null) submitMessage(bridge, sessionStore, text);
+        // The pictures ride it again: their staged ids are still valid.
+        if (text !== null) submitMessage(bridge, sessionStore, text, staged);
       })
       .catch(() => {
+        if (openingSeq.current !== opening) return;
         setFailed(true);
         setSaving(false);
       });

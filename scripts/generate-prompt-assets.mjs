@@ -83,6 +83,29 @@ function compileTree(dirName) {
 const assets = compileTree("prompts");
 const assetsEn = compileTree("prompts-en");
 
+// Superseded seed-body hashes (ADR 0052): the registry lives once, beside
+// the zh tree; each language's list rides its own bundle so materialize can
+// upgrade stale seed files in existing workspaces.
+const superseded = JSON.parse(
+  readFileSync(
+    join(root, "packages", "herta", "prompts", "feian-seeds-superseded.json"),
+    "utf8",
+  ),
+);
+assets.supersededFeianSha1 = superseded.zh ?? [];
+assetsEn.supersededFeianSha1 = superseded.en ?? [];
+
+// Retired seed files (ADR 0053): consolidated away, no successor file.
+// materialize archives a live copy that still matches a shipped body.
+const retired = JSON.parse(
+  readFileSync(
+    join(root, "packages", "herta", "prompts", "feian-seeds-retired.json"),
+    "utf8",
+  ),
+);
+assets.retiredFeian = retired.zh ?? {};
+assetsEn.retiredFeian = retired.en ?? {};
+
 /** Key-set parity gate: the zh and en trees must expose IDENTICAL keys in
  *  every record group. Any divergence aborts codegen with a loud error. */
 function checkKeyParity(label, zhRecord, enRecord) {
@@ -142,6 +165,14 @@ export interface PromptAssets {
   /** Canonical seed 废案, keyed by full filename (materialized verbatim
    *  into a fresh workspace's live corpus). */
   readonly feianSeeds: Readonly<Record<string, string>>;
+  /** sha1 (LF-normalized) of RETIRED seed bodies — a live workspace file
+   *  matching one is a stale prior seed version and gets overwritten by
+   *  materialization (the seed-revision upgrade path, ADR 0052). */
+  readonly supersededFeianSha1: readonly string[];
+  /** Seed files that no longer ship, keyed by filename → the sha1s of the
+   *  bodies that ever shipped under that name. A live copy matching one is
+   *  archived rather than left to duplicate its successor (ADR 0053). */
+  readonly retiredFeian: Readonly<Record<string, readonly string[]>>;
 }
 
 export const PROMPT_ASSETS: PromptAssets = ${JSON.stringify(assets, null, 2)};

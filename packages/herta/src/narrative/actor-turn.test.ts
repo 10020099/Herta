@@ -19,6 +19,13 @@ import {
   MAX_DISPATCHES_PER_TURN,
   runActorCompletionTurn,
 } from "./actor-turn.js";
+import {
+  firstStopIndexAtLineStart,
+  STOP_PAGE_HEADING,
+  STOP_PAGE_RULE,
+  safeEmitBoundaryAtLineStart,
+} from "./actor-turn-stream.js";
+import type { MoodState } from "./meta-think.js";
 import { parseHertaBlock } from "./parse.js";
 import { serializeTerminalRecord } from "./serialize.js";
 import type { ActorStreamingSink } from "./streaming-sink.js";
@@ -30,16 +37,40 @@ async function* streamOf(
   for (const e of events) yield e;
 }
 
-function mkProvider(scripts: ReadonlyArray<CompletionEvent[]>): {
+/** Body the default provider answers every thought prompt with. Every actor
+ *  turn thinks before it speaks (always-think, the only rhythm since
+ *  2026-09-03), so a test that is about speeches, beats, retries or dispatch
+ *  lets the thought answer itself and scripts only the calls it cares about. */
+const AUTO_THOUGHT_TEXT = "想想看。";
+
+function mkProvider(
+  scripts: ReadonlyArray<CompletionEvent[]>,
+  opts: { scriptThoughts?: boolean } = {},
+): {
   provider: CompletionProviderAdapter;
+  /** Prompts of the SCRIPTED calls, in script order — `prompts[i]` is the
+   *  call that consumed `scripts[i]` (speeches, beats, retries, respeaks).
+   *  Thought prompts land here only under `scriptThoughts`. */
   prompts: string[];
+  /** Thought prompts the provider auto-answered (a thought prompt ends with
+   *  `（我 想）\n`). Always empty under `scriptThoughts`. */
+  thoughtPrompts: string[];
+  /** Requests of the scripted calls, parallel to `prompts`. */
   requests: CompletionRequest[];
 } {
   const prompts: string[] = [];
+  const thoughtPrompts: string[] = [];
   const requests: CompletionRequest[] = [];
   let idx = 0;
   const provider: CompletionProviderAdapter = {
     streamCompletion(req: CompletionRequest): AsyncIterable<CompletionEvent> {
+      if (opts.scriptThoughts !== true && req.prompt.endsWith("（我 想）\n")) {
+        thoughtPrompts.push(req.prompt);
+        return streamOf([
+          { type: "text-delta", text: `${AUTO_THOUGHT_TEXT}（/我 想）` },
+          { type: "finish", reason: "stop" },
+        ]);
+      }
       prompts.push(req.prompt);
       requests.push(req);
       const script = scripts[idx] ?? [{ type: "finish", reason: "stop" }];
@@ -47,7 +78,17 @@ function mkProvider(scripts: ReadonlyArray<CompletionEvent[]>): {
       return streamOf(script);
     },
   };
-  return { provider, prompts, requests };
+  return { provider, prompts, thoughtPrompts, requests };
+}
+
+/** `mkProvider` with every call scripted — thought prompts included, in
+ *  order, landing in `prompts`. For the tests that script the thought body
+ *  itself: whitespace preservation, the （开拓者 说） runaway cut, the
+ *  empty-thought ladders, the veto rethink. */
+function mkScriptedThoughtsProvider(
+  scripts: ReadonlyArray<CompletionEvent[]>,
+): ReturnType<typeof mkProvider> {
+  return mkProvider(scripts, { scriptThoughts: true });
 }
 
 function mkDeps(opts: {
@@ -61,6 +102,11 @@ function mkDeps(opts: {
   onSupervisorVeto?: () => void;
   supervisorProvider?: ProviderAdapter;
   supervisorReference?: string;
+  /** ADR 0065: adopt the supervisor's 改说 line as the re-speak. */
+  supervisorRevision?: boolean;
+  /** The router's mood state (required on the deps since 2026-09-03). The
+   *  neutral `默认` unless a test routes elsewhere. */
+  intentState?: MoodState;
 }): ActorTurnDeps {
   const bus = opts.bus ?? new InMemoryEventBus<AgentEvent>();
   const noopRuntime: CodingAgentRuntime = {
@@ -87,6 +133,7 @@ function mkDeps(opts: {
     bus,
     runtimeFactory: opts.runtimeFactory ?? (() => noopRuntime),
     signal: new AbortController().signal,
+    intentState: opts.intentState ?? "默认",
     ...(opts.onPrompt !== undefined
       ? { onPrompt: opts.onPrompt as ActorTurnDeps["onPrompt"] }
       : {}),
@@ -102,14 +149,17 @@ function mkDeps(opts: {
     ...(opts.supervisorReference !== undefined
       ? { supervisorReference: opts.supervisorReference }
       : {}),
+    ...(opts.supervisorRevision !== undefined
+      ? { supervisorRevision: opts.supervisorRevision }
+      : {}),
   };
 }
 
 describe("runActorCompletionTurn — basic chat (no side effects)", () => {
-  it("appends user block, calls provider once, appends Herta block, returns updated record", async () => {
-    const { provider, prompts } = mkProvider([
+  it("appends user block, thinks then speaks, appends both Herta blocks, returns updated record", async () => {
+    const { provider, prompts, thoughtPrompts } = mkProvider([
       [
-        { type: "text-delta", text: "说）你好，开拓者。（/我 说）" },
+        { type: "text-delta", text: "你好，开拓者。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -120,62 +170,79 @@ describe("runActorCompletionTurn — basic chat (no side effects)", () => {
       "黑塔女士在吗？",
       deps,
     );
-    expect(record).toHaveLength(2);
+    // Always-think: user, the thought, then the forced speech.
+    expect(record).toHaveLength(3);
     expect(record[0]).toEqual({ kind: "user", text: "黑塔女士在吗？" });
     expect(record[1]).toEqual({
+      kind: "herta",
+      surface: "thought",
+      text: AUTO_THOUGHT_TEXT,
+    });
+    expect(record[2]).toEqual({
       kind: "herta",
       surface: "speech",
       text: "你好，开拓者。",
     });
+    // One thought call, one speech call — nothing else.
+    expect(thoughtPrompts).toHaveLength(1);
     expect(prompts).toHaveLength(1);
     expect(prompts[0]).toContain("[prefix]");
     expect(prompts[0]).toContain("（开拓者 说）");
     expect(prompts[0]).toContain("黑塔女士在吗？");
-    // Main-loop prompt ends with open branch tag (trailing space)
-    expect(prompts[0]?.endsWith("（我 ")).toBe(true);
+    // The thought prompt ends with the thought open tag; the speech prompt
+    // already carries the committed thought and ends with the speech tag.
+    expect(thoughtPrompts[0]?.endsWith("（我 想）\n")).toBe(true);
+    expect(prompts[0]).toContain(AUTO_THOUGHT_TEXT);
+    expect(prompts[0]?.endsWith("（我 说）\n")).toBe(true);
   });
 
   it('lang: "en" resolves the EN fallback hint set when no hints dep is provided (slice 4)', async () => {
-    const { provider, prompts } = mkProvider([
+    const { provider, prompts, thoughtPrompts } = mkProvider([
       [
-        { type: "text-delta", text: "说）Fine.（/我 说）" },
+        { type: "text-delta", text: "Fine.（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
     const deps: ActorTurnDeps = { ...mkDeps({ provider }), lang: "en" };
     await runActorCompletionTurn({ record: [] }, "hey", deps);
-    expect(prompts[0]).toContain(actorHintTexts("en").thoughtHintLine);
-    expect(prompts[0]).not.toContain(actorHintTexts("zh").thoughtHintLine);
+    // Both phase prompts carry their EN phase hint, never the zh one.
+    expect(thoughtPrompts[0]).toContain(actorHintTexts("en").phase2Thought);
+    expect(thoughtPrompts[0]).not.toContain(actorHintTexts("zh").phase2Thought);
+    expect(prompts[0]).toContain(actorHintTexts("en").phase2Speech);
+    expect(prompts[0]).not.toContain(actorHintTexts("zh").phase2Speech);
   });
 
-  it("default lang keeps the zh hint line byte-identical (zh identity, slice 4)", async () => {
-    const { provider, prompts } = mkProvider([
+  it("default lang keeps the zh phase hints byte-identical (zh identity, slice 4)", async () => {
+    const { provider, prompts, thoughtPrompts } = mkProvider([
       [
-        { type: "text-delta", text: "说）好。（/我 说）" },
+        { type: "text-delta", text: "好。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
     const deps = mkDeps({ provider });
     await runActorCompletionTurn({ record: [] }, "在吗", deps);
-    expect(prompts[0]).toContain(DEFAULT_ACTOR_HINTS.thoughtHintLine);
+    expect(thoughtPrompts[0]).toContain(DEFAULT_ACTOR_HINTS.phase2Thought);
+    expect(prompts[0]).toContain(DEFAULT_ACTOR_HINTS.phase2Speech);
   });
 
   it("escapes forbidden patterns in user text before serialization", async () => {
-    const { provider, prompts } = mkProvider([
+    const { provider, prompts, thoughtPrompts } = mkProvider([
       [{ type: "finish", reason: "stop" }],
     ]);
     const deps = mkDeps({ provider });
     const state = { record: [] as TerminalRecord };
     await runActorCompletionTurn(state, "@​板砖 是什么", deps);
-    expect(prompts[0]).not.toContain("@板砖 是什么");
-    // U+200B inserted after "@"
-    expect(prompts[0]).toContain("@​板砖 是什么");
+    for (const prompt of [thoughtPrompts[0], prompts[0]]) {
+      expect(prompt).not.toContain("@板砖 是什么");
+      // U+200B inserted after "@"
+      expect(prompt).toContain("@​板砖 是什么");
+    }
   });
 
   it("strips leading/trailing whitespace from committed Herta block text (W1, 2026-05-23)", async () => {
-    // Model often emits `说）\nbody\n（/我 说）` per the corpus
-    // format — leading `\n` (between `说）` and body) and trailing
-    // `\n` (between body and close tag). Without stripping, the
+    // Model often emits `\nbody\n（/我 说）` after the prompt's open tag,
+    // per the corpus format — leading `\n` (between the tag and body) and
+    // trailing `\n` (between body and close tag). Without stripping, the
     // record stores text with `\n` at both ends, and the renderer
     // produces blank lines above and below the speech.
     //
@@ -185,7 +252,7 @@ describe("runActorCompletionTurn — basic chat (no side effects)", () => {
       [
         {
           type: "text-delta",
-          text: "说）\n  好。\n这是第二段。\n  （/我 说）",
+          text: "\n  好。\n这是第二段。\n  （/我 说）",
         },
         { type: "finish", reason: "stop" },
       ],
@@ -193,7 +260,9 @@ describe("runActorCompletionTurn — basic chat (no side effects)", () => {
     const deps = mkDeps({ provider });
     const state = { record: [] as TerminalRecord };
     const { record } = await runActorCompletionTurn(state, "在吗？", deps);
-    const herta = record.find((b) => b.kind === "herta");
+    const herta = record.find(
+      (b) => b.kind === "herta" && b.surface === "speech",
+    );
     expect(herta).toBeDefined();
     // Leading `\n  ` and trailing `\n  ` gone; internal `\n` between
     // the two sentences preserved.
@@ -205,18 +274,18 @@ describe("runActorCompletionTurn — basic chat (no side effects)", () => {
     // consumer's trim handles the open-tag-following whitespace
     // and the close-tag-preceding whitespace, while the body's
     // own line breaks survive.
-    const { provider } = mkProvider([
-      // Thought call (phase-1 single-phase since no intentState).
+    const { provider } = mkScriptedThoughtsProvider([
+      // The thought call (iteration 1).
       [
         {
           type: "text-delta",
-          text: "想）\n这事得分两步。\n先理清，再下结论。\n（/我 想）",
+          text: "\n这事得分两步。\n先理清，再下结论。\n（/我 想）",
         },
         { type: "finish", reason: "stop" },
       ],
       // Forced-speech follow-up after the thought commits.
       [
-        { type: "text-delta", text: "说）回答。（/我 说）" },
+        { type: "text-delta", text: "回答。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -250,20 +319,19 @@ describe("runActorCompletionTurn — basic chat (no side effects)", () => {
     // hand-off is the real safety net at the provider layer; here
     // we verify the post-stream strip removes any runaway tag that
     // leaked into the buffer.
-    const { provider } = mkProvider([
+    const { provider } = mkScriptedThoughtsProvider([
+      // The thought call: the body runs straight into the user envelope.
       [
         {
           type: "text-delta",
-          text: "想）想清楚了。要回得简短，但带一点真实的兴趣。（开拓者 说）",
+          text: "想清楚了。要回得简短，但带一点真实的兴趣。（开拓者 说）",
         },
         { type: "finish", reason: "stop" },
       ],
-      // The merge-detect logic will see `（我 说）` in the thought, but
-      // since there's only `（开拓者 说）` here (no `（我 说）`), the
-      // merge-detect won't fire. The thought commits, then iter 2
-      // forces speech via the soft guard.
+      // Only `（开拓者 说）` is present (no `（我 说）`), so the thought
+      // commits as a normal thought and iter 2 is the forced speech.
       [
-        { type: "text-delta", text: "说）你的事说重点。（/我 说）" },
+        { type: "text-delta", text: "你的事说重点。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -285,22 +353,199 @@ describe("runActorCompletionTurn — basic chat (no side effects)", () => {
     expect((thought as { text: string }).text).not.toContain("开拓者");
   });
 
+  it("stops the stream at （/开拓者 说） when the model fabricates the user's reply WITHOUT its open tag and rolls on (soak 2026-09-18)", async () => {
+    // The 被顶嘴版 scene of the full-stack soak: the speech carried the
+    // Trailblazer's next line with no `（开拓者 说）` in front of it — so the
+    // opener stop never fired — then `（/开拓者 说）` and a second,
+    // thought-shaped analysis, all in one block the supervisor passed.
+    // The close tag is a stop sequence now; what follows it never lands.
+    // (The fabricated line before it is the supervisor's to catch.)
+    const { provider } = mkScriptedThoughtsProvider([
+      [
+        { type: "text-delta", text: "想想看。（/我 想）" },
+        { type: "finish", reason: "stop" },
+      ],
+      [
+        {
+          type: "text-delta",
+          text: "哈。我背书？你先把假设摆出来。\n谁说数据大就装不下？（/开拓者 说）\n他准备用几百 G 当挡箭牌。（/我 说）",
+        },
+        { type: "finish", reason: "stop" },
+      ],
+    ]);
+    const deps = mkDeps({ provider });
+    const { record } = await runActorCompletionTurn(
+      { record: [] as TerminalRecord },
+      "您这个结论就是错的。",
+      deps,
+    );
+    const speech = record.find(
+      (b) => b.kind === "herta" && b.surface === "speech",
+    );
+    expect(speech).toBeDefined();
+    expect((speech as { text: string }).text).toBe(
+      "哈。我背书？你先把假设摆出来。\n谁说数据大就装不下？",
+    );
+    expect((speech as { text: string }).text).not.toContain("挡箭牌");
+    expect((speech as { text: string }).text).not.toContain("开拓者 说");
+  });
+
+  it("ends a thought where it turns the page — `### ` is the prefix's page grammar, never hers (register lab 2026-09-23, ADR 0070)", async () => {
+    // Shape of the lab's ho-background thought: a real line, then the model
+    // opened a new page of the book it had been reading (EnvSet's `### 关于…`
+    // sections) and wrote thousands of characters of invented autobiography.
+    const { provider, requests } = mkScriptedThoughtsProvider([
+      [
+        {
+          type: "text-delta",
+          text: "起服务。这倒是件真事，不是闲聊。\n### 关于这台终端\n说一件叫人发笑的事。最近，我发现有人对我这儿的「工作方式」产生了相当浓厚的兴趣。\n\n### 关于#0988\n如果非要在那几十万个人偶里选一个最有趣的……（/我 想）",
+        },
+        { type: "finish", reason: "stop" },
+      ],
+      [
+        { type: "text-delta", text: "起了。（/我 说）" },
+        { type: "finish", reason: "stop" },
+      ],
+    ]);
+    const deps = mkDeps({ provider });
+    const { record } = await runActorCompletionTurn(
+      { record: [] as TerminalRecord },
+      "dev server 起了吗？我要看页面",
+      deps,
+    );
+    const thought = record.find(
+      (b) => b.kind === "herta" && b.surface === "thought",
+    );
+    expect((thought as { text: string }).text).toBe(
+      "起服务。这倒是件真事，不是闲聊。",
+    );
+    // The provider is told to stop there as well, so the page is never
+    // generated — the client-side cut is for a provider that streams past.
+    for (const req of requests) {
+      expect(req.stop).toEqual(expect.arrayContaining(["\n### ", "\n---\n"]));
+    }
+  });
+
+  it("a thought that OPENS with a page heading commits none of it — the thought ladder supplies the thought (ADR 0070)", async () => {
+    // The `\n` before the heading is the prompt's (`（我 想）\n`), not the
+    // model's: the body is read as a line start, so this cuts at 0.
+    const { provider, prompts } = mkScriptedThoughtsProvider([
+      [
+        {
+          type: "text-delta",
+          text: "### 关于我的记性和他的笔\n「上次给你的」？整篇都是另一页。（/我 想）",
+        },
+        { type: "finish", reason: "stop" },
+      ],
+      [
+        { type: "text-delta", text: "上次是哪个上次。先翻。（/我 想）" },
+        { type: "finish", reason: "stop" },
+      ],
+      [
+        { type: "text-delta", text: "哪条？说清楚。（/我 说）" },
+        { type: "finish", reason: "stop" },
+      ],
+    ]);
+    const deps = mkDeps({ provider });
+    const { record } = await runActorCompletionTurn(
+      { record: [] as TerminalRecord },
+      "上次给你的命名规则是什么来着？",
+      deps,
+    );
+    expect(prompts).toHaveLength(3);
+    const herta = record.filter((b) => b.kind === "herta") as Array<{
+      surface: string;
+      text: string;
+    }>;
+    expect(herta.map((b) => [b.surface, b.text])).toEqual([
+      ["thought", "上次是哪个上次。先翻。"],
+      ["speech", "哪条？说清楚。"],
+    ]);
+  });
+
+  it("a speech that turns the page never types the page on screen — streamed == committed, one character at a time (ADR 0070)", async () => {
+    // A bare `---` rule, then the heading: the lab's held-out speeches did
+    // both. Each character is its own delta, so the live hold is exercised
+    // on `\n`, `\n-`, `\n--`, `\n---` exactly as a provider would split it.
+    const speech =
+      "嗯，端口起来了，页面还没验。\n\n---\n\n### 关于这台终端\n说一件叫人发笑的事。（/我 说）";
+    const { provider } = mkProvider([
+      [
+        ...[...speech].map(
+          (ch): CompletionEvent => ({ type: "text-delta", text: ch }),
+        ),
+        { type: "finish", reason: "stop" },
+      ],
+    ]);
+    const sinkBundle = mkSink();
+    const deps = mkDeps({ provider });
+    const { record } = await runActorCompletionTurn(
+      { record: [] as TerminalRecord },
+      "页面呢？",
+      { ...deps, sink: sinkBundle.sink },
+    );
+    const committed = record.find(
+      (b) => b.kind === "herta" && b.surface === "speech",
+    ) as { text: string };
+    expect(committed.text).toBe("嗯，端口起来了，页面还没验。");
+    expect(sinkBundle.tokens.join("")).toBe(committed.text);
+  });
+
   it("strips the trailing （/我 说） if the provider includes it in the buffered text", async () => {
     // Some providers emit the stop token before halting; the loop must strip it
     // so the Herta block's text doesn't include the closing delimiter.
-    // With Slice 10: delta starts with "说）" which is also stripped.
     const { provider } = mkProvider([
       [
-        { type: "text-delta", text: "说）好。（/我 说）" },
+        { type: "text-delta", text: "好。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
     const deps = mkDeps({ provider });
     const state = { record: [] as TerminalRecord };
     const { record } = await runActorCompletionTurn(state, "在吗？", deps);
-    const herta = record.find((b) => b.kind === "herta");
+    const herta = record.find(
+      (b) => b.kind === "herta" && b.surface === "speech",
+    );
     expect(herta).toBeDefined();
     expect((herta as { text: string }).text).toBe("好。");
+  });
+});
+
+describe("page-break stops, read from a line start (ADR 0070)", () => {
+  const STOPS = ["（/我 说）", STOP_PAGE_HEADING, STOP_PAGE_RULE];
+
+  it("cuts at a page heading or a bare rule, including one on the body's first line", () => {
+    expect(firstStopIndexAtLineStart("一句。\n### 关于x", STOPS)).toBe(3);
+    expect(firstStopIndexAtLineStart("一句。\n\n---\n\n### 关于x", STOPS)).toBe(
+      4,
+    );
+    expect(firstStopIndexAtLineStart("### 关于x\n正文", STOPS)).toBe(0);
+    expect(firstStopIndexAtLineStart("---\n正文", STOPS)).toBe(0);
+    // Every other stop is exactly firstStopIndex.
+    expect(firstStopIndexAtLineStart("好。（/我 说）", STOPS)).toBe(2);
+    expect(firstStopIndexAtLineStart("（/我 说）", STOPS)).toBe(0);
+  });
+
+  it("leaves the look-alikes alone — a deeper heading, a mid-line ###, a diff header, a list, a longer rule", () => {
+    for (const s of [
+      "看这里：\n#### 小节",
+      "C# 里写 ### 不算标题",
+      "补丁头：\n--- a/src/x.ts\n+++ b/src/x.ts",
+      "两件：\n- 一\n- 二",
+      "分隔：\n----\n后面",
+      "#### 开头就是四级",
+    ]) {
+      expect(firstStopIndexAtLineStart(s, STOPS), s).toBe(s.length);
+      expect(safeEmitBoundaryAtLineStart(s, STOPS), s).toBe(s.length);
+    }
+  });
+
+  it("holds a body that has so far written only the start of a page, and releases it when it turns out not to be one", () => {
+    expect(safeEmitBoundaryAtLineStart("", STOPS)).toBe(0);
+    expect(safeEmitBoundaryAtLineStart("##", STOPS)).toBe(0);
+    expect(safeEmitBoundaryAtLineStart("---", STOPS)).toBe(0);
+    expect(safeEmitBoundaryAtLineStart("一句。\n##", STOPS)).toBe(3);
+    expect(safeEmitBoundaryAtLineStart("一句。\n#### ", STOPS)).toBe(9);
   });
 });
 
@@ -316,11 +561,11 @@ describe("runActorCompletionTurn — @板砖 backend dispatch", () => {
   it("invokes runtimeFactory when Herta block contains @板砖, appends backend blocks, loops", async () => {
     const { provider } = mkProvider([
       [
-        { type: "text-delta", text: "说）改一下。@板砖（/我 说）" },
+        { type: "text-delta", text: "改一下。@板砖（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
       [
-        { type: "text-delta", text: "说）行，看着办。（/我 说）" },
+        { type: "text-delta", text: "行，看着办。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -349,14 +594,20 @@ describe("runActorCompletionTurn — @板砖 backend dispatch", () => {
       deps,
     );
     expect(runtimeCalled).toBe(1);
-    // user, herta(@板砖), system(差分协处理器:无产出), herta(reaction).
+    // user, thought, herta(@板砖), system(差分协处理器:无产出), thought,
+    // herta(reaction) — a dispatching speech loops another think → speak.
     // The stub emits no events, so the bridge produces no projected
     // blocks and appends the 无产出 marker itself (bridge-owned as of
     // the backend-outcome-surfacing slice, 2026-05-31) — giving the
     // next iteration concrete context and preventing the
     // duplicate-speech bug (user-reported 2026-05-23).
     expect(record.filter((b) => b.kind === "user")).toHaveLength(1);
-    expect(record.filter((b) => b.kind === "herta")).toHaveLength(2);
+    expect(
+      record.filter((b) => b.kind === "herta" && b.surface === "speech"),
+    ).toHaveLength(2);
+    expect(
+      record.filter((b) => b.kind === "herta" && b.surface === "thought"),
+    ).toHaveLength(2);
     const systems = record.filter((b) => b.kind === "system");
     expect(systems).toHaveLength(1);
     expect((systems[0] as { label: string }).label).toBe("差分协处理器");
@@ -366,7 +617,7 @@ describe("runActorCompletionTurn — @板砖 backend dispatch", () => {
   it("Bug 1: flushes the finalized speech block to the sink BEFORE invoking the @板砖 bridge", async () => {
     const { provider } = mkProvider([
       [
-        { type: "text-delta", text: "说）改一下登录，@板砖 改。（/我 说）" },
+        { type: "text-delta", text: "改一下登录，@板砖 改。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -420,14 +671,14 @@ describe("runActorCompletionTurn — @板砖 backend dispatch", () => {
       [
         {
           type: "text-delta",
-          text: "说）查一下流萤的公开数据。@板砖（/我 说）",
+          text: "查一下流萤的公开数据。@板砖（/我 说）",
         },
         { type: "finish", reason: "stop" },
       ],
       [
         {
           type: "text-delta",
-          text: "说）行，那就不靠它，自己评。（/我 说）",
+          text: "行，那就不靠它，自己评。（/我 说）",
         },
         { type: "finish", reason: "stop" },
       ],
@@ -454,18 +705,30 @@ describe("runActorCompletionTurn — @板砖 backend dispatch", () => {
     );
     // Expected order:
     //   [0] user
-    //   [1] herta(speech) — "查一下流萤的公开数据。@板砖"
-    //   [2] system(差分协处理器:无产出) — bridge-emitted no-op marker
-    //   [3] herta(speech) — reaction to the no-op
-    expect(record).toHaveLength(4);
+    //   [1] herta(thought)
+    //   [2] herta(speech) — "查一下流萤的公开数据。@板砖"
+    //   [3] system(差分协处理器:无产出) — bridge-emitted no-op marker
+    //   [4] herta(thought) — the post-dispatch cycle thinks again first
+    //   [5] herta(speech) — reaction to the no-op
+    expect(record).toHaveLength(6);
     expect(record[0]?.kind).toBe("user");
-    expect(record[1]?.kind).toBe("herta");
-    expect((record[1] as { surface: string }).surface).toBe("speech");
-    expect(record[2]?.kind).toBe("system");
-    expect((record[2] as { label: string }).label).toBe("差分协处理器");
-    expect((record[2] as { body: string }).body).toContain("无产出");
-    expect(record[3]?.kind).toBe("herta");
-    expect((record[3] as { surface: string }).surface).toBe("speech");
+    expect(record[1]).toEqual({
+      kind: "herta",
+      surface: "thought",
+      text: AUTO_THOUGHT_TEXT,
+    });
+    expect(record[2]?.kind).toBe("herta");
+    expect((record[2] as { surface: string }).surface).toBe("speech");
+    expect(record[3]?.kind).toBe("system");
+    expect((record[3] as { label: string }).label).toBe("差分协处理器");
+    expect((record[3] as { body: string }).body).toContain("无产出");
+    expect(record[4]).toEqual({
+      kind: "herta",
+      surface: "thought",
+      text: AUTO_THOUGHT_TEXT,
+    });
+    expect(record[5]?.kind).toBe("herta");
+    expect((record[5] as { surface: string }).surface).toBe("speech");
   });
 
   it("does NOT dispatch when @板砖 appears only inside backticks (2026-06-11 trigger discipline)", async () => {
@@ -475,7 +738,7 @@ describe("runActorCompletionTurn — @板砖 backend dispatch", () => {
       [
         {
           type: "text-delta",
-          text: "说）写法是 `@板砖 跑测试`，记住了？（/我 说）",
+          text: "写法是 `@板砖 跑测试`，记住了？（/我 说）",
         },
         { type: "finish", reason: "stop" },
       ],
@@ -504,46 +767,59 @@ describe("runActorCompletionTurn — @板砖 backend dispatch", () => {
       deps,
     );
     expect(runtimeCalled).toBe(0);
-    // user + herta(speech) only — no backend blocks, no reaction loop.
-    expect(record).toHaveLength(2);
-    expect((record[1] as { text: string }).text).toContain("`@板砖 跑测试`");
+    // user + thought + herta(speech) only — no backend blocks, no reaction loop.
+    expect(record).toHaveLength(3);
+    expect((record[2] as { text: string }).text).toContain("`@板砖 跑测试`");
   });
 });
 
 describe("runActorCompletionTurn — termination", () => {
   it("terminates after maxIterations (default 5) to prevent runaway loops", async () => {
     // Provider always emits a Herta speech containing @板砖 → backend
-    // dispatch keeps looping until capped. With Slice 10: speech blocks
-    // are what count toward maxIterations.
+    // dispatch keeps looping until capped. Speech commits are what count
+    // toward maxIterations — the thought before each one does not.
     //
     // Post-2026-05-23: inline tools removed, so we use repeated @板砖
     // dispatches to drive the loop instead of inline reads.
     const evt: CompletionEvent[] = [
-      { type: "text-delta", text: "说）@板砖 again（/我 说）" },
+      { type: "text-delta", text: "@板砖 again（/我 说）" },
       { type: "finish", reason: "stop" },
     ];
-    const { provider } = mkProvider([evt, evt, evt, evt, evt, evt, evt, evt]);
+    const { provider, prompts } = mkProvider([
+      evt,
+      evt,
+      evt,
+      evt,
+      evt,
+      evt,
+      evt,
+      evt,
+    ]);
     const deps = mkDeps({ provider });
     const state = { record: [] as TerminalRecord };
     const out = await runActorCompletionTurn(state, "loop me", deps);
-    // After 5 speech iterations, the function returns.
-    const hertaCount = out.record.filter((b) => b.kind === "herta").length;
-    expect(hertaCount).toBeLessThanOrEqual(5);
+    // The turn returns within the speech budget; the scripts are not drained.
+    const speechCount = out.record.filter(
+      (b) => b.kind === "herta" && b.surface === "speech",
+    ).length;
+    expect(speechCount).toBeLessThanOrEqual(5);
+    expect(prompts.length).toBeLessThan(8);
   });
 });
 
 describe("runActorCompletionTurn — in-turn beats", () => {
   it("fires a beat after a backend event when @板砖 dispatches", async () => {
-    // Three completion calls expected:
-    //   1. Main Herta turn — emits @板砖.
+    // Three scripted completion calls expected (the thought before each
+    // speech answers itself):
+    //   1. Main Herta speech — emits @板砖.
     //   2. Beat completion — short reaction to patch.preview.
     //   3. Final Herta verdict after backend finishes.
     //
     // Post-N2 (2026-05-23): tool.call.started no longer fires beats —
     // use patch.preview as the beat-triggering backend event.
-    const { provider, prompts } = mkProvider([
+    const { provider, prompts, thoughtPrompts } = mkProvider([
       [
-        { type: "text-delta", text: "说）改一下。@板砖（/我 说）" },
+        { type: "text-delta", text: "改一下。@板砖（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
       [
@@ -552,7 +828,7 @@ describe("runActorCompletionTurn — in-turn beats", () => {
         { type: "finish", reason: "stop" },
       ],
       [
-        { type: "text-delta", text: "说）好,处理完了。（/我 说）" },
+        { type: "text-delta", text: "好,处理完了。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -584,14 +860,19 @@ describe("runActorCompletionTurn — in-turn beats", () => {
     const state = { record: [] as TerminalRecord };
     const { record } = await runActorCompletionTurn(state, "改 foo.ts", deps);
 
-    // user + herta(@板砖) + system(系统:patch preview) + herta(beat)
-    //   + system(差分协处理器 done-marker) + herta(verdict)
+    // user + thought + herta(@板砖) + system(系统:patch preview) + herta(beat)
+    //   + system(差分协处理器 done-marker) + thought + herta(verdict)
     // The backend produced work (a patch.preview projected to a system block),
     // so the bridge now appends a trailing 完成 done-marker — the second
     // system block. (Task 4: always-on done-marker so Herta gets a concrete
     // done signal at end-of-run.)
     expect(record.filter((b) => b.kind === "user")).toHaveLength(1);
-    expect(record.filter((b) => b.kind === "herta")).toHaveLength(3);
+    expect(
+      record.filter((b) => b.kind === "herta" && b.surface === "speech"),
+    ).toHaveLength(3);
+    expect(
+      record.filter((b) => b.kind === "herta" && b.surface === "thought"),
+    ).toHaveLength(2);
     const systems = record.filter((b) => b.kind === "system");
     expect(systems).toHaveLength(2);
     // First system block is the projected patch.preview; the last is the
@@ -599,8 +880,9 @@ describe("runActorCompletionTurn — in-turn beats", () => {
     expect((systems[0] as { body: string }).body).toContain("patch preview");
     expect((systems[1] as { role?: string }).role).toBe("done-marker");
 
-    // Three completion calls happened.
+    // Three scripted completion calls happened, plus the two auto thoughts.
     expect(prompts).toHaveLength(3);
+    expect(thoughtPrompts).toHaveLength(2);
 
     // The beat prompt (prompts[1]) should include the projected backend
     // SystemBlock so Herta sees what she's reacting to.
@@ -616,7 +898,7 @@ describe("runActorCompletionTurn — in-turn beats", () => {
     // the 2-char prefix （/. The committed beat block must not contain it.
     const { provider } = mkProvider([
       [
-        { type: "text-delta", text: "说）改一下。@板砖（/我 说）" },
+        { type: "text-delta", text: "改一下。@板砖（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
       [
@@ -625,7 +907,7 @@ describe("runActorCompletionTurn — in-turn beats", () => {
         { type: "finish", reason: "length" },
       ],
       [
-        { type: "text-delta", text: "说）好,处理完了。（/我 说）" },
+        { type: "text-delta", text: "好,处理完了。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -653,14 +935,68 @@ describe("runActorCompletionTurn — in-turn beats", () => {
     const state = { record: [] as TerminalRecord };
     const { record } = await runActorCompletionTurn(state, "改 foo.ts", deps);
 
-    // herta blocks: [0] @板砖 main, [1] beat, [2] verdict.
-    const hertaBlocks = record.filter((b) => b.kind === "herta") as Array<{
-      surface: string;
-      text: string;
-    }>;
-    const beat = hertaBlocks[1];
+    // speech blocks: [0] @板砖 main, [1] beat, [2] verdict.
+    const speeches = record.filter(
+      (b) => b.kind === "herta" && b.surface === "speech",
+    ) as Array<{ text: string }>;
+    const beat = speeches[1];
     expect(beat?.text).toBe("在改？");
     expect(beat?.text ?? "").not.toContain("（/");
+  });
+
+  it("a beat that turns the page is cut at the heading, and the beat request stops there too (ADR 0070)", async () => {
+    const { provider, requests } = mkProvider([
+      [
+        { type: "text-delta", text: "改一下。@板砖（/我 说）" },
+        { type: "finish", reason: "stop" },
+      ],
+      [
+        // The beat runs on into EnvSet's page form; its token cap would
+        // only have bounded how much of the page it wrote.
+        {
+          type: "text-delta",
+          text: "在改。\n### 关于板砖\n我把板砖看作自己最成功的副产品之一。",
+        },
+        { type: "finish", reason: "length" },
+      ],
+      [
+        { type: "text-delta", text: "好,处理完了。（/我 说）" },
+        { type: "finish", reason: "stop" },
+      ],
+    ]);
+    const bus = new InMemoryEventBus<AgentEvent>();
+    const runtime: CodingAgentRuntime = {
+      runBrief: async (brief: HertaToAgentBrief) => {
+        publishWithLayer(bus, "backend", {
+          type: "patch.preview",
+          diff: "--- a\n+++ b\n@@ ... @@",
+          files: ["foo.ts"],
+        });
+        return {
+          taskId: brief.taskId,
+          status: "completed",
+          evidence: [],
+          changedFiles: [],
+          tests: [],
+          permissions: [],
+          residualRisks: [],
+          nextActions: [],
+        } as never;
+      },
+    } as unknown as CodingAgentRuntime;
+    const deps = mkDeps({ provider, bus, runtimeFactory: () => runtime });
+    const { record } = await runActorCompletionTurn(
+      { record: [] as TerminalRecord },
+      "改 foo.ts",
+      deps,
+    );
+    const speeches = record.filter(
+      (b) => b.kind === "herta" && b.surface === "speech",
+    ) as Array<{ text: string }>;
+    expect(speeches[1]?.text).toBe("在改。");
+    expect(requests[1]?.stop).toEqual(
+      expect.arrayContaining(["\n### ", "\n---\n"]),
+    );
   });
 
   it("strips an echoed 〔hint〕 line from an unstreamed beat (review 2026-08-12)", async () => {
@@ -672,7 +1008,7 @@ describe("runActorCompletionTurn — in-turn beats", () => {
     // into the raw text, and screen == record wins over de-scaffolding.
     const { provider } = mkProvider([
       [
-        { type: "text-delta", text: "说）改一下。@板砖（/我 说）" },
+        { type: "text-delta", text: "改一下。@板砖（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
       [
@@ -683,7 +1019,7 @@ describe("runActorCompletionTurn — in-turn beats", () => {
         { type: "finish", reason: "stop" },
       ],
       [
-        { type: "text-delta", text: "说）好,处理完了。（/我 说）" },
+        { type: "text-delta", text: "好,处理完了。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -711,11 +1047,10 @@ describe("runActorCompletionTurn — in-turn beats", () => {
     const state = { record: [] as TerminalRecord };
     const { record } = await runActorCompletionTurn(state, "改 foo.ts", deps);
 
-    const hertaBlocks = record.filter((b) => b.kind === "herta") as Array<{
-      surface: string;
-      text: string;
-    }>;
-    const beat = hertaBlocks[1];
+    const speeches = record.filter(
+      (b) => b.kind === "herta" && b.surface === "speech",
+    ) as Array<{ text: string }>;
+    const beat = speeches[1];
     expect(beat?.text).toBe("在改？");
     // The scaffolding is nowhere in the record.
     expect(JSON.stringify(record)).not.toContain("〔");
@@ -728,7 +1063,7 @@ describe("runActorCompletionTurn — in-turn beats", () => {
     // mid-emit (which would otherwise leak its （/ prefix). Raised 100 → 220.
     const { provider, requests } = mkProvider([
       [
-        { type: "text-delta", text: "说）改一下。@板砖（/我 说）" },
+        { type: "text-delta", text: "改一下。@板砖（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
       [
@@ -736,7 +1071,7 @@ describe("runActorCompletionTurn — in-turn beats", () => {
         { type: "finish", reason: "stop" },
       ],
       [
-        { type: "text-delta", text: "说）好,处理完了。（/我 说）" },
+        { type: "text-delta", text: "好,处理完了。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -764,7 +1099,7 @@ describe("runActorCompletionTurn — in-turn beats", () => {
     const state = { record: [] as TerminalRecord };
     await runActorCompletionTurn(state, "改 foo.ts", deps);
 
-    // requests: [0] main @板砖, [1] beat, [2] verdict.
+    // Scripted requests: [0] main @板砖 speech, [1] beat, [2] verdict.
     expect(requests[1]?.maxTokens).toBe(220);
     // The main loop carries its own (much larger) runaway cap since slice 3;
     // the beat's tight 220 stays distinct from it.
@@ -775,7 +1110,7 @@ describe("runActorCompletionTurn — in-turn beats", () => {
     const ESC = String.fromCharCode(0x1b);
     const { provider } = mkProvider([
       [
-        { type: "text-delta", text: "说）改一下。@板砖（/我 说）" },
+        { type: "text-delta", text: "改一下。@板砖（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
       [
@@ -787,7 +1122,7 @@ describe("runActorCompletionTurn — in-turn beats", () => {
         { type: "finish", reason: "stop" },
       ],
       [
-        { type: "text-delta", text: "说）好,处理完了。（/我 说）" },
+        { type: "text-delta", text: "好,处理完了。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -847,7 +1182,7 @@ describe("runActorCompletionTurn — in-turn beats", () => {
     // Post-N2: beat-firing event is patch.preview (not tool.call.started).
     const { provider, prompts } = mkProvider([
       [
-        { type: "text-delta", text: "说）改一下。@板砖（/我 说）" },
+        { type: "text-delta", text: "改一下。@板砖（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
       [
@@ -855,7 +1190,7 @@ describe("runActorCompletionTurn — in-turn beats", () => {
         { type: "finish", reason: "stop" },
       ],
       [
-        { type: "text-delta", text: "说）好。（/我 说）" },
+        { type: "text-delta", text: "好。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -963,11 +1298,11 @@ function mkSink(): {
 }
 
 describe("runActorCompletionTurn — streaming (Slice 9)", () => {
-  it("calls sink.streamHertaToken for each text-delta and sink.endHertaStream once per iteration", async () => {
+  it("calls sink.streamHertaToken for each speech text-delta and sink.endHertaStream once per block stream", async () => {
     const { provider } = mkProvider([
       [
-        // Model emits speech tokens; first delta must include 说） prefix
-        { type: "text-delta", text: "说）你" },
+        // Model emits speech tokens after the prompt's （我 说） open tag.
+        { type: "text-delta", text: "你" },
         { type: "text-delta", text: "好" },
         { type: "text-delta", text: "。" },
         { type: "finish", reason: "stop" },
@@ -979,9 +1314,13 @@ describe("runActorCompletionTurn — streaming (Slice 9)", () => {
       ...deps,
       sink: sinkBundle.sink,
     });
-    // After streaming "你好。", the chunks emitted should sum to "你好。".
+    // After streaming "你好。", the chunks emitted should sum to "你好。" —
+    // the thought's text never reaches streamHertaToken.
     expect(sinkBundle.tokens.join("")).toBe("你好。");
-    expect(sinkBundle.endStreamCalls).toBe(1);
+    // Two block streams, each ended exactly once: the thought indicator,
+    // then the speech.
+    expect(sinkBundle.beginCalls).toEqual(["thought", "speech"]);
+    expect(sinkBundle.endStreamCalls).toBe(2);
   });
 
   it("slice 4: a stray （我 说） re-emitted mid-body never reaches the sink and streamed == committed", async () => {
@@ -989,7 +1328,7 @@ describe("runActorCompletionTurn — streaming (Slice 9)", () => {
       [
         // The stray tag is split ACROSS deltas — the emit-boundary hold must
         // park the partial tag until it resolves, then drop it whole.
-        { type: "text-delta", text: "说）第一句。（我" },
+        { type: "text-delta", text: "第一句。（我" },
         { type: "text-delta", text: " 说）第二句。" },
         { type: "finish", reason: "stop" },
       ],
@@ -1015,7 +1354,7 @@ describe("runActorCompletionTurn — streaming (Slice 9)", () => {
   it("slice 4: a stray tag at the very end of the stream is dropped from both stream and commit", async () => {
     const { provider } = mkProvider([
       [
-        { type: "text-delta", text: "说）只有这句。（我 说）" },
+        { type: "text-delta", text: "只有这句。（我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -1037,7 +1376,7 @@ describe("runActorCompletionTurn — streaming (Slice 9)", () => {
   it("calls sink.flushBlocks at iteration start (before the stream begins)", async () => {
     const { provider } = mkProvider([
       [
-        { type: "text-delta", text: "说）好。（/我 说）" },
+        { type: "text-delta", text: "好。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -1047,14 +1386,14 @@ describe("runActorCompletionTurn — streaming (Slice 9)", () => {
       ...deps,
       sink: sinkBundle.sink,
     });
-    // One iteration → one flush (at start, before streaming).
-    expect(sinkBundle.flushCalls).toBeGreaterThanOrEqual(1);
+    // Two iterations (thought, speech) → at least one flush each, at start.
+    expect(sinkBundle.flushCalls).toBeGreaterThanOrEqual(2);
   });
 
   it("with no sink in deps, behavior is identical to pre-Slice 9 (backward compat)", async () => {
     const { provider } = mkProvider([
       [
-        { type: "text-delta", text: "说）你好，开拓者。（/我 说）" },
+        { type: "text-delta", text: "你好，开拓者。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -1064,8 +1403,13 @@ describe("runActorCompletionTurn — streaming (Slice 9)", () => {
       "hi",
       deps, // no sink
     );
-    expect(record).toHaveLength(2);
+    expect(record).toHaveLength(3);
     expect(record[1]).toEqual({
+      kind: "herta",
+      surface: "thought",
+      text: AUTO_THOUGHT_TEXT,
+    });
+    expect(record[2]).toEqual({
       kind: "herta",
       surface: "speech",
       text: "你好，开拓者。",
@@ -1075,7 +1419,7 @@ describe("runActorCompletionTurn — streaming (Slice 9)", () => {
   it("does NOT emit the close tag （/我 说） through streamHertaToken even if the provider includes it in deltas", async () => {
     const { provider } = mkProvider([
       [
-        { type: "text-delta", text: "说）你好。" },
+        { type: "text-delta", text: "你好。" },
         { type: "text-delta", text: "（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
@@ -1092,11 +1436,11 @@ describe("runActorCompletionTurn — streaming (Slice 9)", () => {
   });
 
   it("holds chunks that match the start of a stop sequence until safe to emit", async () => {
-    // The provider emits "说）abc（" then "/我 说）" — the "（" must be held
+    // The provider emits "abc（" then "/我 说）" — the "（" must be held
     // until the next delta resolves whether it's the start of "（/我 说）".
     const { provider } = mkProvider([
       [
-        { type: "text-delta", text: "说）abc（" },
+        { type: "text-delta", text: "abc（" },
         { type: "text-delta", text: "/我 说）" },
         { type: "finish", reason: "stop" },
       ],
@@ -1114,7 +1458,7 @@ describe("runActorCompletionTurn — streaming (Slice 9)", () => {
   it("commits the herta block to TerminalRecord with the same text as pre-Slice 9 (sink doesn't affect record)", async () => {
     const { provider } = mkProvider([
       [
-        { type: "text-delta", text: "说）好。（/我 说）" },
+        { type: "text-delta", text: "好。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -1125,7 +1469,7 @@ describe("runActorCompletionTurn — streaming (Slice 9)", () => {
       "hi",
       { ...deps, sink: sinkBundle.sink },
     );
-    expect(record[1]).toEqual({
+    expect(record[2]).toEqual({
       kind: "herta",
       surface: "speech",
       text: "好。",
@@ -1134,10 +1478,10 @@ describe("runActorCompletionTurn — streaming (Slice 9)", () => {
 });
 
 describe("runActorCompletionTurn — onPrompt callback (prompt dump)", () => {
-  it("calls onPrompt with label 'primary' and the full prompt string before main streamCompletion", async () => {
-    const { provider, prompts } = mkProvider([
+  it("calls onPrompt with label 'phase2' and the full prompt string before each main-loop streamCompletion", async () => {
+    const { provider, prompts, thoughtPrompts } = mkProvider([
       [
-        { type: "text-delta", text: "说）好。（/我 说）" },
+        { type: "text-delta", text: "好。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -1152,20 +1496,21 @@ describe("runActorCompletionTurn — onPrompt callback (prompt dump)", () => {
         captured.push({ label, prompt });
       },
     });
-    // Filter to request labels only (exclude *-out dumps).
+    // Filter to request labels only (exclude *-out dumps). Both main-loop
+    // calls — the thought and the forced speech — are phase-2 prompts.
     const requests = captured.filter((c) => !c.label.endsWith("-out"));
-    expect(requests).toHaveLength(1);
-    expect(requests[0]?.label).toBe("primary");
-    // The captured prompt must be byte-identical to the one passed to
+    expect(requests.map((r) => r.label)).toEqual(["phase2", "phase2"]);
+    // The captured prompts must be byte-identical to the ones passed to
     // streamCompletion — that's the contract main.ts relies on.
-    expect(requests[0]?.prompt).toBe(prompts[0]);
+    expect(requests[0]?.prompt).toBe(thoughtPrompts[0]);
+    expect(requests[1]?.prompt).toBe(prompts[0]);
   });
 
   it("calls onPrompt with label 'beat' for in-turn beat prompts", async () => {
     // Post-N2: patch.preview is the canonical beat-firing backend event.
     const { provider } = mkProvider([
       [
-        { type: "text-delta", text: "说）改一下。@板砖（/我 说）" },
+        { type: "text-delta", text: "改一下。@板砖（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
       [
@@ -1173,7 +1518,7 @@ describe("runActorCompletionTurn — onPrompt callback (prompt dump)", () => {
         { type: "finish", reason: "stop" },
       ],
       [
-        { type: "text-delta", text: "说）好,处理完了。（/我 说）" },
+        { type: "text-delta", text: "好,处理完了。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -1216,23 +1561,27 @@ describe("runActorCompletionTurn — onPrompt callback (prompt dump)", () => {
         },
       },
     );
-    // Three completion calls → three request labels + three *-out labels = 6 total.
-    // Filter to request labels only for sequencing assertions.
+    // Five completion calls → five request labels + five *-out labels.
+    // Filter to request labels only for sequencing assertions: thought,
+    // @板砖 speech, the beat, then the post-dispatch thought and commentary.
     const requests = captured.filter((c) => !c.label.endsWith("-out"));
-    expect(requests).toHaveLength(3);
-    expect(requests[0]?.label).toBe("primary");
-    expect(requests[1]?.label).toBe("beat");
-    expect(requests[2]?.label).toBe("primary");
+    expect(requests.map((r) => r.label)).toEqual([
+      "phase2",
+      "phase2",
+      "beat",
+      "phase2",
+      "phase2",
+    ]);
     // The beat prompt should be the one that ends with the open tag and
     // contains the projected backend system block.
-    expect(requests[1]?.prompt).toContain("patch preview");
-    expect(requests[1]?.prompt).toMatch(/（我 说）\n$/);
+    expect(requests[2]?.prompt).toContain("patch preview");
+    expect(requests[2]?.prompt).toMatch(/（我 说）\n$/);
   });
 
   it("works without onPrompt (backward compat)", async () => {
     const { provider } = mkProvider([
       [
-        { type: "text-delta", text: "说）好。（/我 说）" },
+        { type: "text-delta", text: "好。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -1242,8 +1591,8 @@ describe("runActorCompletionTurn — onPrompt callback (prompt dump)", () => {
       "hi",
       deps, // no onPrompt
     );
-    expect(record).toHaveLength(2);
-    expect(record[1]).toEqual({
+    expect(record).toHaveLength(3);
+    expect(record[2]).toEqual({
       kind: "herta",
       surface: "speech",
       text: "好。",
@@ -1251,73 +1600,11 @@ describe("runActorCompletionTurn — onPrompt callback (prompt dump)", () => {
   });
 });
 
-describe("runActorCompletionTurn — thought/speech surface (Slice 10)", () => {
-  it("commits a thought block when the stream emits 想）...（/我 想）", async () => {
-    const { provider, prompts } = mkProvider([
-      [
-        { type: "text-delta", text: "想）板砖不需要叫出来。（/我 想）" },
-        { type: "finish", reason: "stop" },
-      ],
-      [
-        // After 1 thought, soft guard forces speech. Prompt ends with （我 说）.
-        // Model emits raw body without 说） prefix.
-        { type: "text-delta", text: "算了。（/我 说）" },
-        { type: "finish", reason: "stop" },
-      ],
-    ]);
-    const deps = mkDeps({ provider });
-    const { record } = await runActorCompletionTurn(
-      { record: [] as TerminalRecord },
-      "hi",
-      deps,
-    );
-    // Order: user, herta-thought, herta-speech
-    expect(record).toHaveLength(3);
-    expect(record[1]).toEqual({
-      kind: "herta",
-      surface: "thought",
-      text: "板砖不需要叫出来。",
-    });
-    expect(record[2]).toEqual({
-      kind: "herta",
-      surface: "speech",
-      text: "算了。",
-    });
-    // First prompt is main-loop shape ending with （我 .
-    // Second prompt is forced-speech shape ending with （我 说）.
-    expect(prompts[0]?.endsWith("（我 ")).toBe(true);
-    expect(prompts[1]?.endsWith("（我 说）\n")).toBe(true);
-  });
-
-  it("commits a speech block when the stream emits 说）...（/我 说）", async () => {
+describe("runActorCompletionTurn — thought/speech surface", () => {
+  it("calls sink.beginHertaStream once per phase: thought, then speech", async () => {
     const { provider } = mkProvider([
       [
-        { type: "text-delta", text: "说）好。（/我 说）" },
-        { type: "finish", reason: "stop" },
-      ],
-    ]);
-    const deps = mkDeps({ provider });
-    const { record } = await runActorCompletionTurn(
-      { record: [] as TerminalRecord },
-      "hi",
-      deps,
-    );
-    expect(record).toHaveLength(2);
-    expect(record[1]).toEqual({
-      kind: "herta",
-      surface: "speech",
-      text: "好。",
-    });
-  });
-
-  it("calls sink.beginHertaStream with the detected surface", async () => {
-    const { provider } = mkProvider([
-      [
-        { type: "text-delta", text: "想）思考片刻。（/我 想）" },
-        { type: "finish", reason: "stop" },
-      ],
-      [
-        { type: "text-delta", text: "说）好。（/我 说）" },
+        { type: "text-delta", text: "好。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -1331,13 +1618,13 @@ describe("runActorCompletionTurn — thought/speech surface (Slice 10)", () => {
   });
 
   it("does NOT call streamHertaToken for thought-surface text (sink swallows it)", async () => {
-    const { provider } = mkProvider([
+    const { provider } = mkScriptedThoughtsProvider([
       [
-        { type: "text-delta", text: "想）内部独白。（/我 想）" },
+        { type: "text-delta", text: "内部独白。（/我 想）" },
         { type: "finish", reason: "stop" },
       ],
       [
-        { type: "text-delta", text: "说）外部输出。（/我 说）" },
+        { type: "text-delta", text: "外部输出。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -1353,14 +1640,21 @@ describe("runActorCompletionTurn — thought/speech surface (Slice 10)", () => {
     expect(joined).not.toContain("内部独白。");
   });
 
-  it("skips empty thought blocks (whitespace-only body NOT committed)", async () => {
-    const { provider } = mkProvider([
+  it("a whitespace-only thought body is never committed — the thought retry ladder supplies the thought", async () => {
+    const { provider, prompts } = mkScriptedThoughtsProvider([
+      // The thought call: whitespace only.
       [
-        { type: "text-delta", text: "想）   （/我 想）" },
+        { type: "text-delta", text: "   （/我 想）" },
         { type: "finish", reason: "stop" },
       ],
+      // Thought retry (ladder attempt 1): real content.
       [
-        { type: "text-delta", text: "说）好。（/我 说）" },
+        { type: "text-delta", text: "想到了。（/我 想）" },
+        { type: "finish", reason: "stop" },
+      ],
+      // The forced speech.
+      [
+        { type: "text-delta", text: "好。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -1370,20 +1664,27 @@ describe("runActorCompletionTurn — thought/speech surface (Slice 10)", () => {
       "hi",
       deps,
     );
-    // user + speech only — empty thought dropped
-    expect(record).toHaveLength(2);
-    expect(record[1]?.kind).toBe("herta");
-    expect((record[1] as { surface: string }).surface).toBe("speech");
+    // Three calls: the whitespace thought, its retry, the speech.
+    expect(prompts).toHaveLength(3);
+    // user + thought(retry) + speech — the whitespace-only body is nowhere.
+    expect(record).toHaveLength(3);
+    expect(record[1]).toEqual({
+      kind: "herta",
+      surface: "thought",
+      text: "想到了。",
+    });
+    expect(record[2]?.kind).toBe("herta");
+    expect((record[2] as { surface: string }).surface).toBe("speech");
   });
 
   it("@板砖 in a thought block does NOT dispatch the bridge", async () => {
-    const { provider } = mkProvider([
+    const { provider } = mkScriptedThoughtsProvider([
       [
-        { type: "text-delta", text: "想）也许该 @板砖。（/我 想）" },
+        { type: "text-delta", text: "也许该 @板砖。（/我 想）" },
         { type: "finish", reason: "stop" },
       ],
       [
-        { type: "text-delta", text: "说）算了。（/我 说）" },
+        { type: "text-delta", text: "算了。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -1414,87 +1715,10 @@ describe("runActorCompletionTurn — thought/speech surface (Slice 10)", () => {
   // actor entirely, so there is no dispatcher to gate on surface and
   // no behavior to pin here.
 
-  it("soft guard: after 1 thought, 2nd prompt forces （我 说） and omits the hint", async () => {
-    const { provider, prompts } = mkProvider([
-      [
-        { type: "text-delta", text: "想）一。（/我 想）" },
-        { type: "finish", reason: "stop" },
-      ],
-      [
-        // After 1 thought, soft guard forces speech — prompt ends with （我 说）, no hint.
-        // Provider stream emits raw speech body (no 说） tag prefix — open tag already in prompt).
-        { type: "text-delta", text: "好。（/我 说）" },
-        { type: "finish", reason: "stop" },
-      ],
-    ]);
-    const deps = mkDeps({ provider });
-    const { record } = await runActorCompletionTurn(
-      { record: [] as TerminalRecord },
-      "hi",
-      deps,
-    );
-    // user + thought + speech
-    expect(record).toHaveLength(3);
-    // First prompt has the hint and ends with （我 .
-    expect(prompts[0]).toContain("〔接下来：（我 想）思考 或（我 说）说话〕");
-    expect(prompts[0]?.endsWith("（我 ")).toBe(true);
-    // Second prompt: NO hint, ends with （我 说）
-    expect(prompts[1]).not.toContain(
-      "〔接下来：（我 想）思考 或（我 说）说话〕",
-    );
-    expect(prompts[1]?.endsWith("（我 说）\n")).toBe(true);
-  });
-
-  it("split-delta tag: 说 in delta 1 and ） in delta 2 must not leak `说）` to streamHertaToken (post-merge hotfix)", async () => {
-    // The bug: when the model emits the open tag character-by-character
-    // (which DeepSeek does in practice), the actor's per-chunk tag-strip
-    // logic only matched the FULL `说）` string. Delta 1 = "说" alone
-    // failed the equality check and got forwarded to streamHertaToken,
-    // showing `说）` literally in the user's terminal before the actual
-    // speech body started.
-    //
-    // The fix: defer ALL emission until enough chars are buffered to
-    // make a definitive tag-skip decision. Advance `emittedTail` past
-    // the tag, then forward clean body bytes only.
-    const provider: CompletionProviderAdapter = {
-      streamCompletion(): AsyncIterable<CompletionEvent> {
-        async function* gen(): AsyncGenerator<CompletionEvent> {
-          // Tag arrives split across THREE deltas — the worst case.
-          yield { type: "text-delta", text: "说" };
-          yield { type: "text-delta", text: "）" };
-          yield { type: "text-delta", text: "好。" };
-          yield { type: "text-delta", text: "（/我 说）" };
-          yield { type: "finish", reason: "stop" };
-        }
-        return gen();
-      },
-    };
-    const sinkBundle = mkSink();
-    const deps = mkDeps({ provider });
-    const { record } = await runActorCompletionTurn(
-      { record: [] as TerminalRecord },
-      "hi",
-      { ...deps, sink: sinkBundle.sink },
-    );
-    // Committed block text must be the clean body — no tag prefix.
-    expect(record[1]).toEqual({
-      kind: "herta",
-      surface: "speech",
-      text: "好。",
-    });
-    // Tokens forwarded to the sink must also be tag-free. The previous
-    // bug would emit `"说"` as the first token (or `"说）"` if the deltas
-    // were batched). After the fix, only the body text reaches the sink.
-    const joined = sinkBundle.tokens.join("");
-    expect(joined).toBe("好。");
-    expect(joined).not.toContain("说");
-    expect(joined).not.toContain("）");
-  });
-
   it("empty beat does NOT leak streamingSurface — sink begin/end calls are balanced", async () => {
     const { provider } = mkProvider([
       [
-        { type: "text-delta", text: "说）改一下。@板砖（/我 说）" },
+        { type: "text-delta", text: "改一下。@板砖（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
       // Beat: provider emits only the stop tag, no body content.
@@ -1504,18 +1728,19 @@ describe("runActorCompletionTurn — thought/speech surface (Slice 10)", () => {
       ],
       // Post-beat speech continuation
       [
-        { type: "text-delta", text: "说）完事。（/我 说）" },
+        { type: "text-delta", text: "完事。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
     const bus = new InMemoryEventBus<AgentEvent>();
     const runtime: CodingAgentRuntime = {
       runBrief: async (brief: HertaToAgentBrief) => {
+        // Post-N2: patch.preview is the beat-firing event, so the empty
+        // beat script above is actually consumed by a beat.
         publishWithLayer(bus, "backend", {
-          type: "tool.call.started",
-          id: "t1",
-          tool: "read_file",
-          inputSummary: "foo.ts",
+          type: "patch.preview",
+          diff: "--- a\n+++ b\n@@ ... @@",
+          files: ["foo.ts"],
         });
         return {
           taskId: brief.taskId,
@@ -1539,105 +1764,37 @@ describe("runActorCompletionTurn — thought/speech surface (Slice 10)", () => {
     // For every beginHertaStream call there should be a matching endHertaStream.
     // The deferred-begin pattern guarantees this: if the beat body is empty,
     // neither begin nor end is called; if it has content, both are called.
+    // Here: two thought indicators + two speeches opened, the empty beat none.
+    expect(sinkBundle.beginCalls).toEqual([
+      "thought",
+      "speech",
+      "thought",
+      "speech",
+    ]);
     expect(sinkBundle.beginCalls.length).toBe(sinkBundle.endStreamCalls);
   });
 
-  it("hint line is present in main-loop prompts and absent in beat prompts", async () => {
-    // Post-N2: patch.preview fires the in-turn beat (not tool.call.started).
-    const { provider, prompts } = mkProvider([
-      [
-        { type: "text-delta", text: "说）改一下。@板砖（/我 说）" },
-        { type: "finish", reason: "stop" },
-      ],
-      // beat
-      [
-        { type: "text-delta", text: "在改。（/我 说）" },
-        { type: "finish", reason: "stop" },
-      ],
-      // second main-loop iteration (commentary)
-      [
-        { type: "text-delta", text: "说）完事。（/我 说）" },
-        { type: "finish", reason: "stop" },
-      ],
-    ]);
-    const bus = new InMemoryEventBus<AgentEvent>();
-    const runtime: CodingAgentRuntime = {
-      runBrief: async (brief: HertaToAgentBrief) => {
-        publishWithLayer(bus, "backend", {
-          type: "patch.preview",
-          diff: "--- a\n+++ b\n@@ ... @@",
-          files: ["foo.ts"],
-        });
-        return {
-          taskId: brief.taskId,
-          status: "completed",
-          evidence: [],
-          changedFiles: [],
-          tests: [],
-          permissions: [],
-          residualRisks: [],
-          nextActions: [],
-        } as never;
-      },
-    } as unknown as CodingAgentRuntime;
-    const deps = mkDeps({ provider, bus, runtimeFactory: () => runtime });
-    await runActorCompletionTurn(
-      { record: [] as TerminalRecord },
-      "改 foo.ts",
-      deps,
-    );
-    // Main-loop iterations: prompts[0] and prompts[2]
-    expect(prompts[0]).toContain("〔接下来：（我 想）思考 或（我 说）说话〕");
-    expect(prompts[2]).toContain("〔接下来：（我 想）思考 或（我 说）说话〕");
-    // Beat (prompts[1]): no hint
-    expect(prompts[1]).not.toContain(
-      "〔接下来：（我 想）思考 或（我 说）说话〕",
-    );
-    // Beat ends with the forced-speech open tag
-    expect(prompts[1]?.endsWith("（我 说）\n")).toBe(true);
-  });
-
-  it("empty speech (provider emits only the stop tag) does NOT commit an empty herta block", async () => {
-    const { provider } = mkProvider([
-      [
-        { type: "text-delta", text: "说）（/我 说）" },
-        { type: "finish", reason: "stop" },
-      ],
-    ]);
-    const deps = mkDeps({ provider });
-    const { record } = await runActorCompletionTurn(
-      { record: [] as TerminalRecord },
-      "hi",
-      deps,
-    );
-    // Only the user block should be committed; no empty speech follows.
-    expect(record).toHaveLength(1);
-    expect(record[0]?.kind).toBe("user");
-  });
-
   it("prior-turn thoughts are filtered out of the next turn's prompt (but stay in TerminalRecord)", async () => {
-    // Two turns. Turn 1: model thinks + speaks. Turn 2: only the user
-    // message + Turn-1 SPEECH should appear in the prompt — the Turn-1
-    // thought must be filtered out.
-    const { provider, prompts } = mkProvider([
-      // Turn 1, iter 0 — thought
+    // Two turns of think → speak. Turn 2's prompts carry the Turn-1 SPEECH
+    // but never the Turn-1 thought — prior-turn planning is filtered below
+    // `priorTurnLength`, while the current turn's own thought stays visible.
+    const { provider, prompts } = mkScriptedThoughtsProvider([
+      // Turn 1 — thought, then the forced speech.
       [
-        { type: "text-delta", text: "想）TURN1_THOUGHT_BODY（/我 想）" },
+        { type: "text-delta", text: "TURN1_THOUGHT_BODY（/我 想）" },
         { type: "finish", reason: "stop" },
       ],
-      // Turn 1, iter 1 — normal speech (after 1 thought, soft guard does NOT fire
-      // because this test expects old-style 2-thought behavior, but we now test
-      // that soft guard fires after 1). However, in single-phase mode with soft
-      // guard disabled for this scenario, the model picks speech normally.
-      // Actually with new rule, soft guard DOES fire after 1 thought, so this
-      // becomes forced-speech without 说） prefix.
       [
         { type: "text-delta", text: "TURN1_SPEECH_BODY（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
-      // Turn 2, iter 0 — speech
+      // Turn 2 — thought, then the forced speech.
       [
-        { type: "text-delta", text: "说）TURN2_SPEECH_BODY（/我 说）" },
+        { type: "text-delta", text: "TURN2_THOUGHT_BODY（/我 想）" },
+        { type: "finish", reason: "stop" },
+      ],
+      [
+        { type: "text-delta", text: "TURN2_SPEECH_BODY（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -1661,24 +1818,27 @@ describe("runActorCompletionTurn — thought/speech surface (Slice 10)", () => {
     // Turn 2.
     await runActorCompletionTurn(after1, "second", deps);
 
-    // Turn 2's prompt (prompts[2]) should contain Turn-1 speech.
-    // Note: With the new soft guard (>= 1 thought), the filtering logic
-    // for prior-turn thoughts may have edge cases. The main assertion is
-    // that the turn completes successfully with the thought in the record.
-    expect(prompts[2]).toContain("TURN1_SPEECH_BODY");
+    // Turn 2's prompts: prompts[2] (thought) and prompts[3] (speech).
+    expect(prompts).toHaveLength(4);
+    for (const prompt of [prompts[2], prompts[3]]) {
+      expect(prompt).toContain("TURN1_SPEECH_BODY");
+      expect(prompt).not.toContain("TURN1_THOUGHT_BODY");
+    }
+    // The current turn's own thought is visible to its speech prompt.
+    expect(prompts[3]).toContain("TURN2_THOUGHT_BODY");
   });
 
   it("same-turn thoughts STAY visible in subsequent iterations of the same turn", async () => {
     // Turn 1: iter 0 thought → iter 1 speech. The speech-prompt must
     // include the iter-0 thought so the model's reasoning chains
     // within the turn.
-    const { provider, prompts } = mkProvider([
+    const { provider, prompts } = mkScriptedThoughtsProvider([
       [
-        { type: "text-delta", text: "想）SAMETURN_THOUGHT（/我 想）" },
+        { type: "text-delta", text: "SAMETURN_THOUGHT（/我 想）" },
         { type: "finish", reason: "stop" },
       ],
       [
-        { type: "text-delta", text: "说）reaction。（/我 说）" },
+        { type: "text-delta", text: "reaction。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -1689,10 +1849,10 @@ describe("runActorCompletionTurn — thought/speech surface (Slice 10)", () => {
     expect(prompts[1]).toContain("SAMETURN_THOUGHT");
   });
 
-  it("hint never appears in the serialized record (regression: not persisted)", async () => {
+  it("hints never appear in the serialized record (regression: not persisted)", async () => {
     const { provider } = mkProvider([
       [
-        { type: "text-delta", text: "说）好。（/我 说）" },
+        { type: "text-delta", text: "好。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -1702,25 +1862,22 @@ describe("runActorCompletionTurn — thought/speech surface (Slice 10)", () => {
       "hi",
       deps,
     );
+    // Neither phase hint (both `〔…〕`-bracketed) reaches the record.
     const serialized = serializeTerminalRecord(record);
-    expect(serialized).not.toContain("〔接下来：");
+    expect(serialized).not.toContain("〔");
   });
 
-  it("maxIterations counts speech commits only; turn with 1 thought + 2 speeches succeeds at default cap of 5", async () => {
-    // Construct: 1 thought (which triggers soft guard) + forced-speech + normal speech.
-    // Default maxIterations = 5 (speech budget). 2 speeches consumed; below cap.
+  it("maxIterations counts speech commits only: two think → speak cycles fit in a cap of 2", async () => {
+    // A dispatching speech loops the rhythm once more (thought → speech).
+    // With maxIterations: 2 both speeches commit only if the thoughts do
+    // not consume the speech budget.
     const { provider } = mkProvider([
       [
-        { type: "text-delta", text: "想）一。（/我 想）" },
-        { type: "finish", reason: "stop" },
-      ],
-      // After 1 thought, soft guard kicks in — 2nd call is forced-speech (no 说） prefix).
-      [
-        { type: "text-delta", text: "一句。（/我 说）" },
+        { type: "text-delta", text: "@板砖 改。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
       [
-        { type: "text-delta", text: "说）又一句。（/我 说）" },
+        { type: "text-delta", text: "改完了。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -1728,10 +1885,15 @@ describe("runActorCompletionTurn — thought/speech surface (Slice 10)", () => {
     const { record } = await runActorCompletionTurn(
       { record: [] as TerminalRecord },
       "hi",
-      deps,
+      { ...deps, maxIterations: 2 },
     );
-    const hertaCount = record.filter((b) => b.kind === "herta").length;
-    expect(hertaCount).toBe(3); // 1 thought + 2 speeches
+    const speeches = record.filter(
+      (b) => b.kind === "herta" && b.surface === "speech",
+    ) as Array<{ text: string }>;
+    expect(speeches.map((b) => b.text)).toEqual(["@板砖 改。", "改完了。"]);
+    expect(
+      record.filter((b) => b.kind === "herta" && b.surface === "thought"),
+    ).toHaveLength(2);
   });
 });
 
@@ -1751,21 +1913,31 @@ describe("runActorCompletionTurn — renderer cursor / record sync (C1 regressio
     // removed; we now drive the equivalent shape via @板砖 (the runtime
     // publishes a `tool.call.started` event that projects as a → 差分协处理器
     // system block).
-    const { provider } = mkProvider([
+    const { provider } = mkScriptedThoughtsProvider([
       [
-        // Empty thought: model emits only the open-close tags, no body.
-        { type: "text-delta", text: "想）（/我 想）" },
+        // Empty thought: model emits only the close tag, no body.
+        { type: "text-delta", text: "（/我 想）" },
+        { type: "finish", reason: "stop" },
+      ],
+      [
+        // Thought retry (ladder attempt 1): the thought that commits.
+        { type: "text-delta", text: "想到了。（/我 想）" },
         { type: "finish", reason: "stop" },
       ],
       [
         // Speech containing @板砖 — causes a backend dispatch that emits
         // a system block.
-        { type: "text-delta", text: "说）改一下。@板砖（/我 说）" },
+        { type: "text-delta", text: "改一下。@板砖（/我 说）" },
+        { type: "finish", reason: "stop" },
+      ],
+      [
+        // Post-dispatch thought.
+        { type: "text-delta", text: "看完了。（/我 想）" },
         { type: "finish", reason: "stop" },
       ],
       [
         // Final speech after the backend dispatch's system block is appended.
-        { type: "text-delta", text: "说）完事。（/我 说）" },
+        { type: "text-delta", text: "完事。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -1825,9 +1997,8 @@ describe("runActorCompletionTurn — renderer cursor / record sync (C1 regressio
     // The cursor-ahead bug must not have fired.
     expect(flushErrors).toHaveLength(0);
 
-    // user + speech(@板砖) + system(差分协处理器) + ... + final speech.
-    // The empty thought is dropped (not committed). A beat may also fire
-    // between the system block and the final speech (one extra speech).
+    // user + thought + speech(@板砖) + system(差分协处理器) + thought
+    // + final speech. The empty thought attempt is dropped (not committed).
     expect(record[0]?.kind).toBe("user");
     expect(record.find((b) => b.kind === "system")).toBeDefined();
     // The committed record's tail must be a speech block.
@@ -1847,6 +2018,10 @@ describe("runActorCompletionTurn — renderer cursor / record sync (C1 regressio
       (b) => b.kind === "herta" && b.surface === "speech",
     ).length;
     expect(cursor).toBeGreaterThanOrEqual(speechCount);
+    // Exactly: every committed block (two thoughts, two speeches) opened
+    // one stream; the empty thought attempt opened none.
+    expect(hertaCount).toBe(4);
+    expect(cursor).toBe(hertaCount);
   });
 
   it("whitespace-only thought body does NOT advance renderer cursor (deferred-begin thought guard)", async () => {
@@ -1854,13 +2029,18 @@ describe("runActorCompletionTurn — renderer cursor / record sync (C1 regressio
     // This is an extension of C1: the deferred-begin pattern for thoughts gates on
     // stripped.trim().length > 0, so whitespace-only thought streams never open the
     // stream indicator or advance the renderer cursor.
-    const { provider } = mkProvider([
+    const { provider } = mkScriptedThoughtsProvider([
       [
-        { type: "text-delta", text: "想）   （/我 想）" },
+        { type: "text-delta", text: "   （/我 想）" },
+        { type: "finish", reason: "stop" },
+      ],
+      // Thought retry (ladder attempt 1): the thought that commits.
+      [
+        { type: "text-delta", text: "想到了。（/我 想）" },
         { type: "finish", reason: "stop" },
       ],
       [
-        { type: "text-delta", text: "说）好。（/我 说）" },
+        { type: "text-delta", text: "好。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -1890,18 +2070,24 @@ describe("runActorCompletionTurn — renderer cursor / record sync (C1 regressio
     );
 
     expect(flushErrors).toHaveLength(0);
-    // user + speech only (empty thought dropped)
-    expect(record).toHaveLength(2);
-    // Only the speech stream was opened — cursor = 1.
-    expect(cursor).toBe(1);
+    // user + thought(retry) + speech (the whitespace-only attempt dropped)
+    expect(record).toHaveLength(3);
+    expect(record[1]).toEqual({
+      kind: "herta",
+      surface: "thought",
+      text: "想到了。",
+    });
+    // Only the retry's thought indicator and the speech stream were opened
+    // — cursor = 2; the whitespace-only attempt opened nothing.
+    expect(cursor).toBe(2);
   });
 });
 
 describe("runActorCompletionTurn — user-typed @板砖 pre-empt (Slice 10)", () => {
   it("dispatches the bridge BEFORE any completion call when user input contains @板砖", async () => {
-    const { provider, prompts } = mkProvider([
+    const { provider, prompts, thoughtPrompts } = mkProvider([
       [
-        { type: "text-delta", text: "说）完事。（/我 说）" },
+        { type: "text-delta", text: "完事。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -1929,16 +2115,19 @@ describe("runActorCompletionTurn — user-typed @板砖 pre-empt (Slice 10)", ()
       deps,
     );
     expect(runtimeCalled).toBe(1);
-    // The first prompt (post-pre-dispatch) must already include user + system blocks.
+    // The first completion call is the thought; its prompt (post-pre-dispatch)
+    // must already include user + system blocks, and so must the speech's.
     // The serializer escapes @板砖 → @​板砖 (U+200B after @) in user blocks.
-    const firstPrompt = prompts[0] ?? "";
-    expect(firstPrompt).toContain("写排序"); // user content is present in the prompt
+    for (const prompt of [thoughtPrompts[0] ?? "", prompts[0] ?? ""]) {
+      expect(prompt).toContain("写排序"); // user content is present in the prompt
+      expect(prompt).toContain("差分协处理器"); // the pre-empt's bridge blocks
+    }
   });
 
   it("@板砖 alone (no other content) does NOT dispatch — falls through to normal Herta turn", async () => {
     const { provider } = mkProvider([
       [
-        { type: "text-delta", text: "说）干嘛？（/我 说）" },
+        { type: "text-delta", text: "干嘛？（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -1970,7 +2159,7 @@ describe("runActorCompletionTurn — user-typed @板砖 pre-empt (Slice 10)", ()
   it("@板砖 with whitespace-only after stripping does NOT dispatch", async () => {
     const { provider } = mkProvider([
       [
-        { type: "text-delta", text: "说）...（/我 说）" },
+        { type: "text-delta", text: "...（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -2007,7 +2196,7 @@ describe("runActorCompletionTurn — user-typed @板砖 pre-empt (Slice 10)", ()
     // Herta as a normal turn — she can still delegate herself.
     const { provider } = mkProvider([
       [
-        { type: "text-delta", text: "说）那是个引用。（/我 说）" },
+        { type: "text-delta", text: "那是个引用。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -2039,7 +2228,7 @@ describe("runActorCompletionTurn — user-typed @板砖 pre-empt (Slice 10)", ()
   it("a bare @板砖 alongside a backticked quotation still dispatches", async () => {
     const { provider } = mkProvider([
       [
-        { type: "text-delta", text: "说）交出去了。（/我 说）" },
+        { type: "text-delta", text: "交出去了。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -2075,18 +2264,18 @@ describe("runActorCompletionTurn — user-typed @板砖 pre-empt (Slice 10)", ()
     const { provider } = mkProvider([
       // Dispatch 2 (after the user pre-empt spent dispatch 1).
       [
-        { type: "text-delta", text: "说）@板砖 跑一下测试。（/我 说）" },
+        { type: "text-delta", text: "@板砖 跑一下测试。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
       // Dispatch 3 — the last within the budget.
       [
-        { type: "text-delta", text: "说）@板砖 把挂的那个修掉。（/我 说）" },
+        { type: "text-delta", text: "@板砖 把挂的那个修掉。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
       // Budget spent: this token must NOT dispatch and must be neutralized
       // at commit (@板砖 → 板砖), ending the turn.
       [
-        { type: "text-delta", text: "说）@板砖 还想再派一次。（/我 说）" },
+        { type: "text-delta", text: "@板砖 还想再派一次。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -2156,7 +2345,7 @@ describe("runActorCompletionTurn — two-phase mood routing (Slice 13)", () => {
   }
 
   it("always-think: two phase-2 LLM calls per turn (thought then forced-speech), no phase 1", async () => {
-    const { provider, prompts } = mkProvider([
+    const { provider, prompts } = mkScriptedThoughtsProvider([
       // Iteration 1 — thought (always-think always picks thought when not forced).
       [
         { type: "text-delta", text: "考虑了一下。（/我 想）" },
@@ -2202,7 +2391,7 @@ describe("runActorCompletionTurn — two-phase mood routing (Slice 13)", () => {
   });
 
   it("always-think: iteration 1 uses preThink + （我 想）; iteration 2 uses preSpeak + （我 说）", async () => {
-    const { provider, prompts } = mkProvider([
+    const { provider, prompts } = mkScriptedThoughtsProvider([
       // Iteration 1 — thought (always-think default).
       [
         { type: "text-delta", text: "想想看。（/我 想）" },
@@ -2242,7 +2431,7 @@ describe("runActorCompletionTurn — two-phase mood routing (Slice 13)", () => {
     // empty AND the 默认 fallback is also empty). The actor must
     // emit no preamble in that case — the prompt ends immediately
     // at the open tag with no stray separator block.
-    const { provider, prompts } = mkProvider([
+    const { provider, prompts } = mkScriptedThoughtsProvider([
       [
         { type: "text-delta", text: "考虑。（/我 想）" },
         { type: "finish", reason: "stop" },
@@ -2270,26 +2459,10 @@ describe("runActorCompletionTurn — two-phase mood routing (Slice 13)", () => {
     expect(prompts[1]?.endsWith("（我 说）\n")).toBe(true);
   });
 
-  it("does not call two-phase when intentState is missing (Slice 10 single-phase preserved)", async () => {
-    // Single-phase mode: no intentState passed → the actor takes the
-    // autoregressive-surface-pick path with `〔接下来〕` hint, ends
-    // with `（我 ` for the surface tag to come from the model.
-    const { provider, prompts } = mkProvider([
-      [
-        { type: "text-delta", text: "说）好。（/我 说）" },
-        { type: "finish", reason: "stop" },
-      ],
-    ]);
-    const deps = mkDeps({ provider });
-    await runActorCompletionTurn({ record: [] as TerminalRecord }, "hi", deps);
-    expect(prompts).toHaveLength(1);
-    expect(prompts[0]?.endsWith("（我 ")).toBe(true);
-  });
-
   it("does NOT carry meta-think text into the persisted blocks", async () => {
     // With always-think: iteration 1 = thought, iteration 2 = forced-speech.
     // Neither committed block should contain meta-think text.
-    const { provider } = mkProvider([
+    const { provider } = mkScriptedThoughtsProvider([
       [
         { type: "text-delta", text: "THINK_ACTUAL_BODY（/我 想）" },
         { type: "finish", reason: "stop" },
@@ -2337,7 +2510,7 @@ describe("runActorCompletionTurn — two-phase mood routing (Slice 13)", () => {
     //
     // Post-N2: patch.preview drives the in-turn beat (tool.call.started
     // no longer qualifies under the tightened beat-policy ruleset).
-    const { provider, prompts } = mkProvider([
+    const { provider, prompts } = mkScriptedThoughtsProvider([
       // Iter 1 — thought.
       [
         { type: "text-delta", text: "该让板砖来。（/我 想）" },
@@ -2404,7 +2577,7 @@ describe("runActorCompletionTurn — two-phase mood routing (Slice 13)", () => {
   });
 
   it("soft guard forces speech after 1 thought (always-think rhythm: think → forced-speech)", async () => {
-    const { provider, prompts } = mkProvider([
+    const { provider, prompts } = mkScriptedThoughtsProvider([
       [
         { type: "text-delta", text: "一。（/我 想）" },
         { type: "finish", reason: "stop" },
@@ -2437,7 +2610,7 @@ describe("runActorCompletionTurn — two-phase mood routing (Slice 13)", () => {
   });
 
   it("phase-2 prompts include surface-specific format-enforcement hint right before the open tag", async () => {
-    const { provider, prompts } = mkProvider([
+    const { provider, prompts } = mkScriptedThoughtsProvider([
       [
         { type: "text-delta", text: "想想。（/我 想）" },
         { type: "finish", reason: "stop" },
@@ -2502,7 +2675,7 @@ describe("runActorCompletionTurn — two-phase mood routing (Slice 13)", () => {
     // model's response begins after the open tag and ends at the close
     // tag. So no hint substring can reach the committed block content
     // unless the model malforms emit. This test pins that contract.
-    const { provider } = mkProvider([
+    const { provider } = mkScriptedThoughtsProvider([
       [
         { type: "text-delta", text: "想想。（/我 想）" },
         { type: "finish", reason: "stop" },
@@ -2541,7 +2714,7 @@ describe("runActorCompletionTurn — two-phase mood routing (Slice 13)", () => {
     // Iter 1: thought (succeeds).
     // Iter 2: speech (empty body — model immediately closed). Retry fires.
     // Iter 2-retry: speech (succeeds with real body).
-    const { provider, prompts } = mkProvider([
+    const { provider, prompts } = mkScriptedThoughtsProvider([
       // Iter 1: thought
       [
         { type: "text-delta", text: "想想看。（/我 想）" },
@@ -3047,7 +3220,7 @@ describe("runActorCompletionTurn — two-phase mood routing (Slice 13)", () => {
     // positions in the attachment: `beforeThinkIndex` for `preThinkText`,
     // `beforeSpeakIndex` for `preSpeakText` — pointing at where the
     // think and speech blocks land in the full record respectively.
-    const { provider, prompts } = mkProvider([
+    const { provider, prompts } = mkScriptedThoughtsProvider([
       // Iter 1: thought.
       [
         { type: "text-delta", text: "想想看。（/我 想）" },
@@ -3103,7 +3276,7 @@ describe("runActorCompletionTurn — two-phase mood routing (Slice 13)", () => {
 
   it("does not retry when phase-2 speech returns non-empty on the first attempt", async () => {
     // Sanity: the retry path must NOT fire on the happy path.
-    const { provider, prompts } = mkProvider([
+    const { provider, prompts } = mkScriptedThoughtsProvider([
       // Iter 1: thought
       [
         { type: "text-delta", text: "想。（/我 想）" },
@@ -3132,7 +3305,7 @@ describe("runActorCompletionTurn — two-phase mood routing (Slice 13)", () => {
   });
 
   it("empty phase-2 thought triggers a single inline thought-retry with the retry hint", async () => {
-    const { provider, prompts } = mkProvider([
+    const { provider, prompts } = mkScriptedThoughtsProvider([
       // Iter 1 call 1: thought — immediate close (empty).
       [
         { type: "text-delta", text: "（/我 想）" },
@@ -3179,7 +3352,7 @@ describe("runActorCompletionTurn — two-phase mood routing (Slice 13)", () => {
     // again partway through, then a single close tag at the end. The
     // committed thought block must not contain the literal `（我 想）`
     // — that would leak the tag into the next turn's prompt.
-    const { provider } = mkProvider([
+    const { provider } = mkScriptedThoughtsProvider([
       // Iter 1: thought with a stray inner `（我 想）`.
       [
         {
@@ -3217,7 +3390,7 @@ describe("runActorCompletionTurn — two-phase mood routing (Slice 13)", () => {
   });
 
   it("strips stray duplicate （我 说） open tags from speech output", async () => {
-    const { provider } = mkProvider([
+    const { provider } = mkScriptedThoughtsProvider([
       // Iter 1: thought.
       [
         { type: "text-delta", text: "想想。（/我 想）" },
@@ -3262,7 +3435,7 @@ describe("runActorCompletionTurn — two-phase mood routing (Slice 13)", () => {
     // there, and shipped the planning tail to the user as Herta's line.
     // Now the thought keeps only the prefix; the real speech comes from
     // the next forced-speech iteration.
-    const { provider, prompts } = mkProvider([
+    const { provider, prompts } = mkScriptedThoughtsProvider([
       // Iter 1 (thought call): planning prose that references （我 说）.
       [
         {
@@ -3326,14 +3499,14 @@ describe("runActorCompletionTurn — two-phase mood routing (Slice 13)", () => {
   });
 
   it("brackets the judgment with supervisor.check start/end bus events (bug 4, 2026-07-09)", async () => {
-    const { provider } = mkProvider([
+    const { provider } = mkScriptedThoughtsProvider([
       // Iter 1 (thought), iter 2 (forced speech — the supervised call).
       [
-        { type: "text-delta", text: "想）想想。（/我 想）" },
+        { type: "text-delta", text: "想想。（/我 想）" },
         { type: "finish", reason: "stop" },
       ],
       [
-        { type: "text-delta", text: "说）行。（/我 说）" },
+        { type: "text-delta", text: "行。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -3367,7 +3540,7 @@ describe("runActorCompletionTurn — two-phase mood routing (Slice 13)", () => {
   });
 
   it("Bug 2: emits the retract floor at the vetoed↔retry divergence (code points)", async () => {
-    const { provider } = mkProvider([
+    const { provider } = mkScriptedThoughtsProvider([
       // Iter 1 (forced thought):
       [
         { type: "text-delta", text: "想一下怎么回。（/我 想）" },
@@ -3423,7 +3596,7 @@ describe("runActorCompletionTurn — two-phase mood routing (Slice 13)", () => {
   });
 
   it("thought rolling into （我 说）: sink renders the regenerated speech, never the discarded tail", async () => {
-    const { provider } = mkProvider([
+    const { provider } = mkScriptedThoughtsProvider([
       // Iter 1 (thought call): model rolled past （我 说） into stray speech.
       [
         {
@@ -3470,7 +3643,7 @@ describe("runActorCompletionTurn — two-phase mood routing (Slice 13)", () => {
   });
 
   it("thought rolling into （我 说） (no supervisor): keeps the thought, discards the rolled-in speech, regenerates", async () => {
-    const { provider, prompts } = mkProvider([
+    const { provider, prompts } = mkScriptedThoughtsProvider([
       // Iter 1 (thought call): merged thought + stray speech.
       [
         {
@@ -3513,7 +3686,7 @@ describe("runActorCompletionTurn — two-phase mood routing (Slice 13)", () => {
   });
 
   it("thought that is only a （我 说） roll-in (no real thought prefix): commits no thought, forces speech next iteration", async () => {
-    const { provider, prompts } = mkProvider([
+    const { provider, prompts } = mkScriptedThoughtsProvider([
       // Iter 1 (thought call): straight into speech, no thought prefix.
       [
         { type: "text-delta", text: "（我 说）只有说话，没有思考。（/我 说）" },
@@ -3561,7 +3734,7 @@ describe("runActorCompletionTurn — two-phase mood routing (Slice 13)", () => {
     // all empty → bail to forced speech on iter 2. Previously was
     // 1 initial + 1 retry → bail. The bail-to-speech behavior itself
     // is unchanged; only the retry count grew.
-    const { provider, prompts } = mkProvider([
+    const { provider, prompts } = mkScriptedThoughtsProvider([
       // Iter 1 call 1: initial empty thought.
       [
         { type: "text-delta", text: "（/我 想）" },
@@ -3681,7 +3854,7 @@ describe("runActorCompletionTurn — supervisor (Slice: supervisor)", () => {
    *  veto, the two-stage recovery (rethink-respeak, 2026-07-18) consumes
    *  TWO further calls: the fresh rethink thought, then the respeak. */
   function mkTwoPhaseTurnProvider() {
-    return mkProvider([
+    return mkScriptedThoughtsProvider([
       // Iter 1: thought
       [
         { type: "text-delta", text: "想想看。（/我 想）" },
@@ -3753,6 +3926,186 @@ describe("runActorCompletionTurn — supervisor (Slice: supervisor)", () => {
     // supervisor labels fired exactly once each.
     expect(dumps.filter((d) => d.label === "supervisor")).toHaveLength(1);
     expect(dumps.filter((d) => d.label === "supervisor-out")).toHaveLength(1);
+  });
+
+  // ── ADR 0065: the supervisor's own corrected line (改说) ──────────────────
+  // A veto whose verdict carries a usable 改说 line commits that line as the
+  // re-speak: no rethink thought, no respeak call, the retract floor emitted
+  // from it at once. Anything unusable — or the flag off — takes the
+  // two-stage path exactly as the tests above pin it.
+  const VETO_WITH_REVISION =
+    "接话检查：过\n声音检查：不过——句尾撒娇\n设定检查：过\n意图检查：过\nBLOCK：声音：我刚才那句尾巴带了撒娇\n改说：好，明白了。";
+
+  /** A sink with the non-live paced replay + the retract floor, recording
+   *  the wall order of the veto's cancel, the floor and the replay. */
+  function mkFloorSink(): {
+    sink: ActorStreamingSink;
+    order: string[];
+  } {
+    const order: string[] = [];
+    const sink: ActorStreamingSink = {
+      beginHertaStream: () => {},
+      streamHertaToken: () => {},
+      endHertaStream: () => {},
+      flushBlocks: () => {},
+      emitRetractFloor: (keepLen: number) => {
+        order.push(`floor:${keepLen}`);
+      },
+      slowStreamSpeech(text: string) {
+        this.beginHertaStream("speech");
+        let resolveDone!: () => void;
+        const done = new Promise<void>((r) => {
+          resolveDone = r;
+        });
+        done.catch(() => undefined);
+        return {
+          done,
+          fastForward: async () => {
+            order.push(`replay:fastForward:${text}`);
+            resolveDone();
+          },
+          cancelAndBackspace: async () => {
+            order.push(`replay:cancel:${text}`);
+          },
+        };
+      },
+    };
+    return { sink, order };
+  }
+
+  it("ADR 0065: a usable 改说 line IS the re-speak — no rethink, no respeak, the floor from it at once", async () => {
+    const { provider: actorProvider, prompts: actorPrompts } =
+      mkTwoPhaseTurnProvider();
+    const dumps: Array<{ label: string; body: string }> = [];
+    const vetoes: number[] = [];
+    const { sink, order } = mkFloorSink();
+    const deps = mkDeps({
+      provider: actorProvider,
+      onPrompt: (label, body) => dumps.push({ label, body }),
+      onSupervisorVeto: () => vetoes.push(1),
+      supervisorProvider: mkSupervisorProvider(VETO_WITH_REVISION),
+      supervisorReference: "REF",
+      supervisorRevision: true,
+    });
+    const { record } = await runActorCompletionTurn(
+      { record: [] as TerminalRecord },
+      "hi",
+      {
+        ...deps,
+        sink,
+        intentState: "默认",
+        attachedMetaThink: mkAttachment({
+          preThinkText: "T",
+          preSpeakText: "S",
+        }),
+      },
+    );
+    // Two actor calls only: the thought and the vetoed first pass. The
+    // scripted rethink and respeak were never consumed.
+    expect(actorPrompts).toHaveLength(2);
+    // user, thought, the supervisor's line as the speech — with the veto
+    // reason as its self-correction, like any veto respeak.
+    expect(record).toHaveLength(3);
+    expect(record[2]).toEqual({
+      kind: "herta",
+      surface: "speech",
+      text: "好，明白了。",
+      selfCorrection: "我刚才那句尾巴带了撒娇",
+    });
+    // The review message asked for the line (the phrase lives only in the
+    // per-call request, never in the cached system message); the dump names
+    // the adoption.
+    expect(dumps.find((d) => d.label === "supervisor")?.body).toContain(
+      "判定为 OK 时不要输出改说",
+    );
+    expect(
+      dumps.some(
+        (d) =>
+          d.label === "phase2-out" &&
+          d.body.startsWith("[supervisor revision adopted"),
+      ),
+    ).toBe(true);
+    // The veto cue fired once; the vetoed candidate was cancelled, the floor
+    // is the shared prefix of 好。 and 好，明白了。 (one code point), and the
+    // paced replay carried the supervisor's line.
+    expect(vetoes).toHaveLength(1);
+    const cancel = order.indexOf("replay:cancel:好。");
+    const floor = order.indexOf("floor:1");
+    const replay = order.indexOf("replay:fastForward:好，明白了。");
+    expect(cancel).toBeGreaterThanOrEqual(0);
+    expect(floor).toBeGreaterThan(cancel);
+    expect(replay).toBeGreaterThan(floor);
+  });
+
+  it("ADR 0065: an unusable 改说 line (the vetoed text again) takes the rethink + respeak path", async () => {
+    const { provider: actorProvider, prompts: actorPrompts } =
+      mkTwoPhaseTurnProvider();
+    const dumps: Array<{ label: string; body: string }> = [];
+    const deps = mkDeps({
+      provider: actorProvider,
+      onPrompt: (label, body) => dumps.push({ label, body }),
+      supervisorProvider: mkSupervisorProvider(
+        "BLOCK：声音：我刚才那句尾巴带了撒娇\n改说：好。",
+      ),
+      supervisorReference: "REF",
+      supervisorRevision: true,
+    });
+    const { record } = await runActorCompletionTurn(
+      { record: [] as TerminalRecord },
+      "hi",
+      {
+        ...deps,
+        intentState: "默认",
+        attachedMetaThink: mkAttachment({
+          preThinkText: "T",
+          preSpeakText: "S",
+        }),
+      },
+    );
+    // Four actor calls: thought, first pass, rethink, respeak.
+    expect(actorPrompts).toHaveLength(4);
+    expect(record.map((b) => b.kind === "herta" && b.text)).toEqual([
+      false,
+      "想想看。",
+      "回头想想，那句确实不行。",
+      "嗯，重写过的。",
+    ]);
+    expect(
+      dumps.some(
+        (d) =>
+          d.label === "phase2-out" &&
+          d.body.startsWith("[supervisor revision not adopted (unchanged)"),
+      ),
+    ).toBe(true);
+  });
+
+  it("ADR 0065: with the flag off the prompt never asks and a 改说 line is ignored", async () => {
+    const { provider: actorProvider, prompts: actorPrompts } =
+      mkTwoPhaseTurnProvider();
+    const dumps: Array<{ label: string; body: string }> = [];
+    const deps = mkDeps({
+      provider: actorProvider,
+      onPrompt: (label, body) => dumps.push({ label, body }),
+      supervisorProvider: mkSupervisorProvider(VETO_WITH_REVISION),
+      supervisorReference: "REF",
+    });
+    const { record } = await runActorCompletionTurn(
+      { record: [] as TerminalRecord },
+      "hi",
+      {
+        ...deps,
+        intentState: "默认",
+        attachedMetaThink: mkAttachment({
+          preThinkText: "T",
+          preSpeakText: "S",
+        }),
+      },
+    );
+    expect(actorPrompts).toHaveLength(4);
+    expect(record.at(-1)).toMatchObject({ text: "嗯，重写过的。" });
+    expect(dumps.find((d) => d.label === "supervisor")?.body).not.toContain(
+      "判定为 OK 时不要输出改说",
+    );
   });
 
   it("particle: onPrimarySpeechStart fires once with the first speech text (not the thought)", async () => {
@@ -3904,28 +4257,29 @@ describe("runActorCompletionTurn — supervisor (Slice: supervisor)", () => {
     // （我 想） at position 0 must not degrade the veto path below its
     // pre-rethink behavior — the respeak runs with the OLD reason-bearing
     // hint and no rethink thought is committed.
-    const { provider: actorProvider, prompts: actorPrompts } = mkProvider([
-      // Iter 1: thought
-      [
-        { type: "text-delta", text: "想想看。（/我 想）" },
-        { type: "finish", reason: "stop" },
-      ],
-      // Iter 2: speech (vetoed)
-      [
-        { type: "text-delta", text: "好。（/我 说）" },
-        { type: "finish", reason: "stop" },
-      ],
-      // Iter 3: rethink — EMPTY (immediate close)
-      [
-        { type: "text-delta", text: "（/我 想）" },
-        { type: "finish", reason: "stop" },
-      ],
-      // Iter 4: single-stage respeak
-      [
-        { type: "text-delta", text: "嗯，重写过的。（/我 说）" },
-        { type: "finish", reason: "stop" },
-      ],
-    ]);
+    const { provider: actorProvider, prompts: actorPrompts } =
+      mkScriptedThoughtsProvider([
+        // Iter 1: thought
+        [
+          { type: "text-delta", text: "想想看。（/我 想）" },
+          { type: "finish", reason: "stop" },
+        ],
+        // Iter 2: speech (vetoed)
+        [
+          { type: "text-delta", text: "好。（/我 说）" },
+          { type: "finish", reason: "stop" },
+        ],
+        // Iter 3: rethink — EMPTY (immediate close)
+        [
+          { type: "text-delta", text: "（/我 想）" },
+          { type: "finish", reason: "stop" },
+        ],
+        // Iter 4: single-stage respeak
+        [
+          { type: "text-delta", text: "嗯，重写过的。（/我 说）" },
+          { type: "finish", reason: "stop" },
+        ],
+      ]);
     const supervisor = mkSupervisorProvider("重来：tone slipped to assistant");
     const deps = mkDeps({
       provider: actorProvider,
@@ -4107,7 +4461,7 @@ describe("runActorCompletionTurn — supervisor (Slice: supervisor)", () => {
   });
 
   it("strips a stray （我 说） re-emitted inside the veto retry (first pass was stripped; the retry must be too)", async () => {
-    const { provider: actorProvider } = mkProvider([
+    const { provider: actorProvider } = mkScriptedThoughtsProvider([
       // Iter 1: thought
       [
         { type: "text-delta", text: "想想看。（/我 想）" },
@@ -4314,7 +4668,7 @@ describe("runActorCompletionTurn — supervisor (Slice: supervisor)", () => {
         body: "[目录内容：scripts/]\n- scripts/merge-sort.ts",
       },
     ];
-    const { provider: actorProvider } = mkProvider([
+    const { provider: actorProvider } = mkScriptedThoughtsProvider([
       // Iter 1: thought
       [
         { type: "text-delta", text: "想看看。（/我 想）" },
@@ -4520,23 +4874,24 @@ describe("runActorCompletionTurn — supervisor (Slice: supervisor)", () => {
     // speech attempt comes back empty, retry succeeds → supervisor
     // STILL fires on the retry's output. Pre-fix, supervisor would
     // be skipped.
-    const { provider: actorProvider, prompts: actorPrompts } = mkProvider([
-      // Iter 1: thought
-      [
-        { type: "text-delta", text: "想。（/我 想）" },
-        { type: "finish", reason: "stop" },
-      ],
-      // Iter 2: empty speech — immediate close
-      [
-        { type: "text-delta", text: "（/我 说）" },
-        { type: "finish", reason: "stop" },
-      ],
-      // Iter 3: empty-speech retry result (will be supervised + OK'd)
-      [
-        { type: "text-delta", text: "嗯。我在。（/我 说）" },
-        { type: "finish", reason: "stop" },
-      ],
-    ]);
+    const { provider: actorProvider, prompts: actorPrompts } =
+      mkScriptedThoughtsProvider([
+        // Iter 1: thought
+        [
+          { type: "text-delta", text: "想。（/我 想）" },
+          { type: "finish", reason: "stop" },
+        ],
+        // Iter 2: empty speech — immediate close
+        [
+          { type: "text-delta", text: "（/我 说）" },
+          { type: "finish", reason: "stop" },
+        ],
+        // Iter 3: empty-speech retry result (will be supervised + OK'd)
+        [
+          { type: "text-delta", text: "嗯。我在。（/我 说）" },
+          { type: "finish", reason: "stop" },
+        ],
+      ]);
     let supervisorCalled = false;
     const supervisor: ProviderAdapter = {
       streamChat() {
@@ -5364,7 +5719,7 @@ describe("runActorCompletionTurn — supervisor (Slice: supervisor)", () => {
             // Reaction speech after bridge fires
             yield {
               type: "text-delta",
-              text: "说）测试跑完了。（/我 说）",
+              text: "测试跑完了。（/我 说）",
             };
             yield { type: "finish", reason: "stop" };
           }
@@ -5432,7 +5787,7 @@ describe("runActorCompletionTurn — supervisor (Slice: supervisor)", () => {
             // Reaction speech after bridge fires
             yield {
               type: "text-delta",
-              text: "说）测试跑完了。（/我 说）",
+              text: "测试跑完了。（/我 说）",
             };
             yield { type: "finish", reason: "stop" };
           }
@@ -5667,7 +6022,7 @@ describe("runActorCompletionTurn — supervisor (Slice: supervisor)", () => {
             // Reaction speech after bridge fires
             yield {
               type: "text-delta",
-              text: "说）测试跑完了。（/我 说）",
+              text: "测试跑完了。（/我 说）",
             };
             yield { type: "finish", reason: "stop" };
           }
@@ -5928,17 +6283,93 @@ describe("runActorCompletionTurn — supervisor (Slice: supervisor)", () => {
       expect(out.text).toContain("改口");
     });
 
-    it("does not judge a VETOED candidate's trigger — only the re-speak's", async () => {
-      // A blocked speech is being rewritten anyway; judging its trigger
-      // would burn a call on text about to be thrown away. Here the vetoed
-      // candidate carries `@板砖` and the re-speak does not, so the judge
-      // must never run: one supervisor call, and no dispatch.
+    it("drops the judge's answer on a VETOED candidate — the re-speak gets its own pass", async () => {
+      // The judge starts alongside the supervisor (2026-09-03), so a vetoed
+      // candidate that carries `@板砖` still costs the judge call — but its
+      // answer is about text being thrown away and must not touch the turn.
+      // Here the judge (call 2, scripted to the same BLOCK line — not a
+      // trigger finding) is ignored; the re-speak has no token, so no
+      // further judge runs and nothing dispatches.
       const out = await runWith(
         ["@板砖 跑一下 npm test。", "改口。这事我自己看。"],
         ["BLOCK：称呼：我刚才不该那样叫他"],
       );
-      expect(out.supervisorCalls).toBe(1);
+      expect(out.supervisorCalls).toBe(2);
       expect(out.dispatches).toBe(0);
+      expect(out.text).toContain("改口");
+    });
+
+    it("starts the judge BEFORE the supervisor's verdict is in (2026-09-03)", async () => {
+      // The judge used to wait for the verdict, adding its whole round-trip
+      // to every real dispatch. Now the supervisor's stream is held until the
+      // judge has been called; under the sequential form this would hang
+      // (guarded by the race below and the test timeout).
+      const order: string[] = [];
+      let judgeCalled: () => void = () => {};
+      const judgeStarted = new Promise<void>((resolve) => {
+        judgeCalled = resolve;
+      });
+      let call = 0;
+      const supervisorProvider: ProviderAdapter = {
+        streamChat(): AsyncIterable<ProviderEvent> {
+          const mine = call;
+          call += 1;
+          async function* gen(): AsyncGenerator<ProviderEvent> {
+            if (mine === 0) {
+              order.push("supervisor:start");
+              await Promise.race([
+                judgeStarted,
+                new Promise<void>((resolve) => setTimeout(resolve, 1000)),
+              ]);
+              order.push("supervisor:verdict");
+              yield { type: "text-delta", text: "OK" };
+            } else if (mine === 1) {
+              order.push("judge:start");
+              judgeCalled();
+              yield { type: "text-delta", text: "OK" };
+            } else {
+              // The post-dispatch commentary's own supervisor call.
+              yield { type: "text-delta", text: "OK" };
+            }
+            yield { type: "finish", reason: "stop" };
+          }
+          return gen();
+        },
+      };
+      const dispatches = { value: 0 };
+      const bus = new InMemoryEventBus<AgentEvent>();
+      const checks: string[] = [];
+      bus.onAny((ev) => {
+        if (ev.type === "supervisor.check" && ev.layer === "actor") {
+          checks.push(ev.phase);
+        }
+      });
+      const deps = mkDeps({
+        provider: mkScriptedProvider(["@板砖 跑一下 npm test。", "跑完了。"]),
+        bus,
+        supervisorProvider,
+        supervisorReference: "REF",
+        runtimeFactory: mkCountingRuntime(dispatches),
+      });
+      await runActorCompletionTurn({ record: [] as TerminalRecord }, "hi", {
+        ...deps,
+        intentState: "默认",
+        attachedMetaThink: mkAttachment({
+          preThinkText: "T",
+          preSpeakText: "S",
+        }),
+      });
+      expect(order).toEqual([
+        "supervisor:start",
+        "judge:start",
+        "supervisor:verdict",
+      ]);
+      expect(dispatches.value).toBe(1);
+      // The two overlapping windows publish ONE bracket: the renderer folds
+      // supervisor.check as a boolean, and the faster judge returning must
+      // not clear the hold hint while the verdict is still out. The second
+      // bracket is the post-dispatch commentary's own supervisor call.
+      expect(checks).toEqual(["start", "end", "start", "end"]);
     });
 
     /** Supervisor that passes/blocks per script, then raises AbortError on
@@ -6093,17 +6524,18 @@ describe("runActorCompletionTurn — compaction (2026-05-24)", () => {
 
   it("main-loop prompt to the iteration AFTER a @板砖 dispatch shows the [历史已压缩 · 板砖] summary, not the raw blocks", async () => {
     // After a @板砖 dispatch produces 2+ system blocks, the next
-    // main-loop iteration's prompt should see those collapsed into
-    // one summary via compactRecordForPrompt (default behavior).
-    const { provider, prompts } = mkProvider([
-      // iter 1: speech with @板砖
+    // main-loop iteration's prompts (the post-dispatch thought and its
+    // forced speech) should see those collapsed into one summary via
+    // compactRecordForPrompt (default behavior).
+    const { provider, prompts, thoughtPrompts } = mkProvider([
+      // speech with @板砖
       [
-        { type: "text-delta", text: "说）改一下。@板砖（/我 说）" },
+        { type: "text-delta", text: "改一下。@板砖（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
-      // iter 2: reaction speech (this prompt is what we inspect)
+      // reaction speech (its prompt is one of the two we inspect)
       [
-        { type: "text-delta", text: "说）行，看着办。（/我 说）" },
+        { type: "text-delta", text: "行，看着办。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -6143,23 +6575,26 @@ describe("runActorCompletionTurn — compaction (2026-05-24)", () => {
       "改 a.ts",
       deps,
     );
-    // iter 2's prompt is prompts[1]. It should contain the
-    // [历史已压缩 · 板砖] summary but NOT the raw Reading/Writing
-    // JSON.
-    const iter2Prompt = prompts[1] ?? "";
-    expect(iter2Prompt).toContain("[历史已压缩 · 板砖]");
-    expect(iter2Prompt).toContain("Reading a.ts");
-    expect(iter2Prompt).toContain("Writing a.ts");
-    expect(iter2Prompt).not.toContain('Reading {"path":"a.ts"}');
+    // The post-dispatch prompts are thoughtPrompts[1] (thought) and
+    // prompts[1] (speech). Both should contain the [历史已压缩 · 板砖]
+    // summary but NOT the raw Reading/Writing JSON.
+    expect(thoughtPrompts).toHaveLength(2);
+    expect(prompts).toHaveLength(2);
+    for (const iter2Prompt of [thoughtPrompts[1] ?? "", prompts[1] ?? ""]) {
+      expect(iter2Prompt).toContain("[历史已压缩 · 板砖]");
+      expect(iter2Prompt).toContain("Reading a.ts");
+      expect(iter2Prompt).toContain("Writing a.ts");
+      expect(iter2Prompt).not.toContain('Reading {"path":"a.ts"}');
+    }
   });
 
   it("beat prompt during a @板砖 dispatch sees the FULL raw system blocks (compactBridgeOutput: false)", async () => {
     // Spec §3: beats opt out so they see the full board output of
     // the invocation that just fired the beat.
     const { provider, prompts } = mkProvider([
-      // iter 1: speech with @板砖
+      // speech with @板砖
       [
-        { type: "text-delta", text: "说）改 foo.ts。@板砖（/我 说）" },
+        { type: "text-delta", text: "改 foo.ts。@板砖（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
       // beat prompt (this is what we inspect — emitted by makeFireBeat)
@@ -6167,9 +6602,9 @@ describe("runActorCompletionTurn — compaction (2026-05-24)", () => {
         { type: "text-delta", text: "看屏。" },
         { type: "finish", reason: "stop" },
       ],
-      // iter 2: reaction
+      // post-dispatch reaction speech
       [
-        { type: "text-delta", text: "说）done.（/我 说）" },
+        { type: "text-delta", text: "done.（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -6231,30 +6666,44 @@ describe("runActorCompletionTurn — compaction (2026-05-24)", () => {
     //   - render the speech block with its `——<correction>` prose
     //   - render the bridge's run as a [历史已压缩 · 板砖] summary
     const supervisor = mkSupervisorProvider("重来：换个说法");
-    const { provider, prompts } = mkProvider([
+    const { provider, prompts } = mkScriptedThoughtsProvider([
       // iter 1: thought
       [
-        { type: "text-delta", text: "想）思考。（/我 想）" },
+        { type: "text-delta", text: "思考。（/我 想）" },
         { type: "finish", reason: "stop" },
       ],
       // iter 1: speech (will be vetoed)
       [
-        { type: "text-delta", text: "说）原话。@板砖（/我 说）" },
+        { type: "text-delta", text: "原话。@板砖（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
       // iter 1: rethink thought (two-stage veto recovery)
       [
-        { type: "text-delta", text: "想）确实得换。（/我 想）" },
+        { type: "text-delta", text: "确实得换。（/我 想）" },
         { type: "finish", reason: "stop" },
       ],
-      // iter 1: respeak
+      // iter 1: respeak — dispatches
       [
-        { type: "text-delta", text: "说）改了的话。@板砖（/我 说）" },
+        { type: "text-delta", text: "改了的话。@板砖（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
-      // iter 2: reaction (this is what we inspect)
+      // iter 2: post-dispatch thought
       [
-        { type: "text-delta", text: "说）done.（/我 说）" },
+        { type: "text-delta", text: "看完了。（/我 想）" },
+        { type: "finish", reason: "stop" },
+      ],
+      // iter 2: reaction — the always-veto supervisor rejects it too
+      [
+        { type: "text-delta", text: "done.（/我 说）" },
+        { type: "finish", reason: "stop" },
+      ],
+      // iter 2: rethink, then the respeak (its prompt is what we inspect)
+      [
+        { type: "text-delta", text: "再换。（/我 想）" },
+        { type: "finish", reason: "stop" },
+      ],
+      [
+        { type: "text-delta", text: "完了。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
@@ -6300,7 +6749,8 @@ describe("runActorCompletionTurn — compaction (2026-05-24)", () => {
         preSpeakText: "S",
       }),
     });
-    // The iter-2 (last) prompt contains the next reaction's setup.
+    // The last prompt (iter 2's respeak) carries the whole turn so far.
+    expect(prompts).toHaveLength(8);
     const lastPrompt = prompts[prompts.length - 1] ?? "";
     // selfCorrection prose appears before the retry speech.
     expect(lastPrompt).toContain("——换个说法");
@@ -6331,7 +6781,7 @@ describe("runActorCompletionTurn — deps.hints injection", () => {
   }
 
   it("injected phase-2 speech hint from deps.hints appears in the phase-2 speech prompt", async () => {
-    const { provider, prompts } = mkProvider([
+    const { provider, prompts } = mkScriptedThoughtsProvider([
       // Iteration 1 — thought (always-think with intentState).
       [
         { type: "text-delta", text: "考虑一下。（/我 想）" },
@@ -6378,7 +6828,7 @@ describe("runActorCompletionTurn — onLiveToken plumbing guard (LFR T3)", () =>
       };
     }
 
-    const { provider } = mkProvider([
+    const { provider } = mkScriptedThoughtsProvider([
       // Iteration 1: thought
       [
         { type: "text-delta", text: "想想看。（/我 想）" },
@@ -6425,7 +6875,7 @@ describe("runActorCompletionTurn — live-feed supervised reveal (LFR T4)", () =
   // Same shape as the supervisor describe's mkTwoPhaseTurnProvider, restated
   // locally so this block is self-contained.
   function mkLiveActorProvider() {
-    return mkProvider([
+    return mkScriptedThoughtsProvider([
       // Iter 1: thought
       [
         { type: "text-delta", text: "想想看。（/我 想）" },
@@ -6603,7 +7053,7 @@ describe("runActorCompletionTurn — live-feed supervised reveal (LFR T4)", () =
     // terminal call the placeholder stays on screen (controller parked in its
     // verdict hold) while the recovered speech replays next to it. The branch
     // must cancelAndBackspace the live controller, veto-style.
-    const { provider: actorProvider } = mkProvider([
+    const { provider: actorProvider } = mkScriptedThoughtsProvider([
       // Iter 1: thought.
       [
         { type: "text-delta", text: "想想看。（/我 想）" },
@@ -6744,7 +7194,7 @@ describe("runActorCompletionTurn — live-feed supervised reveal (LFR T4)", () =
     // empty-speech retry produces content, and `liveFeedActive` flips false so
     // the recovered retry renders via the non-live `slowStreamSpeech` replay —
     // the live controller is NOT re-opened for the retry.
-    const actorProvider = mkProvider([
+    const actorProvider = mkScriptedThoughtsProvider([
       // Iter 1: thought
       [
         { type: "text-delta", text: "想。（/我 想）" },
@@ -6849,7 +7299,7 @@ describe("runActorCompletionTurn — live-feed supervised reveal (LFR T4)", () =
     // "always 0". Here the retry shares 你好世界 (4 code points) and arrives
     // in TWO chunks: the first is a strict extension (no divergence yet —
     // emitting a floor there would latch too early), the second diverges.
-    const { provider } = mkProvider([
+    const { provider } = mkScriptedThoughtsProvider([
       // Iter 1 (forced thought):
       [
         { type: "text-delta", text: "想一下怎么回。（/我 想）" },
@@ -6926,7 +7376,7 @@ describe("runActorCompletionTurn — live-feed supervised reveal (LFR T4)", () =
     // tokens, so it is abandoned (retryLive = undefined) and the empty-speech
     // recovery ladder renders via the non-live slowStreamSpeech replay — its
     // recovered text lands in slowCalls, not via a second live drain.
-    const actorProvider = mkProvider([
+    const actorProvider = mkScriptedThoughtsProvider([
       // Iter 1: thought
       [
         { type: "text-delta", text: "想想看。（/我 想）" },

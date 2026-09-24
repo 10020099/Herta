@@ -1,4 +1,4 @@
-import type { RiskLevel } from "@herta/core";
+import type { CommandConsequence, RiskLevel } from "@herta/core";
 import type { MessageKey } from "../../i18n/keys.js";
 
 /** Maps a permission risk level to its chrome message key (localized at the
@@ -36,9 +36,24 @@ export const REASON_KEY: Record<string, MessageKey> = {
   command_ask_process: "approval.reason.commandProcess",
   command_ask_cwd_escape: "approval.reason.commandCwdEscape",
   command_ask_unresolved: "approval.reason.commandUnresolved",
+  // macOS / Linux machine-level changes (platform review 2026-09-23).
+  command_ask_system: "approval.reason.commandSystem",
   write_new_file_ask: "approval.reason.writeNewFile",
   edit_file_ask: "approval.reason.editFile",
   // The minimal contract's editor (ADR 0040) — its raw reason ("writes
   // NOTES.md (str_replace, +1/-1 lines)") showed verbatim in zh cards.
   str_replace_editor_ask: "approval.reason.strReplaceEditor",
+};
+
+/** Maps a consequence note code (ADR 0049 §5) to its one-sentence card copy.
+ *  Display-only, like everything on this card — the tier already enforced.
+ *  An unrecognized code renders nothing rather than raw machine text. */
+export const CONSEQUENCE_KEY: Record<CommandConsequence, MessageKey> = {
+  discards_uncommitted: "approval.consequence.discardsUncommitted",
+  deletes_untracked: "approval.consequence.deletesUntracked",
+  deletes_stash: "approval.consequence.deletesStash",
+  rewrites_local_history: "approval.consequence.rewritesLocalHistory",
+  rewrites_remote_history: "approval.consequence.rewritesRemoteHistory",
+  concludes_in_progress_operation:
+    "approval.consequence.concludesInProgressOperation",
 };

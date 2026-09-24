@@ -74,8 +74,11 @@ export const en = {
   "update.downloading": "Downloading",
   "update.ready": "Ready — installs on exit:",
   "update.error": "Check failed",
-  "update.upToDate": "Up to date.",
-  "update.notChecked": "Not checked yet.",
+  "update.unreachable":
+    "The update server (GitHub) could not be reached. Check the network or VPN; the latest build is also on Baidu Netdisk.",
+  "update.netdisk": "Open Baidu Netdisk",
+  "update.upToDate": "Up to date",
+  "update.notChecked": "Not checked yet",
   "update.unsupported": "Updates unavailable here",
   "nav.group.general": "General",
   "nav.group.herta": "Herta",
@@ -90,6 +93,11 @@ export const en = {
   "window.closeToTray": "Close to tray",
   "window.closeToTrayDesc":
     "Closing the window hides Herta to the system tray and keeps her running; turn this off to quit on close.",
+  // macOS (2026-09-23): the icon sits in the menu bar, and a Mac app does not
+  // quit when its window closes — it stays in the Dock until ⌘Q.
+  "window.closeToTrayMac": "Close to menu bar",
+  "window.closeToTrayDescMac":
+    "Closing the window hides Herta to the menu bar and keeps her session running; turn this off to close the window instead. Herta stays in the Dock until you quit with ⌘Q.",
   "window.minimize": "Minimize",
   "window.maximize": "Maximize",
   "window.restore": "Restore",
@@ -99,7 +107,7 @@ export const en = {
   "settings.sectionsAria": "Settings sections",
   "settings.dialogAria": "Settings",
   "settings.loadFailed":
-    "Couldn't load this setting — reopen Settings to retry",
+    "Could not load this setting — reopen Settings to retry",
   "language.rowLabel": "Display language",
   "language.intro": "Herta's own voice is unaffected.",
   "language.interactionRowLabel": "Interaction language",
@@ -127,20 +135,104 @@ export const en = {
   "session.group.yesterday": "Yesterday",
   "session.group.previous7Days": "Previous 7 Days",
   "session.group.older": "Older",
+  "voice.realtime": "Real-time voice",
+  "voice.realtimeDesc": "Open the terminal microphone.",
+  "voice.realtimeMissing":
+    "This install lacks the voice runtime — she can only type for now.",
+  "voice.realtimeFailed":
+    "The voice process failed repeatedly; it is off for this run. Restart Herta to retry.",
+  "voice.model": "Voice model",
+  "voice.modelAbsent": "About {size} MB; available once downloaded.",
+  "voice.modelDev": "Using the model in the workspace's data/tts.",
+  "voice.modelDownload": "Download",
+  "voice.modelDownloading": "Downloaded {received} / {total} MB",
+  "voice.modelCancel": "Cancel",
+  "voice.modelReady": "Installed, about {size} MB on disk.",
+  "voice.modelRemove": "Remove",
+  "voice.modelRetry": "Retry",
+  "voice.modelFailed.network":
+    "GitHub could not be reached to download the model. Check the network or VPN and retry.",
+  "voice.modelFailed.http": "The server did not return the model file.",
+  "voice.modelFailed.size":
+    "The downloaded file had the wrong size; discarded.",
+  "voice.modelFailed.hash":
+    "The downloaded file failed its checksum; discarded.",
+  "voice.modelFailed.archive":
+    "The model archive could not be unpacked; discarded.",
+  "voice.modelFailed.verify": "The model files failed verification; discarded.",
+  "voice.modelFailed.disk": "Writing to this machine failed; check disk space.",
+  "voice.modelFailed.cancelled": "Cancelled.",
+  "voice.engine": "Voice engine",
+  "voice.engineDesc":
+    "The downloaded local model, or the cloud model that sounds better.",
+  "voice.engine.local": "Local model",
+  "voice.engine.minimax": "MiniMax cloud",
+  "voice.minimaxKey": "MiniMax API key",
+  "voice.minimaxKeyDesc":
+    "Pay-as-you-go. Generates the voice ID; also synthesizes speech when no plan key is set. Get one at platform.minimaxi.com.",
+  "voice.minimaxKeyAria": "MiniMax API key",
+  "voice.keyDelete": "Delete",
+  "voice.minimaxHelpAria": "About the keys",
+  "voice.minimaxHelp":
+    "Cloud voice needs an API key for two jobs: generating the voice ID and synthesizing speech. The voice ID can only be generated with the MiniMax API key (pay-as-you-go, once). Speech prefers the Token Plan key (free within the plan) and uses the API key when none is set.",
+  "voice.minimaxKeyRejected": "Key rejected",
+  "voice.minimaxKeyQuota": "Out of balance",
+  "voice.minimaxKeyUnchecked": "Unchecked",
+  "voice.speechRefused.quota":
+    "The account is out of balance; replies type unvoiced until it is topped up.",
+  "voice.speechRefused.auth":
+    "MiniMax refused the key; replies type unvoiced until it is fixed.",
+  "voice.speechRefused.invalid_key":
+    "MiniMax did not accept the key; replies type unvoiced until it is fixed.",
+  "voice.minimaxPlanKey": "Token Plan key",
+  "voice.minimaxPlanKeyDesc":
+    "Optional. Synthesizes speech under a Token Plan subscription.",
+  "voice.minimaxPlanKeyAria": "MiniMax Token Plan key",
+  "voice.minimaxRejected":
+    "MiniMax did not accept that key — check it and try again.",
+  "voice.clonePreparing": "Preparing her voice…",
+  "voice.cloneRetry": "Retry",
+  "voice.cloneFailed.no_key": "Enter a MiniMax key first.",
+  "voice.cloneFailed.no_clone_key":
+    "Generating the voice ID needs the MiniMax API key (pay-as-you-go); enter it and retry.",
+  "voice.cloneFailed.invalid_key": "MiniMax did not accept the key.",
+  "voice.cloneFailed.auth":
+    "MiniMax refused the request; check the key and the account.",
+  "voice.cloneFailed.rate": "Too many requests; try again shortly.",
+  "voice.cloneFailed.quota": "The account is out of balance.",
+  "voice.cloneFailed.sensitive":
+    "The reference recording failed the platform's content check.",
+  "voice.cloneFailed.voice_missing": "The voice on the platform has expired.",
+  "voice.cloneFailed.invalid":
+    "The platform did not accept the request's parameters.",
+  "voice.cloneFailed.network":
+    "MiniMax could not be reached; check the network and retry.",
+  "voice.cloneFailed.http": "MiniMax returned an unexpected response.",
+  "voice.cloneFailed.cancelled": "Cancelled.",
+  "voice.cloneFailed.other": "Cloning failed; try again later.",
+  "voice.cloneFailed.reference": "This install lacks the reference recording.",
   "voice.mute": "Mute voice",
   "voice.muteDesc": "Silence all of Herta's voice.",
   "voice.volume": "Volume",
   "voice.volumeDesc": "Adjust the loudness of Herta's voice.",
   "dream.enable": "Enable Dream",
-  "dream.enableDesc": "Let Herta dream while you're away.",
+  "dream.enableDesc":
+    "Let Herta dream while you are away. Dreaming uses your DeepSeek API quota.",
   "dream.intro":
-    "Dream is Herta's downtime. While you're away, she looks back over your finished sessions and writes down the memorable moments — coming to know you a little better the longer you work together.",
-  "common.couldntSave": "Couldn't save — try again.",
-  "common.restartToApply": "Restart to apply.",
+    "Dream is Herta's downtime. While you are away, she looks back over your sessions and writes down the memorable moments — coming to know you a little better the longer you work together.",
+  // Punctuation rule (owner 2026-08-27): a single-clause LABEL or status
+  // carries no terminal period — only prose that explains or instructs keeps
+  // one. So "Could not save — try again." keeps its period and "Restart to
+  // apply" does not. (No contraction: UI copy is formal register.)
+  "common.couldntSave": "Could not save — try again.",
+  "common.restartToApply": "Restart to apply",
+  // Not "stored encrypted" unconditionally (platform review 2026-09-23): on a
+  // Linux desktop without a keyring the key is a plaintext, owner-only file,
+  // and deepseek.unencrypted says so under this line.
   "deepseek.intro":
-    "The API key is stored encrypted on this device. Get one at platform.deepseek.com.",
+    "The API key is stored on this device, encrypted by the OS keychain when one is available. Get one at platform.deepseek.com.",
   "deepseek.checking": "Checking…",
-  "deepseek.statusFailed": "Couldn't check the key status",
+  "deepseek.statusFailed": "Could not check the key status",
   "deepseek.connected": "Connected",
   "deepseek.noKey": "No key set",
   "deepseek.replaceKey": "Replace key…",
@@ -150,13 +242,13 @@ export const en = {
   "deepseek.deleteKey": "Delete key",
   "deepseek.deleting": "Deleting…",
   "deepseek.rejected": "DeepSeek rejected that key — check it and try again.",
-  "deepseek.busy": "Finish the current turn first.",
+  "deepseek.busy": "Finish the current turn first",
   "deepseek.unverified":
-    "Saved, but couldn't reach DeepSeek to verify it — check your connection if Herta doesn't respond.",
+    "Saved, but could not reach DeepSeek to verify it — check your connection if Herta does not respond.",
   "deepseek.unencrypted":
     "Stored unencrypted — this device has no secure keychain available.",
   "deepseek.models.intro":
-    "Model choice: Pro performs best at a higher cost; Flash hallucinates more and may take longer. Changes apply after a restart.",
+    "Model choice: Flash is faster and cheaper and can read images; Pro costs more. Changes apply after a restart.",
   "deepseek.model.actor": "Conversation model",
   "deepseek.model.actorDesc": "The model used when talking with Herta.",
   "deepseek.model.backend": "Coprocessor model",
@@ -170,14 +262,14 @@ export const en = {
   // The honest per-state string (deepseek.unencrypted) exists and is used in
   // Settings once the key is saved.
   "keyprompt.body":
-    "Herta needs a DeepSeek API key to think. It's stored in your OS keychain on this device and never leaves your machine except to call DeepSeek.",
+    "Herta needs a DeepSeek API key to think. It is stored on this device — in your OS keychain when one is available — and never leaves your machine except to call DeepSeek.",
   // Where to get one (audit BL19) — platform.deepseek.com appeared in exactly
   // one pane of the app and in neither the README nor the website, so a user
   // met with a key prompt on first launch had nowhere to go.
   "keyprompt.where": "Get a key at platform.deepseek.com",
   "keyprompt.notNow": "Not now",
   "keyprompt.saveSend": "Save & send",
-  "keyprompt.saveFail": "Couldn't save the key — try again.",
+  "keyprompt.saveFail": "Could not save the key — try again.",
   "device.state.idle": "Idle",
   "device.state.working": "Working",
   "device.state.reading": "Reading",
@@ -192,6 +284,8 @@ export const en = {
   "banzhuan.legend.waitingApproval": "it needs your approval to continue",
   "banzhuan.legend.succeeded": "finished cleanly — a green beat",
   "banzhuan.legend.failed": "the task errored",
+  // Herta's own first-person voice (zh: 板砖替我处理代码的活), so the UI
+  // formal-register rule — no contractions — does not apply to it.
   "banzhuan.intro":
     "The Brick handles the coding for me. To delegate, write the full @板砖 — that @ is the real trigger. The ring on its face shows what it's doing right now:",
   "banzhuan.thinking": "Thinking effort",
@@ -207,6 +301,8 @@ export const en = {
     "No bash was found on this machine; Minimal will run as Standard. Install Git for Windows and restart to enable it.",
   "banzhuan.contract.standard": "Standard",
   "banzhuan.contract.minimal": "Minimal",
+  "banzhuan.scene": "3D device",
+  "banzhuan.sceneDesc": "A lit 3D object; off shows the flat renders.",
   "approval.title": "Permission request",
   "approval.allow": "Allow",
   "approval.alwaysAllow": "Allow for this task",
@@ -238,9 +334,22 @@ export const en = {
     "This command ends processes — check the target",
   "approval.reason.commandCwdEscape":
     "This command leaves the workspace directory — later relative paths are unguarded",
-  "approval.reason.commandUnresolved":
-    "Part of this command is unreadable to Herta (a variable, glob or expansion) — it cannot tell what it would do",
+  "approval.reason.commandUnresolved": "This command has unresolved parts",
+  "approval.reason.commandSystem":
+    "Changes system settings or drives other apps — asked every time",
   "approval.alsoClasses": "Also: {list}",
+  "approval.consequence.discardsUncommitted":
+    "Note: discards uncommitted changes — they cannot be recovered.",
+  "approval.consequence.deletesUntracked":
+    "Note: deletes untracked files — they cannot be recovered.",
+  "approval.consequence.deletesStash":
+    "Note: deletes stashed work — it cannot be recovered.",
+  "approval.consequence.rewritesLocalHistory":
+    "Note: rewrites local commit history.",
+  "approval.consequence.rewritesRemoteHistory":
+    "Note: overwrites the remote branch's history.",
+  "approval.consequence.concludesInProgressOperation":
+    "Note: a merge/rebase is mid-flight — this step concludes it.",
   "app.fanNotice":
     "Herta is a character from Honkai: Star Rail, © HoYoverse. Unofficial fan project, unaffiliated with and not endorsed by HoYoverse.",
   "approval.diffShowAria":
@@ -250,17 +359,23 @@ export const en = {
   "approval.reason.editFile": "Edits an existing file",
   "approval.reason.strReplaceEditor": "Writes a file",
   "approval.heredocFolded": "    ⋯ {n} lines folded — see the diff below ⋯",
+  "approval.trustWorkspace": "Trust this workspace",
+  "approval.trustNote":
+    "Once this workspace is trusted, file edits, directory creation, non-destructive git operations and workspace scripts within it no longer request confirmation; network access, destructive operations and anything outside the workspace still do. This can be revoked from the device card's menu.",
   "composer.placeholder": "Message Herta…",
   "composer.aria": "Message composer",
   "composer.send": "Send message",
   "composer.stop": "Interrupt the current turn",
-  "composer.attach": "Add documents",
+  "composer.attach": "Add files",
   "composer.attach.formats":
-    ".pdf .docx .md .txt .csv .json .log .py .ts and other text",
+    "Images .png .jpg, documents .pdf .docx, plus .md .txt .csv .json .py .ts and other text",
+  // The composer-notice pill (owner 2026-08-27): terse, formal, and NO
+  // trailing period — a pill is a label, not a sentence. Settings-row prose
+  // keeps its periods; these do not.
   "composer.attach.busy":
-    "This turn isn't finished — wait for her, then drop the file.",
-  "composer.attach.tooMany": "Ten files at a time, at most.",
-  "composer.attach.failed": "Those files didn't make it in.",
+    "The current turn is still in progress — files cannot be added",
+  "composer.attach.tooMany": "Ten files at most",
+  "composer.attach.failed": "Adding files failed",
   "composer.context.aria": "Context usage",
   "composer.context.used": "{tokens} Context used",
   "composer.context.threshold": "Auto-compacts at {tokens}",
@@ -270,11 +385,40 @@ export const en = {
   "composer.context.queued": "Compaction is queued for your next message.",
   "composer.context.unavailable":
     "Context status is unavailable for this session.",
+  "composer.attach.denied": "Credential-shaped — refused",
+  // The staged strip (ADR 0048): pictures waiting to be sent WITH a message.
+  "composer.staged": "Images to send",
+  "composer.staged.remove": "Remove",
+  // Enter with staged pictures and no words (owner 2026-08-27): pictures
+  // ride a message; an empty user block is not a message.
+  "composer.attach.needText": "Say something first",
+  // The per-message picture cap (owner 2026-08-27): a message is a moment,
+  // not an album.
+  "composer.attach.imageLimit": "Five pictures at most",
+  // A message while Brick works (ADR 0063): held above the composer, sent as
+  // the next turn unless interjected or taken back. The composer keeps its
+  // ordinary placeholder meanwhile (owner 2026-09-15): the card says it.
+  "composer.hold.label": "Sent after Brick finishes",
+  "composer.hold.aria": "Message queued to send",
+  "composer.hold.steer": "Interject now",
+  "composer.hold.edit": "Edit",
+  "composer.hold.discard": "Withdraw",
+  // Click-to-enlarge lightbox (ADR 0048 §4a). `lightbox.open` prefixes the
+  // thumb button's aria-label, followed by the filename.
+  "lightbox.open": "View picture",
+  "lightbox.close": "Close",
+  "lightbox.zoomIn": "Zoom in",
+  "lightbox.zoomOut": "Zoom out",
+  // The pill's tooltip: a bare wheel scrolls, so the zoom gesture is said
+  // here (owner 2026-08-28).
+  "lightbox.zoomHint": "Ctrl + wheel to zoom, drag to pan",
+  // macOS: ⌘, and the trackpad pinch a Mac user reaches for (2026-09-23).
+  "lightbox.zoomHintMac": "Pinch or ⌘ + wheel to zoom, drag to pan",
   "connect.button": "Connect to Herta",
-  "connect.failed": "Couldn't start a session — try again.",
+  "connect.failed": "Session start failed — try again",
   "workspace.rewind": "Rewind to here",
   "workspace.editsNotReverted": "Edited files were not reverted",
-  "workspace.rewindFailed": "Rewind failed — this turn is still here.",
+  "workspace.rewindFailed": "Rewind failed",
   "workspace.processing": "Working…",
   "workspace.took": "Took",
   "workspace.recapping": "Tidying conversation history…",
@@ -294,7 +438,7 @@ export const en = {
   "workspace.sending": "Message is crossing the galaxy…",
   "workspace.gammaStorm": "Message caught in a gamma storm…",
   "workspace.gammaStormLong":
-    "The storm hasn't passed — message still en route…",
+    "The storm has not passed — message still en route…",
   "workspace.jumpToLatest": "Back to bottom",
   "workspace.loadEarlier": "Load {n} earlier entries",
   "workspace.topicRailAria": "Topic guide",
@@ -344,17 +488,105 @@ export const en = {
   "activity.attachment.unreadable.textTooLong": "text too long, no head taken",
   "activity.attachment.format.pdf": "PDF",
   "activity.attachment.format.docx": "Word document",
+  // Images (ADR 0048). `{f}` is the format token (PNG/JPEG) — data, not
+  // chrome, so it is substituted rather than translated.
+  "activity.attachment.image": "image {f}",
+  "activity.attachment.unreadable.imageTooLarge": "too large to read",
+  "activity.attachment.unreadable.noCaption": "stored, not read",
   "activity.attachment.pages": "pages",
   "activity.attachment.extracted": "text extracted",
   "activity.attachment.outline": "outline · {n} entries",
   "activity.attachment.remove": "Remove this attachment",
-  "activity.attachment.removeFailed": "Couldn't remove that attachment.",
+  "activity.attachment.removeFailed": "Removing the attachment failed",
+  "activity.attachment.removeInUse":
+    "The attachment is open in another program. Close it, then remove it again",
+  "activity.file.openAria": "View file",
+  "activity.commit.openAria": "View commit",
+  "activity.diff.openAria": "View changes",
+  "viewer.close": "Close",
+  "viewer.closeTab": "Close file",
+  "viewer.copyPath": "Copy path",
+  "viewer.copySha": "Copy commit id",
+  "viewer.copied": "Copied",
+  "viewer.openExternal": "Open in default app",
+  "viewer.notFound": "File no longer exists or was moved",
+  "viewer.binary": "Binary file — open with the default app",
+  "viewer.outside": "This path is outside the workspace",
+  "viewer.unreadable": "Could not read this file",
+  "viewer.truncatedNote":
+    "Long file — showing the head; open externally for the rest",
+  "viewer.tooLarge": "Too large to view here — open with the default app",
+  "viewer.renderFailed":
+    "Could not render this file — open with the default app",
+  "viewer.showSource": "View source",
+  "viewer.showRendered": "View rendered",
+  "viewer.rendering": "Rendering…",
+  "viewer.diagramFailed": "The diagram did not render — its source is below",
+  "viewer.imageFit": "Fit to panel",
+  "viewer.imageActual": "Actual size",
+  "viewer.pdfPages": "{n} pages",
+  "viewer.rowsCapped": "Showing the first {n} rows",
+  "viewer.colsCapped": "Showing the first {n} columns",
+  "viewer.emptySheet": "Empty sheet",
+  "viewer.chart": "Chart",
+  "viewer.object": "Embedded object",
+  "viewer.slidesCapped": "Showing the first {n} slides",
+  "viewer.prevSlide": "Previous slide",
+  "viewer.nextSlide": "Next slide",
+  "viewer.slideAria": "Slide {n}",
+  "viewer.commit.notFound": "This commit could not be read",
+  "viewer.timeout":
+    "Timed out reading — the repository is large or git is busy; try again",
+  "viewer.commit.files": "{n} files",
+  "viewer.commit.merge": "merge commit",
+  "viewer.commit.binary": "binary",
+  "viewer.commit.truncated": "Long patch — showing the head",
+  "viewer.commit.moreFiles": "{n} more files not listed",
+  "viewer.diff.against": "Changes against HEAD",
+  "viewer.diff.none": "No changes against HEAD",
+  "viewer.diff.truncated": "Long diff — showing the head",
+  "viewer.diff.notFound": "Could not read the changes for this path",
+  "viewer.log.tab": "History",
+  "viewer.log.more": "Load more",
+  "viewer.log.end": "Beginning of history",
+  "viewer.log.notFound": "Could not read the history",
+  "viewer.log.branch": "Branch",
+  "viewer.log.search": "Search commit messages",
+  "viewer.log.noMatch": "No matching commits",
   "activity.plan.more": "+{n} more",
   "plan.card.title": "Todo list",
-  "plan.card.itemsUnavailable": "This record kept no item detail.",
+  "plan.card.itemsUnavailable": "No item detail in this record",
   "trace.card.title": "Operation trace",
   "trace.card.steps": "{n} steps",
   "trace.card.files": "{n} files",
+  "repo.card.title": "Repository",
+  "repo.card.clean": "Working tree clean",
+  "repo.card.dirty": "{n} changes",
+  "repo.card.detached": "Detached HEAD",
+  "repo.card.unborn": "No commits yet",
+  "repo.card.upstream": "Upstream {name}",
+  "repo.card.upstreamGone": "Upstream {name} is gone",
+  "repo.card.gone": "gone",
+  "repo.card.ahead": "{n} ahead",
+  "repo.card.behind": "{n} behind",
+  "repo.card.conflicts": "{n} conflicts",
+  "repo.card.more": "{n} more",
+  "repo.card.scope": "Workspace at {prefix}",
+  "repo.card.recent": "Recent commits",
+  "repo.card.all": "All",
+  "repo.card.unpushed": "Not pushed",
+  "repo.card.inProgress.merge": "Merge in progress",
+  "repo.card.inProgress.rebase": "Rebase in progress",
+  "repo.card.inProgress.cherryPick": "Cherry-pick in progress",
+  "repo.card.inProgress.revert": "Revert in progress",
+  "repo.card.inProgress.bisect": "Bisect in progress",
+  "repo.card.status.modified": "Modified",
+  "repo.card.status.added": "Added",
+  "repo.card.status.deleted": "Deleted",
+  "repo.card.status.renamed": "Renamed",
+  "repo.card.status.untracked": "Untracked",
+  "repo.card.status.conflict": "Conflict",
+  "repo.card.status.other": "Changed",
   "activity.result.detail": "result detail",
   "evidence.output": "output",
   "evidence.excerpt": "excerpt",
@@ -379,7 +611,10 @@ export const en = {
   "workspace.diffExpand": "Expand diff · {n} lines (+{add} −{del})",
   "workspace.diffCollapse": "Collapse",
   "device.aria": "Agent device",
-  "device.dragHint": "Agent device (drag upward to interact)",
+  // The drag affordance's own label. Terse (owner 2026-08-27) — its context
+  // comes from the enclosing card, labelled "Coprocessor: {state}", and from
+  // the device image's own alt text above.
+  "device.dragHint": "Drag upward",
   "device.ariaLabel": "Coprocessor: {state}",
   "record.chip.coprocessor": "Coprocessor",
   "record.chip.system": "System",
@@ -395,6 +630,8 @@ export const en = {
   "record.marker.risk": "{n} risk",
   "record.marker.risks": "{n} risks",
   "record.marker.aborted": "run aborted",
+  "record.marker.commit": "committed {sha}",
+  "record.marker.pushed": "pushed {ref}",
   "record.marker.noop": "No output",
   "card.workspace": "Workspace",
   "card.workspaceDefault": "Workspace · default",
@@ -402,8 +639,15 @@ export const en = {
   "card.resetDefault": "Reset to default",
   "card.workspaceSetError": "could not set workspace",
   "card.rules": "Remembered commands",
-  "card.rulesEmpty": "No commands remembered yet.",
+  "card.rulesEmpty": "No commands remembered",
   "card.rulesRemove": "Remove rule {rule}",
+  "card.trust": "Workspace trust",
+  "card.trustOn":
+    "Trusted: writes, git operations and scripts within it no longer request confirmation",
+  "card.trustOnDefault": "Sandbox workspace, trusted by default",
+  "card.trustOff": "Confirms each operation",
+  "card.trustEnable": "Trust this workspace",
+  "card.trustDisable": "Confirm each operation instead",
   "card.deviceInfoAria": "device card info",
   "card.deviceInfo":
     "The device card represents Brick (the differential coprocessor) — " +
@@ -412,14 +656,14 @@ export const en = {
     "running, waiting for approval, etc.).",
   "time.justNow": "just now",
   "time.minAgo": "{n} min ago",
-  "app.cantStart": "Herta couldn't start",
+  "app.cantStart": "Herta could not start",
   "app.cantStartBody":
     "Restart the app. If this keeps happening, check the logs. (Your DeepSeek key is set in Settings → DeepSeek — a missing key no longer blocks startup.)",
   "app.bridgeUnavailable":
     "The desktop bridge ({bridge}) is unavailable — the preload script failed to load.",
   "app.bridgeUnavailableBody":
     "Restart the app. If this persists, the preload build output or its path in the main process is misconfigured.",
-  "app.crashTitle": "The interface hit a problem",
+  "app.crashTitle": "Interface error",
   "app.crashBody":
     "Your session record is safe — reload the interface to continue.",
   "app.crashReload": "Reload",

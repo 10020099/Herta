@@ -60,6 +60,34 @@ describe("promote", () => {
     );
   });
 
+  it("a second archived file with an archived one's exact name never overwrites it (dream review 2026-09-22, finding 19)", () => {
+    const name = "### 废案_01：x.txt";
+    writeFileSync(join(narrative, name), "the first memory");
+    expect(
+      archiveLiveRecord({
+        narrativeDir: narrative,
+        dreamDir,
+        file: name,
+        reason: "a",
+      }),
+    ).toBe(name);
+    // A later 废案 takes the same NN and title, then is archived in turn.
+    writeFileSync(join(narrative, name), "the second memory");
+    expect(
+      archiveLiveRecord({
+        narrativeDir: narrative,
+        dreamDir,
+        file: name,
+        reason: "b",
+      }),
+    ).toBe("### 废案_01：x (2).txt");
+    const archive = join(dreamDir, "archive");
+    expect(readFileSync(join(archive, name), "utf8")).toBe("the first memory");
+    expect(readFileSync(join(archive, "### 废案_01：x (2).txt"), "utf8")).toBe(
+      "the second memory",
+    );
+  });
+
   describe("assertUnderDreamRoot", () => {
     it("allows a path that is inside root", () => {
       expect(() => assertUnderDreamRoot("/a/b/c", "/a/b")).not.toThrow();

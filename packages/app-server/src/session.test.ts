@@ -7,19 +7,29 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import type { TerminalRecord } from "@herta/core";
+import type { RepoContextSnapshot, TerminalRecord } from "@herta/core";
 import type { OpeningChoice } from "@herta/herta";
+import type { RepoContextOutcome } from "@herta/tools";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SessionImpl, spanEditedFiles } from "./session.js";
-import { createSessionHost } from "./session-host.js";
 import {
+  SessionImpl,
+  type SessionInternalDeps,
+  spanEditedFiles,
+} from "./session.js";
+import { createSessionHost } from "./session-host.js";
+import type { BackendStack } from "./session-wiring.js";
+import { makePng } from "./testing/image-fixtures.js";
+import {
+  STUB_THOUGHT,
   stubChatProvider,
   stubCompletionProvider,
 } from "./testing/stub-providers.js";
+import { removeTmpDir } from "./testing/tmp-workspace.js";
 import type {
   AppServerConfig,
   RecordEvent,
@@ -29,11 +39,12 @@ import type {
 
 /**
  * A MetaThinkCorpus with every mood-state key present but mapped to the
- * empty string. corpusHasContent() returns false for this, which disables
- * mood routing in V2ActorDriver (single-phase fallback) — exactly what the
- * deterministic stub turn needs. The seven keys mirror MOOD_STATES; an
- * all-empty `{}` would not satisfy `Record<MoodState, string>` under strict
- * mode.
+ * empty string. corpusHasContent() returns false for this, so V2ActorDriver
+ * attaches no meta-think preamble — the turn still runs the always-think
+ * rhythm (thought, then forced speech; the single-phase path went on
+ * 2026-09-03), which the stub actor answers deterministically. The keys
+ * mirror MOOD_STATES; an all-empty `{}` would not satisfy
+ * `Record<MoodState, string>` under strict mode.
  */
 function emptyMetaThinkCorpus(): import("@herta/herta").MetaThinkCorpus {
   const blank = {
@@ -49,20 +60,43 @@ function emptyMetaThinkCorpus(): import("@herta/herta").MetaThinkCorpus {
   return { preThink: { ...blank }, preSpeak: { ...blank } };
 }
 
+/** Every workspace mkConfig() makes, removed after the test that made it —
+ *  a suite run used to leave one `herta-app-server-session-test-*` per call
+ *  under %TEMP% (tens of thousands by 2026-09-16). Same pattern as
+ *  session-wiring.test.ts.
+ *
+ *  A stub session still open at that point (a test that failed before its
+ *  cleanup, or never called it) is closed FIRST: close() awaits the in-flight
+ *  turn's settlement, so no late append or `mkdirSync` can land in — or
+ *  recreate — the tree being removed, and on Windows an open handle would
+ *  make the remove itself fail. What close() does NOT wait for is a child
+ *  whose cwd is the workspace (the repository probe's `git`, the backend's
+ *  shell); removeTmpDir waits those out. */
+const tmpDirs: string[] = [];
+const openSessions = new Set<SessionImpl>();
+afterEach(async () => {
+  // A test that installed fake timers and failed before restoring them would
+  // otherwise hang close()'s setImmediate hop until the hook timeout.
+  vi.useRealTimers();
+  for (const s of openSessions) await s.close();
+  openSessions.clear();
+  for (const d of tmpDirs.splice(0)) await removeTmpDir(d);
+});
+
 function mkConfig(): AppServerConfig {
   const root = mkdtempSync(join(tmpdir(), "herta-app-server-session-test-"));
+  tmpDirs.push(root);
   return {
     workspaceRoot: root,
     transcriptDir: join(root, ".herta", "transcript", "v2"),
     projectMemoryDir: join(root, ".herta", "memory"),
     userMemoryDir: join(root, ".herta", "user-memory"),
-    capsulesDir: join(root, ".herta", "capsules"),
     narrativeDir: join(root, ".herta", "narrative"),
     providers: {
       apiKey: "sk-test",
       actorModel: "deepseek-v4-base",
       backendModel: "deepseek-v4-chat",
-      routerModel: "deepseek-v4-flash",
+      routerModel: "deepseek-flash",
     },
   };
 }
@@ -247,9 +281,10 @@ describe("Session — interaction language threading (slice 4)", () => {
 /**
  * Build a minimal SessionImpl for subscribeRecord tests using stub providers.
  *
- * The stub provider emits one speech block: "你好。（/我 说）".
- * runActorCompletionTurn prepends the user block and appends the herta block,
- * so two blocks total are added per submitText("hi") call.
+ * Each turn is a thought then a speech. The stub answers the thought prompt
+ * with STUB_THOUGHT and the speech prompt with one script ("你好。（/我 说）"),
+ * so a submitText("hi") appends three blocks: user, herta thought, herta
+ * speech.
  */
 async function mkStubSession(
   cfg: AppServerConfig,
@@ -279,6 +314,22 @@ async function mkStubSession(
     lang?: "zh" | "en";
     // Title-provider override (slice 4: capture the title prompt's language).
     titleProvider?: import("@herta/core").ProviderAdapter;
+    // The repository probe behind the rail's repository card (ADR 0058).
+    // Defaults to "not a repository" so no git runs under a stub session.
+    repoDescriber?: SessionInternalDeps["repoDescriber"];
+    // The git-dir watcher + its debounce (ADR 0058 amendment). Defaults to
+    // a no-op watcher so no fs handle opens under a stub session.
+    repoWatcher?: SessionInternalDeps["repoWatcher"];
+    repoWatchDebounceMs?: number;
+    // The commit reader behind the viewer's commit tab (ADR 0059).
+    commitDescriber?: SessionInternalDeps["commitDescriber"];
+    // The working-tree diff reader behind the viewer's diff tab (ADR 0059 §5).
+    workingDiffDescriber?: SessionInternalDeps["workingDiffDescriber"];
+    // The history reader behind the viewer's log tab (ADR 0059 §6).
+    logDescriber?: SessionInternalDeps["logDescriber"];
+    branchesDescriber?: SessionInternalDeps["branchesDescriber"];
+    // The backend-stack seam (ADR 0067 toolset-gate tests).
+    backendStackObserver?: SessionInternalDeps["backendStackObserver"];
   },
 ): Promise<{
   session: SessionImpl;
@@ -295,9 +346,9 @@ async function mkStubSession(
     transcriptDir: cfg.transcriptDir,
   });
 
-  // Stub actor: emits a single speech block per call.
-  // The actor protocol needs （我 说）...（/我 说）. We emit just the body
-  // after the open tag (actor-turn prepends the open tag in the prompt).
+  // Stub actor: one script per turn = that turn's speech. The prompt carries
+  // the open tag, so a script is just the body plus its close tag; the
+  // thought prompt preceding each speech is auto-answered (not scripted).
   const actorStub = stubCompletionProvider(
     Array.from({ length: turns }, () => ({
       deltas: [extra?.actorSpeech ?? "你好。", "（/我 说）"],
@@ -306,8 +357,8 @@ async function mkStubSession(
   );
 
   // Stub router (chat-mode): the V2ActorDriver calls classifyIntent once per
-  // turn. With an empty meta-think corpus, mood routing is disabled so the
-  // resolved state is unused; the router just needs to return a benign,
+  // turn. The resolved state only selects a meta-think preamble, and the
+  // empty corpus has none; the router just needs to return a benign,
   // recognizable state name without throwing.
   const stubRouter = stubChatProvider(
     Array.from({ length: turns }, () => ({
@@ -360,15 +411,31 @@ async function mkStubSession(
       ...(extra?.easterEggRandom !== undefined
         ? { easterEggRandom: extra.easterEggRandom }
         : {}),
+      repoDescriber: extra?.repoDescriber ?? (async () => ({ kind: "absent" })),
+      repoWatcher: extra?.repoWatcher ?? (() => () => undefined),
+      ...(extra?.repoWatchDebounceMs !== undefined
+        ? { repoWatchDebounceMs: extra.repoWatchDebounceMs }
+        : {}),
+      commitDescriber: extra?.commitDescriber ?? (async () => null),
+      workingDiffDescriber: extra?.workingDiffDescriber ?? (async () => null),
+      logDescriber: extra?.logDescriber ?? (async () => null),
+      branchesDescriber: extra?.branchesDescriber ?? (async () => null),
       ...(extra?.easterEggNow !== undefined
         ? { easterEggNow: extra.easterEggNow }
+        : {}),
+      ...(extra?.backendStackObserver !== undefined
+        ? { backendStackObserver: extra.backendStackObserver }
         : {}),
     },
   });
 
+  openSessions.add(session);
   return {
     session,
-    cleanup: () => session.close(),
+    cleanup: async () => {
+      openSessions.delete(session);
+      await session.close();
+    },
   };
 }
 
@@ -453,15 +520,15 @@ describe("Session — D3 streaming opening (new sessions)", () => {
       for await (const ev of session.subscribeRecord()) {
         if (ev.kind === "block") {
           blocks.push(ev.block);
-          if (blocks.length >= 2) break; // user + herta from this turn
+          if (blocks.length >= 3) break; // user + thought + speech this turn
         }
       }
     })();
     await session.submitText("hi");
     await consumer;
 
-    // The first turn streams ONLY its new blocks (user + herta); the seed at
-    // block 0 is never re-streamed (the sink's cursor is past it).
+    // The first turn streams ONLY its new blocks (user + thought + speech);
+    // the seed at block 0 is never re-streamed (the sink's cursor is past it).
     expect(blocks.map((b) => ({ ...b, at: undefined }))).toEqual(
       session.record.slice(1),
     );
@@ -809,7 +876,8 @@ describe("Session — D2 resume regenerate (orphaned reply recovery)", () => {
       for await (const ev of session.subscribeRecord()) {
         if (ev.kind === "block") {
           blocks.push(ev.block);
-          break; // exactly one new block: the regenerated reply
+          // Exactly two new blocks: the regenerated reply's thought + speech.
+          if (blocks.length >= 2) break;
         }
       }
     })();
@@ -827,18 +895,28 @@ describe("Session — D2 resume regenerate (orphaned reply recovery)", () => {
 
     // Only the regenerated reply streamed — the already-shown seed + user block
     // are NOT re-streamed (the sink's seeded cursor skips them).
-    expect(blocks).toHaveLength(1);
+    expect(blocks).toHaveLength(2);
     expect(blocks[0]).toMatchObject({
+      kind: "herta",
+      surface: "thought",
+      text: STUB_THOUGHT,
+    });
+    expect(blocks[1]).toMatchObject({
       kind: "herta",
       surface: "speech",
       text: "你好。",
     });
     // It ran as a turn (locks the composer via lifecycle): started → finished.
     expect(lifecycle).toEqual(["started", "finished"]);
-    // Final record: seed + the intact user block + the regenerated reply.
-    expect(session.record).toHaveLength(3);
+    // Final record: seed + the intact user block + the regenerated reply
+    // (its thought, then its speech).
+    expect(session.record).toHaveLength(4);
     expect(session.record[1]).toEqual({ kind: "user", text: "在吗" });
-    expect(session.record[2]).toMatchObject({ kind: "herta", text: "你好。" });
+    expect(session.record[2]).toMatchObject({
+      kind: "herta",
+      surface: "thought",
+    });
+    expect(session.record[3]).toMatchObject({ kind: "herta", text: "你好。" });
     await cleanup();
   });
 
@@ -860,11 +938,11 @@ describe("Session — subscribeRecord (single-subscriber)", () => {
   it("runs a turn through V2ActorDriver and broadcasts the new blocks", async () => {
     const cfg = mkConfig();
     const { session, cleanup } = await mkStubSession(cfg);
-    const events: unknown[] = [];
+    const events: RecordEvent[] = [];
     const consumer = (async () => {
       for await (const ev of session.subscribeRecord()) {
         events.push(ev);
-        if (events.length >= 2) break; // user + herta speech block
+        if (events.length >= 3) break; // user + thought + speech
       }
     })();
     await session.submitText("hi");
@@ -878,20 +956,29 @@ describe("Session — subscribeRecord (single-subscriber)", () => {
     const cfg = mkConfig();
     const { session, cleanup } = await mkStubSession(cfg);
 
-    const events: unknown[] = [];
+    const events: RecordEvent[] = [];
     const consumer = (async () => {
       for await (const ev of session.subscribeRecord()) {
         events.push(ev);
-        // user block + herta speech block = 2 blocks
-        if (events.length >= 2) break;
+        // user block + herta thought + herta speech = 3 blocks
+        if (events.length >= 3) break;
       }
     })();
 
     await session.submitText("hi");
     await consumer;
 
-    expect(events.length).toBeGreaterThanOrEqual(1);
-    expect(events[0]).toMatchObject({ kind: "block" });
+    // One block event per appended block, in record order — the thought is
+    // broadcast like any other block (the GUI hides it; the sink does not).
+    expect(
+      events.map((e) =>
+        e.kind === "block" ? { ...e.block, at: undefined } : e,
+      ),
+    ).toEqual([
+      { kind: "user", text: "hi", at: undefined },
+      { kind: "herta", surface: "thought", text: STUB_THOUGHT, at: undefined },
+      { kind: "herta", surface: "speech", text: "你好。", at: undefined },
+    ]);
     await cleanup();
   });
 
@@ -917,11 +1004,18 @@ describe("Session — subscribeRecord (single-subscriber)", () => {
     await session.submitText("hi");
     await consumer;
 
-    // After submitText resolves, all blocks must be on disk.
+    // After submitText resolves, all blocks must be on disk: the user block,
+    // the thought, and the speech (meta lines such as `turn_end` sit between
+    // them and are not counted).
     const jsonl = readFileSync(sessionFile, "utf8");
     const lines = jsonl.split("\n").filter((l) => l.length > 0);
-    // Header line + at least the user block + the herta speech block.
-    expect(lines.length).toBeGreaterThanOrEqual(3);
+    const header = JSON.parse(lines[0] ?? "{}") as { _kind?: string };
+    expect(header._kind).toBe("session_meta");
+    const blocks = lines
+      .map((l) => JSON.parse(l) as { _kind?: string; kind?: string })
+      .filter((o) => o._kind === undefined);
+    expect(blocks).toHaveLength(3);
+    expect(blocks.map((b) => b.kind)).toEqual(["user", "herta", "herta"]);
     await cleanup();
   });
 });
@@ -1014,10 +1108,11 @@ describe("Session — setWorkspace / resetWorkspace", () => {
 /**
  * Build a SessionImpl for a NO-OP `@板砖` turn.
  *
- * Actor (completion) provider — two scripted calls:
- *   Call 1: Herta's first speech contains @板砖, triggering the bridge.
- *           The prompt ends with "（我", so the model completes "说）<body>…".
- *   Call 2: After the bridge completes, Herta emits a closing speech.
+ * Actor (completion) provider — two scripted speeches (the thought before
+ * each one is auto-answered by the stub, so the record carries a thought
+ * block ahead of both):
+ *   Speech 1: Herta's first speech contains @板砖, triggering the bridge.
+ *   Speech 2: After the bridge completes, Herta emits a closing speech.
  *
  * Backend (chat) provider — one scripted turn that emits TEXT ONLY (no tool
  * calls). With no tool/patch work the bridge projects zero `→ 系统` /
@@ -1046,13 +1141,13 @@ async function mkNoopBanzhuanSession(cfg: AppServerConfig): Promise<{
 
   const actorStub = stubCompletionProvider([
     {
-      // Call 1: Herta delegates to 板砖.
-      deltas: ["说）@板砖 看看公开资料就行。（/我 说）"],
+      // Speech 1: Herta delegates to 板砖.
+      deltas: ["@板砖 看看公开资料就行。（/我 说）"],
       stopReason: "stop",
     },
     {
-      // Call 2: Main-loop closing speech after the bridge completes.
-      deltas: ["说）行，没什么要动的。（/我 说）"],
+      // Speech 2: Main-loop closing speech after the bridge completes.
+      deltas: ["行，没什么要动的。（/我 说）"],
       stopReason: "stop",
     },
   ]);
@@ -1067,7 +1162,8 @@ async function mkNoopBanzhuanSession(cfg: AppServerConfig): Promise<{
     },
   ]);
 
-  // Empty meta-think corpus + empty supervisor reference → single-phase actor.
+  // Empty meta-think corpus + empty supervisor reference: no preamble, no
+  // supervisor pass — the stubs count exact provider calls.
   const stubRouter = stubChatProvider([
     {
       events: [
@@ -1119,8 +1215,9 @@ describe("Session — noop-marker reaches the live record stream", () => {
     const consumer = (async () => {
       for await (const ev of session.subscribeRecord()) {
         blocks.push(ev);
-        // user + herta(@板砖) + noop-marker + herta(closing) = 4 blocks.
-        if (blocks.length >= 4) break;
+        // user + thought + herta(@板砖) + noop-marker + thought +
+        // herta(closing) = 6 blocks.
+        if (blocks.length >= 6) break;
       }
     })();
 
@@ -1177,7 +1274,11 @@ describe("Session — actor assistant.delta reaches the agent stream", () => {
         (e.event as { layer?: string }).layer === "actor",
     );
     expect(actorDeltas.length).toBeGreaterThanOrEqual(1);
-    expect(actorDeltas.map((e) => e.event.text).join("")).toContain("你好");
+    const streamed = actorDeltas.map((e) => e.event.text).join("");
+    expect(streamed).toContain("你好");
+    // Thought-surface tokens never reach the agent stream (hidden per D6/D7):
+    // the sink drops them, so only the speech is in the streaming bubble.
+    expect(streamed).not.toContain(STUB_THOUGHT);
   });
 });
 
@@ -1216,7 +1317,7 @@ describe("Session — rewindLastTurn", () => {
     const cfg = mkConfig();
     const { session, cleanup } = await mkStubSession(cfg);
     await session.submitText("在吗");
-    expect(session.record).toHaveLength(2); // user + herta speech
+    expect(session.record).toHaveLength(3); // user + thought + speech
     const result = await session.rewindLastTurn();
     expect(result).toEqual({ ok: true, userText: "在吗", editedFiles: false });
     expect(session.record).toEqual([]);
@@ -1246,7 +1347,7 @@ describe("Session — rewindLastTurn", () => {
         .filter(
           (l) => (JSON.parse(l) as { _kind?: string })._kind === undefined,
         ).length;
-    expect(blockCount()).toBe(2); // user + herta
+    expect(blockCount()).toBe(3); // user + thought + speech
     await session.rewindLastTurn();
     expect(blockCount()).toBe(0); // header only remains
     await cleanup();
@@ -1302,17 +1403,23 @@ describe("Session — rewindLastTurn", () => {
       })),
     ).toEqual([
       { kind: "user", text: "second" },
+      { kind: "herta", text: STUB_THOUGHT },
       { kind: "herta", text: "你好。" },
     ]);
-    // The JSONL holds exactly header + the second turn's two blocks — the first
-    // turn's lines were truncated and never re-appended (cursor reset correctly).
+    // The JSONL holds exactly header + the second turn's three blocks — the
+    // first turn's lines were truncated and never re-appended (cursor reset
+    // correctly).
     const sessionFile = join(cfg.transcriptDir, `${session.sessionId}.jsonl`);
     const blocks = readFileSync(sessionFile, "utf8")
       .split("\n")
       .filter((l) => l.length > 0)
       .map((l) => JSON.parse(l) as Record<string, unknown>)
       .filter((o) => o._kind === undefined);
-    expect(blocks.map((b) => b.text)).toEqual(["second", "你好。"]);
+    expect(blocks.map((b) => b.text)).toEqual([
+      "second",
+      STUB_THOUGHT,
+      "你好。",
+    ]);
     await cleanup();
   });
 
@@ -1418,6 +1525,71 @@ describe("Session — no-key onboarding (live DeepSeek key)", () => {
   });
 });
 
+describe("Session — the toolset follows the environment (ADR 0067)", () => {
+  /** A stub session whose backend stack the test can watch, moved to a
+   *  temp workspace so nothing lands under the real homedir. */
+  async function mkGateSession(initialRecord?: TerminalRecord) {
+    const cfg = mkConfig();
+    let stack: BackendStack | undefined;
+    const made = await mkStubSession(cfg, initialRecord, 1, undefined, {
+      backendStackObserver: (s) => {
+        stack = s;
+      },
+    });
+    if (stack === undefined) throw new Error("no backend stack observed");
+    const names = (): string[] =>
+      (stack as BackendStack).backendTools.list().map((t) => t.name);
+    return { ...made, cfg, stack, names };
+  }
+
+  it("git_status / git_diff follow the workspace: mounted on a move into a repository, unmounted on a move out", async () => {
+    const { session, stack, names, cleanup } = await mkGateSession();
+    expect(stack.contract).toBe("standard");
+    const plain = mkdtempSync(join(tmpdir(), "herta-gate-plain-"));
+    const repo = mkdtempSync(join(tmpdir(), "herta-gate-repo-"));
+    mkdirSync(join(repo, ".git"));
+
+    expect((await session.setWorkspace(repo)).ok).toBe(true);
+    expect(names()).toContain("git_status");
+    expect(names()).toContain("git_diff");
+
+    expect((await session.setWorkspace(plain)).ok).toBe(true);
+    expect(names()).not.toContain("git_status");
+    expect(names()).not.toContain("git_diff");
+    // The rest of the standard set is untouched by the move.
+    expect(names()).toContain("read_file");
+    expect(names()).toContain("glob");
+    expect(names()).not.toContain("list_files");
+    await cleanup();
+  });
+
+  it("digest_document mounts when the first document is attached — and a reopened record that holds one mounts it at build", async () => {
+    const { session, names, cleanup } = await mkGateSession();
+    const ws = mkdtempSync(join(tmpdir(), "herta-gate-ws-"));
+    expect((await session.setWorkspace(ws)).ok).toBe(true);
+    expect(names()).not.toContain("digest_document");
+
+    const srcDir = mkdtempSync(join(tmpdir(), "herta-gate-src-"));
+    writeFileSync(join(srcDir, "spec.md"), "# spec\nbody\n");
+    const first = await session.attachFiles([join(srcDir, "spec.md")]);
+    expect(first.ok).toBe(true);
+    expect(names().filter((n) => n === "digest_document")).toHaveLength(1);
+    // A second document finds the tool already there — still exactly one.
+    writeFileSync(join(srcDir, "notes.txt"), "notes\n");
+    expect((await session.attachFiles([join(srcDir, "notes.txt")])).ok).toBe(
+      true,
+    );
+    expect(names().filter((n) => n === "digest_document")).toHaveLength(1);
+
+    // Reopen: the record carries the attachment rows, so the tool is there
+    // from the first brief without waiting for another attach.
+    const resumed = await mkGateSession([...session.record]);
+    expect(resumed.names()).toContain("digest_document");
+    await resumed.cleanup();
+    await cleanup();
+  });
+});
+
 describe("Session — attachFiles (ADR 0033)", () => {
   /** A hermetic attach setup: the default backend workspace lives under the
    *  real homedir, so point the session at a temp dir first — which also
@@ -1475,6 +1647,34 @@ describe("Session — attachFiles (ADR 0033)", () => {
     await cleanup();
   });
 
+  it("caps a MESSAGE at five pictures, counting what is already staged (owner 2026-08-27)", async () => {
+    const { session, cleanup } = await mkAttachSession();
+    const png = (n: string) => ({ bytes: makePng(4, 4), name: n });
+    // Six in one batch: whole-batch refusal, nothing staged (the same
+    // no-silent-prefix rule as the attachFiles cap above).
+    const six = await session.stageImages(
+      Array.from({ length: 6 }, (_, i) => png(`p${i}.png`)),
+    );
+    expect(six).toEqual({ ok: false, reason: "too_many_images" });
+    // Five is fine…
+    const five = await session.stageImages(
+      Array.from({ length: 5 }, (_, i) => png(`q${i}.png`)),
+    );
+    expect(five.ok).toBe(true);
+    if (five.ok) expect(five.staged).toHaveLength(5);
+    // …and the cap counts the strip, not the batch: one more is refused.
+    const more = await session.stageImages([png("r.png")]);
+    expect(more).toEqual({ ok: false, reason: "too_many_images" });
+    // Unstaging frees a slot again.
+    if (five.ok) {
+      const freed = five.staged[0]?.id ?? "";
+      expect(await session.unstageImage(freed)).toBe(true);
+      const retry = await session.stageImages([png("r.png")]);
+      expect(retry.ok).toBe(true);
+    }
+    await cleanup();
+  });
+
   it("removeAttachment deletes the file and MARKS the block, keeping the count", async () => {
     const { session, backendWs, srcDir, cleanup } = await mkAttachSession();
     writeFileSync(join(srcDir, "spec.md"), "# spec\nSECRET-BODY-LINE\n");
@@ -1502,6 +1702,72 @@ describe("Session — attachFiles (ADR 0033)", () => {
     expect(block.body).toContain("已移除");
     expect(block.evidenceDetail).toBeUndefined();
     expect(JSON.stringify(session.record)).not.toContain("SECRET-BODY-LINE");
+    await cleanup();
+  });
+
+  it("a copy that cannot be deleted refuses the take-back with NOTHING marked — never 已移除 over a file still on disk (UX review 2026-09-22, item 8)", async () => {
+    const { session, backendWs, srcDir, cleanup } = await mkAttachSession();
+    writeFileSync(join(srcDir, "spec.md"), "# spec\nBODY-LINE\n");
+    const a = await session.attachFiles([join(srcDir, "spec.md")]);
+    expect(a.ok).toBe(true);
+    if (!a.ok) return;
+    const rel = a.files[0]?.path ?? "";
+    const abs = join(backendWs, ...rel.split("/"));
+    // A path `rm` cannot remove, portably: a non-empty directory where the
+    // copy was. On Windows the real case is the document open in Word.
+    rmSync(abs);
+    mkdirSync(abs);
+    writeFileSync(join(abs, "held"), "x");
+    expect(await session.removeAttachment(rel)).toEqual({
+      ok: false,
+      reason: "in_use",
+    });
+    const block = session.record.find(
+      (b) => b.kind === "system" && b.digest?.kind === "attachment",
+    );
+    if (block?.kind !== "system") throw new Error("no attachment block");
+    expect(block.digest).not.toMatchObject({ unreadable: "removed" });
+    expect(block.body).not.toContain("已移除");
+    // Released (the program closed it): the retry finishes the job.
+    rmSync(abs, { recursive: true });
+    expect(await session.removeAttachment(rel)).toEqual({
+      ok: true,
+      removed: 1,
+    });
+    await cleanup();
+  });
+
+  it("a source-only document (no text — an .xlsx) is removed by its SOURCE path, the only path its row has (ADR 0038 amendment)", async () => {
+    const { makeOleBytes } = await import("./testing/document-fixtures.js");
+    const { session, backendWs, srcDir, cleanup } = await mkAttachSession();
+    writeFileSync(join(srcDir, "sheet.xlsx"), makeOleBytes());
+    const a = await session.attachFiles([join(srcDir, "sheet.xlsx")]);
+    expect(a.ok).toBe(true);
+    if (!a.ok) return;
+    expect(a.files[0]?.path).toBe("");
+    const block = session.record.find(
+      (b) => b.kind === "system" && b.digest?.kind === "attachment",
+    );
+    const digest = block?.kind === "system" ? block.digest : undefined;
+    const source = digest?.kind === "attachment" ? (digest.source ?? "") : "";
+    expect(source).toMatch(/\/sheet-[0-9a-f]{8}\.xlsx$/);
+    expect(existsSync(join(backendWs, ...source.split("/")))).toBe(true);
+    // An empty path never matches anything — not even another path-less row.
+    expect(await session.removeAttachment("")).toEqual({
+      ok: false,
+      reason: "not_found",
+    });
+    expect(await session.removeAttachment(source)).toEqual({
+      ok: true,
+      removed: 1,
+    });
+    expect(existsSync(join(backendWs, ...source.split("/")))).toBe(false);
+    const after = session.record.find(
+      (b) => b.kind === "system" && b.digest?.kind === "attachment",
+    );
+    if (after?.kind !== "system") throw new Error("no attachment block");
+    expect(after.digest).toMatchObject({ unreadable: "removed", path: "" });
+    expect(after.digest).not.toHaveProperty("source");
     await cleanup();
   });
 
@@ -1534,6 +1800,11 @@ describe("Session — attachFiles (ADR 0033)", () => {
     const digestRel = rel.replace(/\.txt$/, ".digest.txt");
     writeFileSync(join(backendWs, ...digestRel.split("/")), "# 文档摘要\n");
 
+    // …and the original's copy (ADR 0038 amendment) with everything else.
+    const source = digest?.kind === "attachment" ? (digest.source ?? "") : "";
+    expect(source).toMatch(/\.pdf$/);
+    expect(existsSync(join(backendWs, ...source.split("/")))).toBe(true);
+
     expect(await session.removeAttachment(rel)).toEqual({
       ok: true,
       removed: 1,
@@ -1541,13 +1812,179 @@ describe("Session — attachFiles (ADR 0033)", () => {
     expect(existsSync(join(backendWs, ...rel.split("/")))).toBe(false);
     expect(existsSync(join(backendWs, ...sidecar.split("/")))).toBe(false);
     expect(existsSync(join(backendWs, ...digestRel.split("/")))).toBe(false);
+    expect(existsSync(join(backendWs, ...source.split("/")))).toBe(false);
     const after = session.record.find(
       (b) => b.kind === "system" && b.digest?.kind === "attachment",
     );
     if (after?.kind !== "system") throw new Error("no attachment block");
     expect(after.digest).toMatchObject({ unreadable: "removed" });
     expect(after.digest).not.toHaveProperty("outline");
+    expect(after.digest).not.toHaveProperty("source");
     expect(JSON.stringify(session.record)).not.toContain("Chapter 2");
+    await cleanup();
+  });
+
+  it("rewind keeps an attachment whose row sits above the cut (attached before the send)", async () => {
+    // The common flow: attach, then send. The attach block precedes the user
+    // block, so the rewind's truncation never touches it — and the GC must
+    // not either: the row is still on screen, its ✕ still works, and its
+    // file must still exist behind both.
+    const { session, backendWs, srcDir, cleanup } = await mkAttachSession();
+    writeFileSync(join(srcDir, "spec.md"), "# spec\nbody\n");
+    const a = await session.attachFiles([join(srcDir, "spec.md")]);
+    expect(a.ok).toBe(true);
+    if (!a.ok) return;
+    const rel = a.files[0]?.path ?? "";
+    await session.submitText("看看这个文件");
+    const r = await session.rewindLastTurn();
+    expect(r.ok).toBe(true);
+    expect(
+      session.record.some(
+        (b) => b.kind === "system" && b.digest?.kind === "attachment",
+      ),
+    ).toBe(true);
+    expect(existsSync(join(backendWs, ...rel.split("/")))).toBe(true);
+    await cleanup();
+  });
+
+  it("rewind garbage-collects the stored copies of WITHDRAWN attachment blocks — sidecars included (2026-08-26)", async () => {
+    // D-Record-only amendment: an attachment block inside the withdrawn span
+    // (attached after the turn's reply, then rewound before the next send)
+    // takes its row's ✕ affordance with it — so the stored copy would be
+    // orphaned with no in-app way to delete it. The rewind GCs it: text,
+    // outline sidecar, and any ADR 0043 digest sidecar, same set as the ✕.
+    const { makePdf } = await import("./testing/document-fixtures.js");
+    const { session, backendWs, srcDir, cleanup } = await mkAttachSession();
+    await session.submitText("hi");
+    writeFileSync(
+      join(srcDir, "book.pdf"),
+      makePdf([["one"], ["two"]], {
+        bookmarks: [
+          { title: "Chapter 1", page: 1 },
+          { title: "Chapter 2", page: 2 },
+        ],
+      }),
+    );
+    const a = await session.attachFiles([join(srcDir, "book.pdf")]);
+    expect(a.ok).toBe(true);
+    if (!a.ok) return;
+    const rel = a.files[0]?.path ?? "";
+    const block = session.record.find(
+      (b) => b.kind === "system" && b.digest?.kind === "attachment",
+    );
+    const digest = block?.kind === "system" ? block.digest : undefined;
+    const sidecar =
+      digest?.kind === "attachment" ? (digest.outline?.path ?? "") : "";
+    expect(existsSync(join(backendWs, ...sidecar.split("/")))).toBe(true);
+    const digestRel = rel.replace(/\.txt$/, ".digest.txt");
+    writeFileSync(join(backendWs, ...digestRel.split("/")), "# 文档摘要\n");
+
+    const r = await session.rewindLastTurn();
+    expect(r.ok).toBe(true);
+    // The block left the record with the turn…
+    expect(
+      session.record.some(
+        (b) => b.kind === "system" && b.digest?.kind === "attachment",
+      ),
+    ).toBe(false);
+    // …and the stored copies left the disk with it.
+    expect(existsSync(join(backendWs, ...rel.split("/")))).toBe(false);
+    expect(existsSync(join(backendWs, ...sidecar.split("/")))).toBe(false);
+    expect(existsSync(join(backendWs, ...digestRel.split("/")))).toBe(false);
+    await cleanup();
+  });
+
+  it("rewind RESTAGES the message's pictures instead of deleting them (owner 2026-08-27)", async () => {
+    const { session, backendWs, cleanup } = await mkAttachSession();
+    const staged = await session.stageImages([
+      { bytes: makePng(5, 5), name: "shot.png" },
+    ]);
+    expect(staged.ok).toBe(true);
+    if (!staged.ok) return;
+    const rel = staged.staged[0]?.path ?? "";
+    await session.submitText("看看这张图", {
+      stagedImageIds: staged.staged.map((s) => s.id),
+    });
+    expect(
+      session.record.some(
+        (b) => b.kind === "system" && b.digest?.kind === "attachment",
+      ),
+    ).toBe(true);
+
+    const r = await session.rewindLastTurn();
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    // The block left the record with the turn…
+    expect(
+      session.record.some(
+        (b) => b.kind === "system" && b.digest?.kind === "attachment",
+      ),
+    ).toBe(false);
+    // …but the picture went back to the strip, its file intact: the copy is
+    // on disk, the caption is paid for, and the rewound message's pictures
+    // belong with its restored draft.
+    expect(r.images).toHaveLength(1);
+    expect(r.images?.[0]?.path).toBe(rel);
+    expect(existsSync(join(backendWs, ...rel.split("/")))).toBe(true);
+    expect(session.stagedImageList.map((s) => s.path)).toEqual([rel]);
+    await cleanup();
+  });
+
+  it("rewind falls back to the GC when the strip is already full (the five-picture cap holds)", async () => {
+    const { session, backendWs, cleanup } = await mkAttachSession();
+    const one = await session.stageImages([
+      { bytes: makePng(5, 5), name: "sent.png" },
+    ]);
+    if (!one.ok) return;
+    const rel = one.staged[0]?.path ?? "";
+    await session.submitText("发图", {
+      stagedImageIds: one.staged.map((s) => s.id),
+    });
+    // Fill the strip AFTER the send.
+    const five = await session.stageImages(
+      Array.from({ length: 5 }, (_, i) => ({
+        bytes: makePng(5, 5),
+        name: `later${i}.png`,
+      })),
+    );
+    expect(five.ok).toBe(true);
+
+    const r = await session.rewindLastTurn();
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    // No room: the withdrawn picture is GC'd like a document, not restaged
+    // past the cap.
+    expect(r.images).toBeUndefined();
+    expect(session.stagedImageList).toHaveLength(5);
+    expect(existsSync(join(backendWs, ...rel.split("/")))).toBe(false);
+    await cleanup();
+  });
+
+  it("rewind keeps a stored file a SURVIVING block still cites (idempotent re-attach shares the path)", async () => {
+    // Content-hashed names make re-attaching the identical document a write
+    // to the SAME stored path — two blocks, one file. Withdrawing the later
+    // block must not delete the earlier row's document out from under it.
+    const { session, backendWs, srcDir, cleanup } = await mkAttachSession();
+    writeFileSync(join(srcDir, "spec.md"), "# spec\nbody\n");
+    const first = await session.attachFiles([join(srcDir, "spec.md")]);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    const rel = first.files[0]?.path ?? "";
+    await session.submitText("看看这个文件");
+    const again = await session.attachFiles([join(srcDir, "spec.md")]);
+    expect(again.ok).toBe(true);
+    if (!again.ok) return;
+    expect(again.files[0]?.path).toBe(rel);
+
+    const r = await session.rewindLastTurn();
+    expect(r.ok).toBe(true);
+    // The pre-send block survives, so its file must too.
+    expect(
+      session.record.some(
+        (b) => b.kind === "system" && b.digest?.kind === "attachment",
+      ),
+    ).toBe(true);
+    expect(existsSync(join(backendWs, ...rel.split("/")))).toBe(true);
     await cleanup();
   });
 
@@ -1771,5 +2208,678 @@ describe("contract-fallback record note (ADR 0044)", () => {
     await min.session.playOpening();
     expect(noteBlocks(min.session.record)).toHaveLength(0);
     await min.cleanup();
+  });
+});
+
+// ── The repository card's stream (ADR 0058) ──────────────────────────────────
+
+describe("Session — steerText, a message while 板砖 works (ADR 0063)", () => {
+  it("answers `queued` when idle and during Herta's own turn, recording nothing", async () => {
+    const cfg = mkConfig();
+    const { session, cleanup } = await mkStubSession(cfg);
+    expect(await session.steerText("later")).toEqual({ queued: true });
+    const turn = session.submitText("hi");
+    // A turn with no backend has no boundary to reach: queued, nothing
+    // enters the record.
+    expect(await session.steerText("also")).toEqual({ queued: true });
+    await turn;
+    expect(
+      session.record.some((b) => b.kind === "user" && b.text === "also"),
+    ).toBe(false);
+    expect(await session.steerText("   ")).toEqual({ queued: true });
+    await cleanup();
+  }, 15_000);
+
+  it("while 板砖 runs: accepted, the user block enters the shared record between the dispatch and the done-marker, Herta answers it with a beat, and 板砖's next inference frame carries it", async () => {
+    const cfg = mkConfig();
+    const { V2RecordPersister } = await import("@herta/core");
+    const { randomUUID } = await import("node:crypto");
+    const sessionId = randomUUID();
+    const persister = V2RecordPersister.forNewSession({
+      sessionId,
+      workspaceRoot: cfg.workspaceRoot,
+      startedAt: new Date(),
+      transcriptDir: cfg.transcriptDir,
+    });
+    // Actor: the dispatch, the beat the steer earns, the closing speech.
+    const actorStub = stubCompletionProvider([
+      { deltas: ["@板砖 看看 nope.txt。（/我 说）"], stopReason: "stop" },
+      { deltas: ["收到，改名一起做。（/我 说）"], stopReason: "stop" },
+      { deltas: ["行，都弄完了。（/我 说）"], stopReason: "stop" },
+    ]);
+    // Backend: the FIRST inference waits on a gate (the steer lands while it
+    // runs), then asks for a tool so the loop comes round to a second head;
+    // the second inference stops. Every frame is kept for inspection.
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    // Resolves once the FIRST inference is in flight — the steer must land
+    // while it runs, not before (a steer that arrives between the backend's
+    // turn.started and its first loop head is rightly read by that head).
+    let firstCallStarted: () => void = () => {};
+    const firstCall = new Promise<void>((r) => {
+      firstCallStarted = r;
+    });
+    const frames: unknown[] = [];
+    type Adapter = import("@herta/core").ProviderAdapter;
+    type Ev = import("@herta/core").ProviderEvent;
+    const backendStub: Adapter = {
+      streamChat(frame) {
+        // A snapshot, not the reference: the frame's message list is the
+        // transcript's live array, which the steer appends to later.
+        frames.push(JSON.parse(JSON.stringify(frame)));
+        const n = frames.length;
+        return (async function* () {
+          if (n === 1) {
+            firstCallStarted();
+            await gate;
+            yield {
+              type: "tool-call-request",
+              call: {
+                id: "c1",
+                tool: "read_file",
+                input: { path: "nope.txt" },
+              },
+            } as Ev;
+            yield { type: "finish", reason: "tool_calls" } as Ev;
+          } else {
+            yield { type: "finish", reason: "stop" } as Ev;
+          }
+        })();
+      },
+    };
+    const stubRouter = stubChatProvider([
+      {
+        events: [
+          { type: "text-delta", text: "默认" },
+          { type: "finish", reason: "stop" },
+        ],
+      },
+    ]);
+    const session = await SessionImpl.create({
+      sessionId,
+      workspaceRoot: cfg.workspaceRoot,
+      effectiveWorkspace: cfg.workspaceRoot,
+      isDefaultWorkspace: false,
+      config: cfg,
+      persister,
+      deps: {
+        providerOverrides: {
+          actor: actorStub,
+          backend: backendStub,
+          router: stubRouter,
+          title: stubChatProvider([]),
+        },
+        staticPrefixOverride: { bio: "[test-bio]", env: "", fewShots: [] },
+        metaThinkOverride: emptyMetaThinkCorpus(),
+        supervisorReferenceOverride: "",
+        openingOverride: null,
+      },
+    });
+
+    const turn = session.submitText("看看 nope.txt");
+    await firstCall;
+    const answer = await session.steerText("也把测试文件改名");
+    expect("accepted" in answer).toBe(true);
+    release();
+    await turn;
+
+    // 板砖: absent from the inference that was running, present in the next.
+    expect(frames).toHaveLength(2);
+    expect(JSON.stringify(frames[0])).not.toContain("也把测试文件改名");
+    expect(JSON.stringify(frames[1])).toContain("也把测试文件改名");
+
+    // The record: the steer is a user block after Herta's dispatch and
+    // before the done-marker; Herta's beat answers it in between.
+    const record = session.record;
+    const idx = (pred: (b: (typeof record)[number]) => boolean): number =>
+      record.findIndex(pred);
+    const dispatchIdx = idx(
+      (b) => b.kind === "herta" && b.text.includes("@板砖"),
+    );
+    const steerIdx = idx(
+      (b) => b.kind === "user" && b.text === "也把测试文件改名",
+    );
+    const beatIdx = idx((b) => b.kind === "herta" && b.text.includes("收到"));
+    let markerIdx = -1;
+    for (let i = record.length - 1; i >= 0; i -= 1) {
+      const b = record[i];
+      if (
+        b !== undefined &&
+        b.kind === "system" &&
+        b.label === "差分协处理器" &&
+        (b as { role?: string }).role === "done-marker"
+      ) {
+        markerIdx = i;
+        break;
+      }
+    }
+    expect(dispatchIdx).toBeGreaterThan(0);
+    expect(steerIdx).toBeGreaterThan(dispatchIdx);
+    expect(markerIdx).toBeGreaterThan(steerIdx);
+    expect(beatIdx).toBeGreaterThan(steerIdx);
+    expect(beatIdx).toBeLessThan(markerIdx);
+    // The steer never doubles as a new turn: one user block for it.
+    expect(
+      record.filter((b) => b.kind === "user" && b.text === "也把测试文件改名"),
+    ).toHaveLength(1);
+    await session.close();
+  }, 20_000);
+
+  it("a steer that lands during 板砖's FINAL inference still reaches it: the loop runs one more round with it instead of dropping it at turn end (ADR 0063 §1.8)", async () => {
+    const cfg = mkConfig();
+    const { V2RecordPersister } = await import("@herta/core");
+    const { randomUUID } = await import("node:crypto");
+    const sessionId = randomUUID();
+    const persister = V2RecordPersister.forNewSession({
+      sessionId,
+      workspaceRoot: cfg.workspaceRoot,
+      startedAt: new Date(),
+      transcriptDir: cfg.transcriptDir,
+    });
+    const actorStub = stubCompletionProvider([
+      { deltas: ["@板砖 看看 nope.txt。（/我 说）"], stopReason: "stop" },
+      { deltas: ["听见了，板砖会看。（/我 说）"], stopReason: "stop" },
+      { deltas: ["行，都弄完了。（/我 说）"], stopReason: "stop" },
+    ]);
+    // Backend: the FIRST inference is the LAST one 板砖 intended — no tool
+    // call, a plain stop — and the steer lands while it runs. Before §1.8
+    // the loop broke right there and the turn's cleanup discarded the text;
+    // now the loop drains it and runs a second inference that carries it.
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let firstCallStarted: () => void = () => {};
+    const firstCall = new Promise<void>((r) => {
+      firstCallStarted = r;
+    });
+    const frames: unknown[] = [];
+    type Adapter = import("@herta/core").ProviderAdapter;
+    type Ev = import("@herta/core").ProviderEvent;
+    const backendStub: Adapter = {
+      streamChat(frame) {
+        frames.push(JSON.parse(JSON.stringify(frame)));
+        const n = frames.length;
+        return (async function* () {
+          if (n === 1) {
+            firstCallStarted();
+            await gate;
+            yield { type: "text-delta", text: "看完了。" } as Ev;
+          }
+          yield { type: "finish", reason: "stop" } as Ev;
+        })();
+      },
+    };
+    const stubRouter = stubChatProvider([
+      {
+        events: [
+          { type: "text-delta", text: "默认" },
+          { type: "finish", reason: "stop" },
+        ],
+      },
+    ]);
+    const session = await SessionImpl.create({
+      sessionId,
+      workspaceRoot: cfg.workspaceRoot,
+      effectiveWorkspace: cfg.workspaceRoot,
+      isDefaultWorkspace: false,
+      config: cfg,
+      persister,
+      deps: {
+        providerOverrides: {
+          actor: actorStub,
+          backend: backendStub,
+          router: stubRouter,
+          title: stubChatProvider([]),
+        },
+        staticPrefixOverride: { bio: "[test-bio]", env: "", fewShots: [] },
+        metaThinkOverride: emptyMetaThinkCorpus(),
+        supervisorReferenceOverride: "",
+        openingOverride: null,
+      },
+    });
+
+    const turn = session.submitText("看看 nope.txt");
+    await firstCall;
+    const answer = await session.steerText("也把测试文件改名");
+    expect("accepted" in answer).toBe(true);
+    release();
+    await turn;
+
+    // 板砖 ran a second inference, and that one carries the steer.
+    expect(frames).toHaveLength(2);
+    expect(JSON.stringify(frames[0])).not.toContain("也把测试文件改名");
+    expect(JSON.stringify(frames[1])).toContain("也把测试文件改名");
+    // The record shows it once, as a user block, with the beat after it.
+    const record = session.record;
+    expect(
+      record.filter((b) => b.kind === "user" && b.text === "也把测试文件改名"),
+    ).toHaveLength(1);
+    await session.close();
+  }, 20_000);
+});
+
+describe("Session — the repository probe behind the rail's card (ADR 0058)", () => {
+  const sample: RepoContextSnapshot = {
+    root: "/repo",
+    prefix: "",
+    gitDir: "/repo/.git",
+    branch: "main",
+    detached: false,
+    headShort: "abc1234",
+    upstream: "origin/main",
+    ahead: 0,
+    behind: 0,
+    upstreamGone: false,
+    defaultBranch: "main",
+    inProgress: null,
+    conflicted: [],
+    dirty: [],
+    dirtyTotal: 0,
+    recentSubjects: ["abc1234 init"],
+    recentCommits: [
+      {
+        sha: "abc1234abc1234abc1234abc1234abc1234abc12",
+        shortSha: "abc1234",
+        subject: "init",
+        unpushed: false,
+      },
+    ],
+  };
+  const until = async (ok: () => boolean): Promise<void> => {
+    for (let i = 0; i < 200 && !ok(); i += 1) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(ok()).toBe(true);
+  };
+
+  it("probes on create and after a workspace change, tagging each answer with the workspace it describes", async () => {
+    const cfg = mkConfig();
+    const probed: string[] = [];
+    const { session, cleanup } = await mkStubSession(
+      cfg,
+      undefined,
+      1,
+      undefined,
+      {
+        repoDescriber: async (workspace) => {
+          probed.push(workspace);
+          return workspace === cfg.transcriptDir
+            ? { kind: "repo", repo: sample }
+            : { kind: "absent" };
+        },
+      },
+    );
+    await until(() => probed.length >= 1);
+    expect(probed[0]).toBe(cfg.workspaceRoot);
+    expect(session.repo).toBeNull();
+    const got = (async () => {
+      for await (const ev of session.subscribeRepo()) {
+        if (ev.kind === "repo" && ev.workspace === cfg.transcriptDir) return ev;
+      }
+      return null;
+    })();
+    await session.setWorkspace(cfg.transcriptDir);
+    const ev = await got;
+    expect(ev?.kind).toBe("repo");
+    if (ev?.kind === "repo") expect(ev.repo).toEqual(sample);
+    expect(session.repo).toEqual(sample);
+    await cleanup();
+  });
+
+  it("coalesces refreshes: requests during a probe run exactly one more after it, and a throwing probe leaves the last answer standing (§7.6)", async () => {
+    const cfg = mkConfig();
+    let calls = 0;
+    const gates: Array<() => void> = [];
+    const { session, cleanup } = await mkStubSession(
+      cfg,
+      undefined,
+      1,
+      undefined,
+      {
+        repoDescriber: async () => {
+          calls += 1;
+          await new Promise<void>((resolve) => gates.push(resolve));
+          if (calls === 2) throw new Error("git exploded");
+          return { kind: "repo", repo: sample };
+        },
+      },
+    );
+    // The create-time probe is parked on the first gate.
+    expect(calls).toBe(1);
+    await Promise.all([
+      session.refreshRepo(),
+      session.refreshRepo(),
+      session.refreshRepo(),
+    ]);
+    expect(calls).toBe(1);
+    gates.shift()?.();
+    await until(() => calls === 2);
+    expect(session.repo).toEqual(sample);
+    gates.shift()?.();
+    await new Promise((r) => setTimeout(r, 20));
+    // A throw is a probe that could not answer, not "no repository": the
+    // card stands, and with it on screen nothing retries.
+    expect(session.repo).toEqual(sample);
+    expect(calls).toBe(2);
+    await cleanup();
+  });
+
+  it("watches the git dir each answer names — a change re-probes once after the debounce, a new git dir re-arms, null and close disarm (ADR 0058 amendment)", async () => {
+    const cfg = mkConfig();
+    const watched: string[] = [];
+    const stopped: string[] = [];
+    const hook: { fire: (() => void) | null } = { fire: null };
+    let answer: RepoContextOutcome = { kind: "repo", repo: sample };
+    let calls = 0;
+    const { session, cleanup } = await mkStubSession(
+      cfg,
+      undefined,
+      1,
+      undefined,
+      {
+        repoDescriber: async () => {
+          calls += 1;
+          return answer;
+        },
+        repoWatcher: (gitDir, onChange) => {
+          watched.push(gitDir);
+          hook.fire = onChange;
+          return () => {
+            stopped.push(gitDir);
+          };
+        },
+        repoWatchDebounceMs: 20,
+      },
+    );
+    await until(() => watched.length === 1);
+    expect(watched).toEqual(["/repo/.git"]);
+    expect(calls).toBe(1);
+    // A burst of changes: one probe, after the quiet period.
+    hook.fire?.();
+    hook.fire?.();
+    hook.fire?.();
+    await new Promise((r) => setTimeout(r, 5));
+    expect(calls).toBe(1);
+    await until(() => calls === 2);
+    // The same git dir again: the watcher is kept, not re-armed.
+    expect(watched).toHaveLength(1);
+    expect(stopped).toHaveLength(0);
+    // A different repository answers: the old watcher stops, a new one arms.
+    answer = { kind: "repo", repo: { ...sample, gitDir: "/other/.git" } };
+    await session.refreshRepo();
+    expect(stopped).toEqual(["/repo/.git"]);
+    expect(watched).toEqual(["/repo/.git", "/other/.git"]);
+    // Not a repository any more: disarmed.
+    answer = { kind: "absent" };
+    await session.refreshRepo();
+    expect(stopped).toEqual(["/repo/.git", "/other/.git"]);
+    expect(watched).toHaveLength(2);
+    // Closing with a watcher armed stops it and ends probing.
+    answer = { kind: "repo", repo: sample };
+    await session.refreshRepo();
+    expect(watched).toHaveLength(3);
+    const before = calls;
+    await cleanup();
+    expect(stopped).toHaveLength(3);
+    hook.fire?.();
+    await new Promise((r) => setTimeout(r, 40));
+    expect(calls).toBe(before);
+  });
+
+  it("a watcher that reports its dir gone is forgotten and re-armed on the next answer, even under the same path; a burst that never pauses still probes (2026-09-10)", async () => {
+    const cfg = mkConfig();
+    const watched: string[] = [];
+    const hook: { fire: ((gone?: boolean) => void) | null } = { fire: null };
+    let calls = 0;
+    const { cleanup } = await mkStubSession(cfg, undefined, 1, undefined, {
+      repoDescriber: async () => {
+        calls += 1;
+        return { kind: "repo", repo: sample };
+      },
+      repoWatcher: (gitDir, onChange) => {
+        watched.push(gitDir);
+        hook.fire = onChange;
+        return () => undefined;
+      },
+      repoWatchDebounceMs: 20,
+    });
+    await until(() => watched.length === 1);
+    expect(calls).toBe(1);
+    // `rm -rf .git && git init`: the watcher closed itself, the probe finds
+    // a repository under the SAME git dir — a new watcher must arm.
+    hook.fire?.(true);
+    await until(() => calls === 2);
+    await until(() => watched.length === 2);
+    expect(watched).toEqual(["/repo/.git", "/repo/.git"]);
+    // Events every 5 ms for well past the debounce: the trailing debounce
+    // alone would never fire; the max-wait does.
+    const before = calls;
+    const stopAt = Date.now() + 20 * 4 * 3;
+    while (Date.now() < stopAt) {
+      hook.fire?.();
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(calls).toBeGreaterThan(before);
+    await cleanup();
+  });
+
+  it("describeCommit reads against the EFFECTIVE workspace (ADR 0059)", async () => {
+    const cfg = mkConfig();
+    const asked: Array<[string, string]> = [];
+    const { session, cleanup } = await mkStubSession(
+      cfg,
+      undefined,
+      1,
+      undefined,
+      {
+        commitDescriber: async (workspace, ref) => {
+          asked.push([workspace, ref]);
+          return null;
+        },
+      },
+    );
+    await session.describeCommit("abc1234");
+    expect(asked).toEqual([[cfg.workspaceRoot, "abc1234"]]);
+    await session.setWorkspace(cfg.transcriptDir);
+    await session.describeCommit("def5678");
+    expect(asked[1]).toEqual([cfg.transcriptDir, "def5678"]);
+    await cleanup();
+  });
+
+  it("describeWorkingDiff reads against the EFFECTIVE workspace too (ADR 0059 §5)", async () => {
+    const cfg = mkConfig();
+    const asked: Array<[string, string]> = [];
+    const { session, cleanup } = await mkStubSession(
+      cfg,
+      undefined,
+      1,
+      undefined,
+      {
+        workingDiffDescriber: async (workspace, path) => {
+          asked.push([workspace, path]);
+          return null;
+        },
+      },
+    );
+    await session.describeWorkingDiff("src/a.ts");
+    await session.setWorkspace(cfg.transcriptDir);
+    await session.describeWorkingDiff("b.ts");
+    expect(asked).toEqual([
+      [cfg.workspaceRoot, "src/a.ts"],
+      [cfg.transcriptDir, "b.ts"],
+    ]);
+    await cleanup();
+  });
+
+  it("describeLog reads a page against the EFFECTIVE workspace (ADR 0059 §6)", async () => {
+    const cfg = mkConfig();
+    const asked: Array<[string, number, number]> = [];
+    const { session, cleanup } = await mkStubSession(
+      cfg,
+      undefined,
+      1,
+      undefined,
+      {
+        logDescriber: async (workspace, opts) => {
+          asked.push([workspace, opts.skip, opts.limit]);
+          return null;
+        },
+      },
+    );
+    await session.describeLog({ skip: 50, limit: 50 });
+    expect(asked).toEqual([[cfg.workspaceRoot, 50, 50]]);
+    await cleanup();
+  });
+
+  it("describeLog passes ref and query through; describeBranches reads the effective workspace (ADR 0059 §6 amendment)", async () => {
+    const cfg = mkConfig();
+    const logs: unknown[] = [];
+    const branchAsks: string[] = [];
+    const { session, cleanup } = await mkStubSession(
+      cfg,
+      undefined,
+      1,
+      undefined,
+      {
+        logDescriber: async (_workspace, opts) => {
+          logs.push(opts);
+          return null;
+        },
+        branchesDescriber: async (workspace) => {
+          branchAsks.push(workspace);
+          return null;
+        },
+      },
+    );
+    await session.describeLog({
+      skip: 0,
+      limit: 50,
+      ref: "feature/x",
+      query: "fix",
+    });
+    expect(logs).toEqual([
+      { skip: 0, limit: 50, ref: "feature/x", query: "fix" },
+    ]);
+    await session.describeBranches();
+    expect(branchAsks).toEqual([cfg.workspaceRoot]);
+    await cleanup();
+  });
+});
+
+describe("Session — a transient probe answer (ADR 0058 §7.6)", () => {
+  const sample: RepoContextSnapshot = {
+    root: "/repo",
+    prefix: "",
+    gitDir: "/repo/.git",
+    branch: "main",
+    detached: false,
+    headShort: "abc1234",
+    upstream: null,
+    upstreamGone: false,
+    ahead: 0,
+    behind: 0,
+    defaultBranch: null,
+    inProgress: null,
+    conflicted: [],
+    dirty: [],
+    dirtyTotal: 0,
+    recentSubjects: [],
+    recentCommits: [],
+  };
+  const until = async (ok: () => boolean): Promise<void> => {
+    for (let i = 0; i < 200 && !ok(); i += 1) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(ok()).toBe(true);
+  };
+
+  it("keeps the card and its watcher on a transient answer; a definite 'not a repository' retracts them", async () => {
+    const cfg = mkConfig();
+    const stopped: string[] = [];
+    const watched: string[] = [];
+    let answer: RepoContextOutcome = { kind: "repo", repo: sample };
+    const { session, cleanup } = await mkStubSession(
+      cfg,
+      undefined,
+      1,
+      undefined,
+      {
+        repoDescriber: async () => answer,
+        repoWatcher: (gitDir) => {
+          watched.push(gitDir);
+          return () => {
+            stopped.push(gitDir);
+          };
+        },
+        repoWatchDebounceMs: 20,
+      },
+    );
+    await until(() => watched.length === 1);
+    const events: Array<RepoContextSnapshot | null> = [];
+    const stopListening = (async () => {
+      for await (const ev of session.subscribeRepo()) {
+        if (ev.kind === "repo") events.push(ev.repo);
+      }
+    })();
+    // A `git status` that timed out during the rebase the user is watching
+    // says nothing about the repository: nothing retracts, nothing re-arms.
+    answer = { kind: "transient", reason: "git_timeout" };
+    await session.refreshRepo();
+    expect(session.repo).toEqual(sample);
+    expect(stopped).toEqual([]);
+    expect(watched).toHaveLength(1);
+    expect(events).toEqual([]);
+    // `rm -rf .git`: a definite answer retracts the card and the watcher.
+    answer = { kind: "absent" };
+    await session.refreshRepo();
+    expect(session.repo).toBeNull();
+    expect(stopped).toEqual(["/repo/.git"]);
+    await until(() => events.length === 1);
+    expect(events).toEqual([null]);
+    await cleanup();
+    await stopListening;
+  });
+
+  it("with no answer yet, a transient probe tries once more after the max-wait span — and not again until something definite lands", async () => {
+    const cfg = mkConfig();
+    let calls = 0;
+    let answer: RepoContextOutcome = {
+      kind: "transient",
+      reason: "git_failed",
+    };
+    const { session, cleanup } = await mkStubSession(
+      cfg,
+      undefined,
+      1,
+      undefined,
+      {
+        repoDescriber: async () => {
+          calls += 1;
+          return answer;
+        },
+        repoWatchDebounceMs: 20,
+      },
+    );
+    await until(() => calls === 1);
+    expect(session.repo).toBeNull();
+    // One retry, a max-wait span later; its own transient answer schedules nothing.
+    await until(() => calls === 2);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(calls).toBe(2);
+    // A definite answer, then a transient one WITH a card on screen: no retry
+    // either — the card stands, the watcher will re-probe on the next change.
+    answer = { kind: "repo", repo: sample };
+    await session.refreshRepo();
+    expect(session.repo).toEqual(sample);
+    answer = { kind: "transient", reason: "git_timeout" };
+    await session.refreshRepo();
+    const after = calls;
+    await new Promise((r) => setTimeout(r, 200));
+    expect(calls).toBe(after);
+    expect(session.repo).toEqual(sample);
+    await cleanup();
   });
 });

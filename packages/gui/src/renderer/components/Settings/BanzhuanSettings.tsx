@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { DEVICE_SCENE_DEFAULT } from "../../../shared/device-scene.js";
 import { useHertaBridge } from "../../context/HertaBridgeContext.js";
 import { useDemoDeviceCycle } from "../../hooks/useDemoDeviceCycle.js";
 import type { BanzhuanDeviceState } from "../../hooks/useDeviceState.js";
@@ -9,8 +10,15 @@ import type {
   BackendThinking,
 } from "../../ipc/bridge-types.js";
 import { BanzhuanDemoCard } from "../UtilityRail/BanzhuanDemoCard.js";
+import {
+  loadDeviceScenePref,
+  setDeviceScenePrefLocal,
+  useDeviceScenePref,
+} from "../UtilityRail/device-scene/device-scene-prefs.js";
 import { Select } from "./Select.js";
 import { SettingRow } from "./SettingRow.js";
+import { useRememberedSetting } from "./settings-snapshot.js";
+import { Toggle } from "./Toggle.js";
 
 type DemoState =
   | "idle"
@@ -88,12 +96,11 @@ function metaFor(state: BanzhuanDeviceState): StateMeta {
  * There is deliberately NO dynamic restart note: the row description
  * already says "下次启动生效", and an appearing note re-flowed the pane.
  *
- * NOTE on "low": DeepSeek's 2026-07-31 update gave deepseek-v4-flash the low
- * tier; deepseek-v4-pro (the backend default) maps a sent "low" to "high"
- * server-side until its announced early-August-2026 update. Owner decision
- * 2026-08-03: persist and send the choice as-is — it starts meaning low the
- * day DeepSeek ships that, with no change here. The UI deliberately does not
- * mention the transient mapping.
+ * NOTE on "low": per the DeepSeek doc (2026-09-10) both `deepseek-flash`
+ * and `deepseek-v4-pro` honour the low tier (the 2026-07-31 doc had Pro
+ * mapping a sent "low" to "high" server-side; owner decision 2026-08-03 was
+ * to persist and send the choice as-is regardless). The UI deliberately
+ * says nothing about server-side handling of the tiers.
  */
 export function BanzhuanSettings(): JSX.Element {
   const t = useT();
@@ -107,9 +114,13 @@ export function BanzhuanSettings(): JSX.Element {
   // demo omit it); the row hides with it, mirroring LanguageSettings' handling
   // of the interaction-language pair.
   const thinkingSupported = bridge.setBackendConfig !== undefined;
-  // Default "high" until the persisted value loads (the real handler's
-  // default).
-  const [thinking, setThinking] = useState<BackendThinking>("high");
+  // The last-known tier on the first frame (settings-snapshot.ts); "high" —
+  // the real handler's default — only when nothing has been read yet.
+  const [thinking, setThinking] = useRememberedSetting(
+    bridge,
+    "banzhuan.thinking",
+    "high",
+  );
   const [failed, setFailed] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
   // Once the user picks, the in-flight async load must not clobber the pick.
@@ -119,16 +130,30 @@ export function BanzhuanSettings(): JSX.Element {
   const writeSeqRef = useRef(0);
 
   // Tool-contract row (ADR 0040). Same optimistic / latest-wins discipline as
-  // the thinking row; hides when the bridge's config carries no `contract`
-  // (an older bridge / the website demo). `bashFound` comes from main and is
-  // folded into the row description — the fallback is stated where the
-  // choice is made.
+  // the thinking row, and on screen from the FIRST paint like it: the row
+  // used to wait for the config read to prove the bridge carries
+  // `contract`, so every switch into this pane painted two rows and then
+  // three, pushing the demo card down a beat later (owner 2026-09-07). The
+  // case it waited for does not exist — the preload ships with the
+  // renderer, and the website demo omits `setBackendConfig` altogether,
+  // which hides every row here. `bashFound` comes from main and is folded
+  // into the row description — the fallback is stated where the choice is
+  // made.
   // Pre-load optimistic state = the real handler's default (minimal —
   // owner flip 2026-08-17), so the pill never flashes 标准 while the
-  // config is in flight.
-  const [contract, setContract] = useState<BackendContractChoice>("minimal");
-  const [contractKnown, setContractKnown] = useState(false);
-  const [bashFound, setBashFound] = useState<boolean | undefined>(undefined);
+  // config is in flight. The last-known values win over both defaults
+  // (settings-snapshot.ts): a user on 标准 no longer sees 极简 for a beat,
+  // and the no-bash sentence is in the description on the first frame.
+  const [contract, setContract] = useRememberedSetting(
+    bridge,
+    "banzhuan.contract",
+    "minimal",
+  );
+  const [bashFound, setBashFound] = useRememberedSetting(
+    bridge,
+    "banzhuan.bashFound",
+    undefined,
+  );
   const [contractFailed, setContractFailed] = useState(false);
   const contractTouchedRef = useRef(false);
   const contractSeqRef = useRef(0);
@@ -139,10 +164,8 @@ export function BanzhuanSettings(): JSX.Element {
       (c) => {
         if (!alive) return;
         if (!touchedRef.current) setThinking(c.thinking);
-        if (c.contract !== undefined) {
-          setContractKnown(true);
-          if (!contractTouchedRef.current) setContract(c.contract);
-        }
+        if (c.contract !== undefined && !contractTouchedRef.current)
+          setContract(c.contract);
         setBashFound(c.bashFound);
       },
       () => {
@@ -152,7 +175,7 @@ export function BanzhuanSettings(): JSX.Element {
     return () => {
       alive = false;
     };
-  }, [bridge]);
+  }, [bridge, setThinking, setContract, setBashFound]);
 
   const onContract = (next: BackendContractChoice): void => {
     const prev = contract;
@@ -165,6 +188,31 @@ export function BanzhuanSettings(): JSX.Element {
       if (seq !== contractSeqRef.current) return;
       setContract(prev);
       setContractFailed(true);
+    });
+  };
+
+  // 3D device row (ADR 0057). Shares the live pref module with the rail
+  // card, so a flip here re-renders the card at once; hides when the bridge
+  // has no surface (fakes / the website demo). Optimistic + latest-wins like
+  // the rows above. The demo card below stays on the flat renders on
+  // purpose — one GPU scene per app, in the rail.
+  const scenePref = useDeviceScenePref();
+  const sceneSupported = bridge.setDeviceScene !== undefined;
+  const [sceneFailed, setSceneFailed] = useState(false);
+  const sceneSeqRef = useRef(0);
+  useEffect(() => {
+    void loadDeviceScenePref(bridge);
+  }, [bridge]);
+  const onScene = (next: boolean): void => {
+    const prev = scenePref ?? DEVICE_SCENE_DEFAULT;
+    sceneSeqRef.current += 1;
+    const seq = sceneSeqRef.current;
+    setDeviceScenePrefLocal(next);
+    setSceneFailed(false);
+    void bridge.setDeviceScene?.(next).catch(() => {
+      if (seq !== sceneSeqRef.current) return;
+      setDeviceScenePrefLocal(prev);
+      setSceneFailed(true);
     });
   };
 
@@ -205,54 +253,76 @@ export function BanzhuanSettings(): JSX.Element {
         {introParts[1] ?? ""}
       </p>
 
-      {thinkingSupported && (
-        <SettingRow
-          title={t("banzhuan.thinking")}
-          description={t("banzhuan.thinkingDesc")}
-          control={
-            <Select<BackendThinking>
-              value={thinking}
-              ariaLabel={t("banzhuan.thinking")}
-              options={[
-                { value: "low", label: t("banzhuan.thinking.low") },
-                { value: "high", label: t("banzhuan.thinking.high") },
-                { value: "max", label: t("banzhuan.thinking.max") },
-              ]}
-              onChange={onThinking}
-            />
-          }
-        />
-      )}
-      {thinkingSupported && contractKnown && (
-        <SettingRow
-          title={t("banzhuan.contract")}
-          description={
-            bashFound === false
-              ? `${t("banzhuan.contractDesc")} ${t("banzhuan.contract.noBash")}`
-              : t("banzhuan.contractDesc")
-          }
-          control={
-            <Select<BackendContractChoice>
-              value={contract}
-              ariaLabel={t("banzhuan.contract")}
-              options={[
-                {
-                  value: "standard",
-                  label: t("banzhuan.contract.standard"),
-                },
-                { value: "minimal", label: t("banzhuan.contract.minimal") },
-              ]}
-              onChange={onContract}
-            />
-          }
-        />
-      )}
-      {thinkingSupported && (failed || contractFailed) && (
+      {/* The option rows scroll inside a fixed-height pane (owner
+          2026-09-06): a third row had made this section taller than the
+          card's floor and the card grew on every switch into it. */}
+      <div className="settings-rows">
+        {thinkingSupported && (
+          <SettingRow
+            title={t("banzhuan.thinking")}
+            description={t("banzhuan.thinkingDesc")}
+            control={
+              <Select<BackendThinking>
+                value={thinking}
+                ariaLabel={t("banzhuan.thinking")}
+                options={[
+                  { value: "low", label: t("banzhuan.thinking.low") },
+                  { value: "high", label: t("banzhuan.thinking.high") },
+                  { value: "max", label: t("banzhuan.thinking.max") },
+                ]}
+                onChange={onThinking}
+              />
+            }
+          />
+        )}
+        {thinkingSupported && (
+          <SettingRow
+            title={t("banzhuan.contract")}
+            description={
+              bashFound === false
+                ? `${t("banzhuan.contractDesc")} ${t("banzhuan.contract.noBash")}`
+                : t("banzhuan.contractDesc")
+            }
+            control={
+              <Select<BackendContractChoice>
+                value={contract}
+                ariaLabel={t("banzhuan.contract")}
+                options={[
+                  {
+                    value: "standard",
+                    label: t("banzhuan.contract.standard"),
+                  },
+                  { value: "minimal", label: t("banzhuan.contract.minimal") },
+                ]}
+                onChange={onContract}
+              />
+            }
+          />
+        )}
+        {sceneSupported && (
+          <SettingRow
+            title={t("banzhuan.scene")}
+            description={t("banzhuan.sceneDesc")}
+            control={
+              <Toggle
+                checked={scenePref ?? DEVICE_SCENE_DEFAULT}
+                ariaLabel={t("banzhuan.scene")}
+                onChange={onScene}
+              />
+            }
+          />
+        )}
+      </div>
+      {((thinkingSupported && (failed || contractFailed)) || sceneFailed) && (
         <p className="settings-note">{t("common.couldntSave")}</p>
       )}
-      {thinkingSupported && !failed && !contractFailed && loadFailed && (
-        <p className="settings-note">{t("settings.loadFailed")}</p>
-      )}
+      {thinkingSupported &&
+        !failed &&
+        !contractFailed &&
+        !sceneFailed &&
+        loadFailed && (
+          <p className="settings-note">{t("settings.loadFailed")}</p>
+        )}
 
       <div className="settings-bz-demo">
         <BanzhuanDemoCard state={state} onHoverChange={setPaused} />

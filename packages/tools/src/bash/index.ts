@@ -15,7 +15,7 @@ import { redactSecrets } from "../run-command/redactor.js";
 import { detectTestRun } from "../run-command/test-detector.js";
 import { PersistentShell, SHELL_BG_ID } from "./persistent-shell.js";
 import { bashInputSchema, bashJsonSchema } from "./schema.js";
-import { tokenize } from "./shell-classifier.js";
+import { peelReaderHead, tokenize } from "./shell-classifier.js";
 import { shellPathsFor } from "./shell-paths.js";
 
 export { findBash } from "./find-bash.js";
@@ -39,6 +39,7 @@ export {
 } from "./shell-classifier.js";
 export {
   makeMsysPaths,
+  primeShellPaths,
   type ShellPaths,
   shellPathsFor,
 } from "./shell-paths.js";
@@ -158,13 +159,18 @@ export function bashTool(opts: BashToolOpts): HertaTool {
       const sh = shell as PersistentShell;
 
       // Execution-time reader realpath backstop (TOCTOU, mirrors run_command).
+      // Peeled exactly as the RULE peels (`rule.ts`): the rule learned on
+      // 2026-08-24 that an un-peeled `time cat x` hands the guard a first
+      // word that is no reader and switches it off; this second look kept
+      // the old spelling, so behind one harmless word it re-checked nothing
+      // (perf audit 2026-09-20, found in passing).
       for (const segment of splitShellSegments(command)) {
         const { words } = tokenize(segment);
         if (words.length === 0) continue;
         const denial = await checkReaderArgvPaths(
           ctx.workspaceRoot,
           sh.cwd,
-          words,
+          peelReaderHead(words),
         );
         if (denial !== null) {
           return {

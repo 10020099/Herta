@@ -45,7 +45,7 @@ describe("distill prompts", () => {
   it("worthiness gate extracts the occasion: JSON contract, factual framing, inline example (ADR 0021)", () => {
     const p = buildWorthinessPrompt("digest text", summaries, sampleEnv);
     expect(p.systemPrompt).toContain(
-      '{"worthy": boolean, "reason": "string", "occasion": "string", "retellsKnownEvent": boolean}',
+      '{"worthy": boolean, "reason": "string", "occasion": "string", "retellsKnownEvent": boolean, "mixedTopics": boolean}',
     );
     // The unworthy-retell reinforce loop (ADR 0021 §10): the flag is
     // independent of worthy, and the occasion fills even on unworthy calls.
@@ -353,7 +353,7 @@ describe("distill prompts (lang)", () => {
     // ADR 0021: the occasion joins the JSON contract with the EN inline
     // example; reject-#4 lists title (tag) only + the retelling carve-out.
     expect(p.systemPrompt).toContain(
-      '{"worthy": boolean, "reason": "string", "occasion": "string", "retellsKnownEvent": boolean}',
+      '{"worthy": boolean, "reason": "string", "occasion": "string", "retellsKnownEvent": boolean, "mixedTopics": boolean}',
     );
     expect(p.systemPrompt).toContain("NOT the literary angle");
     expect(p.systemPrompt).toContain(
@@ -382,8 +382,12 @@ describe("distill prompts (lang)", () => {
     expect(p.systemPrompt).toContain("（开拓者 说）");
     expect(p.systemPrompt).toContain("（/我 说）");
     expect(p.systemPrompt).toContain("（我 想）");
-    // evidence-grounding + self-correction digest markers stay CN
-    expect(p.systemPrompt).toContain("〔差分协处理器（已核实）：…〕");
+    // evidence-grounding + self-correction digest markers stay CN, and the
+    // outcome tags are explained (dream review 2026-09-22, finding 17)
+    expect(p.systemPrompt).toContain("〔差分协处理器（…）：…〕");
+    expect(p.systemPrompt).toContain(
+      "（中断） a run stopped before it finished",
+    );
     expect(p.systemPrompt).toContain("〔黑塔的自我更正：…〕");
     // guide/env/exemplars/novelty steer still injected
     expect(p.systemPrompt).toContain(sampleGuide);
@@ -392,6 +396,48 @@ describe("distill prompts (lang)", () => {
     // EN Herta register calibration: no CN-style dash drawls
     expect(p.systemPrompt).toContain("does NOT drawl");
     expect(p.userPayload).toContain("digest text");
+  });
+
+  it("explains the outcome tags in both languages: a run tagged anything but 已核实 did not complete (dream review 2026-09-22, finding 17)", () => {
+    const zh = buildGenerationPrompt(
+      "d",
+      exemplars,
+      summaries,
+      sampleGuide,
+      "",
+    );
+    expect(zh.systemPrompt).toContain("（中断）是没跑完就停下的运行");
+    expect(zh.systemPrompt).toContain("绝不写成已完成或已通过");
+    expect(zh.systemPrompt).toContain("〔系统（…）：…〕");
+    const critique = buildCritiquePrompt("draft", sampleGuide, "zh", "digest");
+    expect(critique.systemPrompt).toContain(
+      "标着（失败）/（中断）/（受阻）/（部分完成）的运行写成已完成或已通过",
+    );
+  });
+
+  it("an excerpt that mixes topics: worthiness flags it, and generation and critique focus on the one it named (dream review 2026-09-22, finding 22)", () => {
+    for (const lang of ["zh", "en"] as const) {
+      const w = buildWorthinessPrompt("d", summaries, "", lang);
+      expect(w.systemPrompt).toContain('"mixedTopics": boolean');
+      const focus = "开拓者复盘了一次数据库迁移失败。";
+      const gen = buildGenerationPrompt(
+        "d",
+        exemplars,
+        summaries,
+        sampleGuide,
+        "",
+        lang,
+        focus,
+      );
+      expect(gen.systemPrompt).toContain(focus);
+      const crit = buildCritiquePrompt("draft", sampleGuide, lang, "d", focus);
+      expect(crit.systemPrompt).toContain(focus);
+      // Without a focus nothing changes.
+      expect(
+        buildGenerationPrompt("d", exemplars, summaries, sampleGuide, "", lang)
+          .systemPrompt,
+      ).not.toContain(lang === "zh" ? "取材范围" : "Scope of this 废案");
+    }
   });
 
   it("EN critique/refine/redistill/pairwise carry the EN scene anchor with CN tokens", () => {

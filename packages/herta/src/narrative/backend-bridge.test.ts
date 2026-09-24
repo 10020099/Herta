@@ -14,8 +14,8 @@ import {
   type BanzhuanBridgeDeps,
   type BeatFirer,
   invokeBanzhuanBridge,
-  projectBackendEvent,
 } from "./backend-bridge.js";
+import { projectBackendEvent } from "./backend-record-projection.js";
 import { BeatPolicy, type TriggerSpec } from "./beat-policy.js";
 import type { ActorStreamingSink } from "./streaming-sink.js";
 
@@ -1121,6 +1121,63 @@ describe("bridge drain — todo layout + background dedup (2026-07-23)", () => {
     } as unknown as CodingAgentRuntime;
   }
 
+  it("a steer (ADR 0063) enters the record as a USER block in event order between the backend rows, and does not count as backend work", async () => {
+    const bus = new InMemoryEventBus<AgentEvent>();
+    const runtime = {
+      runBrief: async (brief: HertaToAgentBrief) => {
+        publishWithLayer(bus, "backend", {
+          type: "turn.started",
+          userText: "task",
+        } as never);
+        publishWithLayer(bus, "backend", {
+          type: "tool.call.started",
+          id: "c1",
+          tool: "read_file",
+          inputSummary: "a.ts",
+        } as never);
+        // The session publishes the steer on the ACTOR layer: it is the
+        // user speaking, not backend plumbing.
+        bus.publish({
+          type: "user.steer",
+          layer: "actor",
+          id: "s-1",
+          text: "also rename the test file",
+        });
+        publishWithLayer(bus, "backend", {
+          type: "tool.call.started",
+          id: "c2",
+          tool: "read_file",
+          inputSummary: "b.ts",
+        } as never);
+        return emptyReport(brief.taskId);
+      },
+    } as unknown as CodingAgentRuntime;
+    const out = await invokeBanzhuanBridge([], [], {
+      bus,
+      runtimeFactory: () => runtime,
+      signal: new AbortController().signal,
+    });
+    const kinds = out.map((b) =>
+      b.kind === "user" ? `user:${b.text}` : b.kind,
+    );
+    const userAt = kinds.indexOf("user:also rename the test file");
+    expect(userAt).toBeGreaterThan(0);
+    // Between the two read rows: after the first projected system block,
+    // before the second.
+    expect(kinds[userAt - 1]).toBe("system");
+    expect(kinds[userAt + 1]).toBe("system");
+    // Real work was done (two read rows), so the terminal block is the
+    // done-marker, unchanged by the steer.
+    const last = out[out.length - 1];
+    expect(last?.kind).toBe("system");
+    // Marked as a steer (§1.10): rewind and ⟲ must not take it for a turn.
+    expect(out[userAt]).toEqual({
+      kind: "user",
+      text: "also rename the test file",
+      steer: true,
+    });
+  });
+
   it("projects the FIRST todo layout as one block; later updates become compact progress rows", async () => {
     const bus = new InMemoryEventBus<AgentEvent>();
     const runtime = runtimePublishing(bus, [
@@ -1622,6 +1679,111 @@ describe("invokeBanzhuanBridge", () => {
     ).toHaveLength(1);
   });
 
+  it("the done marker names the run's commit and push (ADR 0049 §4)", async () => {
+    const bus = new InMemoryEventBus<AgentEvent>();
+    const commandData = {
+      argv: ["bash", "-lc", 'git commit -am "fix" && git push origin main'],
+      cwd: "/ws",
+      exitCode: 0,
+      signal: null,
+      durationMs: 120,
+      stdout: "[main a1b2c34] fix\n 1 file changed, 1 insertion(+)\n",
+      stderr: "To /tmp/origin\n   0e1f2a3..a1b2c34  main -> main\n",
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      stdoutBytes: 60,
+      stderrBytes: 50,
+      logPath: ".herta/logs/x.log",
+      timedOut: false,
+    };
+    const runtime: CodingAgentRuntime = {
+      runBrief: async (brief: HertaToAgentBrief) => {
+        publishWithLayer(bus, "backend", {
+          type: "tool.call.finished",
+          id: "t1",
+          tool: "bash",
+          result: { ok: true, data: commandData, summary: "exit 0" },
+        });
+        return {
+          taskId: brief.taskId,
+          status: "completed",
+          evidence: [],
+          changedFiles: [],
+          tests: [],
+          permissions: [],
+          residualRisks: [],
+          nextActions: [],
+        } as AgentExecutionReport;
+      },
+    } as unknown as CodingAgentRuntime;
+    const deps = mkBridgeDeps({ bus, runtime: () => runtime });
+    const out = await invokeBanzhuanBridge([], [], deps);
+    const marker = out.find(
+      (b) =>
+        b.kind === "system" && (b as { role?: string }).role === "done-marker",
+    ) as {
+      body: string;
+      markerSummary?: { git?: { commit?: string; pushedRef?: string } };
+    };
+    // Canonical body carries the identity; the structured mirror matches it.
+    expect(marker.body).toContain("提交 a1b2c34");
+    expect(marker.body).toContain("推送 main");
+    expect(marker.markerSummary?.git).toEqual({
+      commit: "a1b2c34",
+      pushedRef: "main",
+    });
+  });
+
+  it("a failed commit leaves the marker without a git identity", async () => {
+    const bus = new InMemoryEventBus<AgentEvent>();
+    const runtime: CodingAgentRuntime = {
+      runBrief: async (brief: HertaToAgentBrief) => {
+        publishWithLayer(bus, "backend", {
+          type: "tool.call.finished",
+          id: "t1",
+          tool: "bash",
+          result: {
+            ok: true,
+            data: {
+              argv: ["bash", "-lc", "git commit -am wip"],
+              cwd: "/ws",
+              exitCode: 1,
+              signal: null,
+              durationMs: 80,
+              stdout: "[main a1b2c34] wip\n",
+              stderr: "pre-commit hook failed\n",
+              stdoutTruncated: false,
+              stderrTruncated: false,
+              stdoutBytes: 20,
+              stderrBytes: 24,
+              logPath: ".herta/logs/x.log",
+              timedOut: false,
+            },
+            summary: "exit 1",
+          },
+        });
+        return {
+          taskId: brief.taskId,
+          status: "partial",
+          evidence: [],
+          changedFiles: [],
+          tests: [],
+          permissions: [],
+          residualRisks: [],
+          nextActions: [],
+        } as AgentExecutionReport;
+      },
+    } as unknown as CodingAgentRuntime;
+    const deps = mkBridgeDeps({ bus, runtime: () => runtime });
+    const out = await invokeBanzhuanBridge([], [], deps);
+    const marker = out.find(
+      (b) =>
+        b.kind === "system" && (b as { role?: string }).role === "done-marker",
+    ) as { body: string; markerSummary?: { git?: unknown } };
+    expect(marker.body).not.toContain("提交");
+    expect(marker.markerSummary?.git).toBeUndefined();
+  });
+
   it("appends blocks in event-emission order", async () => {
     const bus = new InMemoryEventBus<AgentEvent>();
     const runtime: CodingAgentRuntime = {
@@ -1843,20 +2005,30 @@ describe("invokeBanzhuanBridge", () => {
 
   it("unsubscribes from the bus after runBrief returns (no leaked listener)", async () => {
     const bus = new InMemoryEventBus<AgentEvent>();
+    // Every subscription the bridge takes, and whether it let go of it —
+    // the assertion this test lacked until 2026-09-10 (`expect(true)`).
+    const released: boolean[] = [];
+    const onAny = bus.onAny.bind(bus);
+    bus.onAny = (handler) => {
+      const off = onAny(handler);
+      const i = released.push(false) - 1;
+      return () => {
+        released[i] = true;
+        off();
+      };
+    };
     const runtime = mkStubRuntime({});
     const deps = mkBridgeDeps({ bus, runtime: () => runtime });
     await invokeBanzhuanBridge([], [], deps);
-    // After the bridge returns, publishing a new event should not throw
-    // or be captured by any lingering listener.
+    expect(released.length).toBeGreaterThan(0);
+    expect(released.every(Boolean)).toBe(true);
+    // And a later event finds no lingering handler.
     publishWithLayer(bus, "backend", {
       type: "tool.call.started",
       id: "ghost",
       tool: "read_file",
       inputSummary: "should-not-be-captured.ts",
     });
-    // No assertion needed beyond "didn't crash" — the test isolates the
-    // bridge's lifecycle.
-    expect(true).toBe(true);
   });
 });
 
@@ -2509,6 +2681,215 @@ describe("invokeBanzhuanBridge — beat deferral across permission prompt", () =
     // The patch.preview system block is still present.
     expect(out.some((b) => b.kind === "system")).toBe(true);
     expect(out.some((b) => b.kind === "herta")).toBe(false);
+  });
+
+  // ── a green test run earns no beat (owner 2026-09-03) ──────────────────
+  // A green run that ended the brief drew a beat ("全绿，0.22 秒…") and then
+  // Herta's synthesis said the same thing again. Only a RED run reacts —
+  // while 板砖 is still there to fix it — and it lands right after its row.
+
+  const testsFinished = (id: string, passed: boolean) =>
+    ({
+      type: "tool.call.finished",
+      id,
+      tool: "bash",
+      result: {
+        ok: true,
+        summary: passed ? "exit 0" : "exit 1",
+        data: {
+          argv: ["node --test"],
+          exitCode: passed ? 0 : 1,
+          testRun: {
+            command: "node --test",
+            status: passed ? "passed" : "failed",
+            summary: passed ? "exit 0, 0.25s" : "exit 1, 0.37s",
+          },
+        },
+      },
+    }) as const;
+
+  function reportFor(brief: HertaToAgentBrief): AgentExecutionReport {
+    return {
+      taskId: brief.taskId,
+      status: "completed",
+      evidence: [],
+      changedFiles: [],
+      tests: [],
+      permissions: [],
+      residualRisks: [],
+      nextActions: [],
+    } as AgentExecutionReport;
+  }
+
+  it("a green test run that ends the brief stages no beat — the synthesis tells it", async () => {
+    const bus = new InMemoryEventBus<AgentEvent>();
+    const beatPolicy = new BeatPolicy({ clock: () => 0, minInterBurstMs: 0 });
+    let beats = 0;
+    const fireBeat: BeatFirer = async (
+      _record: TerminalRecord,
+      trigger: TriggerSpec,
+    ): Promise<TerminalRecordBlock | null> => {
+      beats += 1;
+      return {
+        kind: "herta",
+        surface: "speech",
+        text: `[${trigger.signature}]`,
+      };
+    };
+    const runtime: CodingAgentRuntime = {
+      runBrief: async (brief: HertaToAgentBrief) => {
+        publishWithLayer(bus, "backend", testsFinished("t1", true));
+        publishWithLayer(bus, "backend", {
+          type: "verification.finished",
+          result: { passed: true },
+        });
+        await tick();
+        publishWithLayer(bus, "backend", {
+          type: "tool.call.started",
+          id: "t2",
+          tool: "todo_write",
+          inputSummary: "4/4",
+        });
+        await tick();
+        return reportFor(brief);
+      },
+    } as unknown as CodingAgentRuntime;
+    const out = await invokeBanzhuanBridge([], [], {
+      bus,
+      runtimeFactory: () => runtime,
+      signal: new AbortController().signal,
+      beatPolicy,
+      fireBeat,
+    });
+    expect(beats).toBe(0);
+    expect(
+      out.some(
+        (b) =>
+          b.kind === "system" &&
+          (b as { body: string }).body.startsWith("↳ tests"),
+      ),
+    ).toBe(true);
+    expect(out.some((b) => b.kind === "herta")).toBe(false);
+    expect((out[out.length - 1] as { role?: string }).role).toBe("done-marker");
+  });
+
+  it("a RED test run's beat fires right after its row, while 板砖 goes on to fix it", async () => {
+    const bus = new InMemoryEventBus<AgentEvent>();
+    const beatPolicy = new BeatPolicy({ clock: () => 0, minInterBurstMs: 0 });
+    let beats = 0;
+    const fireBeat: BeatFirer = async (
+      _record: TerminalRecord,
+      trigger: TriggerSpec,
+    ): Promise<TerminalRecordBlock | null> => {
+      beats += 1;
+      return {
+        kind: "herta",
+        surface: "speech",
+        text: `[${trigger.signature}]`,
+      };
+    };
+    const runtime: CodingAgentRuntime = {
+      runBrief: async (brief: HertaToAgentBrief) => {
+        publishWithLayer(bus, "backend", testsFinished("t1", false));
+        publishWithLayer(bus, "backend", {
+          type: "verification.finished",
+          result: { passed: false },
+        });
+        await tick();
+        await tick();
+        publishWithLayer(bus, "backend", {
+          type: "tool.call.started",
+          id: "t2",
+          tool: "bash",
+          inputSummary: "node --test test/strkit.test.mjs",
+        });
+        await tick();
+        return reportFor(brief);
+      },
+    } as unknown as CodingAgentRuntime;
+    const out = await invokeBanzhuanBridge([], [], {
+      bus,
+      runtimeFactory: () => runtime,
+      signal: new AbortController().signal,
+      beatPolicy,
+      fireBeat,
+    });
+    expect(beats).toBe(1);
+    const testsIdx = out.findIndex(
+      (b) =>
+        b.kind === "system" &&
+        (b as { body: string }).body.startsWith("↳ tests: exit 1"),
+    );
+    const beatIdx = out.findIndex((b) => b.kind === "herta");
+    const runningIdx = out.findIndex(
+      (b) =>
+        b.kind === "system" &&
+        (b as { body: string }).body.startsWith("Running node --test"),
+    );
+    expect(testsIdx).toBeGreaterThan(-1);
+    expect(beatIdx).toBe(testsIdx + 1);
+    expect(runningIdx).toBeGreaterThan(beatIdx);
+  });
+
+  it("a call the rules refused outright earns no failure beat — a withheld read is not a crash", async () => {
+    const bus = new InMemoryEventBus<AgentEvent>();
+    const beatPolicy = new BeatPolicy({ clock: () => 0, minInterBurstMs: 0 });
+    const fired: string[] = [];
+    const fireBeat: BeatFirer = async (
+      _record: TerminalRecord,
+      trigger: TriggerSpec,
+    ): Promise<TerminalRecordBlock | null> => {
+      fired.push(trigger.signature);
+      return {
+        kind: "herta",
+        surface: "speech",
+        text: `[${trigger.signature}]`,
+      };
+    };
+    const failed = (id: string, code: string) => ({
+      type: "tool.call.finished" as const,
+      id,
+      tool: "bash",
+      result: {
+        ok: false,
+        summary: `failed: ${code}`,
+        error: { code, message: code, retryable: false },
+      },
+    });
+    const runtime: CodingAgentRuntime = {
+      runBrief: async (brief: HertaToAgentBrief) => {
+        // The reader guard's deterministic deny: no prompt, `id` is the call.
+        publishWithLayer(bus, "backend", {
+          type: "permission.resolved",
+          id: "t1",
+          decision: "blocked",
+          tool: "bash",
+          code: "path_denied",
+          risk: "workspace_read",
+        });
+        publishWithLayer(bus, "backend", failed("t1", "path_denied"));
+        await tick();
+        // A genuine failure still reacts.
+        publishWithLayer(bus, "backend", failed("t2", "spawn_failed"));
+        await tick();
+        publishWithLayer(bus, "backend", {
+          type: "tool.call.started",
+          id: "t3",
+          tool: "bash",
+          inputSummary: "ls",
+        });
+        await tick();
+        return reportFor(brief);
+      },
+    } as unknown as CodingAgentRuntime;
+    await invokeBanzhuanBridge([], [], {
+      bus,
+      runtimeFactory: () => runtime,
+      signal: new AbortController().signal,
+      beatPolicy,
+      fireBeat,
+    });
+    expect(fired).toEqual(["tool.fail:bash:spawn_failed"]);
   });
 });
 

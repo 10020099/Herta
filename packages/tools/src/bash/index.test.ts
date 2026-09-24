@@ -1,4 +1,10 @@
-import { existsSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import {
   type AgentEvent,
@@ -164,8 +170,10 @@ d("bash tool (real bash)", () => {
     }
     // A chained line carries every ask class it triggered, top first
     // (2026-08-17): the card labels by the first and names the rest.
+    // (A loopback curl is a local smoke test and allows since ADR 0064 L1,
+    // so the network half of this line has to reach a real host.)
     const chained = await engine.check(
-      call("kill 574; sleep 0.5; curl -s http://127.0.0.1:4643/"),
+      call("kill 574; sleep 0.5; curl -s https://example.com/health"),
       ctx,
     );
     expect(chained.kind).toBe("ask");
@@ -238,6 +246,48 @@ d("bash tool (real bash)", () => {
     );
     expect(planted.kind).not.toBe("allow");
     await ctx.bg.stopAll();
+  });
+
+  it("the execution-time reader backstop peels the command head like the rule does — `time cat` through an escaping link is refused, not run", async () => {
+    // The rule's allow and the tool's run are two moments; the second look
+    // exists for a link that appears between them. It kept the un-peeled
+    // spelling the rule gave up on 2026-08-24, so `time`, `command`, `!` in
+    // front of a reader switched it off. The tool is called DIRECTLY here —
+    // that is the window (the rule has already said yes).
+    ws = await mkTmpWorkspace({ "a.txt": "inside\n" });
+    const outside = `${ws.root}-sneak`;
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(outside, "secret.txt"), "OUTSIDE-SECRET\n");
+    const ctx = ctxFor(ws.root);
+    try {
+      try {
+        // "junction" needs no admin on Windows; ignored on POSIX.
+        symlinkSync(outside, join(ws.root, "escape"), "junction");
+      } catch {
+        return; // environment cannot create directory links; skip
+      }
+      const tool = bashTool({ bashPath: BASH as string });
+      // Anti-vacuous: the fixture really is an escape the bare guard sees.
+      const bare = await tool.run(
+        call("cat escape/secret.txt", "c1"),
+        ctx,
+        noopProgress,
+      );
+      expect(bare.ok).toBe(false);
+      for (const [i, cmd] of [
+        "time cat escape/secret.txt",
+        "command cat escape/secret.txt",
+        "! cat escape/secret.txt",
+      ].entries()) {
+        const r = await tool.run(call(cmd, `p${i}`), ctx, noopProgress);
+        expect(r.ok, cmd).toBe(false);
+        expect(r.error?.code, cmd).toBe("path_outside_workspace");
+        expect(r.modelText ?? "", cmd).not.toContain("OUTSIDE-SECRET");
+      }
+    } finally {
+      await ctx.bg.stopAll();
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 
   it("the rule previews a heredoc file write like a file write: diff + files on the ask, code command_ask_write, patch.preview on the bus", async () => {

@@ -1,10 +1,16 @@
 export {
   type ApprovalPersistence,
   ApprovalPolicy,
+  type ApprovalPolicyOpts,
   type ApprovalPreflight,
   commandArgv,
   commandCwd,
 } from "./approval-policy.js";
+export {
+  type AtomicWriteOptions,
+  writeFileAtomic,
+  writeFileAtomicSync,
+} from "./atomic-write.js";
 export {
   BACKEND_EXECUTION_CONTRACT,
   BACKEND_EXECUTION_CONTRACT_EN,
@@ -12,7 +18,13 @@ export {
   BackendContextBuilder,
   type BackendContextBuilderDeps,
   type BackendContract,
+  darwinBackendHostNote,
   minimalBackendContract,
+  type RepoContextDirtyFile,
+  type RepoContextSnapshot,
+  type RepoInProgressState,
+  type RepoRecentCommit,
+  renderRepoContext,
   serializeUserHistory,
   windowsBackendHostNote,
 } from "./backend/backend-context-builder.js";
@@ -43,10 +55,19 @@ export {
   fitMessagesToBudget,
 } from "./backend/context-budget.js";
 export {
-  isAbortError,
+  type RenderScopedMemoryOptions,
+  renderScopedMemory,
+  SCOPED_MEMORY_MAX_CHARS,
+  SCOPED_MEMORY_MAX_ITEMS,
+} from "./backend/scoped-memory.js";
+export {
   type ModelInferenceResult,
   streamModelInference,
 } from "./backend/stream-model-inference.js";
+export {
+  toolMessageContent,
+  toolResultPayloadJson,
+} from "./backend/tool-message-content.js";
 export {
   PERSIST_PREVIEW_CHARS,
   PERSIST_RESULT_THRESHOLD_CHARS,
@@ -55,6 +76,7 @@ export {
 } from "./backend/tool-result-persistence.js";
 export { ExecutionReportBuilder } from "./bridge/report-builder.js";
 export type * from "./bridge/types.js";
+export { abortError, errorMessage, isAbortError } from "./errors.js";
 export type { EventBus } from "./event-bus.js";
 export { InMemoryEventBus, publishWithLayer } from "./event-bus.js";
 export {
@@ -70,8 +92,15 @@ export type {
   MemoryQuery,
 } from "./memory-manager.js";
 export { MEMORY_KINDS, NoopMemoryManager } from "./memory-manager.js";
+export {
+  isPathInside,
+  isPathInsideWith,
+  type PathApi,
+  type PathContainmentOptions,
+} from "./path-containment.js";
 export type {
   AskResolver,
+  CommandConsequence,
   PermissionDecision,
   PermissionEngine,
   PermissionRule,
@@ -89,6 +118,7 @@ export {
   ProjectCommandRuleStore,
   ruleDisplay,
   SCRIPT_INTERPRETERS,
+  type WorkspaceTrust,
 } from "./project-command-rules.js";
 export { ReadLedger, type ReadLedgerEntry } from "./read-ledger.js";
 export {
@@ -154,6 +184,10 @@ export {
   pageMarkerLine,
   pageMarkerShape,
 } from "./text/page-marker.js";
+export {
+  repoPathInsideWorkspace,
+  workspaceRelativeRepoPath,
+} from "./text/repo-path.js";
 export { stripDisplayUnsafe } from "./text-sanitize.js";
 export { renderTodoState, TodoStore } from "./todo-store.js";
 export type { ToolRegistry } from "./tool-registry.js";
@@ -182,3 +216,4 @@ export {
 export type * from "./types/todo.js";
 export type * from "./types/tool.js";
 export type * from "./types/transcript.js";
+export { trustCovers, WORKSPACE_TRUST_CODES } from "./workspace-trust.js";

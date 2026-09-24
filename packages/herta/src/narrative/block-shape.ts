@@ -118,6 +118,17 @@ export function isUnusableBlock(text: string): boolean {
  *   pair stays. A leading pair keeps the original rule: content never
  *   starts with a bare citation.
  *
+ * A fourth shape, UNCLOSED (voice register lab, 2026-09-23: 6 of ~900
+ * blocks across 9 runs, every one at the end of a thought):
+ *
+ *   `红了。三处全在一个坑里，正好。\n〔下面是嘴上说的话，必须以` — the
+ *       model began writing the NEXT phase's hint, and the open-tag stop
+ *       sequence quoted inside that hint cut it before its `〕`. It reached
+ *       the record verbatim, because the rules above only see closed pairs.
+ *       A citation always closes, so an unclosed bracket at the end is never
+ *       her voice: drop it. A block that is nothing BUT the fragment becomes
+ *       empty and takes the empty ladder — it never commits hint prose.
+ *
  * Runs BEFORE the usability check, which is what makes the nested case work:
  * `〔{需要说的话}〕` unwraps to `{需要说的话}`, which `isPlaceholderOnly`
  * then catches, so it takes the slot ladder instead of committing. Stripping
@@ -143,6 +154,9 @@ export function stripHintScaffolding(text: string): string {
     if (rest.trim().length === 0) break; // whole-wrap — handled just below
     out = rest;
   }
+  // An unclosed trailing bracket: the start of a hint the stop sequence cut.
+  const cut = /\s*〔[^〔〕]*$/.exec(out);
+  if (cut !== null) out = out.slice(0, cut.index);
   // Trailing self-directives that FOLLOW real content, same bound — and
   // only when the bracket's content is directive-shaped (see above).
   for (let i = 0; i < 3; i += 1) {

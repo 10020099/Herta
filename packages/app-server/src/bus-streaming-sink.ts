@@ -16,7 +16,38 @@ import {
   type SlowStreamController,
 } from "@herta/herta";
 import { recordTail } from "./record-window.js";
-import type { RecordEvent, SpeechControlEvent } from "./types.js";
+import type {
+  RecordEvent,
+  SpeechControlEvent,
+  SpeechSynthesizer,
+  VoiceCueEvent,
+} from "./types.js";
+import {
+  createVoicedReveal,
+  type VoicedReveal,
+} from "./voice/voiced-reveal.js";
+
+/**
+ * Wall-clock ceiling on one VOICED reveal (ADR 0042), from its first emit.
+ * Speech runs ~5 zh chars/s, so a 600-char reply is two minutes of audio;
+ * past this the tail lands in one emit and the audio stops, bounding how
+ * long a pathological completion can keep the composer locked. Normal
+ * replies (p90 ≈ 220 chars, ≈ 45 s) never touch it.
+ */
+export const MAX_VOICED_MS = 150_000;
+
+/** The reveal driver surface both the text driver (`createRevealDriver`)
+ *  and the voiced one (`createVoicedReveal`) share — the sink wraps either
+ *  in the same controller. */
+interface RevealLike {
+  readonly done: Promise<void>;
+  readonly cursor: number;
+  pushToken(text: string): void;
+  finishInput(): void;
+  fastForward(): Promise<void>;
+  flushTail(): void;
+  cancel(): boolean;
+}
 
 /** Base per-character cadence of Herta's paced speech (~12.5 chars/s — a read-along pace; user-tuned 2026-06-11, was 28ms). */
 export const SLOW_MS_PER_CHAR = 80;
@@ -63,6 +94,57 @@ export class BusActorStreamingSink implements ActorStreamingSink {
    */
   private persistHook: ((block: TerminalRecordBlock) => void) | null = null;
 
+  /**
+   * Herta's synthesized voice (ADR 0042), attached by the session when the
+   * host provides a synthesizer. Read at every speech stream's start: when
+   * `available()`, the stream is VOICED — its reveal is paced by the audio
+   * (`createVoicedReveal`) instead of the per-char cadence. Null → the text
+   * reveal, byte-identical to before.
+   */
+  private voice: {
+    readonly synth: SpeechSynthesizer;
+    readonly emitVoice: (ev: VoiceCueEvent) => void;
+    /** A SUPERVISED voiced stream has its first unit in flight — the moment
+     *  the veto reaction is armed (ADR 0042 §7b). At the first REQUEST, not
+     *  the stream's begin (2026-09-10): a single-sentence supervised reply
+     *  never begins before its verdict, and a longer one begins only after
+     *  the pre-roll, so a veto that came first found nothing armed and
+     *  played the recorded clip §7b was written to retire. The filler is
+     *  requested at low priority, so it never delays the reply's units. */
+    readonly onSupervisedVoice?: () => void;
+  } | null = null;
+  private utteranceSeq = 0;
+  /** One voice at a time: every voiced driver starts after the previous
+   *  one settles. A beat still sounding when the next line opens must
+   *  finish first, or two of her would speak at once. */
+  private voiceLane: Promise<void> = Promise.resolve();
+  /** The voiced driver a veto cut, kept until the turn settles: the retry's
+   *  driver skips the sentences it fully played, and the retract floor
+   *  snaps to the start of the sentence the retry will speak whole. */
+  private lastVetoed: VoicedReveal | null = null;
+  /** Voiced drivers not yet settled, by lane — `settleVoice` lands their
+   *  text at turn end; at an interrupt only the BEAT lane's, the controller
+   *  lane's audio is silenced and its text left to the actor's own abort
+   *  path (see `settleVoice`). */
+  private readonly liveVoiced = new Map<VoicedReveal, "beat" | "controller">();
+  /**
+   * The BEAT lane's voiced driver (begin/stream/end with no controller —
+   * how in-turn beats reach the sink). Tokens route into it instead of the
+   * bus; `endHertaStream` finishes its input and it keeps revealing at the
+   * audio's pace after the actor has moved on.
+   */
+  private beatVoice: VoicedReveal | null = null;
+  /**
+   * Record-stream gate for voiced beats: the bridge commits a beat block
+   * and flushes it the instant the beat's tokens are in — but its audio
+   * (and audio-paced reveal) is still running, and the committed block
+   * would snap the streaming bubble to the full text mid-sentence. While a
+   * voiced beat is unsettled, block events queue here (persisted at once,
+   * mirrored at once — only the EMIT waits) and drain in order when it ends.
+   */
+  private beatGate: Promise<void> | null = null;
+  private readonly queuedRecord: RecordEvent[] = [];
+
   constructor(
     private readonly bus: EventBus<AgentEvent>,
     private readonly emitSpeech: (ev: SpeechControlEvent) => void,
@@ -81,6 +163,158 @@ export class BusActorStreamingSink implements ActorStreamingSink {
   /** Reveal granularity derived from the session language. */
   private get mode(): PacingMode {
     return this.lang === "en" ? "word" : "cjk";
+  }
+
+  /** Attach the host's speech synthesizer (ADR 0042). Called once by
+   *  SessionImpl.create when the config carries one; tests may pass a fake. */
+  attachVoice(voice: {
+    readonly synth: SpeechSynthesizer;
+    readonly emitVoice: (ev: VoiceCueEvent) => void;
+    readonly onSupervisedVoice?: () => void;
+  }): void {
+    this.voice = voice;
+  }
+
+  /**
+   * Hold the voice lane for `ms` after whatever is on it settles: the next
+   * voiced driver starts after that. The veto reaction's filler rides here
+   * (ADR 0042 §7b) — the retry's first sentence waits for "等等…" to land.
+   */
+  holdVoiceLane(ms: number): void {
+    if (!(ms > 0)) return;
+    this.voiceLane = this.voiceLane.then(
+      () => new Promise<void>((r) => setTimeout(r, ms)),
+    );
+  }
+
+  /** Hold the voice lane until `open` settles (ADR 0042 §7c): the veto
+   *  filler's hold is the length that was heard, known only once it has
+   *  played, so the lane waits on the cue module's promise rather than on
+   *  a number guessed at the veto. */
+  holdVoiceLaneUntil(open: Promise<void>): void {
+    const settled = open.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.voiceLane = this.voiceLane.then(() => settled);
+  }
+
+  /** Whether a stream opened now would be voiced — the host's synthesizer
+   *  is attached and says it is available. The session asks before the
+   *  opening so the recorded clip and the synthesized line never both
+   *  play (ADR 0042 amendment 2026-09-08). */
+  voiceAvailable(): boolean {
+    return this.voice?.synth.available() ?? false;
+  }
+
+  /** True when the stream about to open should be voiced. */
+  private voiceFor(opts?: { readonly unvoiced?: boolean }): {
+    readonly synth: SpeechSynthesizer;
+    readonly emitVoice: (ev: VoiceCueEvent) => void;
+  } | null {
+    if (opts?.unvoiced === true) return null;
+    if (this.voice === null || !this.voice.synth.available()) return null;
+    return this.voice;
+  }
+
+  /**
+   * Build a voiced driver on the shared lane. `onBegin`/`onFinish` are the
+   * caller's (the controller lanes open/close the surface; the beat lane
+   * does neither — the actor already did).
+   */
+  private makeVoicedDriver(
+    voice: NonNullable<typeof this.voice>,
+    lane: "beat" | "controller",
+    opts: {
+      readonly verdictPending?: Promise<void>;
+      readonly baseMsOverride?: number;
+      readonly onBegin: () => void;
+      readonly onFinish: () => void;
+    },
+  ): VoicedReveal {
+    this.utteranceSeq += 1;
+    const startAfter = this.voiceLane;
+    const supervised = opts.verdictPending !== undefined;
+    const vetoed = this.lastVetoed;
+    const driver = createVoicedReveal({
+      synth: voice.synth,
+      utteranceId: `u${this.utteranceSeq}-${randomUUID().slice(0, 8)}`,
+      lang: this.lang,
+      mode: this.mode,
+      fallbackBaseMs: opts.baseMsOverride ?? SLOW_MS_PER_CHAR,
+      maxUtteranceMs: MAX_VOICED_MS,
+      ...(opts.verdictPending !== undefined
+        ? { verdictPending: opts.verdictPending }
+        : {}),
+      startAfter,
+      // After a veto: the sentences already heard are not spoken twice.
+      ...(vetoed !== null ? { alreadySpoken: vetoed.spokenUnits() } : {}),
+      emitRange: (text) => {
+        publishWithLayer(this.bus, "actor", { type: "assistant.delta", text });
+      },
+      onBegin: opts.onBegin,
+      onFinish: opts.onFinish,
+      emitVoice: voice.emitVoice,
+      ...(supervised && voice.onSupervisedVoice !== undefined
+        ? { onFirstUnitRequested: voice.onSupervisedVoice }
+        : {}),
+    });
+    this.liveVoiced.set(driver, lane);
+    const settled = driver.done.then(
+      () => undefined,
+      () => undefined,
+    );
+    void settled.then(() => this.liveVoiced.delete(driver));
+    this.voiceLane = settled;
+    return driver;
+  }
+
+  /**
+   * Land every unsettled voiced reveal now — the text in one emit, the audio
+   * stopped — and release the beat gate. Called by the session at turn end,
+   * so a beat still sounding can never outlive its turn or hold the
+   * committed blocks back after the turn has ended.
+   *
+   * `interrupt` (the stop click, 2026-09-10): the BEAT lane lands the same
+   * way — its audio has no other path to the abort — but a CONTROLLER lane
+   * driver only falls silent. Its text belongs to the actor's own abort
+   * path, which follows the abort at once: `flushRemainder` for a
+   * post-verdict drain (the same one-emit landing), `cancelAndBackspace`
+   * while the verdict is pending. Landing the controller's text here too
+   * flashed a supervised candidate under its hold — the full, unapproved
+   * sentence appeared on the click and was retracted a beat later.
+   */
+  settleVoice(opts?: { readonly interrupt?: boolean }): void {
+    for (const [d, lane] of this.liveVoiced) {
+      if (opts?.interrupt === true && lane === "controller") d.silence();
+      else d.flushTail();
+    }
+    this.beatVoice = null;
+    this.lastVetoed = null;
+    this.drainQueuedRecord();
+  }
+
+  private gateRecordOn(done: Promise<void>): void {
+    const settled = done.then(
+      () => undefined,
+      () => undefined,
+    );
+    const gate = (this.beatGate ?? Promise.resolve()).then(() => settled);
+    this.beatGate = gate;
+    void gate.then(() => {
+      // Only the NEWEST gate releases; an older one settling while a newer
+      // beat is still sounding must keep the queue held.
+      if (this.beatGate === gate) {
+        this.beatGate = null;
+        this.drainQueuedRecord();
+      }
+    });
+  }
+
+  private drainQueuedRecord(): void {
+    this.beatGate = null;
+    const pending = this.queuedRecord.splice(0, this.queuedRecord.length);
+    for (const ev of pending) this.emitRecord(ev);
   }
 
   /**
@@ -132,6 +366,10 @@ export class BusActorStreamingSink implements ActorStreamingSink {
    */
   resyncRecord(): void {
     if (this.mirror.length !== this.emittedCount) return;
+    // The mirror already holds blocks whose events a voiced beat is still
+    // holding back; release them first so the reset is not followed by
+    // duplicates of blocks it already contains.
+    this.drainQueuedRecord();
     // Long-session windowing (2026-07-12): the heal carries the trailing
     // window + its absolute start, like every full-record payload to the
     // renderer. The store re-anchors its window on it.
@@ -177,19 +415,62 @@ export class BusActorStreamingSink implements ActorStreamingSink {
    * it is not retracting (the cursor-0 veto where no retract fired).
    */
   emitRetractFloor(keepLen: number): void {
-    this.emitSpeech({ kind: "retractFloor", keepLen });
+    // Voiced (ADR 0042 §7b): the retry speaks the sentence the divergence
+    // falls in WHOLE, so the erase walks back to that sentence's start and
+    // audio and text restart together — a few characters further than the
+    // minimum, in lockstep.
+    const snapped = this.lastVetoed?.unitStartAtOrBefore(keepLen) ?? keepLen;
+    this.emitSpeech({ kind: "retractFloor", keepLen: snapped });
   }
 
+  /**
+   * The actor's raw stream lane — how in-turn BEATS reach the sink (the
+   * primary speech goes through the paced controllers below, which open and
+   * close the surface themselves via `openSurface`/`closeSurface`). With a
+   * synthesizer available a beat is voiced too: a driver opens here, the
+   * tokens route into it, and `endHertaStream` finishes its input — the
+   * reveal then runs at the audio's pace after the actor has moved on, with
+   * the record-stream gate holding the committed block until it ends.
+   */
   beginHertaStream(surface: "speech" | "thought"): void {
     this.surface = surface;
+    if (surface !== "speech" || this.beatVoice !== null) return;
+    const voice = this.voiceFor();
+    if (voice === null) return;
+    const driver = this.makeVoicedDriver(voice, "beat", {
+      onBegin: () => undefined,
+      onFinish: () => undefined,
+    });
+    this.beatVoice = driver;
+    this.gateRecordOn(driver.done);
   }
 
   streamHertaToken(text: string): void {
-    if (this.surface !== "speech" || text.length === 0) return;
+    if (text.length === 0) return;
+    if (this.beatVoice !== null) {
+      this.beatVoice.pushToken(text);
+      return;
+    }
+    if (this.surface !== "speech") return;
     publishWithLayer(this.bus, "actor", { type: "assistant.delta", text });
   }
 
   endHertaStream(): void {
+    this.surface = null;
+    if (this.beatVoice !== null) {
+      const driver = this.beatVoice;
+      this.beatVoice = null;
+      driver.finishInput();
+    }
+  }
+
+  /** Surface bookkeeping for the controller lanes (never opens a beat
+   *  driver — the controller IS the voice there). */
+  private openSurface(): void {
+    this.surface = "speech";
+  }
+
+  private closeSurface(): void {
     this.surface = null;
   }
 
@@ -214,7 +495,15 @@ export class BusActorStreamingSink implements ActorStreamingSink {
       // live and reloaded values match.
       const stamped =
         block.at === undefined ? { ...block, at: this.now() } : block;
-      this.emitRecord({ kind: "block", blockId: randomUUID(), block: stamped });
+      const ev: RecordEvent = {
+        kind: "block",
+        blockId: randomUUID(),
+        block: stamped,
+      };
+      // A voiced beat still sounding holds the EMIT (see `beatGate`); the
+      // persist and the mirror above/below are unconditional.
+      if (this.beatGate !== null) this.queuedRecord.push(ev);
+      else this.emitRecord(ev);
       this.mirror.push(stamped);
     }
     this.emittedCount = record.length;
@@ -233,36 +522,61 @@ export class BusActorStreamingSink implements ActorStreamingSink {
   private makeRevealController(opts?: {
     readonly verdictPending?: Promise<void>;
     readonly baseMsOverride?: number;
+    readonly unvoiced?: boolean;
   }): LiveSlowStreamController {
     // Per-char base cadence: a voiced stream (the opening) overrides it so the
     // reveal spans ≈ its clip; otherwise the read-along default. Jitter and
     // punctuation breaths ride on top either way.
     const baseMs = opts?.baseMsOverride ?? SLOW_MS_PER_CHAR;
     let begun = false;
-    const driver = createRevealDriver({
-      mode: this.mode,
-      baseMs,
-      random: this.random,
-      // Reveal ceiling (slice 3): past it the tail lands in one delta.
-      maxRevealMs: resolveMaxRevealMs(),
-      // Fenced ``` regions emit atomically (slice 5) on both GUI lanes.
-      fences: true,
-      // GUI finishes on the tick that emits the last unit (the CLI's
-      // deferred completion tick is off).
-      completionTick: false,
-      // `undefined` means "no supervisor in the loop" (beats, any future
-      // unsupervised caller): the gate is open from the start, so the stream
-      // never ramps, never holds, never front-gates.
-      verdictPending: opts?.verdictPending,
-      emitRange: (text) => {
-        publishWithLayer(this.bus, "actor", { type: "assistant.delta", text });
-      },
-      onBegin: () => {
-        begun = true;
-        this.beginHertaStream("speech");
-      },
-      onFinish: () => this.endHertaStream(),
-    });
+    const onBegin = (): void => {
+      begun = true;
+      this.openSurface();
+    };
+    const onFinish = (): void => this.closeSurface();
+    // Voiced (ADR 0042) when the host's synthesizer is available and the
+    // caller did not bring its own voice: the audio paces the reveal.
+    const voice = this.voiceFor(opts);
+    const voicedDriver: VoicedReveal | null =
+      voice !== null
+        ? this.makeVoicedDriver(voice, "controller", {
+            ...(opts?.verdictPending !== undefined
+              ? { verdictPending: opts.verdictPending }
+              : {}),
+            ...(opts?.baseMsOverride !== undefined
+              ? { baseMsOverride: opts.baseMsOverride }
+              : {}),
+            onBegin,
+            onFinish,
+          })
+        : null;
+    const driver: RevealLike =
+      voicedDriver !== null
+        ? voicedDriver
+        : createRevealDriver({
+            mode: this.mode,
+            baseMs,
+            random: this.random,
+            // Reveal ceiling (slice 3): past it the tail lands in one delta.
+            maxRevealMs: resolveMaxRevealMs(),
+            // Fenced ``` regions emit atomically (slice 5) on both GUI lanes.
+            fences: true,
+            // GUI finishes on the tick that emits the last unit (the CLI's
+            // deferred completion tick is off).
+            completionTick: false,
+            // `undefined` means "no supervisor in the loop" (beats, any future
+            // unsupervised caller): the gate is open from the start, so the
+            // stream never ramps, never holds, never front-gates.
+            verdictPending: opts?.verdictPending,
+            emitRange: (text) => {
+              publishWithLayer(this.bus, "actor", {
+                type: "assistant.delta",
+                text,
+              });
+            },
+            onBegin,
+            onFinish,
+          });
     return {
       done: driver.done,
       pushToken: driver.pushToken,
@@ -280,8 +594,11 @@ export class BusActorStreamingSink implements ActorStreamingSink {
         // driver.cancel() stops the loop and rejects `done`; false → a
         // repeat call (idempotent, no second retract event).
         if (!driver.cancel()) return;
-        if (!begun) this.beginHertaStream("speech");
-        this.endHertaStream();
+        // The retry's driver and the retract floor read what this one
+        // spoke (ADR 0042 §7b).
+        if (voicedDriver !== null) this.lastVetoed = voicedDriver;
+        if (!begun) this.openSurface();
+        this.closeSurface();
         // cursor === 0 → nothing on screen to retract (veto during the
         // startup buffer); the retry just streams fresh.
         if (driver.cursor > 0) this.emitSpeech({ kind: "retract" });
@@ -296,6 +613,7 @@ export class BusActorStreamingSink implements ActorStreamingSink {
     opts?: {
       readonly verdictPending?: Promise<void>;
       readonly baseMsOverride?: number;
+      readonly unvoiced?: boolean;
     },
   ): SlowStreamController {
     // Fixed text is the degenerate live call pattern: push everything, then
@@ -335,6 +653,7 @@ export class BusActorStreamingSink implements ActorStreamingSink {
   slowStreamSpeechLive(opts?: {
     readonly verdictPending?: Promise<void>;
     readonly baseMsOverride?: number;
+    readonly unvoiced?: boolean;
   }): LiveSlowStreamController {
     return this.makeRevealController(opts);
   }

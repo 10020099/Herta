@@ -1,6 +1,24 @@
 import type { Readable } from "node:stream";
-import type { AskResolver, PermissionRequest } from "@herta/core";
+import {
+  type AskResolver,
+  abortError,
+  type CommandConsequence,
+  type PermissionRequest,
+} from "@herta/core";
 import type { Style } from "./style.js";
+
+/** One-line consequence copy (ADR 0049 §5) — the CLI prompt's register is
+ *  terse machine-English (`risk: workspace_destructive`), so the note stays
+ *  in it too. Display-only; the tier already enforced. */
+const CONSEQUENCE_NOTE: Record<CommandConsequence, string> = {
+  discards_uncommitted: "discards uncommitted changes (unrecoverable)",
+  deletes_untracked: "deletes untracked files (unrecoverable)",
+  deletes_stash: "deletes stashed work (unrecoverable)",
+  rewrites_local_history: "rewrites local commit history",
+  rewrites_remote_history: "overwrites the remote branch's history",
+  concludes_in_progress_operation:
+    "a merge/rebase is mid-flight — this step concludes it",
+};
 
 type StdinLike = Readable & {
   setRawMode?: (mode: boolean) => unknown;
@@ -11,6 +29,7 @@ export type CliPromptOutcome =
   | "allow"
   | "allow_remember"
   | "allow_project"
+  | "allow_trust"
   | "deny";
 
 export interface PresentDetailedOptions {
@@ -19,6 +38,9 @@ export interface PresentDetailedOptions {
    *  Absent → the [p] option is neither shown nor accepted — never offer a
    *  choice that would silently no-op (the showRemember contract). */
   projectRule?: string;
+  /** Offer [t] — trust this workspace (ADR 0064): the ask class is one the
+   *  tier covers and the workspace does not trust yet. Same contract. */
+  showTrust?: boolean;
 }
 
 export class CliAskResolver implements AskResolver {
@@ -80,6 +102,11 @@ export class CliAskResolver implements AskResolver {
     // inline with prior output (N3 fix, 2026-05-23).
     this.stdout.write("\n");
     this.stdout.write(this.style.dim(`  risk: ${request.risk}\n`));
+    if (request.consequence !== undefined) {
+      this.stdout.write(
+        this.style.dim(`  note: ${CONSEQUENCE_NOTE[request.consequence]}\n`),
+      );
+    }
     // The minimal contract's `bash` (ADR 0040): the record's Running row shows
     // the header form (cd-prefix dropped, first line); the whole command is
     // what is being approved, so print it here — bounded, like the GUI's
@@ -120,9 +147,16 @@ export class CliAskResolver implements AskResolver {
         ),
       );
     }
+    if (opts.showTrust === true) {
+      this.stdout.write(
+        this.style.dim(
+          "  [t] trusts this workspace: file writes, filesystem operations, non-destructive git and workspace scripts no longer ask; network, destructive and out-of-workspace operations still do\n",
+        ),
+      );
+    }
     const keys = `y${opts.showRemember ? "/a" : ""}${
       opts.projectRule !== undefined ? "/p" : ""
-    }/N`;
+    }${opts.showTrust === true ? "/t" : ""}/N`;
     this.stdout.write(`  ${this.style.bold(`[${keys}]`)} `);
   }
 
@@ -154,6 +188,8 @@ export class CliAskResolver implements AskResolver {
           (ch === "p" || ch === "P")
         ) {
           settle("allow_project", "p");
+        } else if (opts.showTrust === true && (ch === "t" || ch === "T")) {
+          settle("allow_trust", "t");
         } else {
           settle("deny", "n");
         }
@@ -166,16 +202,14 @@ export class CliAskResolver implements AskResolver {
       // (audit 2026-07-10, finding 4 — the ADR-0010 poisoned-history class).
       // Rejecting with an AbortError still settles the promise (no hang) and
       // the turn loop rethrows it into turn.failed{interrupted} — no
-      // permission.resolved, no fabricated tool result. Name is constructed
-      // (not signal.reason) so isAbortError always classifies it.
+      // permission.resolved, no fabricated tool result. Constructed (core's
+      // abortError, not signal.reason) so isAbortError always classifies it.
       const onAbort = (): void => {
         if (settled) return;
         settled = true;
         cleanup();
         this.stdout.write("\n");
-        const e = new Error("permission gate aborted by interrupt");
-        e.name = "AbortError";
-        reject(e);
+        reject(abortError("permission gate aborted by interrupt"));
       };
 
       const cleanup = (): void => {

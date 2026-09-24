@@ -1,3 +1,4 @@
+import type { AgentEvent } from "@herta/app-server";
 import {
   act,
   cleanup,
@@ -6,9 +7,13 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { HertaBridgeProvider } from "../../context/HertaBridgeContext.js";
+import {
+  HertaBridgeProvider,
+  useHertaBridge,
+} from "../../context/HertaBridgeContext.js";
 import { renderWithLocale } from "../../i18n/test-util.js";
 import { createMockHertaBridge } from "../../ipc/mock-bridge.js";
+import type { SessionStore } from "../../store/session-store.js";
 import { isVoicePlaying, playVoiceClip } from "../../voice/play-voice.js";
 import { Composer } from "./Composer.js";
 import { WorkspaceRefsProvider } from "./WorkspaceRefs.js";
@@ -17,16 +22,34 @@ afterEach(() => {
   cleanup();
 });
 
+/** The provider builds its own SessionStore; a probe beside the Composer
+ *  hands it out so a test can read the store's side channels. */
+function StoreProbe(props: { onStore: (s: SessionStore) => void }) {
+  props.onStore(useHertaBridge().sessionStore);
+  return null;
+}
+
 function renderComposer(mock = createMockHertaBridge()) {
+  let store: SessionStore | null = null;
+  const rendered = renderWithLocale(
+    <WorkspaceRefsProvider>
+      <HertaBridgeProvider bridge={mock.bridge}>
+        <StoreProbe
+          onStore={(s) => {
+            store = s;
+          }}
+        />
+        <Composer />
+      </HertaBridgeProvider>
+    </WorkspaceRefsProvider>,
+  );
   return {
     mock,
-    ...renderWithLocale(
-      <WorkspaceRefsProvider>
-        <HertaBridgeProvider bridge={mock.bridge}>
-          <Composer />
-        </HertaBridgeProvider>
-      </WorkspaceRefsProvider>,
-    ),
+    store: (): SessionStore => {
+      if (store === null) throw new Error("store probe never rendered");
+      return store;
+    },
+    ...rendered,
   };
 }
 
@@ -480,6 +503,528 @@ describe("Composer", () => {
     expect(document.activeElement).toBe(input);
     expect(form.classList.contains("is-shrunk")).toBe(false);
   });
+
+  it("a refusal about the turn goes when the turn ends; a rewind's notice beside it stays until the send (UX review 2026-09-22, item 14)", async () => {
+    const { mock, store } = renderComposer();
+    act(() => {
+      mock.emitReset({
+        sessionId: "s",
+        workspaceRoot: "/r",
+        record: [],
+        overlay: null,
+        backendWorkspace: "/r",
+        backendWorkspaceIsDefault: true,
+      });
+      mock.emitTurn({ kind: "started", turnId: "t1" });
+    });
+    const form = document.querySelector(".composer") as HTMLFormElement;
+    const file = {
+      name: "shot.png",
+      type: "image/png",
+      arrayBuffer: async () => new Uint8Array([0x89]).buffer,
+    };
+    await act(async () => {
+      fireEvent.paste(form, { clipboardData: { files: [file] } });
+    });
+    const busyText =
+      "The current turn is still in progress — files cannot be added";
+    expect(store().getSnapshot().composerNotice).toBe(busyText);
+    act(() => {
+      mock.emitTurn({ kind: "finished", turnId: "t1" });
+    });
+    expect(store().getSnapshot().composerNotice).toBeNull();
+
+    // A notice that is NOT about the turn — the rewind's file-edit spill —
+    // is untouched by a turn's end.
+    act(() => {
+      mock.emitTurn({ kind: "started", turnId: "t2" });
+      store().setComposerNotice("Files 板砖 edited stay edited");
+      mock.emitTurn({ kind: "finished", turnId: "t2" });
+    });
+    expect(store().getSnapshot().composerNotice).toBe(
+      "Files 板砖 edited stay edited",
+    );
+  });
+
+  it("a restored draft goes IN FRONT of an unsent one, never over it (UX review 2026-09-22, item 15)", () => {
+    const { store } = renderComposer();
+    const input = screen.getByPlaceholderText(
+      "Message Herta…",
+    ) as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "half-typed follow-up" } });
+    act(() => {
+      store().requestComposerDraft("the rewound message", null);
+    });
+    expect(input.value).toBe("the rewound message\n\nhalf-typed follow-up");
+    // With nothing typed, the restore is the draft itself.
+    fireEvent.change(input, { target: { value: "" } });
+    act(() => {
+      store().requestComposerDraft("again", null);
+    });
+    expect(input.value).toBe("again");
+  });
+
+  it("a reset carrying staged pictures puts them back in the strip — a reloaded window keeps what main still holds (UX review 2026-09-22, item 7)", () => {
+    const { mock, container } = renderComposer();
+    act(() => {
+      mock.emitReset({
+        sessionId: "s",
+        workspaceRoot: "/r",
+        record: [],
+        overlay: null,
+        backendWorkspace: "/r",
+        backendWorkspaceIsDefault: true,
+        stagedImages: [
+          { id: "i1", name: "one.png", path: "a/one.png" },
+          { id: "i2", name: "two.png", path: "a/two.png" },
+        ],
+      });
+    });
+    expect(container.querySelectorAll(".composer-staged__item")).toHaveLength(
+      2,
+    );
+  });
+
+  it("the turn-end refocus never takes the caret from a field the user is typing in elsewhere (UX review 2026-09-22, item 12)", () => {
+    const { mock } = renderComposer();
+    const input = screen.getByPlaceholderText(
+      "Message Herta…",
+    ) as HTMLTextAreaElement;
+    act(() => {
+      mock.emitReset({
+        sessionId: "s",
+        workspaceRoot: "/r",
+        record: [],
+        overlay: null,
+        backendWorkspace: "/r",
+        backendWorkspaceIsDefault: true,
+      });
+      mock.emitTurn({ kind: "started", turnId: "t1" });
+    });
+    // During the reply the user opens Settings and starts typing a key.
+    const elsewhere = document.createElement("input");
+    document.body.appendChild(elsewhere);
+    try {
+      act(() => {
+        elsewhere.focus();
+      });
+      act(() => {
+        mock.emitTurn({ kind: "finished", turnId: "t1" });
+      });
+      expect(document.activeElement).toBe(elsewhere);
+      expect(document.activeElement).not.toBe(input);
+    } finally {
+      elsewhere.remove();
+    }
+  });
+});
+
+describe("Composer — a message while 板砖 works (ADR 0063)", () => {
+  const backendStarted: AgentEvent = {
+    type: "turn.started",
+    layer: "backend",
+    userText: "task",
+  };
+  const backendFinished: AgentEvent = {
+    type: "turn.finished",
+    layer: "backend",
+    summary: { durationMs: 1, toolCallCount: 0, messageCount: 0, endedAt: "" },
+  };
+  /** A commission in flight: the turn started and 板砖 is running. */
+  function startCommission(
+    mock: ReturnType<typeof createMockHertaBridge>,
+  ): void {
+    act(() => {
+      mock.emitReset({
+        sessionId: "s",
+        workspaceRoot: "/r",
+        record: [],
+        overlay: null,
+        backendWorkspace: "/r",
+        backendWorkspaceIsDefault: true,
+      });
+      mock.emitTurn({ kind: "started", turnId: "t1" });
+      mock.emitAgent({ kind: "agent", event: backendStarted });
+    });
+  }
+  function hold(text: string): HTMLTextAreaElement {
+    // The composer keeps its ordinary placeholder while 板砖 works (owner
+    // 2026-09-15): the held card, not the input, says what happens next.
+    const input = screen.getByPlaceholderText(
+      "Message Herta…",
+    ) as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: text } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    return input;
+  }
+
+  it("while 板砖 runs the textarea stays enabled, Enter HOLDS the text above the composer, nothing is sent, and the button stays Stop", () => {
+    const { mock } = renderComposer();
+    startCommission(mock);
+    const input = hold("also rename the test file");
+    expect(input.disabled).toBe(false);
+    expect(input.value).toBe("");
+    expect(screen.getByTestId("composer-held").textContent).toContain(
+      "also rename the test file",
+    );
+    expect(mock.calls.submitText).toHaveLength(0);
+    expect(mock.calls.interrupt).toHaveLength(0);
+    expect(
+      screen.getByLabelText("Interrupt the current turn"),
+    ).toBeInTheDocument();
+  });
+
+  it("a second Enter joins the held message as a new paragraph — one held message, nothing lost", () => {
+    const { mock } = renderComposer();
+    startCommission(mock);
+    hold("first thought");
+    hold("second thought");
+    expect(screen.getAllByTestId("composer-held")).toHaveLength(1);
+    expect(
+      screen.getByTestId("composer-held").querySelector(".composer-held__text")
+        ?.textContent,
+    ).toBe("first thought\n\nsecond thought");
+  });
+
+  it("Interject now hands the held text to bridge.steerText and clears the strip once accepted", async () => {
+    const { mock } = renderComposer();
+    startCommission(mock);
+    hold("also rename the test file");
+    fireEvent.click(screen.getByText("Interject now"));
+    await waitFor(() =>
+      expect(mock.calls.steerText).toEqual(["also rename the test file"]),
+    );
+    await waitFor(() =>
+      expect(screen.queryByTestId("composer-held")).toBeNull(),
+    );
+    expect(mock.calls.submitText).toHaveLength(0);
+  });
+
+  it("a steer the session answers `queued` (the run ended first) stays held for the next turn", async () => {
+    const { mock } = renderComposer(
+      createMockHertaBridge({ steerTextResult: { queued: true } }),
+    );
+    startCommission(mock);
+    hold("also rename the test file");
+    fireEvent.click(screen.getByText("Interject now"));
+    await waitFor(() => expect(mock.calls.steerText).toHaveLength(1));
+    expect(screen.getByTestId("composer-held")).toBeInTheDocument();
+  });
+
+  it("Edit puts the held text back into the composer; Discard drops it", () => {
+    const { mock } = renderComposer();
+    startCommission(mock);
+    const input = hold("also rename the test file");
+    fireEvent.click(screen.getByText("Edit"));
+    expect(screen.queryByTestId("composer-held")).toBeNull();
+    expect(input.value).toBe("also rename the test file");
+    hold("drop me");
+    fireEvent.click(screen.getByLabelText("Withdraw"));
+    expect(screen.queryByTestId("composer-held")).toBeNull();
+    expect(mock.calls.submitText).toHaveLength(0);
+  });
+
+  it("doing nothing sends the held message as the next turn the moment this one ends", () => {
+    const { mock } = renderComposer();
+    startCommission(mock);
+    hold("also rename the test file");
+    act(() => {
+      mock.emitAgent({ kind: "agent", event: backendFinished });
+      mock.emitTurn({ kind: "finished", turnId: "t1" });
+    });
+    expect(mock.calls.submitText).toEqual(["also rename the test file"]);
+    expect(screen.queryByTestId("composer-held")).toBeNull();
+  });
+
+  it("after Stop the held message comes BACK into the composer — nothing is sent (ADR 0063 §1.9)", () => {
+    const { mock } = renderComposer();
+    startCommission(mock);
+    const input = hold("also rename the test file");
+    fireEvent.change(input, { target: { value: "typed since" } });
+    fireEvent.click(screen.getByLabelText("Interrupt the current turn"));
+    expect(mock.calls.interrupt).toHaveLength(1);
+    act(() => {
+      mock.emitTurn({
+        kind: "failed",
+        turnId: "t1",
+        error: { code: "AbortError", message: "aborted" },
+      });
+    });
+    expect(mock.calls.submitText).toHaveLength(0);
+    expect(screen.queryByTestId("composer-held")).toBeNull();
+    // In front of what was typed since, nothing lost.
+    expect(input.value).toBe("also rename the test file\n\ntyped since");
+  });
+
+  it("after a provider failure the held message comes back instead of being sent into the same failure (ADR 0063 §1.9)", () => {
+    const { mock, store } = renderComposer();
+    startCommission(mock);
+    const input = hold("also rename the test file");
+    act(() => {
+      mock.emitTurn({
+        kind: "failed",
+        turnId: "t1",
+        error: { code: "provider_error", message: "402", status: 402 },
+      });
+    });
+    expect(mock.calls.submitText).toHaveLength(0);
+    expect(input.value).toBe("also rename the test file");
+    // The failure's own notice stands: no new turn started to wipe it.
+    expect(store().getSnapshot().turnFailed).toBe(true);
+    expect(store().getSnapshot().turnFailedStatus).toBe(402);
+  });
+
+  it("the held card is a footer sibling BEFORE the composer, not inside it — it grows the footer instead of overflowing the fixed-height form", () => {
+    const { mock } = renderComposer();
+    startCommission(mock);
+    const input = hold("also rename the test file");
+    const card = screen.getByTestId("composer-held");
+    const form = input.closest("form") as HTMLFormElement;
+    expect(form.contains(card)).toBe(false);
+    expect(card.parentElement).toBe(form.parentElement);
+    expect(card.nextElementSibling).toBe(form);
+  });
+
+  it("the delivered message flies from the card, not the input: its rect is armed as the lift-off before the card unmounts", () => {
+    const { mock, store } = renderComposer();
+    startCommission(mock);
+    hold("also rename the test file");
+    const card = screen.getByTestId("composer-held");
+    card.getBoundingClientRect = () =>
+      ({ left: 200, top: 600, width: 400, height: 40 }) as DOMRect;
+    act(() => {
+      mock.emitAgent({ kind: "agent", event: backendFinished });
+      mock.emitTurn({ kind: "finished", turnId: "t1" });
+    });
+    expect(mock.calls.submitText).toEqual(["also rename the test file"]);
+    // The store's side channel carries the point for the outgoing morph.
+    expect(store().takeLaunch()).toEqual({ left: 216, top: 600 });
+    // An ordinary send from the input arms nothing.
+    act(() => {
+      mock.emitTurn({ kind: "started", turnId: "t2" });
+      mock.emitTurn({ kind: "finished", turnId: "t2" });
+    });
+    const input = screen.getByPlaceholderText(
+      "Message Herta…",
+    ) as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "plain" } });
+    fireEvent.submit(input.closest("form") as HTMLFormElement);
+    expect(mock.calls.submitText).toEqual([
+      "also rename the test file",
+      "plain",
+    ]);
+    expect(store().takeLaunch()).toBeNull();
+  });
+
+  it("nothing rides a held message: a picture pasted while one waits is refused, the refusal floats above the footer (never over the card), the card keeps its text, and the attach button is disabled", async () => {
+    const { mock, container } = renderComposer();
+    startCommission(mock);
+    const input = hold("also rename the test file");
+    const form = input.closest("form") as HTMLFormElement;
+    expect(
+      (screen.getByLabelText("Add files") as HTMLButtonElement).disabled,
+    ).toBe(true);
+    const file = {
+      name: "shot.png",
+      type: "image/png",
+      arrayBuffer: async () => new Uint8Array([0x89]).buffer,
+    };
+    await act(async () => {
+      fireEvent.paste(form, { clipboardData: { files: [file] } });
+    });
+    expect(mock.calls.stageImages).toHaveLength(0);
+    const notice = screen.getByRole("status");
+    expect(notice.textContent).toBe(
+      "The current turn is still in progress — files cannot be added",
+    );
+    // The pill is a footer child beside the card, not the form's: anchored
+    // to the form's top edge it sat exactly on the card (owner 2026-09-16).
+    expect(form.contains(notice)).toBe(false);
+    expect(notice.parentElement).toBe(form.parentElement);
+    const card = screen.getByTestId("composer-held");
+    expect(card.querySelector(".composer-held__text")?.textContent).toBe(
+      "also rename the test file",
+    );
+    expect(container.querySelectorAll(".composer-staged__item")).toHaveLength(
+      0,
+    );
+  });
+
+  it("the EN alias applies at delivery, not at the hold: @brick is held as typed and sent as @板砖", () => {
+    const { mock } = renderComposer();
+    act(() => {
+      mock.emitReset({
+        sessionId: "s-en",
+        workspaceRoot: "/r",
+        record: [],
+        overlay: null,
+        backendWorkspace: "/r",
+        backendWorkspaceIsDefault: true,
+        lang: "en",
+      });
+      mock.emitTurn({ kind: "started", turnId: "t1" });
+      mock.emitAgent({ kind: "agent", event: backendStarted });
+    });
+    hold("@brick also rename it");
+    expect(
+      screen.getByTestId("composer-held").querySelector(".composer-held__text")
+        ?.textContent,
+    ).toBe("@brick also rename it");
+    act(() => {
+      mock.emitAgent({ kind: "agent", event: backendFinished });
+      mock.emitTurn({ kind: "finished", turnId: "t1" });
+    });
+    expect(mock.calls.submitText).toEqual(["@板砖 also rename it"]);
+  });
+
+  it("no hold outside 板砖's window: Herta's own turn keeps the textarea disabled, and once 板砖 finishes mid-turn the interject goes while the held text stays", () => {
+    const { mock } = renderComposer();
+    act(() => {
+      mock.emitReset({
+        sessionId: "s",
+        workspaceRoot: "/r",
+        record: [],
+        overlay: null,
+        backendWorkspace: "/r",
+        backendWorkspaceIsDefault: true,
+      });
+      mock.emitTurn({ kind: "started", turnId: "t1" });
+    });
+    const input = screen.getByPlaceholderText(
+      "Message Herta…",
+    ) as HTMLTextAreaElement;
+    expect(input.disabled).toBe(true);
+    // 板砖 starts: the window opens; a message is held; 板砖 ends while
+    // Herta still speaks: the window closes but the hold stays.
+    act(() => {
+      mock.emitAgent({ kind: "agent", event: backendStarted });
+    });
+    hold("also rename the test file");
+    expect(screen.getByText("Interject now")).toBeInTheDocument();
+    act(() => {
+      mock.emitAgent({ kind: "agent", event: backendFinished });
+    });
+    expect(input.disabled).toBe(true);
+    expect(screen.queryByText("Interject now")).toBeNull();
+    expect(screen.getByTestId("composer-held")).toBeInTheDocument();
+    expect(screen.getByText("Edit")).toBeInTheDocument();
+  });
+
+  it("the hold window opening gives the caret back QUIETLY — the composer stays shrunk until the first keystroke (UX review 2026-09-22, item 13)", () => {
+    const { mock } = renderComposer();
+    const form = document.querySelector(".composer") as HTMLFormElement;
+    const input = screen.getByPlaceholderText(
+      "Message Herta…",
+    ) as HTMLTextAreaElement;
+    act(() => {
+      mock.emitReset({
+        sessionId: "s",
+        workspaceRoot: "/r",
+        record: [],
+        overlay: null,
+        backendWorkspace: "/r",
+        backendWorkspaceIsDefault: true,
+      });
+      mock.emitTurn({ kind: "started", turnId: "t1" });
+    });
+    // Nothing holds the caret: the disable at turn start dropped it.
+    expect(document.activeElement).toBe(document.body);
+    act(() => {
+      mock.emitAgent({ kind: "agent", event: backendStarted });
+    });
+    expect(document.activeElement).toBe(input);
+    // Quiet: the reading room the shrink exists for stays until the user
+    // actually types.
+    expect(form.classList.contains("is-shrunk")).toBe(true);
+    fireEvent.change(input, { target: { value: "a" } });
+    expect(form.classList.contains("is-shrunk")).toBe(false);
+  });
+
+  it("an answered gate gives the caret back to a held message being typed (UX review 2026-09-22, item 13)", () => {
+    const { mock } = renderComposer();
+    startCommission(mock);
+    const input = screen.getByPlaceholderText(
+      "Message Herta…",
+    ) as HTMLTextAreaElement;
+    act(() => {
+      input.focus();
+    });
+    fireEvent.change(input, { target: { value: "also the tests" } });
+    // A gate: the composer is suppressed (textarea disabled) and the panel
+    // takes focus.
+    act(() => {
+      mock.emitOverlay({
+        kind: "pending",
+        overlay: {
+          kind: "pending-permission",
+          requestId: "req-1",
+          risk: "workspace_write",
+          tool: "bash",
+          summary: "writes a file",
+          cacheable: false,
+        },
+      });
+    });
+    expect(input.disabled).toBe(true);
+    // The approval panel holds focus through its exit (jsdom ignores blur()
+    // on a disabled element, so the stand-in panel takes it explicitly).
+    const panel = document.createElement("div");
+    panel.className = "approval-panel";
+    panel.tabIndex = -1;
+    document.body.appendChild(panel);
+    try {
+      act(() => {
+        panel.focus();
+      });
+      expect(document.activeElement).toBe(panel);
+      act(() => {
+        mock.emitOverlay({ kind: "resolved", requestId: "req-1" });
+      });
+      expect(input.disabled).toBe(false);
+      expect(document.activeElement).toBe(input);
+      expect(input.value).toBe("also the tests");
+    } finally {
+      panel.remove();
+    }
+  });
+
+  it("the hold window opening leaves a caret the user put elsewhere where it is", () => {
+    const { mock } = renderComposer();
+    act(() => {
+      mock.emitReset({
+        sessionId: "s",
+        workspaceRoot: "/r",
+        record: [],
+        overlay: null,
+        backendWorkspace: "/r",
+        backendWorkspaceIsDefault: true,
+      });
+      mock.emitTurn({ kind: "started", turnId: "t1" });
+    });
+    const elsewhere = document.createElement("input");
+    document.body.appendChild(elsewhere);
+    try {
+      act(() => {
+        elsewhere.focus();
+      });
+      act(() => {
+        mock.emitAgent({ kind: "agent", event: backendStarted });
+      });
+      expect(document.activeElement).toBe(elsewhere);
+    } finally {
+      elsewhere.remove();
+    }
+  });
+
+  it("a bridge without steerText (the demo) holds and delivers but never offers the interject", () => {
+    const mock = createMockHertaBridge();
+    Object.assign(mock.bridge, { steerText: undefined });
+    renderComposer(mock);
+    startCommission(mock);
+    hold("also rename the test file");
+    expect(screen.getByTestId("composer-held")).toBeInTheDocument();
+    expect(screen.queryByText("Interject now")).toBeNull();
+  });
 });
 
 describe("Composer Enter-to-send (IME-safe)", () => {
@@ -779,7 +1324,7 @@ describe("Composer — attachments (ADR 0033)", () => {
     });
     renderAttached(mock);
     await act(async () => {
-      fireEvent.click(screen.getByLabelText("Add documents"));
+      fireEvent.click(screen.getByLabelText("Add files"));
     });
     expect(mock.calls.pickAttachments).toBe(1);
     expect(mock.calls.attachFiles).toHaveLength(1);
@@ -798,9 +1343,7 @@ describe("Composer — attachments (ADR 0033)", () => {
     );
     expect(wrap).toBeTruthy();
     expect(wrap?.classList.contains("tooltip-top")).toBe(true);
-    expect(wrap?.querySelector(".tooltip")?.textContent).toContain(
-      "Add documents",
-    );
+    expect(wrap?.querySelector(".tooltip")?.textContent).toContain("Add files");
     // Extensions, not category prose (owner 2026-08-10) — with a trailing
     // "and other text" so the list reads as representative, not exhaustive.
     const sub = wrap?.querySelector(".tooltip-sub")?.textContent ?? "";
@@ -816,7 +1359,7 @@ describe("Composer — attachments (ADR 0033)", () => {
     const mock = createMockHertaBridge({ pickAttachmentsResult: null });
     renderAttached(mock);
     await act(async () => {
-      fireEvent.click(screen.getByLabelText("Add documents"));
+      fireEvent.click(screen.getByLabelText("Add files"));
     });
     expect(mock.calls.attachFiles).toHaveLength(0);
   });
@@ -862,9 +1405,7 @@ describe("Composer — attachments (ADR 0033)", () => {
     await act(async () => {
       fireEvent.drop(form, fileDrop([{ name: "a.md" }]));
     });
-    expect(
-      screen.getByText(/wait for her, then drop the file/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/files cannot be added/i)).toBeInTheDocument();
   });
 
   it("names the too-many refusal specifically", async () => {
@@ -876,6 +1417,235 @@ describe("Composer — attachments (ADR 0033)", () => {
     await act(async () => {
       fireEvent.drop(form, fileDrop([{ name: "a.md" }]));
     });
-    expect(screen.getByText(/Ten files at a time/i)).toBeInTheDocument();
+    expect(screen.getByText(/Ten files at most/i)).toBeInTheDocument();
+  });
+
+  // ── Staged images (ADR 0048 §4) ─────────────────────────────────────────
+
+  it("a dropped PICTURE stages instead of entering the record", async () => {
+    const mock = createMockHertaBridge();
+    const { container } = renderAttached(mock);
+    const form = container.querySelector(".composer") as HTMLElement;
+    await act(async () => {
+      fireEvent.drop(form, fileDrop([{ name: "shot.png" }]));
+    });
+    expect(mock.calls.stageImages).toHaveLength(1);
+    // The document lane is NOT used: nothing was appended to the record.
+    expect(mock.calls.attachFiles).toHaveLength(0);
+    expect(container.querySelectorAll(".composer-staged__item")).toHaveLength(
+      1,
+    );
+  });
+
+  it("a mixed drop splits by kind: pictures stage, documents ingest", async () => {
+    const mock = createMockHertaBridge();
+    const { container } = renderAttached(mock);
+    const form = container.querySelector(".composer") as HTMLElement;
+    await act(async () => {
+      fireEvent.drop(
+        form,
+        fileDrop([{ name: "shot.png" }, { name: "spec.md" }]),
+      );
+    });
+    expect(container.querySelectorAll(".composer-staged__item")).toHaveLength(
+      1,
+    );
+    // Documents keep their immediate-ingest UX (extraction takes seconds, and
+    // the early row is what says the file is ready to ask about).
+    expect(mock.calls.attachFiles).toHaveLength(1);
+    expect(mock.calls.attachFiles[0]?.[1]).toEqual(["spec.md"]);
+  });
+
+  it("sends the staged ids WITH the message, then empties the strip", async () => {
+    const mock = createMockHertaBridge();
+    const { container } = renderAttached(mock);
+    const form = container.querySelector(".composer") as HTMLElement;
+    await act(async () => {
+      fireEvent.drop(form, fileDrop([{ name: "shot.png" }]));
+    });
+    const input = screen.getByPlaceholderText(
+      "Message Herta…",
+    ) as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "看看这个" } });
+    await act(async () => {
+      fireEvent.submit(form);
+    });
+    expect(mock.calls.submitText).toEqual(["看看这个"]);
+    expect(mock.calls.submitTextStaged[0]).toEqual(["staged-0"]);
+    // The strip empties on the same frame the text does.
+    expect(container.querySelectorAll(".composer-staged__item")).toHaveLength(
+      0,
+    );
+  });
+
+  it("a picture alone does NOT send — pictures ride words (owner 2026-08-27)", async () => {
+    // Reverses the first cut: an empty user block is a degenerate moment in
+    // the record (（用户 说） with nothing said, which the narrative actor
+    // then completes against). The refusal is SHOWN, not silent, and the
+    // strip keeps the picture for the message it still awaits.
+    const mock = createMockHertaBridge();
+    const { container } = renderAttached(mock);
+    const form = container.querySelector(".composer") as HTMLElement;
+    await act(async () => {
+      fireEvent.drop(form, fileDrop([{ name: "shot.png" }]));
+    });
+    await act(async () => {
+      fireEvent.submit(form);
+    });
+    expect(mock.calls.submitText).toHaveLength(0);
+    expect(screen.getByText(/Say something first/i)).toBeInTheDocument();
+    expect(container.querySelectorAll(".composer-staged__item")).toHaveLength(
+      1,
+    );
+  });
+
+  it("plain empty Enter stays a QUIET no-op — the notice is only for stranded pictures", async () => {
+    const mock = createMockHertaBridge();
+    const { container } = renderAttached(mock);
+    const form = container.querySelector(".composer") as HTMLElement;
+    await act(async () => {
+      fireEvent.submit(form);
+    });
+    expect(mock.calls.submitText).toHaveLength(0);
+    expect(screen.queryByText(/Say something first/i)).not.toBeInTheDocument();
+  });
+
+  it("staged pictures hold the composer expanded (has-staged; never is-shrunk)", async () => {
+    // The strip is the only sign the pictures are pending — resting shrunk
+    // would clip it, and the fixed 78px box painted it OVER the input
+    // (owner screenshots 2026-08-27).
+    const mock = createMockHertaBridge();
+    const { container } = renderAttached(mock);
+    const form = container.querySelector(".composer") as HTMLElement;
+    expect(form.className).toContain("is-shrunk"); // rests shrunk
+    await act(async () => {
+      fireEvent.drop(form, fileDrop([{ name: "shot.png" }]));
+    });
+    expect(form.className).toContain("has-staged");
+    // Even after focus LEAVES the form (which alone would re-shrink it),
+    // the pending pictures keep it open.
+    fireEvent.blur(form, { relatedTarget: null });
+    expect(form.className).not.toContain("is-shrunk");
+    // Removing the last picture lets it rest again.
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Remove shot.png"));
+    });
+    expect(form.className).not.toContain("has-staged");
+    expect(form.className).toContain("is-shrunk");
+  });
+
+  it("the × removes a staged picture and tells main to delete the copy", async () => {
+    const mock = createMockHertaBridge();
+    const { container } = renderAttached(mock);
+    const form = container.querySelector(".composer") as HTMLElement;
+    await act(async () => {
+      fireEvent.drop(form, fileDrop([{ name: "shot.png" }]));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Remove shot.png"));
+    });
+    expect(container.querySelectorAll(".composer-staged__item")).toHaveLength(
+      0,
+    );
+    expect(mock.calls.unstageImage).toEqual([["s-1", "staged-0"]]);
+    // …and it can no longer ride a message.
+    await act(async () => {
+      fireEvent.submit(form);
+    });
+    expect(mock.calls.submitText).toHaveLength(0); // nothing to send at all
+  });
+
+  it("a pasted screenshot stages by BYTES — the clipboard has no path", async () => {
+    const mock = createMockHertaBridge();
+    const { container } = renderAttached(mock);
+    const form = container.querySelector(".composer") as HTMLElement;
+    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+    const file = {
+      name: "",
+      type: "image/png",
+      arrayBuffer: async () => bytes.buffer,
+    };
+    await act(async () => {
+      fireEvent.paste(form, { clipboardData: { files: [file] } });
+    });
+    expect(mock.calls.stageImages).toHaveLength(1);
+    const [, inputs] = mock.calls.stageImages[0] as [
+      string,
+      readonly { name?: string; bytes?: Uint8Array }[],
+    ];
+    // A pasted File carries no name; the fallback keeps the record readable.
+    expect(inputs[0]?.name).toBe("pasted-image.png");
+    expect(inputs[0]?.bytes).toBeInstanceOf(Uint8Array);
+  });
+
+  it("an ordinary text paste is left completely alone", async () => {
+    const mock = createMockHertaBridge();
+    const { container } = renderAttached(mock);
+    const form = container.querySelector(".composer") as HTMLElement;
+    await act(async () => {
+      fireEvent.paste(form, { clipboardData: { files: [] } });
+    });
+    expect(mock.calls.stageImages).toHaveLength(0);
+  });
+
+  it("staged pictures do not survive a session switch", async () => {
+    // Transient per-session state (the 2026-07-19 "pill survived session
+    // delete" class): the ids belong to the session that made them and would
+    // not resolve anywhere else.
+    const mock = createMockHertaBridge();
+    const { container } = renderAttached(mock);
+    const form = container.querySelector(".composer") as HTMLElement;
+    await act(async () => {
+      fireEvent.drop(form, fileDrop([{ name: "shot.png" }]));
+    });
+    expect(container.querySelectorAll(".composer-staged__item")).toHaveLength(
+      1,
+    );
+    act(() => {
+      mock.emitReset({
+        sessionId: "s-2",
+        workspaceRoot: "/r",
+        record: [],
+        overlay: null,
+        backendWorkspace: "/r",
+        backendWorkspaceIsDefault: true,
+      });
+    });
+    expect(container.querySelectorAll(".composer-staged__item")).toHaveLength(
+      0,
+    );
+  });
+
+  it("surfaces a staging refusal instead of failing silently", async () => {
+    const mock = createMockHertaBridge({
+      stageImagesResult: { ok: false, message: "a turn is in progress" },
+    });
+    const { container } = renderAttached(mock);
+    const form = container.querySelector(".composer") as HTMLElement;
+    await act(async () => {
+      fireEvent.drop(form, fileDrop([{ name: "shot.png" }]));
+    });
+    expect(screen.getByText(/files cannot be added/i)).toBeInTheDocument();
+    expect(container.querySelectorAll(".composer-staged__item")).toHaveLength(
+      0,
+    );
+  });
+
+  it("a message carries at most five pictures — the refusal names the cap (owner 2026-08-27)", async () => {
+    const mock = createMockHertaBridge();
+    const { container } = renderAttached(mock);
+    const form = container.querySelector(".composer") as HTMLElement;
+    await act(async () => {
+      fireEvent.drop(
+        form,
+        fileDrop(Array.from({ length: 6 }, (_, i) => ({ name: `p${i}.png` }))),
+      );
+    });
+    // Whole-batch refusal, like the attachFiles cap: nothing staged, and the
+    // notice says the RULE rather than silently staging a prefix.
+    expect(screen.getByText(/Five pictures at most/i)).toBeInTheDocument();
+    expect(container.querySelectorAll(".composer-staged__item")).toHaveLength(
+      0,
+    );
   });
 });

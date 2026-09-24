@@ -48,6 +48,31 @@ describe("App", () => {
     );
   });
 
+  it("in full screen the Mac top bar stops reserving room for the hidden traffic lights (2026-09-23)", async () => {
+    const mock = createMockHertaBridge({
+      platform: "darwin",
+      windowIsFullScreenResult: true,
+    });
+    const { container } = render(<App bridge={mock.bridge} />);
+    const root = (): Element | null => container.querySelector(".app");
+    // Seeded from main on mount (a reload inside a full-screen window).
+    await waitFor(() =>
+      expect(root()?.classList.contains("is-fullscreen")).toBe(true),
+    );
+    act(() => mock.emitWindowFullScreen(false));
+    expect(root()?.classList.contains("is-fullscreen")).toBe(false);
+    act(() => mock.emitWindowFullScreen(true));
+    expect(root()?.classList.contains("is-fullscreen")).toBe(true);
+  });
+
+  it("the application menu's Settings… (Cmd+,) opens Settings (2026-09-23)", async () => {
+    const mock = createMockHertaBridge({ platform: "darwin" });
+    render(<App bridge={mock.bridge} />);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    act(() => mock.emitOpenSettings());
+    await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument());
+  });
+
   it("shows the error panel when bootstrap reports an error", () => {
     const mock = createMockHertaBridge();
     render(<App bridge={mock.bridge} />);
@@ -57,7 +82,7 @@ describe("App", () => {
     expect(screen.getByTestId("app-error")).toBeInTheDocument();
     expect(screen.getByText("DeepSeek API key not found")).toBeInTheDocument();
     // Localized heading renders in English under the default en locale.
-    expect(screen.getByText("Herta couldn't start")).toBeInTheDocument();
+    expect(screen.getByText("Herta could not start")).toBeInTheDocument();
     expect(screen.queryByTestId("workspace")).not.toBeInTheDocument();
   });
 
@@ -123,6 +148,20 @@ describe("App", () => {
       expect(screen.getByTestId("app-error")).toBeInTheDocument();
       expect(screen.queryByTestId("workspace")).not.toBeInTheDocument();
     } finally {
+      (window as { herta?: unknown }).herta = prior;
+    }
+  });
+
+  it("the no-bridge screen still has a way to close the frameless window (2026-09-23)", () => {
+    const prior = (window as { herta?: unknown }).herta;
+    (window as { herta?: unknown }).herta = undefined;
+    const close = vi.spyOn(window, "close").mockImplementation(() => {});
+    try {
+      render(<App />);
+      fireEvent.click(screen.getByLabelText("Close"));
+      expect(close).toHaveBeenCalledTimes(1);
+    } finally {
+      close.mockRestore();
       (window as { herta?: unknown }).herta = prior;
     }
   });

@@ -1,6 +1,11 @@
-import type { TerminalRecordBlock } from "@herta/core";
+import type { SystemBlock, TerminalRecordBlock } from "@herta/core";
 import { describe, expect, it } from "vitest";
-import { buildEpisodeDigest } from "./digest.js";
+import {
+  buildEpisodeDigest,
+  DIGEST_EVIDENCE_BUDGET,
+  DIGEST_MAX_SYSTEM_ROWS,
+  dreamRelevantSystemBody,
+} from "./digest.js";
 
 const blocks: TerminalRecordBlock[] = [
   { kind: "user", text: "加个 --verbose" },
@@ -45,6 +50,89 @@ describe("buildEpisodeDigest — attachments (ADR 0033)", () => {
     expect(d).toContain("附件 spec.md");
     expect(d).not.toContain("CONFIDENTIAL");
     expect(d).not.toContain("REVENUE");
+  });
+
+  // ADR 0069 §5 (dream review 2026-09-22, finding 9): the same text came back
+  // through 板砖's read lanes — the fold's own hint sends Herta to re-read the
+  // document — and those rows kept their detail. Keyed on provenance now.
+  const reread: TerminalRecordBlock[] = [
+    { kind: "user", text: "再看看那份 spec 第三节" },
+    { kind: "herta", surface: "speech", text: "@板砖 翻一下第三节。" },
+    {
+      kind: "system",
+      label: "差分协处理器",
+      body: "↳ excerpt .herta/attachments/s1/spec.md:40-60",
+      digest: {
+        kind: "excerpt",
+        path: ".herta/attachments/s1/spec.md",
+        from: 40,
+        to: 60,
+      },
+      evidenceDetail:
+        "↳ 摘录 .herta/attachments/s1/spec.md:40-60\nCONFIDENTIAL ROADMAP",
+    },
+    {
+      kind: "system",
+      label: "差分协处理器",
+      body: "↳ 3 matches in 2 files",
+      digest: {
+        kind: "search",
+        pattern: "TARGET",
+        matches: 3,
+        files: 2,
+        truncated: false,
+      },
+      evidenceDetail: [
+        "↳ 匹配 /TARGET/:",
+        ".herta/attachments/s1/spec.md:12: Q4 REVENUE TARGET",
+        "E:\\ws\\.herta\\attachments\\s1\\spec.md:13: REVENUE TARGET 2",
+        "src/config.ts:4: const TARGET_FPS = 60;",
+      ].join("\n"),
+    },
+    {
+      kind: "system",
+      label: "差分协处理器",
+      body: "Running cat .herta/attachments/s1/spec.md",
+      digest: {
+        kind: "op",
+        verb: "Running",
+        arg: "cat .herta/attachments/s1/spec.md",
+      },
+    },
+    {
+      kind: "system",
+      label: "差分协处理器",
+      body: "↳ exit 0 · 120 lines",
+      digest: { kind: "text", text: "↳ exit 0 · 120 lines" },
+      evidenceDetail: "↳ 输出:\nCONFIDENTIAL APPENDIX",
+    },
+    {
+      kind: "system",
+      label: "差分协处理器",
+      body: "Running npm test",
+      digest: { kind: "op", verb: "Running", arg: "npm test" },
+    },
+    {
+      kind: "system",
+      label: "差分协处理器",
+      body: "↳ exit 1 · 2 lines",
+      digest: { kind: "text", text: "↳ exit 1 · 2 lines" },
+      evidenceDetail: "↳ 输出:\nFAIL src/config.test.ts",
+    },
+    { kind: "herta", surface: "speech", text: "第三节说的是路线图。" },
+  ];
+
+  it("drops what 板砖 re-read from the attachment store and keeps what it read from the repo", () => {
+    const d = buildEpisodeDigest(reread);
+    for (const secret of ["CONFIDENTIAL", "REVENUE", "APPENDIX"]) {
+      expect(d).not.toContain(secret);
+    }
+    // The citations stay: she remembers going back to the document.
+    expect(d).toContain("↳ excerpt .herta/attachments/s1/spec.md:40-60");
+    expect(d).toContain("Running cat .herta/attachments/s1/spec.md");
+    // Repo evidence in the same episode is untouched.
+    expect(d).toContain("src/config.ts:4: const TARGET_FPS = 60;");
+    expect(d).toContain("FAIL src/config.test.ts");
   });
 });
 
@@ -142,6 +230,202 @@ describe("buildEpisodeDigest", () => {
     expect(d).toContain("完成 · 1 个文件");
     expect(d).toContain("改动文件: a.ts");
   });
+  it("keeps a background command's exit and its output — the verdict of a background test run — and drops its start, polls and stop (dream review 2026-09-22, finding 17)", () => {
+    const bg = (
+      state: "running" | "stopped" | "exited",
+      extra: Pick<SystemBlock, "evidenceDetail"> = {},
+    ): TerminalRecordBlock => ({
+      kind: "system",
+      label: "差分协处理器",
+      body: `↳ background bg-1: ${state === "exited" ? "exited (1)" : state}`,
+      digest: {
+        kind: "bg",
+        id: "bg-1",
+        state,
+        ...(state === "exited" ? { exitCode: 1 } : {}),
+      },
+      ...extra,
+    });
+    const run: TerminalRecordBlock[] = [
+      {
+        kind: "system",
+        label: "差分协处理器",
+        body: "Running npm test &",
+        digest: { kind: "op", verb: "Running", arg: "npm test &" },
+      },
+      bg("running"),
+      bg("running", { evidenceDetail: "↳ 输出:\nRUNS 12 suites" }),
+      bg("exited", { evidenceDetail: "↳ 输出:\nFAIL parser.test.ts" }),
+    ];
+    const d = buildEpisodeDigest(run);
+    expect(d).toContain("background bg-1: exited (1)");
+    expect(d).toContain("FAIL parser.test.ts");
+    expect(d).not.toContain("background bg-1: running");
+    expect(d).not.toContain("RUNS 12 suites");
+    // A background command that read the attachment store keeps its exit
+    // row and loses the text (ADR 0069 §5).
+    const fromStore = buildEpisodeDigest([
+      {
+        kind: "system",
+        label: "差分协处理器",
+        body: "Running cat .herta/attachments/s1/spec.md &",
+        digest: {
+          kind: "op",
+          verb: "Running",
+          arg: "cat .herta/attachments/s1/spec.md &",
+        },
+      },
+      bg("running"),
+      {
+        kind: "system",
+        label: "差分协处理器",
+        body: "Reading bg-1 output",
+        digest: { kind: "op", verb: "Reading", arg: "bg-1 output" },
+      },
+      bg("exited", { evidenceDetail: "↳ 输出:\nCONFIDENTIAL" }),
+    ]);
+    expect(fromStore).toContain("background bg-1: exited (1)");
+    expect(fromStore).not.toContain("CONFIDENTIAL");
+  });
+
+  it("bounds a long run: its first and last rows, every marker, and a line saying how many were left out (ADR 0069 §7)", () => {
+    const op = (i: number): TerminalRecordBlock => ({
+      kind: "system",
+      label: "差分协处理器",
+      body: `Reading src/f${i}.ts`,
+      digest: { kind: "op", verb: "Reading", arg: `src/f${i}.ts` },
+    });
+    const run: TerminalRecordBlock[] = [
+      { kind: "user", text: "修 parser" },
+      ...Array.from({ length: 50 }, (_, i) => op(i)),
+      {
+        kind: "system",
+        label: "差分协处理器",
+        body: "受阻 · 缺依赖",
+        role: "done-marker",
+      },
+      ...Array.from({ length: 50 }, (_, i) => op(50 + i)),
+      { kind: "herta", surface: "speech", text: "修好了。" },
+    ];
+    const d = buildEpisodeDigest(run);
+    // The limit counts 板砖's rows; the marker stays on top of it.
+    const kept = (d.match(/Reading src\/f\d+\.ts/g) ?? []).length;
+    expect(kept).toBe(DIGEST_MAX_SYSTEM_ROWS);
+    expect(d).toContain("Reading src/f0.ts");
+    expect(d).toContain("Reading src/f99.ts");
+    expect(d).toContain("受阻 · 缺依赖");
+    expect(d).toContain(`此处略去 ${100 - kept} 条板砖操作记录`);
+    expect(d).toContain("修好了。");
+  });
+
+  it("keeps run evidence within a budget, nearest the verdict first, and always the marker's own detail (ADR 0069 §7)", () => {
+    const out = (i: number): TerminalRecordBlock => ({
+      kind: "system",
+      label: "差分协处理器",
+      body: `↳ exit 0 · 40 lines (#${i})`,
+      digest: { kind: "text", text: `↳ exit 0 · 40 lines (#${i})` },
+      evidenceDetail: `↳ 输出:\nOUT${i} ${"x".repeat(1000)}`,
+    });
+    const d = buildEpisodeDigest([
+      ...Array.from({ length: 12 }, (_, i) => out(i)),
+      {
+        kind: "system",
+        label: "差分协处理器",
+        body: "完成 · 1 个文件",
+        role: "done-marker",
+        evidenceDetail: "↳ 改动文件: a.ts",
+      },
+    ]);
+    // Every body stays; only the last rows' outputs fit the budget.
+    expect(d).toContain("(#0)");
+    expect(d).not.toContain("OUT0 ");
+    expect(d).toContain("OUT11 ");
+    const outputs = (d.match(/OUT\d+ /g) ?? []).length;
+    expect(outputs).toBeGreaterThan(0);
+    expect(outputs * 1000).toBeLessThanOrEqual(DIGEST_EVIDENCE_BUDGET);
+    expect(d).toContain("改动文件: a.ts");
+  });
+
+  it("tags each row by what it is — a failed call, a run that failed, stopped or stalled — instead of calling everything verified (dream review 2026-09-22, finding 17)", () => {
+    const marker = (
+      body: string,
+      state?: "completed" | "failed" | "interrupted" | "blocked" | "partial",
+    ): TerminalRecordBlock => ({
+      kind: "system",
+      label: "差分协处理器",
+      body,
+      role: "done-marker",
+      ...(state !== undefined
+        ? {
+            markerSummary: {
+              kind: "done" as const,
+              state,
+              fileCount: 0,
+              riskCount: 0,
+            },
+          }
+        : {}),
+    });
+    const d = buildEpisodeDigest([
+      {
+        kind: "system",
+        label: "系统",
+        body: "↳ edit_file failed: stale_read: file changed since read",
+        digest: {
+          kind: "tool-fail",
+          tool: "edit_file",
+          code: "stale_read",
+        },
+      },
+      marker("中断 · 0 个文件", "interrupted"),
+      marker("失败 · 运行异常中止", "failed"),
+      marker("部分完成 · 1 个文件", "partial"),
+      // Persisted before markerSummary existed: the body's state word.
+      marker("受阻 · 缺依赖"),
+      marker("完成 · 1 个文件", "completed"),
+      {
+        kind: "system",
+        label: "差分协处理器",
+        body: "↳ tests: 3 failed",
+        digest: { kind: "tests", status: "failed", summary: "3 failed" },
+      },
+    ]);
+    expect(d).toContain("〔系统（失败）：↳ edit_file failed");
+    expect(d).toContain("〔差分协处理器（中断）：中断");
+    expect(d).toContain("〔差分协处理器（失败）：失败 · 运行异常中止");
+    expect(d).toContain("〔差分协处理器（部分完成）：部分完成");
+    expect(d).toContain("〔差分协处理器（受阻）：受阻");
+    expect(d).toContain("〔差分协处理器（已核实）：完成 · 1 个文件");
+    // A failing test is a verified fact about the code, not a failed run.
+    expect(d).toContain("〔差分协处理器（已核实）：↳ tests: 3 failed");
+  });
+
+  it("drops a patch preview in the shape the projector has emitted since 2026-08-25 — digest `patch`, the full diff in the body (dream review 2026-09-22, finding 1)", () => {
+    const current: TerminalRecordBlock[] = [
+      { kind: "herta", surface: "speech", text: "改。" },
+      {
+        kind: "system",
+        label: "系统",
+        body: "patch preview: a.ts (+2 -1)\n\n```diff\n--- a/a.ts\n+++ b/a.ts\n-x\n+y\n+z\n```",
+        digest: { kind: "patch", files: ["a.ts"], add: 2, del: 1 },
+      },
+      {
+        kind: "system",
+        label: "差分协处理器",
+        body: "Writing a.ts ↳ +2 −1",
+        digest: { kind: "op", verb: "Writing", arg: "a.ts" },
+      },
+    ];
+    const d = buildEpisodeDigest(current);
+    expect(d).not.toContain("```diff");
+    expect(d).not.toContain("patch preview");
+    // The write row keeps the outcome and its magnitude.
+    expect(d).toContain("Writing a.ts");
+    const preview = current[1];
+    if (preview?.kind !== "system") throw new Error("fixture");
+    expect(dreamRelevantSystemBody(preview)).toBeNull();
+  });
+
   it("drops a legacy pre-digest patch preview by body prefix", () => {
     const legacy: TerminalRecordBlock[] = [
       { kind: "herta", surface: "speech", text: "看。" },

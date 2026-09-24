@@ -3,12 +3,15 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   createActorStack,
+  createBackendProvider,
   createBackendStack,
-  digestModelFrom,
-  makeDigestProvider,
+  defaultDigestModel,
+  installUsageLog,
+  prepareBackendStack,
 } from "@herta/app-server/wiring";
 import {
   ensureHertaGitignore,
+  errorMessage,
   InMemoryToolRegistry,
   listSessions,
   readSessionFile,
@@ -16,7 +19,7 @@ import {
   SessionFileError,
 } from "@herta/core";
 import { type PromptLang, V2ActorDriver } from "@herta/herta";
-import { deepseekProvider, resolveDeepSeekKey } from "@herta/providers";
+import { resolveDeepSeekKey } from "@herta/providers";
 import { canonicalWorkspaceRoot } from "@herta/tools";
 import { CachingAskResolver } from "../render/caching-ask-resolver.js";
 import { NarrativeRenderer } from "../render/narrative-renderer.js";
@@ -82,6 +85,19 @@ export async function main(
   // results and permission grants, right beside their source. Self-ignore it
   // before anything writes there (audit BL6).
   ensureHertaGitignore(workspaceRoot);
+  // HERTA_USAGE_LOG: each model call's token counts as the API states them,
+  // prompt-cache hits included (numbers only) — `1` writes
+  // `<workspace>/.herta/usage.jsonl`, anything else is the file to write.
+  // An environment knob like the CLI's model knobs; the desktop app always
+  // keeps one beside its settings.
+  const usageLog = process.env.HERTA_USAGE_LOG;
+  if (usageLog !== undefined && usageLog.length > 0) {
+    installUsageLog(
+      usageLog === "1"
+        ? join(workspaceRoot, ".herta", "usage.jsonl")
+        : usageLog,
+    );
+  }
 
   // Resolve --resume target early (before the API key check) so that a bad
   // prefix fails fast without a key lookup.
@@ -188,7 +204,7 @@ export async function main(
       homedir: deps?.homedir,
     });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = errorMessage(err);
     stderr.write(`herta: ${msg}\n`);
     return 2;
   }
@@ -201,17 +217,20 @@ export async function main(
     devBaseUrl !== undefined && devBaseUrl !== ""
       ? { baseUrl: devBaseUrl }
       : {};
-  const backendProvider = deepseekProvider({
+  // Default the flash — `deepseek-flash`, V4.1 Flash, which reads images, so
+  // 板砖 can re-look at a picture out of the box (parity with the GUI; the
+  // vision flash has been the default since 2026-08-28, ADR 0048 §5a/§5b).
+  // Pro stays one env var away.
+  const backendModel = process.env.HERTA_BACKEND_MODEL ?? "deepseek-flash";
+  // The one way both hosts build it (@herta/app-server's session-wiring):
+  // the env supplies the model and the thinking level (HERTA_BACKEND_THINKING
+  // accepts low/high/max/false; default "high"), the wiring supplies
+  // everything the GUI session would spell the same.
+  const thinking = parseThinking(process.env.HERTA_BACKEND_THINKING, stderr);
+  const backendProvider = createBackendProvider({
     apiKey,
-    // Default flash (owner 2026-08-17, parity with the GUI): on the minimal
-    // contract the outcome lab measured flash-板砖 = Pro-板砖 (62/62) at a
-    // fraction of the cost. HERTA_BACKEND_MODEL=deepseek-v4-pro opts back.
-    model: process.env.HERTA_BACKEND_MODEL ?? "deepseek-v4-flash",
-    // Default "high". HERTA_BACKEND_THINKING accepts low/high/max/false —
-    // note deepseek-v4-pro maps a sent "low" to "high" server-side until
-    // its announced early-August-2026 update (flash already honors it).
-    thinking:
-      parseThinking(process.env.HERTA_BACKEND_THINKING, stderr) ?? "high",
+    model: backendModel,
+    ...(thinking !== undefined ? { thinking } : {}),
     ...baseUrl,
   });
   const isTty =
@@ -248,15 +267,22 @@ export async function main(
   // exists on this machine (owner flip 2026-08-17, parity with the GUI); the
   // standard 15-tool set otherwise, or with HERTA_BACKEND_CONTRACT=standard.
   // The CLI takes the knob from the environment like its model knobs.
+  const wantMinimal = process.env.HERTA_BACKEND_CONTRACT !== "standard";
+  await prepareBackendStack({ wantMinimal });
   const backend = createBackendStack({
     wsHolder,
     workspaceRoot,
     lang,
-    wantMinimal: process.env.HERTA_BACKEND_CONTRACT !== "standard",
+    wantMinimal,
     backendProvider,
+    // ADR 0048 §5: the stack mounts `view_image` only when this model can
+    // actually see — one rule for both hosts (isVisionModel in the wiring);
+    // without it an operator on the vision model would pay its latency and
+    // still be told it has no eyes.
+    backendModel,
     // The digest tool's side model (ADR 0043) — the same flash sidecar the
     // GUI host builds.
-    digestModel: digestModelFrom(makeDigestProvider(apiKey, baseUrl)),
+    digestModel: defaultDigestModel(apiKey, baseUrl),
     makeAsk: ({ cache, rules }) =>
       new CachingAskResolver(
         new CliAskResolver(stdin as NodeJS.ReadStream, stdout, style),
@@ -347,12 +373,15 @@ export async function main(
   // Default to deepseek-v4-pro for the v0.2 narrative-completion actor.
   // The actor is the user's primary touchpoint with Herta — voice fidelity
   // and Chinese nuance matter more here than per-turn latency. Operators
-  // can override via HERTA_ACTOR_MODEL=deepseek-v4-flash to trade quality
-  // for ~3x speed and ~10x lower cost.
+  // can override via HERTA_ACTOR_MODEL=deepseek-flash to trade quality for
+  // speed and cost.
   //
-  // NOTE: as of 2026-05, the DeepSeek API accepts only `deepseek-v4-pro`
-  // or `deepseek-v4-flash` on the completion endpoint. Any other model
+  // NOTE: per the DeepSeek doc (2026-09-10) the completion endpoint accepts
+  // only `deepseek-flash` or `deepseek-v4-pro` (the retired
+  // `deepseek-v4-flash` is still served, as V4.1 Flash). Any other model
   // identifier produces a 400 "supported API model names are..." error.
+  // DeepSeek retires V4 Pro on 2026-09-14: the name stays accepted, served
+  // by V4.1 Flash at the Flash price.
   const model = process.env.HERTA_ACTOR_MODEL ?? "deepseek-v4-pro";
 
   // `lang` selects the reveal cadence (EN word-paced, zh per code point) and
@@ -385,7 +414,15 @@ export async function main(
     hints: actor.actorHints,
     supervisorProvider: actor.supervisorProvider,
     supervisorReference: actor.supervisorReference,
+    supervisorRevision: actor.supervisorRevision,
+    speculativeThought: actor.speculativeThought,
     recap: actor.recap,
+    // ADR 0069 §1: the prefix follows a fold. (The CLI runs no automatic
+    // dream pass, so nothing marks it stale.)
+    ...(actor.rebuildStaticPrefix !== undefined
+      ? { rebuildStaticPrefix: actor.rebuildStaticPrefix }
+      : {}),
+    prefixRecapBoundary: actor.prefixRecapBoundary,
     lang,
   });
 
@@ -407,6 +444,11 @@ export async function main(
 
   await repl({
     actor: driver,
+    // In-REPL /resume rebinds the driver to the loaded session's own
+    // prefix, exclusions and recap (ADR 0069 §3).
+    rebindSession: async (sid, record) => {
+      driver.rebindSession(await actor.sessionScope(sid, record));
+    },
     tools: actorTools,
     input,
     renderer: v2Renderer,

@@ -13,28 +13,42 @@ import {
   V2RecordPersister,
   writeSessionTitle,
 } from "@herta/core";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createSessionHost,
   makeLifecycleSerializer,
   wrapSessionForDreamActivity,
 } from "./session-host.js";
+import { removeTmpDir } from "./testing/tmp-workspace.js";
 import type { AppServerConfig, Session } from "./types.js";
+
+/** Every workspace mkConfig() makes, removed after the test that made it —
+ *  a suite run used to leave one `herta-app-server-test-*` per call under
+ *  %TEMP% (tens of thousands by 2026-09-16). Same pattern as
+ *  session-wiring.test.ts. Each test here closes its own session before it
+ *  ends, so nothing still writes into the tree being removed — but a
+ *  reopened session's repository probe runs `git` with THIS workspace as
+ *  its cwd (the legacy fallback), and close() does not wait for that child;
+ *  removeTmpDir waits it out. */
+const tmpDirs: string[] = [];
+afterEach(async () => {
+  for (const d of tmpDirs.splice(0)) await removeTmpDir(d);
+});
 
 function mkConfig(): AppServerConfig {
   const root = mkdtempSync(join(tmpdir(), "herta-app-server-test-"));
+  tmpDirs.push(root);
   return {
     workspaceRoot: root,
     transcriptDir: join(root, ".herta", "transcript", "v2"),
     projectMemoryDir: join(root, ".herta", "memory"),
     userMemoryDir: join(root, ".herta", "user-memory"),
-    capsulesDir: join(root, ".herta", "capsules"),
     narrativeDir: join(root, ".herta", "narrative"),
     providers: {
       apiKey: "sk-test",
       actorModel: "deepseek-v4-base",
       backendModel: "deepseek-v4-chat",
-      routerModel: "deepseek-v4-flash",
+      routerModel: "deepseek-flash",
     },
   };
 }
@@ -176,6 +190,25 @@ describe("openSession — load pre-existing JSONL", () => {
     await host.closeActiveSession();
   });
 
+  it("a create that cannot write its transcript fails with the open session STILL open (UX review 2026-09-22, item 6)", async () => {
+    // Closing first left the host with nothing open while the window still
+    // showed the closed session: every send went nowhere.
+    const host = createSessionHost(mkConfig());
+    const first = await host.createSession({});
+    const spy = vi
+      .spyOn(V2RecordPersister, "forNewSession")
+      .mockImplementationOnce(() => {
+        throw new Error("EACCES: permission denied");
+      });
+    try {
+      await expect(host.createSession({})).rejects.toThrow(/EACCES/);
+      expect(host.activeSession).toBe(first);
+    } finally {
+      spy.mockRestore();
+    }
+    await host.closeActiveSession();
+  });
+
   it("a corrupt file fails the open but leaves the active session pointed", async () => {
     const cfg = mkConfig();
 
@@ -259,7 +292,7 @@ describe("deleteSession", () => {
 
     const r = await host.deleteSession(sessionId);
 
-    expect(r).toEqual({ ok: true, wasActive: false });
+    expect(r).toEqual({ ok: true, wasActive: false, removed: true });
     expect(existsSync(join(cfg.transcriptDir, `${sessionId}.jsonl`))).toBe(
       false,
     );
@@ -278,7 +311,7 @@ describe("deleteSession", () => {
 
     const r = await host.deleteSession(active.sessionId);
 
-    expect(r).toEqual({ ok: true, wasActive: true });
+    expect(r).toEqual({ ok: true, wasActive: true, removed: true });
     expect(host.activeSession).toBeNull();
     expect(
       existsSync(join(cfg.transcriptDir, `${active.sessionId}.jsonl`)),
@@ -374,6 +407,18 @@ describe("hasEnoughDreamMaterial (host wiring)", () => {
       writeSession(cfg, `short-${i}`, 1, new Date("2026-06-15T00:00:00.000Z"));
     }
     expect(materialGate(cfg)).toBe(true); // 5 new sessions ≥ minNewSessions
+  });
+
+  it("with no key it is closed before anything is read — the pass could not run (dream review 2026-09-22, finding 11)", () => {
+    const cfg = mkConfig();
+    writeDreamManifest(cfg, "2026-06-10T00:00:00.000Z");
+    writeSession(cfg, "long-new", 25, new Date("2026-06-15T00:00:00.000Z"));
+    expect(
+      materialGate({
+        ...cfg,
+        providers: { ...cfg.providers, apiKey: "" },
+      }),
+    ).toBe(false);
   });
 
   it("does not fire on too few short new sessions", () => {
@@ -552,13 +597,44 @@ describe("wrapSessionForDreamActivity", () => {
     await wrapped.submitText("hi");
     await wrapped.regenerateLastReplyIfOrphaned?.();
     await wrapped.playOpening?.();
-    expect(calls.note).toBe(3);
+    // Both ends of each call count (dream review 2026-09-22, finding 2).
+    expect(calls.note).toBe(6);
     // tick fires in a detached microtask right after each wrapped call.
     await Promise.resolve();
     expect(calls.tick).toBe(3);
 
     // Non-turn methods pass through untouched.
     await wrapped.interrupt();
-    expect(calls.note).toBe(3);
+    expect(calls.note).toBe(6);
+  });
+
+  it("a turn's END restarts the idle clock — a long run never ends into a pass the moment the reply lands (dream review 2026-09-22, finding 2)", async () => {
+    const stamps: string[] = [];
+    let release!: () => void;
+    const turn = new Promise<void>((r) => {
+      release = r;
+    });
+    const trigger = {
+      noteActivity: () => {
+        stamps.push("note");
+      },
+      tick: () => {
+        stamps.push("tick");
+      },
+    };
+    const fake = {
+      submitText: async () => {
+        stamps.push("turn-start");
+        await turn;
+        stamps.push("turn-end");
+        return { turnId: "t" };
+      },
+    } as unknown as Session;
+    const wrapped = wrapSessionForDreamActivity(fake, trigger);
+    const p = wrapped.submitText("a long 板砖 run");
+    release();
+    await p;
+    await Promise.resolve();
+    expect(stamps).toEqual(["note", "turn-start", "turn-end", "note", "tick"]);
   });
 });

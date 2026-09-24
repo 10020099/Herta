@@ -1,3 +1,4 @@
+import { errorMessage, isAbortError } from "../errors.js";
 import type { EventBus } from "../event-bus.js";
 import type { AgentError } from "../types/errors.js";
 import type { AgentEvent } from "../types/events.js";
@@ -79,18 +80,15 @@ export async function streamModelInference(
   return { text, reasoning, toolCalls, finishReason, deltas };
 }
 
-export function isAbortError(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    (err as { name?: string }).name === "AbortError"
-  );
-}
+// The ONE abort predicate lives in ../errors.ts since 2026-09-11 (with the
+// abort constructor and `errorMessage`); re-exported here for the callers
+// that import it by this path.
+export { isAbortError };
 
 export function toProviderError(err: unknown): AgentError {
   return {
     kind: "provider_failed",
-    message: err instanceof Error ? err.message : String(err),
+    message: errorMessage(err),
     cause: err,
   };
 }

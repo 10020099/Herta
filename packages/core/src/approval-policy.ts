@@ -9,6 +9,16 @@ import {
   type SessionApprovalCache,
 } from "./session-approval-cache.js";
 import type { PermissionRequest } from "./types/events.js";
+import { trustCovers } from "./workspace-trust.js";
+
+/** Policy options (ADR 0064). */
+export interface ApprovalPolicyOpts {
+  /** Whether the CURRENT workspace trusts by default when the owner has
+   *  not chosen: the session's managed sandbox does (nothing of theirs is
+   *  in it), a real project does not. A provider — the workspace can move
+   *  mid-session. Absent → never by default (the CLI). */
+  readonly defaultTrust?: () => boolean;
+}
 
 /**
  * The part of a permission ask that is POLICY, not presentation (D4): which
@@ -31,7 +41,20 @@ export class ApprovalPolicy {
   constructor(
     private readonly cache: SessionApprovalCache,
     private readonly rules?: ProjectCommandRuleStore,
+    private readonly opts: ApprovalPolicyOpts = {},
   ) {}
+
+  /**
+   * Whether this workspace trusts (ADR 0064): the owner's explicit choice
+   * in the permissions file, else the host's default for the workspace
+   * kind. Without a rule store there is nowhere to record a choice, so
+   * only the default applies.
+   */
+  workspaceTrusted(): boolean {
+    const explicit = this.rules?.trust() ?? null;
+    if (explicit !== null) return explicit === "workspace";
+    return this.opts.defaultTrust?.() === true;
+  }
 
   /**
    * Decide before prompting. `auto` → the ask is already covered (the surface
@@ -47,6 +70,15 @@ export class ApprovalPolicy {
     const scope = permissionCacheScope(request);
     if (this.cache.has(tool, risk, scope)) {
       return { kind: "auto", via: "cache", scope };
+    }
+
+    // Workspace trust (ADR 0064): every class the request carries stays
+    // inside the workspace, and this workspace trusts. The record still
+    // shows the row and the diff; only the card is skipped.
+    const trusted = this.workspaceTrusted();
+    const covered = trustCovers(request);
+    if (trusted && covered) {
+      return { kind: "auto", via: "workspace_trust", scope };
     }
 
     // Project-rule hit (ADR 0030): persistent auto-allow, gated on the LIVE
@@ -73,6 +105,10 @@ export class ApprovalPolicy {
       scope,
       showRemember: this.cache.isCacheable(tool, risk, scope),
       projectRule: derived === null ? undefined : ruleDisplay(derived),
+      // Offer the trust grant only where it would take effect: the class is
+      // one the tier covers, the workspace does not trust yet, and there is
+      // a store to record the choice in.
+      showTrust: covered && !trusted && this.rules !== undefined,
     };
   }
 
@@ -83,6 +119,15 @@ export class ApprovalPolicy {
    */
   commit(request: PermissionRequest, persistence: ApprovalPersistence): void {
     if (persistence === "once") return;
+    if (persistence === "trust") {
+      // ADR 0064: the grant is the WORKSPACE's, not this request's — but it
+      // is only offered on a request the tier covers (`showTrust`), so a
+      // surface cannot turn a destructive card into a standing trust.
+      if (this.rules !== undefined && trustCovers(request)) {
+        this.rules.setTrust("workspace");
+      }
+      return;
+    }
     if (persistence === "session") {
       this.cache.add(
         request.call.tool,
@@ -100,13 +145,15 @@ export class ApprovalPolicy {
   }
 }
 
-/** How long a granted allow should outlive this one ask. */
-export type ApprovalPersistence = "once" | "session" | "always";
+/** How long a granted allow should outlive this one ask. `trust` (ADR 0064)
+ *  is not about this ask at all: it turns workspace trust on for the
+ *  workspace, and allows this one. */
+export type ApprovalPersistence = "once" | "session" | "always" | "trust";
 
 export type ApprovalPreflight =
   | {
       readonly kind: "auto";
-      readonly via: "cache" | "project_rule";
+      readonly via: "cache" | "project_rule" | "workspace_trust";
       readonly scope: string | undefined;
       /** The matched command argv (project-rule hits only). */
       readonly argv?: readonly string[];
@@ -119,6 +166,9 @@ export type ApprovalPreflight =
       /** Display form of the rule an "always" grant would persist; undefined
        *  → hide the project-rule choice. */
       readonly projectRule: string | undefined;
+      /** Offer the workspace-trust grant (ADR 0064): this class is one the
+       *  tier covers and the workspace does not trust yet. */
+      readonly showTrust: boolean;
     };
 
 /**

@@ -1,6 +1,7 @@
-import { mkdir, readdir, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { dreamDirFor, narrativeDirFor } from "@herta/core";
+import { dreamDirFor, errorMessage, narrativeDirFor } from "@herta/core";
 import { promptAssetsFor } from "./prompt-assets.js";
 import type { PromptLang } from "./prompt-lang.js";
 
@@ -38,6 +39,13 @@ import type { PromptLang } from "./prompt-lang.js";
 export async function materializeSeedFeian(
   workspaceRoot: string,
   lang: PromptLang = "zh",
+  /** Test seam: a substitute seed bundle (seeds + superseded registry).
+   *  Production callers omit it — the compiled bundle is the truth. */
+  assetsOverride?: {
+    readonly feianSeeds: Readonly<Record<string, string>>;
+    readonly supersededFeianSha1: readonly string[];
+    readonly retiredFeian?: Readonly<Record<string, readonly string[]>>;
+  },
 ): Promise<void> {
   // Per-language dir: EN seeds land in `.herta/narrative-en`, wholly separate
   // from the zh corpus in `.herta/narrative` (which only zh reads/writes). The
@@ -61,21 +69,91 @@ export async function materializeSeedFeian(
     await listDir(join(dreamDirFor(workspaceRoot, lang), "archive")),
   );
 
-  const seeds = promptAssetsFor(lang).feianSeeds;
+  const assets = assetsOverride ?? promptAssetsFor(lang);
+  const seeds = assets.feianSeeds;
   const missing = Object.entries(seeds).filter(
     ([filename]) => !live.has(filename) && !archived.has(filename),
   );
-  if (missing.length === 0) return;
+
+  // Seed-revision upgrade path (ADR 0052): a live file matching a bundle
+  // seed's FILENAME but not its current body is either the user's own edit
+  // (untouchable, D7) or a stale copy of a prior bundle version. The two
+  // are distinguished by content hash: every retired seed body's sha1 is
+  // registered in the bundle, so a stale copy is recognized EXACTLY and
+  // overwritten with the revision, while anything else — a user edit, a
+  // dream 废案 that happens to share nothing but confusion — never matches
+  // and is never touched.
+  const superseded = new Set(assets.supersededFeianSha1);
+  const stale: Array<[string, string]> = [];
+  if (superseded.size > 0) {
+    for (const [filename, body] of Object.entries(seeds)) {
+      if (!live.has(filename)) continue;
+      try {
+        const onDisk = await readFile(join(dir, filename), "utf-8");
+        const normalized = onDisk.replace(/\r\n/g, "\n");
+        if (normalized === body) continue; // current — nothing to do
+        const sha1 = createHash("sha1")
+          .update(normalized, "utf8")
+          .digest("hex");
+        if (superseded.has(sha1)) stale.push([filename, body]);
+      } catch {
+        // unreadable live file — leave it alone; the prefix builder's own
+        // error handling owns that case.
+      }
+    }
+  }
+
+  // Retired seeds (ADR 0053): a file that no longer ships because its
+  // content was folded into another seed. Materialization only ever writes,
+  // so without this an existing workspace would carry the retired file
+  // NEXT TO its successor and Herta would read the same lesson twice.
+  // Archived, never deleted — the same destination cap-eviction uses — and
+  // only when the content still hashes to a body this bundle shipped, so a
+  // user-edited copy is left alone (D7).
+  const retiredMap = assets.retiredFeian ?? {};
+  const retired: string[] = [];
+  for (const [filename, hashes] of Object.entries(retiredMap)) {
+    if (!live.has(filename)) continue;
+    try {
+      const onDisk = (await readFile(join(dir, filename), "utf-8")).replace(
+        /\r\n/g,
+        "\n",
+      );
+      const sha1 = createHash("sha1").update(onDisk, "utf8").digest("hex");
+      if (hashes.includes(sha1)) retired.push(filename);
+    } catch {
+      // unreadable — leave it alone.
+    }
+  }
+
+  if (missing.length === 0 && stale.length === 0 && retired.length === 0) {
+    return;
+  }
 
   await mkdir(dir, { recursive: true });
-  for (const [filename, body] of missing) {
+  if (retired.length > 0) {
+    const archiveDir = join(dreamDirFor(workspaceRoot, lang), "archive");
+    await mkdir(archiveDir, { recursive: true });
+    for (const filename of retired) {
+      try {
+        await rename(join(dir, filename), join(archiveDir, filename));
+      } catch (err) {
+        console.warn(
+          `materializeSeedFeian: failed to archive retired ${filename}: ${errorMessage(
+            err,
+          )}`,
+        );
+      }
+    }
+  }
+  for (const [filename, body] of [...missing, ...stale]) {
     try {
       await writeFile(join(dir, filename), body, "utf-8");
     } catch (err) {
       console.warn(
-        `materializeSeedFeian: failed to write ${filename}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        `materializeSeedFeian: failed to write ${filename}: ${errorMessage(
+          err,
+        )}`,
       );
     }
   }

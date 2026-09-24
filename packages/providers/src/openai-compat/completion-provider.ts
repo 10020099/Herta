@@ -4,6 +4,7 @@ import type {
   CompletionRequest,
 } from "@herta/core";
 import { ProviderError } from "../errors.js";
+import { type ProviderUsage, reportProviderUsage } from "../usage.js";
 import type { ApiKey } from "./api-key.js";
 import { postCompletions } from "./completion-http.js";
 import { mapCompletionStream } from "./completion-stream.js";
@@ -27,6 +28,9 @@ export interface OpenAICompatibleCompletionProviderOpts {
   /** SSE idle watchdog: max ms between body chunks before the stream is
    * treated as stalled. Default 90s; 0 disables. See `ParseSSEOpts`. */
   idleTimeoutMs?: number;
+  /** Told each call's token usage as the API states it — in addition to the
+   *  process-wide sink (`usage.ts`). */
+  onUsage?: (usage: ProviderUsage) => void;
 }
 
 export class OpenAICompatibleCompletionProvider
@@ -92,6 +96,15 @@ export class OpenAICompatibleCompletionProvider
           : {},
       ),
       signal,
+      (usage) => {
+        const stated: ProviderUsage = {
+          endpoint: "completion",
+          model: request.model,
+          ...usage,
+        };
+        this.opts.onUsage?.(stated);
+        reportProviderUsage(stated);
+      },
     );
   }
 }

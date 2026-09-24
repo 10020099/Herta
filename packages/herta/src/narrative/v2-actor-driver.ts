@@ -15,7 +15,12 @@ import {
   type StaticHertaPrefix,
   serializeActorPrompt,
 } from "./actor-prompt.js";
-import { ActorTurnAbortedError, runActorCompletionTurn } from "./actor-turn.js";
+import {
+  ActorTurnAbortedError,
+  runActorCompletionTurn,
+  userTextPreemptsDispatch,
+} from "./actor-turn.js";
+import { startThoughtSpeculation } from "./actor-turn-stream.js";
 import { classifyIntent, lastNSpeechTurns } from "./intent-router.js";
 import {
   type AttachedMetaThink,
@@ -48,8 +53,41 @@ import type { ActorStreamingSink } from "./streaming-sink.js";
  * Tuning: 5 is a starting value. Larger keeps the anchor stable at
  * a small voice-drift cost; smaller re-emits the preamble more often
  * at a larger token cost. Change here if a regression suggests it.
+ *
+ * Since ADR 0066 (2026-09-17) the default policy at this point is to
+ * EXPIRE the preamble rather than jump it — see
+ * `V2ActorDriverDeps.speakAnchorPolicy`. The interval keeps its meaning
+ * as the turn count after which the preamble stops being re-sent.
  */
 const SPEAK_ANCHOR_REFRESH_INTERVAL = 5;
+
+/**
+ * Re-derives the static prefix at a STEP event (ADR 0069 §1): the few-shot
+ * set a session reads is decided by the dream corpus on disk and by which of
+ * the session's own dreams are still verbatim in its record. Called by the
+ * driver only when one of those moved — never per turn. `current` carries
+ * what the session-scoped prefix holds besides the corpus (a new session's
+ * opening preamble); the returned prefix replaces it whole.
+ */
+export type StaticPrefixRebuilder = (input: {
+  /** The committed record (this turn's user block not yet appended). */
+  readonly record: TerminalRecord;
+  /** The recap boundary this turn's prompt uses. */
+  readonly recapBoundaryIndex: number;
+  readonly current: StaticHertaPrefix;
+}) => Promise<StaticHertaPrefix>;
+
+/** The parts of the actor's input that belong to ONE session: rebinding the
+ *  driver to another session (the CLI's in-REPL `/resume`) swaps them
+ *  together, so the loaded record never reads another session's prefix,
+ *  exclusions or recap (dream review 2026-09-22, finding 10). */
+export interface DriverSessionScope {
+  readonly staticPrefix: StaticHertaPrefix;
+  readonly recap?: RecapRuntime;
+  readonly rebuildStaticPrefix?: StaticPrefixRebuilder;
+  /** The recap boundary `staticPrefix` was derived against. Default 0. */
+  readonly prefixRecapBoundary?: number;
+}
 
 /**
  * D3 lead beat: how long a NEW session's opening seed holds AFTER the turn's
@@ -65,12 +103,10 @@ export const OPENING_LEAD_MS = 2000;
 
 /**
  * Returns true when the corpus has at least one non-empty meta-think blob.
- * An all-empty corpus means no meta-think text can be injected, so
- * two-phase mode is not useful — the driver passes `undefined` to
- * `runActorCompletionTurn`, falling back to Slice 10 single-phase mode.
- *
- * Per the V2ActorDriverDeps spec comment: "Pass an empty corpus to disable
- * mood routing (the actor falls back to Slice 10 single-phase mode)."
+ * An all-empty corpus (a test seam — the compiled corpus is never empty)
+ * means no meta-think text can be injected, so the driver builds no
+ * attachment; the actor still runs its think-then-speak rhythm (the
+ * single-phase fallback this used to select is gone, 2026-09-03).
  */
 function corpusHasContent(corpus: MetaThinkCorpus): boolean {
   return (
@@ -148,7 +184,7 @@ export interface V2ActorDriverDeps {
     prompt: string,
   ) => void;
   /** Slice 13 (chat-mode escalation): router provider. Typically
-   *  `deepseekProvider({ model: "deepseek-v4-flash", thinking: "low" })`
+   *  `deepseekProvider({ model: "deepseek-flash", thinking: "low" })`
    *  (low since the 2026-07-31 flash update; the supervisor keeps its own
    *  "high" adapter).
    *  Used once per user turn to classify the conversation into one of
@@ -160,9 +196,9 @@ export interface V2ActorDriverDeps {
    *  Model name lives on the provider instance (via the factory's
    *  `model` option), not on per-call requests. */
   readonly routerProvider: ProviderAdapter;
-  /** Slice 13: pre-loaded meta-think corpus. Pass an empty corpus
-   *  to disable mood routing (the actor falls back to Slice 10
-   *  single-phase mode). */
+  /** Slice 13: pre-loaded meta-think corpus. An empty corpus (a test
+   *  seam) means no meta-think attachment is built; the actor still thinks
+   *  then speaks. */
   readonly metaThinkCorpus: MetaThinkCorpus;
   /** Editable actor hints, loaded at startup. Optional: omit to use the
    *  hardcoded `DEFAULT_ACTOR_HINTS`. */
@@ -172,6 +208,19 @@ export interface V2ActorDriverDeps {
    *  Built at app bootstrap (router summarizer + persisted cache). Undefined
    *  → no compaction. */
   readonly recap?: RecapRuntime;
+  /**
+   * Re-derives `staticPrefix` at a step event (ADR 0069 §1). Absent → the
+   * prefix is fixed for the driver's life (tests, a caller with a fixed
+   * prefix). The driver calls it when this turn's recap boundary differs
+   * from `prefixRecapBoundary` (a fold, or a rewind that invalidated the
+   * recap), and on the first turn after `markPrefixStale()` (a dream pass
+   * completed). Between those the prefix bytes never change, so the prompt
+   * cache holds.
+   */
+  readonly rebuildStaticPrefix?: StaticPrefixRebuilder;
+  /** The recap boundary `staticPrefix` was derived against (the validated
+   *  cached boundary on a reopen, 0 for a new session). Default 0. */
+  readonly prefixRecapBoundary?: number;
   /**
    * Optional supervisor chat-mode provider. Typically the same
    * `ProviderAdapter` instance used by the router. When set together
@@ -184,6 +233,36 @@ export interface V2ActorDriverDeps {
    * `loadSupervisorReference`. Empty string disables the supervisor.
    */
   readonly supervisorReference?: string;
+  /** ADR 0065: adopt the supervisor's corrected line as the re-speak when
+   *  it is usable (see `ActorTurnDeps.supervisorRevision`). */
+  readonly supervisorRevision?: boolean;
+  /**
+   * What happens to the speak anchor after `SPEAK_ANCHOR_REFRESH_INTERVAL`
+   * same-state turns. "refresh" (the behavior to date): the pre_speak
+   * preamble jumps forward to the current speech position, which changes
+   * the serialized record behind the old anchor — a prompt-cache miss over
+   * that stretch every five turns, and again at the next state change.
+   * "expire": the preamble is dropped where it stands, once; nothing moves
+   * again until the state changes, and the next state's anchor lands at
+   * the tail, after everything the cache holds. The in-mood speeches
+   * already in the record and the per-turn pre_think carry the register.
+   * Default "expire" (ADR 0066, `scripts/anchor-lab.mjs` 2026-09-17: no
+   * register loss over turns 6–10 without the preamble, one bounded
+   * cache miss per mood run instead of one per five turns); "refresh"
+   * stays available for a lab.
+   */
+  readonly speakAnchorPolicy?: "refresh" | "expire";
+  /**
+   * Start the turn's first thought while the router is still classifying,
+   * under the mood the turn would have if it does not change (ADR 0066
+   * amendment 2026-09-21). Adopted only when the prompt turns out
+   * byte-identical; a changed mood cancels it and the thought is asked
+   * again, as before. Default OFF here — a direct caller (a test, a lab)
+   * gets exactly one completion request per thought unless it asks for
+   * more; the runtime wiring turns it on (`HERTA_SPECULATIVE_THOUGHT=0`
+   * turns it back off).
+   */
+  readonly speculativeThought?: boolean;
   /**
    * Interaction language of the session (slice 4). Per-session — the
    * driver lives for one session and threads this into EVERY
@@ -267,9 +346,26 @@ export class V2ActorDriver {
    * and the driver batch-persists after the turn as before.
    */
   private sinkPersists = false;
+  /**
+   * The session-scoped prompt inputs (ADR 0069). Seeded from `deps`; the
+   * prefix moves only at a step event (`refreshPrefixAtStep`), and all four
+   * move together when `rebindSession` points the driver at another session.
+   * Every turn, beat and speculation reads them from here, never from deps.
+   */
+  private staticPrefix: StaticHertaPrefix;
+  private recap: RecapRuntime | undefined;
+  private rebuildPrefix: StaticPrefixRebuilder | undefined;
+  /** The recap boundary `staticPrefix` was derived against. */
+  private prefixBoundary: number;
+  /** A dream pass completed since the prefix was derived (`markPrefixStale`). */
+  private prefixStale = false;
 
   constructor(private readonly deps: V2ActorDriverDeps) {
     this.persister = deps.persister;
+    this.staticPrefix = deps.staticPrefix;
+    this.recap = deps.recap;
+    this.rebuildPrefix = deps.rebuildStaticPrefix;
+    this.prefixBoundary = deps.prefixRecapBoundary ?? 0;
     // Hand a persisting sink a hook that reads our LIVE persister (so a
     // `/resume` `setPersister` swap is honored without re-wiring the sink), and
     // mark that the sink owns persistence. The hook fires inside the sink's
@@ -288,7 +384,17 @@ export class V2ActorDriver {
   }
 
   private staticPrefixForCurrentRequest(): StaticHertaPrefix {
-    return this.deps.staticPrefixForTurn?.() ?? this.deps.staticPrefix;
+    const forTurn = this.deps.staticPrefixForTurn;
+    if (forTurn === undefined) return this.staticPrefix;
+    // The per-turn getter exists for project-local rules that may change while
+    // a session stays open; everything else must stay the driver's CURRENT
+    // prefix — a step-event rebuild (ADR 0069 §1) or a `/resume` rebind
+    // (§3) — not the bootstrap value the session was created with. Only an
+    // env that actually differs is layered on, so a getter that returns the
+    // unchanged bootstrap prefix never masks a rebuilt one.
+    const env = forTurn().env;
+    if (env === this.staticPrefix.env) return this.staticPrefix;
+    return { ...this.staticPrefix, env };
   }
 
   /** Estimate the actual compacted actor prompt instead of counting the raw
@@ -332,6 +438,62 @@ export class V2ActorDriver {
       recapCharacters: recap?.length ?? 0,
       compactionPending: this.forceCompactPending,
     };
+  }
+
+  /**
+   * The dream corpus changed on disk (a pass completed, ADR 0069 §1b): the
+   * next turn re-derives the prefix once. Idempotent; a driver without a
+   * rebuilder ignores it.
+   */
+  markPrefixStale(): void {
+    this.prefixStale = true;
+  }
+
+  /** The prefix the next turn will use unless a step event moves it. */
+  getStaticPrefix(): StaticHertaPrefix {
+    return this.staticPrefix;
+  }
+
+  /**
+   * Point the driver's session-scoped inputs at another session (the CLI's
+   * in-REPL `/resume`, ADR 0069 §3). Pair with `loadRecord` and
+   * `setPersister` for the same session before the next turn.
+   */
+  rebindSession(scope: DriverSessionScope): void {
+    this.staticPrefix = scope.staticPrefix;
+    this.recap = scope.recap;
+    this.rebuildPrefix = scope.rebuildStaticPrefix;
+    this.prefixBoundary = scope.prefixRecapBoundary ?? 0;
+    this.prefixStale = false;
+  }
+
+  /**
+   * ADR 0069 §1: re-derive the prefix when a step event moved what it is
+   * derived from — this turn's recap boundary differs from the one the
+   * prefix was built against (a fold advanced it, a rewind invalidated it),
+   * or a dream pass completed since. The fold already re-bills the bytes
+   * behind the prefix, and a pass runs at most weekly, so the prefix's
+   * cache is lost at most once per step and never per turn.
+   *
+   * A failed rebuild keeps the prefix the turn would have had and records
+   * the step as taken: the next step event tries again, rather than every
+   * turn until it works.
+   */
+  private async refreshPrefixAtStep(recapBoundaryIndex: number): Promise<void> {
+    const rebuild = this.rebuildPrefix;
+    if (rebuild === undefined) return;
+    if (!this.prefixStale && recapBoundaryIndex === this.prefixBoundary) return;
+    try {
+      this.staticPrefix = await rebuild({
+        record: this.record,
+        recapBoundaryIndex,
+        current: this.staticPrefix,
+      });
+    } catch {
+      // Keep the current prefix (see above).
+    }
+    this.prefixBoundary = recapBoundaryIndex;
+    this.prefixStale = false;
   }
 
   getCurrentIntentState(): MoodState {
@@ -379,28 +541,38 @@ export class V2ActorDriver {
     // on rejection). False for regenerate (a resume-recovery redo should not
     // re-play the interjection or the catching-herself line).
     voiceEligible = true,
+    // Attachment blocks sent WITH this message (ADR 0048 §4) — appended after
+    // the user block by the actor turn, so they sit inside the turn's span.
+    userAttachments: readonly SystemBlock[] = [],
   ): Promise<TerminalRecord> {
     const prevLen = this.record.length;
     const staticPrefix = this.staticPrefixForCurrentRequest();
 
     // Slice 13: classify intent before the actor runs. Router failure
     // is non-fatal — we keep the prior state and proceed.
+    // The attachments are NOT in this preliminary record: the recap
+    // summarizes history BEFORE this turn, and the router classifies what the
+    // user SAID. Both would be unmoved by a picture appended after the fact.
     const prelimRecord = [...this.record, { kind: "user" as const, text }];
 
-    // Long-session compaction runs FIRST — before intent routing — so the recap
-    // hint (recap.compaction start/end) fires at turn-start and the GUI shows
-    // the recap row immediately, rather than flashing the galaxy-travel row
-    // first while the router LLM call below runs (~1s; user 2026-06-20).
-    // classifyIntent reads the raw recent record, so compacting first does not
-    // change its input. Computed once here and threaded into the turn as
+    // The two pre-speech calls run CONCURRENTLY (2026-09-03). The recap
+    // summarizes history BEFORE this turn; the router classifies what the
+    // user SAID from the raw recent record — neither reads the other's
+    // output, and on a compaction turn they used to run back to back, the
+    // summarizer's seconds plus the router's on top. The recap is STARTED
+    // first: its synchronous prefix (cache read, the prompt estimate, the
+    // `recap.compaction` start hint) runs before the router's request is even
+    // issued, so the GUI still shows the recap row at turn start on a
+    // compaction turn rather than the galaxy-travel row first (user
+    // 2026-06-20). Computed once here and threaded into the turn as
     // `precomputedRecap`; the forceCompact one-shot is consumed up here too so
     // it clears even if the turn later throws.
     const forceCompact = this.forceCompactPending;
     this.forceCompactPending = false;
-    const precomputedRecap: PreparedRecap = await prepareTurnRecap(
+    const recapPending = prepareTurnRecap(
       prelimRecord,
       staticPrefix,
-      this.deps.recap,
+      this.recap,
       forceCompact,
       signal,
       (phase) =>
@@ -410,23 +582,100 @@ export class V2ActorDriver {
           phase,
         }),
     );
+    // A step event re-derives the prefix off the recap's boundary (ADR 0069
+    // §1). Chained onto the recap rather than awaited up front: the boundary
+    // is known the moment the recap's synchronous prefix runs, so the rebuild
+    // lands before this turn reads the prefix, while the router below is
+    // still issued concurrently — the recap's summarizer no longer delays it.
+    const prefixReady = recapPending.then((prepared) =>
+      this.refreshPrefixAtStep(prepared.recapBoundaryIndex),
+    );
+    // Router failure is non-fatal — the prior state is kept. Settled to
+    // null here (not awaited under a try) so a failing router can neither
+    // reject unhandled while the recap is still running nor mask it. The
+    // driver intentionally does not log the failure — main.ts can decide
+    // whether to surface router failures.
+    //
+    // A message that makes the HARNESS dispatch 板砖 before Herta speaks (a
+    // bare `@板砖` with a brief) is not classified at all (ADR 0066 amendment
+    // 2026-09-21): the router's own first rule — 「如果开拓者直接 @板砖 …
+    // 走板砖代答版」, top of its priority order — already decides that case,
+    // and the predicate is the very one the turn dispatches on, so the mood
+    // is known without asking. The call sat in front of the dispatch: ~0.65 s
+    // and one request before 板砖 could start.
+    const preempts = userTextPreemptsDispatch(text);
+    let routerSettled = preempts;
+    const routerPending = preempts
+      ? Promise.resolve(null)
+      : classifyIntent({
+          recentRecord: lastNSpeechTurns(prelimRecord, 5),
+          currentState: this.currentIntentState,
+          provider: this.deps.routerProvider,
+          lang: this.deps.lang ?? "zh",
+          signal,
+        })
+          .then(
+            (result) => result,
+            () => null,
+          )
+          .finally(() => {
+            routerSettled = true;
+          });
+    const precomputedRecap: PreparedRecap = await recapPending;
+    // The prefix rebuild was chained onto the recap above; wait for it before
+    // anything of this turn reads the prefix (ADR 0069 §1).
+    await prefixReady;
+
+    // The first thought, started on a guess while the router is still out
+    // (see `speculativeThought`). The guess is "the mood stays": the
+    // attachment below is what this turn gets if the router agrees, built
+    // by the same planner that builds the real one after it answers — and
+    // the record, the recap and the hints are exactly the turn's. Skipped
+    // when there is nothing to gain: the router has already answered (a
+    // compaction turn's summarizer outlasts it), the message pre-empts a
+    // dispatch (the record will have moved on before Herta thinks), or the
+    // turn is already cancelled.
+    const corpusActive = corpusHasContent(this.deps.metaThinkCorpus);
+    const speculation =
+      this.deps.speculativeThought === true &&
+      !preempts &&
+      !routerSettled &&
+      !signal.aborted
+        ? startThoughtSpeculation({
+            deps: {
+              provider: this.deps.provider,
+              model: this.deps.model,
+              staticPrefix: this.staticPrefixForCurrentRequest(),
+              attachedMetaThink: corpusActive
+                ? this.planMetaThink(this.currentIntentState).attachment
+                : undefined,
+              lang: this.deps.lang ?? "zh",
+              ...(this.deps.hints !== undefined
+                ? { hints: this.deps.hints }
+                : {}),
+            },
+            record: [
+              ...this.record,
+              { kind: "user" as const, text },
+              ...userAttachments,
+            ],
+            priorTurnLength: this.record.length,
+            ...(precomputedRecap.recap !== undefined
+              ? { recap: precomputedRecap.recap }
+              : {}),
+            recapBoundaryIndex: precomputedRecap.recapBoundaryIndex,
+            signal,
+          })
+        : undefined;
+    const routed = await routerPending;
 
     let routerPrompt: string | undefined;
     let routerRawOutput: string | undefined;
-    try {
-      const result = await classifyIntent({
-        recentRecord: lastNSpeechTurns(prelimRecord, 5),
-        currentState: this.currentIntentState,
-        provider: this.deps.routerProvider,
-        lang: this.deps.lang ?? "zh",
-        signal,
-      });
-      this.currentIntentState = result.state;
-      routerPrompt = result.prompt;
-      routerRawOutput = result.rawOutput;
-    } catch {
-      // Keep prior state. The driver intentionally does not log here —
-      // main.ts can decide whether to surface router failures.
+    if (preempts) this.currentIntentState = "板砖代答版";
+    if (routed !== null) {
+      this.currentIntentState = routed.state;
+      routerPrompt = routed.prompt;
+      routerRawOutput = routed.rawOutput;
     }
     // Dump the full router transaction (prompt + raw output) for
     // diagnostics. Only fires when the router call returned without
@@ -440,11 +689,12 @@ export class V2ActorDriver {
     // Log the resolved (or kept) intent state once per turn.
     this.deps.onPrompt?.("state", this.currentIntentState);
 
-    // Only activate two-phase mood routing when the corpus has actual
-    // content. An all-empty corpus → no intentState to
-    // runActorCompletionTurn, which falls back to single-phase (Slice 10)
-    // mode.
-    const corpusActive = corpusHasContent(this.deps.metaThinkCorpus);
+    // The routed state always reaches the actor (2026-09-03 — the single-
+    // phase fallback an absent state used to select is gone). The corpus
+    // check below gates only the meta-think ATTACHMENT: an all-empty corpus
+    // (a test seam) means there is no preamble to splice, and the turn runs
+    // think-then-speak without one. (`corpusActive` is computed above, where
+    // the speculative thought needs it too.)
 
     // Build the meta-think attachment for this turn. Asymmetric
     // anchoring — the two surfaces have different stickiness AND
@@ -487,63 +737,9 @@ export class V2ActorDriver {
     // same value), saving a redundant resolve. `loadRecord` resets
     // the attachment to null so the next turn rebuilds from scratch.
     if (corpusActive) {
-      const sameState =
-        this.attachedMetaThink !== null &&
-        this.attachedMetaThink.state === this.currentIntentState;
-      if (sameState && this.attachedMetaThink !== null) {
-        this.turnsSinceSpeakAnchor += 1;
-        const speakStale =
-          this.turnsSinceSpeakAnchor >= SPEAK_ANCHOR_REFRESH_INTERVAL;
-        if (speakStale) {
-          // Speak anchor drifted too far back across same-state turns.
-          // Re-anchor at this turn's speech position so the preamble
-          // re-enters the model's effective attention window. Texts
-          // are re-resolved too (no-op for unchanged corpus, but
-          // picks up hot-reloaded content if the corpus changed mid-
-          // session).
-          this.attachedMetaThink = {
-            state: this.currentIntentState,
-            beforeThinkIndex: this.record.length,
-            beforeSpeakIndex: this.record.length + 2,
-            preThinkText: resolveMetaThink(
-              this.deps.metaThinkCorpus,
-              "thought",
-              this.currentIntentState,
-            ),
-            preSpeakText: resolveMetaThink(
-              this.deps.metaThinkCorpus,
-              "speech",
-              this.currentIntentState,
-            ),
-          };
-          this.turnsSinceSpeakAnchor = 0;
-        } else {
-          // Keep speak anchor + texts; update only the think anchor.
-          this.attachedMetaThink = {
-            ...this.attachedMetaThink,
-            beforeThinkIndex: this.record.length,
-          };
-        }
-      } else {
-        // State change (or first turn): fresh anchors at current
-        // record positions, fresh corpus lookups, counter reset.
-        this.attachedMetaThink = {
-          state: this.currentIntentState,
-          beforeThinkIndex: this.record.length,
-          beforeSpeakIndex: this.record.length + 2,
-          preThinkText: resolveMetaThink(
-            this.deps.metaThinkCorpus,
-            "thought",
-            this.currentIntentState,
-          ),
-          preSpeakText: resolveMetaThink(
-            this.deps.metaThinkCorpus,
-            "speech",
-            this.currentIntentState,
-          ),
-        };
-        this.turnsSinceSpeakAnchor = 0;
-      }
+      const planned = this.planMetaThink(this.currentIntentState);
+      this.attachedMetaThink = planned.attachment;
+      this.turnsSinceSpeakAnchor = planned.turnsSinceSpeakAnchor;
     }
 
     let result: { record: TerminalRecord };
@@ -551,7 +747,7 @@ export class V2ActorDriver {
       result = await runActorCompletionTurn({ record: this.record }, text, {
         provider: this.deps.provider,
         model: this.deps.model,
-        staticPrefix,
+        staticPrefix: this.staticPrefixForCurrentRequest(),
         bus: this.deps.bus,
         runtimeFactory: this.deps.runtimeFactory,
         sink: this.deps.sink,
@@ -564,8 +760,9 @@ export class V2ActorDriver {
           : {}),
         signal,
         precomputedRecap,
+        ...(userAttachments.length > 0 ? { userAttachments } : {}),
         lang: this.deps.lang ?? "zh",
-        intentState: corpusActive ? this.currentIntentState : undefined,
+        intentState: this.currentIntentState,
         attachedMetaThink:
           corpusActive && this.attachedMetaThink !== null
             ? this.attachedMetaThink
@@ -576,9 +773,18 @@ export class V2ActorDriver {
         ...(this.deps.supervisorReference !== undefined
           ? { supervisorReference: this.deps.supervisorReference }
           : {}),
+        ...(this.deps.supervisorRevision !== undefined
+          ? { supervisorRevision: this.deps.supervisorRevision }
+          : {}),
         ...(this.deps.hints !== undefined ? { hints: this.deps.hints } : {}),
+        ...(speculation !== undefined
+          ? { thoughtSpeculation: speculation }
+          : {}),
       });
     } catch (err) {
+      // A speculation the turn never reached (it threw first) must not keep
+      // generating; after an adoption this is a no-op.
+      speculation?.discard();
       // Interrupt at an iteration boundary (typically right after a @板砖
       // bridge run): adopt the partial record BEFORE re-throwing. The blocks
       // — backend projections, beats, the done-marker — were already rendered
@@ -597,6 +803,9 @@ export class V2ActorDriver {
       }
       throw err;
     }
+    // Idempotent: nothing to cancel once adopted; a speculation the turn
+    // had no use for stops here.
+    speculation?.discard();
     this.record = result.record;
     // Push newly-appended blocks to the persister, in order. Per-turn diff:
     // only the blocks at indices [prevLen, this.record.length). D1: SKIP when
@@ -610,6 +819,68 @@ export class V2ActorDriver {
       }
     }
     return this.record;
+  }
+
+  /**
+   * This turn's meta-think attachment IF the mood were `state` — computed,
+   * never committed. A pure function of the driver's current attachment,
+   * its same-state counter and the record length, so it can be asked twice
+   * per turn: once for the GUESS a speculative first thought runs under
+   * (the state staying what it is), once for the state the router actually
+   * returned. The three branches are the ones `runTurn` used to run inline
+   * (asymmetric anchoring — see the comment at the call site).
+   */
+  private planMetaThink(state: MoodState): {
+    readonly attachment: AttachedMetaThink;
+    readonly turnsSinceSpeakAnchor: number;
+  } {
+    const prev = this.attachedMetaThink;
+    const at = this.record.length;
+    const fresh = (): AttachedMetaThink => ({
+      state,
+      beforeThinkIndex: at,
+      beforeSpeakIndex: at + 2,
+      preThinkText: resolveMetaThink(
+        this.deps.metaThinkCorpus,
+        "thought",
+        state,
+      ),
+      preSpeakText: resolveMetaThink(
+        this.deps.metaThinkCorpus,
+        "speech",
+        state,
+      ),
+    });
+    // State change (or first turn): fresh anchors at current record
+    // positions, fresh corpus lookups, counter reset.
+    if (prev === null || prev.state !== state) {
+      return { attachment: fresh(), turnsSinceSpeakAnchor: 0 };
+    }
+    const turns = this.turnsSinceSpeakAnchor + 1;
+    const speakStale = turns >= SPEAK_ANCHOR_REFRESH_INTERVAL;
+    if (speakStale && (this.deps.speakAnchorPolicy ?? "expire") === "expire") {
+      // Expire: the speak preamble is dropped in place. The record behind
+      // the old anchor changes once (as a jump would) and never again until
+      // the state changes; the think anchor keeps moving. Idempotent on the
+      // following turns — the text is already empty.
+      return {
+        attachment: { ...prev, beforeThinkIndex: at, preSpeakText: "" },
+        turnsSinceSpeakAnchor: turns,
+      };
+    }
+    if (speakStale) {
+      // Speak anchor drifted too far back across same-state turns.
+      // Re-anchor at this turn's speech position so the preamble re-enters
+      // the model's effective attention window. Texts are re-resolved too
+      // (no-op for unchanged corpus, but picks up hot-reloaded content if
+      // the corpus changed mid-session).
+      return { attachment: fresh(), turnsSinceSpeakAnchor: 0 };
+    }
+    // Keep speak anchor + texts; update only the think anchor.
+    return {
+      attachment: { ...prev, beforeThinkIndex: at },
+      turnsSinceSpeakAnchor: turns,
+    };
   }
 
   /**
@@ -670,6 +941,14 @@ export class V2ActorDriver {
      * the record/screen stay converged.
      */
     signal?: AbortSignal,
+    /**
+     * The opening spoken by the SYNTHESIZER (ADR 0042 amendment 2026-09-08):
+     * with the real-time voice on, the caller cues no recorded clip and the
+     * sink voices the stream — its audio paces the reveal, so the clip's
+     * cadence override is ignored. Default false: the recorded clip and the
+     * clip-matched cadence, byte-identical to before.
+     */
+    voiced = false,
   ): Promise<void> {
     const sink = this.deps.sink;
     if (sink?.slowStreamSpeech !== undefined && block.kind === "herta") {
@@ -693,10 +972,17 @@ export class V2ActorDriver {
         });
       }
       if (signal?.aborted !== true) onStreamStart?.();
-      const controller = sink.slowStreamSpeech(
-        block.text,
-        baseMsOverride !== undefined ? { baseMsOverride } : undefined,
-      );
+      // `unvoiced`: by default the opening is voiced by its RECORDED clip
+      // (the cue the caller fires in onStreamStart); a sink with a speech
+      // synthesizer (ADR 0042) must not speak the same line over it. When
+      // the caller says `voiced`, it cued no clip and the sink speaks the
+      // line itself, pacing the reveal by its audio.
+      const controller = voiced
+        ? sink.slowStreamSpeech(block.text)
+        : sink.slowStreamSpeech(block.text, {
+            ...(baseMsOverride !== undefined ? { baseMsOverride } : {}),
+            unvoiced: true,
+          });
       const onAbort = (): void => controller.flushRemainder?.();
       if (signal?.aborted === true) onAbort();
       else signal?.addEventListener("abort", onAbort, { once: true });
@@ -739,11 +1025,21 @@ export class V2ActorDriver {
    *
    * Filesystem side-effects from a withdrawn `@板砖` turn are NOT reverted — this
    * withdraws the record only (see 2026-06-21-rewind-last-turn spec, D-Record-only).
+   * The one carve-out lives a layer up: SessionImpl garbage-collects the harness's
+   * own stored attachment copies for attachment blocks in the withdrawn span
+   * (`cleanUpWithdrawnAttachments`, amendment 2026-08-26) — user project files
+   * stay untouched.
    */
   rewindLastUserTurn(): { userText: string; withdrawn: TerminalRecord } | null {
+    // The turn starts at the last user block that is NOT a steer (ADR 0063
+    // §1.10): a steer is words interjected into 板砖's run, inside the turn
+    // that commissioned it. Taking the last user block of any kind withdrew
+    // only the steer and left the commission and half the run standing,
+    // with no 完成 marker.
     let userIndex = -1;
     for (let i = this.record.length - 1; i >= 0; i--) {
-      if (this.record[i]?.kind === "user") {
+      const b = this.record[i];
+      if (b?.kind === "user" && b.steer !== true) {
         userIndex = i;
         break;
       }
@@ -751,6 +1047,12 @@ export class V2ActorDriver {
     const userBlock = userIndex === -1 ? undefined : this.record[userIndex];
     if (userBlock === undefined || userBlock.kind !== "user") return null;
     const withdrawn = this.record.slice(userIndex);
+    // Everything the user said in the withdrawn turn comes back: the
+    // commission, then each steer in order, as paragraphs of one draft.
+    const steers = withdrawn.flatMap((b) =>
+      b.kind === "user" && b.steer === true ? [b.text] : [],
+    );
+    const userText = [userBlock.text, ...steers].join("\n\n");
     // Durable-first: truncate the persisted JSONL BEFORE mutating the in-memory
     // record, so a persister failure (disk full, permission denied) propagates
     // with BOTH still intact rather than leaving memory shortened ahead of disk
@@ -763,7 +1065,7 @@ export class V2ActorDriver {
     // anyway — deleting here just keeps a knowably-stale file from outliving
     // the rewind. A cache whose boundary survived (tail-only cut above it)
     // stays: its compacted span [0, boundary) is untouched.
-    const recap = this.deps.recap;
+    const recap = this.recap;
     if (recap !== undefined) {
       const cached = recap.cacheRead();
       if (
@@ -779,7 +1081,7 @@ export class V2ActorDriver {
     this.currentIntentState = "默认";
     this.attachedMetaThink = null;
     this.turnsSinceSpeakAnchor = 0;
-    return { userText: userBlock.text, withdrawn };
+    return { userText, withdrawn };
   }
 
   /**

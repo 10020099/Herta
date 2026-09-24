@@ -1,19 +1,28 @@
-import { readdirSync, unlinkSync } from "node:fs";
+import { readdirSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { liveDreamRecords } from "./manifest.js";
 import type { DreamManifest } from "./types.js";
 
 const FEIAN_FILE_RE = /^### 废案_\d{2,}：.*\.txt$/;
-const TEMP_PREFIX = ".dream-tmp-";
-/** The notes writer's temp prefix (`writeTrailblazerNotes` in semanticize.ts
- *  writes `.dream-notes-tmp-<runId>` then renames): a crash or EPERM-failed
- *  rename orphans it exactly like a promotion temp, so it joins the sweep. */
-const NOTES_TEMP_PREFIX = ".dream-notes-tmp-";
+/** The pre-2026-09-11 temp names (the promotion and notes writers' own). */
+const LEGACY_TEMP_PREFIXES = [".dream-tmp-", ".dream-notes-tmp-"];
+/** What core's `writeFileAtomicSync` leaves when it dies between write and
+ *  rename: `.<target name>.<pid>.<seq>.<rand>.tmp`. The 2026-09-11 refactor
+ *  moved the dream's writes onto it and the sweep kept matching only the
+ *  old prefixes — dead, while the new orphans piled up (dream review
+ *  2026-09-22, finding 19). Only corpus targets (`### 废案` / `### 记录`). */
+const ATOMIC_TEMP_RE = /^\.### (废案|记录).*\.tmp$/;
+/** An atomic-write temp younger than this may belong to a write in flight —
+ *  a seed being materialized by an opening session — and is left alone. */
+const ATOMIC_TEMP_MIN_AGE_MS = 10 * 60_000;
 
 export interface ReconcileInput {
   narrativeDir: string;
   /** Mutated in place: phantom live records (file gone) flip to "archived". */
   manifest: DreamManifest;
+  /** Pass-time clock for the atomic-temp age check; without it only the
+   *  legacy temp names are swept. */
+  nowMs?: number;
 }
 
 export interface ReconcileResult {
@@ -61,9 +70,8 @@ export function reconcileDreamState(input: ReconcileInput): ReconcileResult {
   //    the app's interval-gated, re-entrancy-guarded idle trigger — so any temp
   //    file seen here is from a crashed pass, never a live concurrent one.
   for (const name of entries) {
-    if (!name.startsWith(TEMP_PREFIX) && !name.startsWith(NOTES_TEMP_PREFIX)) {
-      continue;
-    }
+    const legacy = LEGACY_TEMP_PREFIXES.some((p) => name.startsWith(p));
+    if (!legacy && !isStaleAtomicTemp(input, name)) continue;
     try {
       unlinkSync(join(input.narrativeDir, name));
       res.sweptTemp++;
@@ -84,4 +92,14 @@ export function reconcileDreamState(input: ReconcileInput): ReconcileResult {
   }
 
   return res;
+}
+
+function isStaleAtomicTemp(input: ReconcileInput, name: string): boolean {
+  if (input.nowMs === undefined || !ATOMIC_TEMP_RE.test(name)) return false;
+  try {
+    const age = input.nowMs - statSync(join(input.narrativeDir, name)).mtimeMs;
+    return age > ATOMIC_TEMP_MIN_AGE_MS;
+  } catch {
+    return false;
+  }
 }

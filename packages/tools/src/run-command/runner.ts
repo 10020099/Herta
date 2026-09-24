@@ -1,11 +1,13 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import { childProcessEnv } from "../child-env.js";
 
 export interface RunOptions {
   cwd: string;
   timeoutMs: number;
   signal: AbortSignal;
   maxBytesPerStream: number;
-  /** Merged child environment (ADR 0025 slice 4); defaults to process.env.
+  /** Merged child environment (ADR 0025 slice 4); defaults to
+   *  `childProcessEnv()` (process.env minus the AppImage launcher's entries).
    *  Callers must have vetted model-supplied keys through the env guard. */
   env?: NodeJS.ProcessEnv;
 }
@@ -190,7 +192,7 @@ export async function runCommand(
         shell: false,
         ...(isWin ? {} : { detached: true }),
         stdio: ["ignore", "pipe", "pipe"],
-        env: options.env ?? process.env,
+        env: options.env ?? childProcessEnv(),
         windowsHide: true,
       });
     } catch (err) {

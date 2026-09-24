@@ -62,7 +62,7 @@ describe("DeepSeekSettings", () => {
     it("loads the persisted choice into both Selects", async () => {
       const mock = createMockHertaBridge({
         getModelConfigResult: {
-          actor: "deepseek-v4-flash",
+          actor: "deepseek-flash",
           backend: "deepseek-v4-pro",
         },
       });
@@ -81,12 +81,13 @@ describe("DeepSeekSettings", () => {
       await waitFor(() => expect(actor.textContent).toContain("Pro"));
       fireEvent.click(actor);
       fireEvent.click(getByRole("option", { name: "Flash" }));
-      // Backend rides along at its default (flash since 2026-08-17).
+      // Backend rides along at its default (the flash — the vision-capable
+      // one since the 2026-09 rename, ADR 0048 §5a/§5b).
       expect(mock.calls.setModelConfig).toEqual([
-        { actor: "deepseek-v4-flash", backend: "deepseek-v4-flash" },
+        { actor: "deepseek-flash", backend: "deepseek-flash" },
       ]);
       // The restart fact lives in the intro (static), like the thinking row.
-      expect(queryByText("Restart to apply.")).toBeNull();
+      expect(queryByText("Restart to apply")).toBeNull();
       expect(queryByText(/apply after a restart/)).toBeTruthy();
     });
 
@@ -98,7 +99,7 @@ describe("DeepSeekSettings", () => {
       await waitFor(() => expect(backend.textContent).toContain("Flash"));
       fireEvent.click(backend);
       fireEvent.click(getByRole("option", { name: "Pro" }));
-      await waitFor(() => expect(queryByText(/Couldn't save/)).toBeTruthy());
+      await waitFor(() => expect(queryByText(/Could not save/)).toBeTruthy());
       expect(backend.textContent).toContain("Flash");
     });
 
@@ -157,7 +158,7 @@ describe("DeepSeekSettings", () => {
     // A turn starts → the store goes busy (thinking).
     mock.emitTurn({ kind: "started", turnId: "t1" });
     await waitFor(() =>
-      expect(queryByText("Finish the current turn first.")).toBeTruthy(),
+      expect(queryByText("Finish the current turn first")).toBeTruthy(),
     );
     expect((getByText("Save") as HTMLButtonElement).disabled).toBe(true);
     expect((getByText("Delete key") as HTMLButtonElement).disabled).toBe(true);

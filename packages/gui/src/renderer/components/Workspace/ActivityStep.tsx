@@ -1,10 +1,18 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import {
+  Fragment,
+  memo,
+  type RefObject,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import type { TFn } from "../../i18n/LocaleProvider.js";
 import { Tooltip } from "../Tooltip/Tooltip.js";
 import { CollapsibleBody } from "./CollapsibleBody.js";
 import { useUnpinConversation } from "./ConversationPin.js";
 import { DiffBody } from "./DiffBody.js";
 import { DiffStat, type DiffStatValue } from "./DiffStat.js";
+import { segmentByTargets, splitBodyAtPath } from "./file-name-target.js";
 import { StepIcon, type StepIconKey, stepIcon } from "./step-icon.js";
 
 export interface ActivityStepProps {
@@ -73,10 +81,163 @@ export interface ActivityStepProps {
    * their magnitude settled.
    */
   readonly at?: string;
+  /**
+   * Makes the file NAME inside the body a click target that opens the
+   * viewer panel (ADR 0050 §1) — the name only, never the row, and only
+   * when the caller (ActivityBlock) has both a path-shaped digest arg and
+   * an available viewer. The name is found by substring in the localized
+   * body; a miss degrades to plain text.
+   */
+  readonly file?: {
+    readonly path: string;
+    /** The display NAME to locate in the body when it differs from `path` —
+     *  an attachment row shows the file's name while its `path` is the
+     *  stored copy under `.herta/attachments/` (ADR 0050 amendment,
+     *  owner 2026-08-31). Absent → the path is the display text. */
+    readonly name?: string;
+    readonly onOpen: () => void;
+    /** Localized aria label ("查看文件 x"), session-language like the row. */
+    readonly ariaLabel: string;
+  };
+  /**
+   * MULTIPLE click targets inside the body (ADR 0050 v1.5) — a finding
+   * row's cites (`claim — src/x.ts:12-30, src/y.ts:5`), each opening the
+   * viewer at its lines. First occurrence of each, in order; a target the
+   * body no longer carries degrades to plain text. Ignored when `file`
+   * (the single-target form) is set.
+   */
+  readonly links?: readonly FileLinkTarget[];
+  /** Click targets inside the DETAIL pane (the done-marker's
+   *  `↳ 改动文件:` list). Same contract as `links`. */
+  readonly detailLinks?: readonly FileLinkTarget[];
+}
+
+export interface FileLinkTarget {
+  /** The exact substring to make clickable. */
+  readonly text: string;
+  readonly onOpen: () => void;
+  readonly ariaLabel: string;
+}
+
+/** The body (or detail) with each link target wrapped as a click span —
+ *  the same `.file-open-name` affordance as the single-target form.
+ *  Exported for the activity line's headline (the done marker's commit
+ *  sha, ADR 0059). */
+export function textWithLinks(
+  text: string,
+  links: readonly FileLinkTarget[],
+): JSX.Element | string {
+  const segments = segmentByTargets(
+    text,
+    links.map((l) => l.text),
+  );
+  if (!segments.some((s) => s.kind === "target")) return text;
+  return (
+    <>
+      {segments.map((s, i) => {
+        if (s.kind === "text")
+          // biome-ignore lint/suspicious/noArrayIndexKey: segments are a stable split of one string
+          return <span key={i}>{s.text}</span>;
+        const link = links[s.index];
+        return (
+          // biome-ignore lint/suspicious/noArrayIndexKey: segments are a stable split of one string
+          <Fragment key={i}>
+            {/* biome-ignore lint/a11y/useSemanticElements: rendered inside a <pre>; a span keeps the text flow intact. */}
+            <span
+              role="button"
+              tabIndex={0}
+              className="file-open-name"
+              aria-label={link?.ariaLabel}
+              onClick={(e) => {
+                e.stopPropagation();
+                link?.onOpen();
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  link?.onOpen();
+                }
+              }}
+            >
+              {s.text}
+            </span>
+          </Fragment>
+        );
+      })}
+    </>
+  );
+}
+
+/**
+ * The body with its file name as the click target — a span, not a link:
+ * ink text, dotted underline, glass pill on hover (owner 2026-08-31: "not
+ * the blue link style"). Inside a patch row this sits WITHIN the fold
+ * button, so activation stops propagation instead of also toggling the
+ * fold; role/tabIndex keep it a first-class keyboard stop either way.
+ */
+function bodyWithFileName(
+  body: string,
+  file: NonNullable<ActivityStepProps["file"]>,
+): JSX.Element | string {
+  const split = splitBodyAtPath(body, file.name ?? file.path);
+  if (split === null) return body;
+  const activate = (e: { stopPropagation: () => void }): void => {
+    e.stopPropagation();
+    file.onOpen();
+  };
+  return (
+    <>
+      {split.before}
+      {/* biome-ignore lint/a11y/useSemanticElements: a real <button> cannot nest inside the patch row's fold <button>; the span keeps valid DOM in both branches. */}
+      <span
+        role="button"
+        tabIndex={0}
+        className="file-open-name"
+        aria-label={file.ariaLabel}
+        onClick={activate}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            activate(e);
+          }
+        }}
+      >
+        {split.name}
+      </span>
+      {split.after}
+    </>
+  );
+}
+
+/**
+ * Measured max-height reveal, same as the activity history panel: a px
+ * target is the only way to transition to `auto`, and the scroller's
+ * overflow-anchor:none keeps the growth pointing downward. Shared by the
+ * folded patch and the evidence-detail pane (2026-08-26 — the detail used
+ * to pop with no animation while the diff beside it eased); both render a
+ * `.activity-step__fold` wrapper, which carries the transition.
+ */
+function useMeasuredFold(open: boolean): RefObject<HTMLDivElement> {
+  const ref = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el === null) return;
+    el.style.maxHeight = open ? `${el.scrollHeight}px` : "0px";
+  }, [open]);
+  return ref;
 }
 
 /** One row in an activity block: a verb icon + the (collapsible) body. */
-export function ActivityStep(props: ActivityStepProps): JSX.Element {
+/**
+ * memo (2026-09-03): the parent derives every row's props once per `blocks`
+ * identity, so a historical row's props are reference-stable across the
+ * live group's 1 Hz tick and the turn-boundary re-renders — only the row
+ * whose `active` shimmer flips reconciles.
+ */
+export const ActivityStep = memo(function ActivityStep(
+  props: ActivityStepProps,
+): JSX.Element {
   const icon = props.icon ?? stepIcon(props.body);
   const continuation = icon === "result" || icon === "fail";
   // The projected body carries a literal "↳ " prefix for the CLI (which has no
@@ -86,21 +247,18 @@ export function ActivityStep(props: ActivityStepProps): JSX.Element {
   const [detailOpen, setDetailOpen] = useState(false);
   const unpin = useUnpinConversation();
   const hasDetail = props.detail !== undefined && props.detail.length > 0;
+  // Mount the detail on FIRST open and keep it mounted, so collapsing
+  // animates out instead of vanishing — the same lifecycle as the patch
+  // fold below (an unopened pane costs nothing).
+  const [detailMounted, setDetailMounted] = useState(false);
+  const detailFoldRef = useMeasuredFold(detailOpen);
   const patch = props.patch;
   const [patchOpen, setPatchOpen] = useState(false);
   // Mount the diff on FIRST open and keep it mounted, so collapsing animates
   // out instead of vanishing. A closed row costs nothing until it is opened —
   // a long dispatch can carry dozens of patches, each thousands of lines.
   const [patchMounted, setPatchMounted] = useState(false);
-  const foldRef = useRef<HTMLDivElement | null>(null);
-  useLayoutEffect(() => {
-    const el = foldRef.current;
-    if (el === null) return;
-    // Same measured max-height reveal as the activity history panel: a px
-    // target is the only way to transition to `auto`, and the scroller's
-    // overflow-anchor:none keeps the growth pointing downward.
-    el.style.maxHeight = patchOpen ? `${el.scrollHeight}px` : "0px";
-  }, [patchOpen]);
+  const foldRef = useMeasuredFold(patchOpen);
   return (
     <div
       className={`activity-step${props.active ? " is-active" : ""}${
@@ -135,7 +293,11 @@ export function ActivityStep(props: ActivityStepProps): JSX.Element {
               setPatchOpen((v) => !v);
             }}
           >
-            <span className="activity-step__body">{body}</span>
+            <span className="activity-step__body">
+              {props.file !== undefined
+                ? bodyWithFileName(body, props.file)
+                : body}
+            </span>
             <DiffStat
               value={patch.stat}
               {...(props.at !== undefined ? { at: props.at } : {})}
@@ -161,6 +323,13 @@ export function ActivityStep(props: ActivityStepProps): JSX.Element {
               body={body}
               preClassName="activity-step__body"
               t={props.t}
+              {...(props.stat !== undefined
+                ? {}
+                : props.file !== undefined
+                  ? { bodyNode: bodyWithFileName(body, props.file) }
+                  : props.links !== undefined && props.links.length > 0
+                    ? { bodyNode: textWithLinks(body, props.links) }
+                    : {})}
               {...(props.stat !== undefined
                 ? {
                     headline: (
@@ -233,7 +402,10 @@ export function ActivityStep(props: ActivityStepProps): JSX.Element {
               // reaches the scroll handler as a plain "reader left the
               // bottom" — lighting the jump chip nobody asked for and
               // disarming the next send's travel (owner 2026-08-10).
-              if (!detailOpen) unpin();
+              if (!detailOpen) {
+                unpin();
+                setDetailMounted(true);
+              }
               setDetailOpen((v) => !v);
             }}
           >
@@ -242,10 +414,23 @@ export function ActivityStep(props: ActivityStepProps): JSX.Element {
             )}
           </button>
         )}
-        {hasDetail && detailOpen && (
-          <pre className="activity-step__detail">{props.detail}</pre>
+        {hasDetail && (
+          // The same animated fold as the patch above — the detail pane used
+          // to mount/unmount bare, popping open next to a diff that eased.
+          <div
+            ref={detailFoldRef}
+            className={`activity-step__fold${detailOpen ? " is-open" : ""}`}
+          >
+            {detailMounted && (
+              <pre className="activity-step__detail">
+                {props.detailLinks !== undefined && props.detailLinks.length > 0
+                  ? textWithLinks(props.detail ?? "", props.detailLinks)
+                  : props.detail}
+              </pre>
+            )}
+          </div>
         )}
       </div>
     </div>
   );
-}
+});

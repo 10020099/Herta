@@ -34,6 +34,7 @@
 import type { TerminalRecordBlock } from "@herta/core";
 import { describe, expect, it } from "vitest";
 import {
+  countsTowardBlockCap,
   episodeHash,
   isSettled,
   type SegmentOptions,
@@ -79,9 +80,11 @@ function formatIso(offsetMs: number): string {
 }
 
 // ── Atom corpus ──────────────────────────────────────────────────────────
-type Gen = "user" | "speech" | "thought" | "done" | "noop";
+type Gen = "user" | "speech" | "thought" | "done" | "noop" | "op";
 
-/** Weighted so conversational turns dominate and markers are the spice. */
+/** Weighted so conversational turns dominate and markers are the spice.
+ *  Plain 板砖 op rows (2026-09-23) exercise v2's block cap, which counts
+ *  only the conversation (ADR 0069 §7). */
 const KINDS: readonly Gen[] = [
   "user",
   "speech",
@@ -90,6 +93,8 @@ const KINDS: readonly Gen[] = [
   "speech",
   "done",
   "noop",
+  "op",
+  "op",
 ];
 
 /** Step atoms as multiples of GAP_MS: sub-gap (stay together), == gap (no
@@ -157,6 +162,14 @@ function mkBlock(
         label: "差分协处理器",
         body: text,
         role: "noop-marker",
+        ...stamp,
+      };
+    case "op":
+      return {
+        kind: "system",
+        label: "差分协处理器",
+        body: `Reading ${text}`,
+        digest: { kind: "op", verb: "Reading", arg: text },
         ...stamp,
       };
   }
@@ -238,9 +251,14 @@ const OPTS_TIGHT: SegmentOptions = {
   maxEpisodeBlocks: 3,
   maxEpisodeMs: 30 * 60_000,
 };
+// Segmentation v2 (ADR 0069 §4, §7) with a cutover before every stamp: each
+// stamped marker defers its cut to the next user block, and stamped system
+// rows do not count toward the block cap.
 const OPTS_VARIANTS: readonly (readonly [string, SegmentOptions])[] = [
   ["default", OPTS_DEFAULT],
   ["tight", OPTS_TIGHT],
+  ["v2", { ...OPTS_DEFAULT, segmentationV2SinceMs: 0 }],
+  ["v2-tight", { ...OPTS_TIGHT, segmentationV2SinceMs: 0 }],
 ];
 
 // ── Labels / summaries ───────────────────────────────────────────────────
@@ -302,8 +320,10 @@ function checkCoverage(
         `${label} :: gap/overlap between episode ${i - 1} and ${i}`,
       ).toBe(eps[i - 1]?.endIndex);
     }
+    // The cap counts every block before the v2 cutover and only the
+    // conversation after it (ADR 0069 §7).
     expect(
-      ep.blocks.length,
+      ep.blocks.filter((b) => countsTowardBlockCap(b, opts)).length,
       `${label} :: episode ${i} exceeds maxEpisodeBlocks`,
     ).toBeLessThanOrEqual(opts.maxEpisodeBlocks);
     expect(
@@ -333,7 +353,7 @@ function checkCoverage(
 
 // ── Sweep 1: determinism + coverage + cap + settled ──────────────────────
 describe("segment-session fuzz — coverage / determinism / cap / settled", () => {
-  it("holds G1–G3 over a random record sweep (1000 records x 2 opts)", {
+  it("holds G1–G3 over a random record sweep (1000 records x 4 opts)", {
     timeout: 60_000,
   }, () => {
     const rng = mulberry32(0x5eed_1234);
@@ -360,7 +380,7 @@ describe("segment-session fuzz — coverage / determinism / cap / settled", () =
 
 // ── Sweep 1b: trailing-silence settling (ADR 0024, clocked form) ─────────
 describe("segment-session fuzz — trailing-silence settling (ADR 0024)", () => {
-  it("holds: non-tail settled unchanged; tail settled iff stamped-silence > gap (1000 x 2 opts)", {
+  it("holds: non-tail settled unchanged; tail settled iff stamped-silence > gap (1000 x 4 opts)", {
     timeout: 60_000,
   }, () => {
     const rng = mulberry32(0x0024_ad24);
@@ -427,7 +447,7 @@ describe("segment-session fuzz — trailing-silence settling (ADR 0024)", () => 
 
 // ── Sweep 2: P-GROWTH ────────────────────────────────────────────────────
 describe("segment-session fuzz — P-GROWTH prefix stability", () => {
-  it("holds G4: idle-gap append preserves E as an exact prefix of E' (1000 x 2 opts)", {
+  it("holds G4: idle-gap append preserves E as an exact prefix of E' (1000 x 4 opts)", {
     timeout: 60_000,
   }, () => {
     const rng = mulberry32(0x6_9ada_55);
@@ -862,7 +882,7 @@ describe("segment-session — non-monotonic timestamps / clock skew (pin)", () =
   // can fire across it. Out-of-order stamps therefore UNDER-segment. Determinism
   // and full partition must still hold; the under-segmentation is pinned so a
   // future reorder of the boundary logic can't silently re-hash episodes.
-  it("holds G1 (determinism) + G2 (partition/cap/settled) under out-of-order stamps (1000 x 2 opts)", {
+  it("holds G1 (determinism) + G2 (partition/cap/settled) under out-of-order stamps (1000 x 4 opts)", {
     timeout: 60_000,
   }, () => {
     const rng = mulberry32(0x5ce7_0003);

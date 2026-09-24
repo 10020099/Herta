@@ -68,8 +68,11 @@ export const zh = {
   "update.downloading": "正在下载",
   "update.ready": "已就绪，退出时安装：",
   "update.error": "检查失败",
-  "update.upToDate": "已是最新。",
-  "update.notChecked": "尚未检查更新。",
+  "update.unreachable":
+    "无法连接更新服务器（GitHub）。请检查网络或 VPN；也可从百度网盘下载最新版本。",
+  "update.netdisk": "打开百度网盘",
+  "update.upToDate": "已是最新",
+  "update.notChecked": "尚未检查更新",
   "update.unsupported": "此环境不支持更新",
   "nav.group.general": "通用",
   "nav.group.herta": "黑塔",
@@ -83,6 +86,11 @@ export const zh = {
   "window.closeToTray": "关闭时收进托盘",
   "window.closeToTrayDesc":
     "关闭窗口时收进系统托盘继续运行；关掉此项后，关闭即退出。",
+  // macOS (2026-09-23): the icon sits in the menu bar, and a Mac app does not
+  // quit when its window closes — it stays in the Dock until ⌘Q.
+  "window.closeToTrayMac": "关闭时收进菜单栏",
+  "window.closeToTrayDescMac":
+    "关闭窗口时收进菜单栏，会话继续运行；关掉此项后，关闭即关窗，黑塔仍留在程序坞，按 ⌘Q 退出。",
   "window.minimize": "最小化",
   "window.maximize": "最大化",
   "window.restore": "还原",
@@ -118,18 +126,86 @@ export const zh = {
   "session.group.yesterday": "昨天",
   "session.group.previous7Days": "前 7 天",
   "session.group.older": "更早",
+  "voice.realtime": "实时语音",
+  "voice.realtimeDesc": "开启终端麦克风。",
+  "voice.realtimeMissing": "本次安装缺少语音运行时，她暂时只能打字。",
+  "voice.realtimeFailed": "语音进程反复失败，本次运行内已停用；重启后重试。",
+  "voice.model": "语音模型",
+  "voice.modelAbsent": "约 {size} MB，下载到本机后可用。",
+  "voice.modelDev": "正在使用工作区 data/tts 中的模型。",
+  "voice.modelDownload": "下载",
+  "voice.modelDownloading": "已下载 {received} / {total} MB",
+  "voice.modelCancel": "取消",
+  "voice.modelReady": "已安装，占用约 {size} MB。",
+  "voice.modelRemove": "删除",
+  "voice.modelRetry": "重试",
+  "voice.modelFailed.network":
+    "无法连接 GitHub 下载模型。请检查网络或 VPN 后重试。",
+  "voice.modelFailed.http": "服务器没有给出模型文件。",
+  "voice.modelFailed.size": "下载的文件大小不对，已丢弃。",
+  "voice.modelFailed.hash": "下载的文件校验失败，已丢弃。",
+  "voice.modelFailed.archive": "模型压缩包无法解开，已丢弃。",
+  "voice.modelFailed.verify": "模型文件校验失败，已丢弃。",
+  "voice.modelFailed.disk": "写入本机失败，检查磁盘空间。",
+  "voice.modelFailed.cancelled": "已取消。",
+  "voice.engine": "语音引擎",
+  "voice.engineDesc": "使用下载的本地模型或效果更好的云端模型。",
+  "voice.engine.local": "本地模型",
+  "voice.engine.minimax": "MiniMax 云端",
+  "voice.minimaxKey": "MiniMax API 密钥",
+  "voice.minimaxKeyDesc":
+    "按量计费。用于生成音色 ID；未配置套餐密钥时也用于语音合成。可在 platform.minimaxi.com 获取。",
+  "voice.minimaxKeyAria": "MiniMax API 密钥",
+  "voice.keyDelete": "删除",
+  "voice.minimaxHelpAria": "密钥说明",
+  "voice.minimaxHelp":
+    "云端语音需要配置 API 密钥，分为音色 ID 生成与语音合成两部分。音色 ID 仅能由 MiniMax API 密钥生成（按量计费，只需生成一次）；语音合成优先使用 Token Plan 密钥（套餐内免费合成），未配置时使用 API 密钥。",
+  "voice.minimaxKeyRejected": "密钥无效",
+  "voice.minimaxKeyQuota": "余额不足",
+  "voice.minimaxKeyUnchecked": "未核对",
+  "voice.speechRefused.quota": "账户余额不足，充值前回复不发声。",
+  "voice.speechRefused.auth": "MiniMax 拒绝了这个密钥，修正前回复不发声。",
+  "voice.speechRefused.invalid_key":
+    "MiniMax 不接受这个密钥，修正前回复不发声。",
+  "voice.minimaxPlanKey": "Token Plan 密钥",
+  "voice.minimaxPlanKeyDesc": "可选。订阅 Token Plan 套餐后用于语音合成。",
+  "voice.minimaxPlanKeyAria": "MiniMax Token Plan 密钥",
+  "voice.minimaxRejected": "MiniMax 不接受这个密钥，检查后再试。",
+  "voice.clonePreparing": "正在准备她的声音…",
+  "voice.cloneRetry": "重试",
+  "voice.cloneFailed.no_key": "先填入 MiniMax 密钥。",
+  "voice.cloneFailed.no_clone_key":
+    "生成音色 ID 需要 MiniMax API 密钥（按量计费），填入后重试。",
+  "voice.cloneFailed.invalid_key": "MiniMax 不接受这个密钥。",
+  "voice.cloneFailed.auth": "MiniMax 拒绝了这次请求，检查密钥和账户。",
+  "voice.cloneFailed.rate": "请求过于频繁，稍后再试。",
+  "voice.cloneFailed.quota": "账户余额不足。",
+  "voice.cloneFailed.sensitive": "参考录音未通过平台的内容审核。",
+  "voice.cloneFailed.voice_missing": "平台上的声音已失效。",
+  "voice.cloneFailed.invalid": "平台不接受这次请求的参数。",
+  "voice.cloneFailed.network": "连不上 MiniMax，检查网络后重试。",
+  "voice.cloneFailed.http": "MiniMax 返回了意外的响应。",
+  "voice.cloneFailed.cancelled": "已取消。",
+  "voice.cloneFailed.other": "克隆失败，稍后再试。",
+  "voice.cloneFailed.reference": "本次安装缺少参考录音。",
   "voice.mute": "静音",
   "voice.muteDesc": "关闭黑塔的全部语音。",
   "voice.volume": "音量",
   "voice.volumeDesc": "调整黑塔语音的响度。",
   "dream.enable": "开启入梦",
-  "dream.enableDesc": "你离开时让黑塔入梦。",
+  // Opt-in since 2026-09-21: the pass runs while the user is away, on their
+  // key — the row says so, since that is the whole reason it is a choice.
+  "dream.enableDesc": "你离开时让黑塔入梦。入梦会消耗 DeepSeek API 额度。",
   "dream.intro":
     "入梦是黑塔的休息时间。你离开时，她会回顾过往的会话，把那些值得记住的片刻写下来——相处越久，就越了解你。",
+  // Punctuation rule (owner 2026-08-27): a single-clause LABEL or status
+  // carries no terminal 。 — only prose that explains or instructs keeps one.
+  // So "保存失败，请重试。" (two clauses) keeps its period and "重启后生效"
+  // does not.
   "common.couldntSave": "保存失败，请重试。",
-  "common.restartToApply": "重启后生效。",
+  "common.restartToApply": "重启后生效",
   "deepseek.intro":
-    "API 密钥以加密形式存储在本机。可在 platform.deepseek.com 获取。",
+    "API 密钥存储在本机；系统密钥链可用时，由其加密保存。可在 platform.deepseek.com 获取。",
   "deepseek.checking": "检查中…",
   "deepseek.statusFailed": "密钥状态读取失败",
   "deepseek.connected": "已连接",
@@ -141,14 +217,16 @@ export const zh = {
   "deepseek.deleteKey": "删除密钥",
   "deepseek.deleting": "删除中…",
   "deepseek.rejected": "DeepSeek 拒绝了该密钥——请检查后重试。",
-  "deepseek.busy": "请先结束当前回合。",
+  "deepseek.busy": "请先结束当前回合",
   "deepseek.unverified":
     "已保存，但无法连接 DeepSeek 验证——若黑塔没有回应，请检查网络。",
   "deepseek.unencrypted": "已明文存储——此设备没有可用的安全密钥链。",
-  // Per-stage model choice (2026-08-17, owner: API prices rose). Pro is the
-  // built-in default for both; flash is cheaper. Restart-to-apply.
+  // Per-stage model choice (2026-08-17, owner: API prices rose). Restart-to-
+  // apply. Since the 2026-09 API (`deepseek-flash` = V4.1 Flash, which reads
+  // images; V4 Pro retires 2026-09-14) both rows offer the same two names —
+  // the 板砖-only "Flash 视觉版" row is gone (ADR 0048 §5b).
   "deepseek.models.intro":
-    "模型选择：Pro 表现最佳，成本较高；Flash 幻觉较多，可能增加耗时。改动重启后生效。",
+    "模型选择：Flash 更快、更省，能直接看图片；Pro 成本较高。改动重启后生效。",
   "deepseek.model.actor": "对话模型",
   "deepseek.model.actorDesc": "与黑塔交流时使用的模型。",
   "deepseek.model.backend": "协处理器模型",
@@ -157,7 +235,7 @@ export const zh = {
   "deepseek.model.flash": "Flash",
   "keyprompt.title": "将黑塔接入 DeepSeek",
   "keyprompt.body":
-    "黑塔需要一个 DeepSeek API 密钥才能思考。它存放在本机的系统密钥链里，除了调用 DeepSeek 绝不外传。",
+    "黑塔需要一个 DeepSeek API 密钥才能思考。它存放在本机（系统密钥链可用时存入密钥链），除了调用 DeepSeek 绝不外传。",
   "keyprompt.where": "在 platform.deepseek.com 获取密钥",
   "keyprompt.notNow": "暂不",
   "keyprompt.saveSend": "保存并发送",
@@ -192,6 +270,10 @@ export const zh = {
     "本机未检测到 bash，选极简也会按标准运行；装上 Git for Windows 后重启即可用。",
   "banzhuan.contract.standard": "标准",
   "banzhuan.contract.minimal": "极简",
+  // 3D device card (ADR 0057). Same register as the rows above: what it is,
+  // the one trade-off, apply semantics.
+  "banzhuan.scene": "立体板砖",
+  "banzhuan.sceneDesc": "立体实物渲染，关闭则显示平面图。",
   "approval.title": "请求权限",
   "approval.allow": "同意",
   "approval.alwaysAllow": "任务内同意",
@@ -215,10 +297,22 @@ export const zh = {
   "approval.reason.commandProcess": "该命令会结束进程，请核对目标",
   "approval.reason.commandCwdEscape":
     "该命令会切到工作区之外，之后的相对路径不受工作区保护",
-  "approval.reason.commandUnresolved":
-    "这条命令里有黑塔读不出来的部分（变量、通配、展开），不能确定它到底会做什么",
+  "approval.reason.commandUnresolved": "这条命令有未解析部分",
+  "approval.reason.commandSystem": "会改动系统设置或操控其他应用，每次都需确认",
   // A chained line with more than one ask class: the other classes, named.
   "approval.alsoClasses": "另含：{list}",
+  // Consequence notes (ADR 0049 §5) — one sentence on what the command will
+  // do to work that cannot be recovered. Display-only; the tier enforces.
+  "approval.consequence.discardsUncommitted":
+    "注意：会丢弃未提交的改动，无法找回。",
+  "approval.consequence.deletesUntracked":
+    "注意：会删除未跟踪的文件，无法找回。",
+  "approval.consequence.deletesStash":
+    "注意：会删除 stash 里的工作，无法找回。",
+  "approval.consequence.rewritesLocalHistory": "注意：会改写本地提交历史。",
+  "approval.consequence.rewritesRemoteHistory": "注意：会覆盖远端分支的历史。",
+  "approval.consequence.concludesInProgressOperation":
+    "注意：仓库正在合并/变基中途，这一步会把它收尾。",
   "app.fanNotice":
     "黑塔是《崩坏：星穹铁道》的角色，版权归米哈游所有。本项目为非官方同人作品，与米哈游无关，亦未获其认可。",
   "approval.diffShowAria": "展开差分：{n} 行改动，新增 {add} 行，删除 {del} 行",
@@ -229,21 +323,27 @@ export const zh = {
   // A heredoc body folded out of the command well (the content is in the
   // diff below) — 2026-08-17.
   "approval.heredocFolded": "    ⋯ 已折叠 {n} 行，内容见下方差异 ⋯",
+  // Workspace trust (ADR 0064): the button, and the one-line scope above it.
+  "approval.trustWorkspace": "信任此工作区",
+  "approval.trustNote":
+    "选择「信任此工作区」后，工作区内的文件修改、目录创建、非破坏性 git 操作与工作区脚本的执行将不再请求确认；网络访问、破坏性操作及工作区之外的操作仍会请求确认。可在设备卡片菜单中撤销。",
   "composer.placeholder": "给黑塔发消息…",
   "composer.aria": "消息输入框",
   "composer.send": "发送消息",
   "composer.stop": "打断当前回合",
-  "composer.attach": "添加文档",
+  // 文件, not 文档 (owner 2026-09-17): the same button stages images (ADR
+  // 0048) and ingests PDF, Word and text files (ADR 0038) — "documents"
+  // undersold it.
+  "composer.attach": "添加文件",
   /** The tooltip's muted second line. Extensions, not kinds (owner
    *  2026-08-10): a reader scans `.md .txt .csv` faster than a sentence about
-   *  categories. The trailing 等 keeps it honest — the sniff accepts any text
-   *  file, so the list is representative, not exhaustive. `.pdf .docx` lead
-   *  since ADR 0038: they are the two formats people actually hand over. */
+   *  categories. Images lead since they are the newest capability and the
+   *  one the old line never mentioned; `.pdf .docx` next (ADR 0038); the
+   *  trailing 等 keeps it honest — the sniff accepts any text file, so the
+   *  list is representative, not exhaustive. Not listed on purpose:
+   *  `.ppt .pptx .xls .xlsx .doc` are refused as 暂不支持 (document-text.ts). */
   "composer.attach.formats":
-    ".pdf .docx .md .txt .csv .json .log .py .ts 等文本文件",
-  "composer.attach.busy": "这一回合还没结束，等她说完再放文件。",
-  "composer.attach.tooMany": "一次最多十个文件。",
-  "composer.attach.failed": "文件没能加进来。",
+    "图片 .png .jpg、文档 .pdf .docx，以及 .md .txt .csv .json .py .ts 等文本文件",
   "composer.context.aria": "上下文使用量",
   "composer.context.used": "{tokens} Context used",
   "composer.context.threshold": "自动压缩于 {tokens}",
@@ -252,11 +352,47 @@ export const zh = {
   "composer.context.pending": "将在下一条消息前压缩",
   "composer.context.queued": "已安排在下一条消息前压缩。",
   "composer.context.unavailable": "当前会话无法读取上下文状态。",
+  // The composer-notice pill (owner 2026-08-27): terse, formal, and NO
+  // trailing 。 — a pill is a label, not a sentence. Settings-row prose keeps
+  // its periods; these do not.
+  "composer.attach.busy": "当前回合尚未结束，无法添加文件",
+  "composer.attach.tooMany": "最多十个文件",
+  "composer.attach.failed": "文件加载失败",
+  "composer.attach.denied": "涉及密钥或凭据，上传失败",
+  // The staged strip (ADR 0048): pictures waiting to be sent WITH a message.
+  "composer.staged": "待发送的图片",
+  "composer.staged.remove": "移除",
+  // Enter with staged pictures and no words (owner 2026-08-27): pictures
+  // ride a message; an empty user block is not a message.
+  "composer.attach.needText": "说点什么再发",
+  // The per-message picture cap (owner 2026-08-27): a message is a moment,
+  // not an album.
+  "composer.attach.imageLimit": "最多五张图",
+  // A message while 板砖 works (ADR 0063): Enter holds it above the composer
+  // instead of interrupting; it goes as the next turn unless the user
+  // interjects it into the running work or takes it back. Only while the
+  // coprocessor runs — a conversation with Herta has no such strip.
+  "composer.hold.label": "待板砖完成后发送",
+  "composer.hold.aria": "待发送的消息",
+  "composer.hold.steer": "立即插话",
+  "composer.hold.edit": "修改",
+  "composer.hold.discard": "撤回",
+  // Click-to-enlarge lightbox (ADR 0048 §4a). `lightbox.open` prefixes the
+  // thumb button's aria-label, followed by the filename.
+  "lightbox.open": "查看图片",
+  "lightbox.close": "关闭",
+  "lightbox.zoomIn": "放大",
+  "lightbox.zoomOut": "缩小",
+  // The pill's tooltip: a bare wheel scrolls, so the zoom gesture is said
+  // here (owner 2026-08-28).
+  "lightbox.zoomHint": "Ctrl + 滚轮缩放，按住拖动可移动",
+  // macOS: ⌘, and the trackpad pinch a Mac user reaches for (2026-09-23).
+  "lightbox.zoomHintMac": "双指捏合或 ⌘ + 滚轮缩放，按住拖动可移动",
   "connect.button": "接入黑塔空间站",
-  "connect.failed": "会话没能建立——请重试。",
+  "connect.failed": "会话建立失败——请重试",
   "workspace.rewind": "回到此处",
-  "workspace.editsNotReverted": "改动的文件没有被撤销",
-  "workspace.rewindFailed": "撤回失败，这一轮还在。",
+  "workspace.editsNotReverted": "改动的文件未撤销",
+  "workspace.rewindFailed": "撤回失败",
   "workspace.processing": "处理中…",
   "workspace.took": "用时",
   "workspace.recapping": "终端正在归整历史消息…",
@@ -326,20 +462,111 @@ export const zh = {
   "activity.attachment.unreadable.textTooLong": "正文过长，未取正文",
   "activity.attachment.format.pdf": "PDF",
   "activity.attachment.format.docx": "Word 文档",
+  // Images (ADR 0048). `{f}` is the format token (PNG/JPEG) — data, not
+  // chrome, so it is substituted rather than translated.
+  "activity.attachment.image": "图片 {f}",
+  "activity.attachment.unreadable.imageTooLarge": "图片过大，未能读图",
+  "activity.attachment.unreadable.noCaption": "已存图片，未能读图",
   "activity.attachment.pages": "页",
   "activity.attachment.extracted": "已提取文本",
   /** The document's own outline, stored beside the text (2026-08-23). */
   "activity.attachment.outline": "目录 {n} 条",
   "activity.attachment.remove": "移除这个附件",
-  "activity.attachment.removeFailed": "没能移除这个附件。",
+  "activity.attachment.removeFailed": "移除附件失败",
+  "activity.attachment.removeInUse": "附件正被其他程序占用，关闭后再移除",
+  "activity.file.openAria": "查看文件",
+  /** The commit tab (ADR 0059): a sha in the done marker or the repository
+   *  card opens the commit beside the record. */
+  "activity.commit.openAria": "查看提交",
+  /** The diff tab (ADR 0059 §5): a dirty row opens its change against HEAD. */
+  "activity.diff.openAria": "查看改动",
+  "viewer.close": "关闭",
+  "viewer.closeTab": "关闭文件",
+  "viewer.copyPath": "复制路径",
+  "viewer.copySha": "复制提交号",
+  "viewer.copied": "已复制",
+  "viewer.openExternal": "用系统应用打开",
+  "viewer.notFound": "文件不存在或已被移动",
+  "viewer.binary": "二进制文件——用系统应用打开查看",
+  "viewer.outside": "该路径在工作区之外",
+  "viewer.unreadable": "无法读取该文件",
+  "viewer.truncatedNote": "文件较长，仅显示开头；完整内容用系统应用打开",
+  /** The rich renderers (ADR 0054). */
+  "viewer.tooLarge": "文件太大，面板内无法查看；用系统应用打开",
+  "viewer.renderFailed": "无法渲染该文件——用系统应用打开查看",
+  "viewer.showSource": "查看源码",
+  "viewer.showRendered": "查看渲染",
+  "viewer.rendering": "正在渲染…",
+  "viewer.diagramFailed": "图表未能渲染，下面是它的源码",
+  "viewer.imageFit": "适应面板",
+  "viewer.imageActual": "原始大小",
+  "viewer.pdfPages": "{n} 页",
+  "viewer.rowsCapped": "仅显示前 {n} 行",
+  "viewer.colsCapped": "仅显示前 {n} 列",
+  "viewer.emptySheet": "空表",
+  "viewer.chart": "图表",
+  "viewer.object": "嵌入对象",
+  "viewer.slidesCapped": "仅显示前 {n} 页",
+  "viewer.prevSlide": "上一页",
+  "viewer.nextSlide": "下一页",
+  "viewer.slideAria": "第 {n} 页",
+  "viewer.commit.notFound": "该提交不存在或无法读取",
+  "viewer.timeout": "读取超时：仓库太大或 git 正忙，稍后再试",
+  "viewer.commit.files": "{n} 个文件",
+  "viewer.commit.merge": "合并提交",
+  "viewer.commit.binary": "二进制",
+  "viewer.commit.truncated": "补丁较长，仅显示开头",
+  "viewer.commit.moreFiles": "还有 {n} 个文件未列出",
+  "viewer.diff.against": "相对 HEAD 的改动",
+  "viewer.diff.none": "与 HEAD 没有差异",
+  "viewer.diff.truncated": "改动较长，仅显示开头",
+  "viewer.diff.notFound": "无法读取该路径的改动",
+  /** The history tab (ADR 0059 §6). */
+  "viewer.log.tab": "提交记录",
+  "viewer.log.more": "加载更多",
+  "viewer.log.end": "已到最早的提交",
+  "viewer.log.notFound": "无法读取提交记录",
+  "viewer.log.branch": "分支",
+  "viewer.log.search": "搜索提交信息",
+  "viewer.log.noMatch": "没有匹配的提交",
   "activity.plan.more": "还有 {n} 项",
   "plan.card.title": "任务清单",
-  "plan.card.itemsUnavailable": "这次记录没有留下清单明细。",
+  "plan.card.itemsUnavailable": "本次记录无清单明细",
   // 操作轨迹 rail card (2026-08-17) — the plan card's fallback for
   // dispatches with no 任务清单 (every 极简 run).
   "trace.card.title": "操作轨迹",
   "trace.card.steps": "{n} 步",
   "trace.card.files": "{n} 文件",
+  // 仓库 rail card (ADR 0058): the workspace's repository, under the device.
+  "repo.card.title": "仓库",
+  "repo.card.clean": "工作区干净",
+  "repo.card.dirty": "{n} 处改动",
+  "repo.card.detached": "游离 HEAD",
+  "repo.card.unborn": "尚无提交",
+  "repo.card.upstream": "上游 {name}",
+  "repo.card.upstreamGone": "上游 {name} 已不存在",
+  "repo.card.gone": "已删除",
+  "repo.card.ahead": "领先 {n}",
+  "repo.card.behind": "落后 {n}",
+  "repo.card.conflicts": "{n} 个冲突",
+  "repo.card.more": "还有 {n} 项",
+  // A workspace that is a subfolder of its repository (ADR 0058 amendment).
+  "repo.card.scope": "工作区位于 {prefix}",
+  "repo.card.recent": "最近提交",
+  "repo.card.all": "全部",
+  "repo.card.unpushed": "未推送",
+  "repo.card.inProgress.merge": "合并进行中",
+  "repo.card.inProgress.rebase": "变基进行中",
+  "repo.card.inProgress.cherryPick": "拣选进行中",
+  "repo.card.inProgress.revert": "回退进行中",
+  "repo.card.inProgress.bisect": "二分查找进行中",
+  "repo.card.status.modified": "已修改",
+  "repo.card.status.added": "新增",
+  "repo.card.status.deleted": "已删除",
+  "repo.card.status.renamed": "已重命名",
+  "repo.card.status.untracked": "未跟踪",
+  "repo.card.status.conflict": "冲突",
+  "repo.card.status.other": "已变更",
   "activity.result.detail": "结果明细",
   // Evidence-detail section labels. The canonical record composes these in
   // Chinese and keeps them there (ADR 0018); these translate the DISPLAY.
@@ -371,7 +598,10 @@ export const zh = {
   "workspace.diffExpand": "展开 差异 {n} 行 （+{add} −{del}）",
   "workspace.diffCollapse": "收起",
   "device.aria": "智能体设备",
-  "device.dragHint": "智能体设备（向上拖动以交互）",
+  // The drag affordance's own label. Terse (owner 2026-08-27) — its context
+  // comes from the enclosing card, which is labelled 差分协处理器：{state},
+  // and from the device image's own alt text above.
+  "device.dragHint": "向上拖动",
   "device.ariaLabel": "差分协处理器：{state}",
   "record.chip.coprocessor": "差分协处理器",
   "record.chip.system": "系统",
@@ -387,6 +617,8 @@ export const zh = {
   "record.marker.risk": "{n} 风险",
   "record.marker.risks": "{n} 风险",
   "record.marker.aborted": "运行异常中止",
+  "record.marker.commit": "提交 {sha}",
+  "record.marker.pushed": "推送 {ref}",
   "record.marker.noop": "无产出",
   "card.workspace": "工作区",
   "card.workspaceDefault": "工作区 · 默认",
@@ -394,8 +626,15 @@ export const zh = {
   "card.resetDefault": "恢复默认",
   "card.workspaceSetError": "无法设置工作区",
   "card.rules": "已记住的命令",
-  "card.rulesEmpty": "还没有记住任何命令。",
+  "card.rulesEmpty": "暂无已记住的命令",
   "card.rulesRemove": "删除规则 {rule}",
+  // Workspace trust (ADR 0064) — the row in the device card's menu.
+  "card.trust": "工作区信任",
+  "card.trustOn": "已信任：工作区内的写入、git 操作与脚本执行不再请求确认",
+  "card.trustOnDefault": "沙盒工作区，默认信任",
+  "card.trustOff": "逐项确认",
+  "card.trustEnable": "信任此工作区",
+  "card.trustDisable": "改为逐项确认",
   "card.deviceInfoAria": "设备卡片信息",
   "card.deviceInfo":
     "设备卡片代表板砖（差分协处理器）——黑塔的编码执行后端。光环颜色与呼吸节奏反映后端当前状态（空闲、读取、写入、运行、等待批准等）。",
@@ -407,7 +646,7 @@ export const zh = {
   "app.bridgeUnavailable": "桌面桥（{bridge}）不可用——预加载脚本加载失败。",
   "app.bridgeUnavailableBody":
     "重启应用。若仍然如此，可能是预加载脚本的构建产物或它在主进程中的路径配置有误。",
-  "app.crashTitle": "界面出了点问题",
+  "app.crashTitle": "界面出错",
   "app.crashBody": "会话记录没有丢失——重新载入界面即可继续。",
   "app.crashReload": "重新载入",
   "conversation.rowError": "这条记录渲染失败，已跳过。",

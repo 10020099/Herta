@@ -5,6 +5,7 @@ import {
   buildTrayMenuTemplate,
   renderTrayIconBitmap,
   sessionMenuLabel,
+  TRAY_SESSION_ROWS,
   type TrayMenuHandlers,
   trayLabels,
 } from "./tray-menu.js";
@@ -162,6 +163,25 @@ describe("buildTrayMenuTemplate", () => {
     const sub = more?.submenu as MenuItemConstructorOptions[];
     expect(sub).toHaveLength(12);
     expect(sub[0]?.label).toBe("s16"); // 4th-newest heads the submenu
+  });
+
+  it("TRAY_SESSION_ROWS is every session the menu can show — what a lister needs to fetch (perf audit 2026-09-20)", () => {
+    // The tray listed EVERY session on each right-click to show these few;
+    // session-service bounds its listing by this number now, so the number
+    // has to stay true to the menu.
+    const sessions = Array.from({ length: 60 }, (_, i) =>
+      meta({
+        sessionId: `s${i}`,
+        title: `s${i}`,
+        lastActivityAt: new Date(Date.UTC(2026, 6, 1, 0, 0, i)).toISOString(),
+      }),
+    );
+    const items = buildTrayMenuTemplate(sessions, labels(), noopHandlers());
+    const inline = items.filter((i) => /^s\d+$/.test(i.label ?? "")).length;
+    const more = (items.find((i) => i.label === "More")?.submenu ??
+      []) as MenuItemConstructorOptions[];
+    expect(inline + more.length).toBe(TRAY_SESSION_ROWS);
+    expect(TRAY_SESSION_ROWS).toBe(15);
   });
 
   it("clicking a recent item opens THAT session; the static items route to their handlers", () => {

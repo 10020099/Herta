@@ -1,8 +1,11 @@
 import { memo, type Ref } from "react";
+import { attachmentImageUrl } from "../../../shared/attachment-image.js";
 import { useT } from "../../i18n/LocaleProvider.js";
 import { renderBanzhuanText } from "../../lib/banzhuan-text.js";
 import { Tooltip } from "../Tooltip/Tooltip.js";
 import { BubbleTime } from "./BubbleTime.js";
+import type { SystemBlock } from "./group-record.js";
+import { useLightbox } from "./ImageLightbox.js";
 
 /**
  * Rewind / undo glyph — Heroicons arrow-uturn-down (from
@@ -48,6 +51,50 @@ export interface UserBubbleProps {
   readonly absIndex?: number;
   /** Conversation language for the 板砖→Brick display alias (default "zh"). */
   readonly lang?: "zh" | "en";
+  /** Pictures sent WITH this message (ADR 0048 §4), shown above the bubble —
+   *  where the 开拓者 put them. For a record row their blocks live after the
+   *  user block (inside the turn's span, so a rewind takes both); only the
+   *  presentation differs, which is what D7 is for. For the optimistic echo
+   *  they come from the just-taken composer strip — a VIEW type rather than
+   *  SystemBlock so both sources feed the same rendering. */
+  readonly images?: readonly UserImageView[];
+}
+
+/** Everything the bubble needs to draw one attached picture. `caption` is
+ *  the instrument's reading — the alt text a screen reader gets, since the
+ *  filename says nothing about what is in the frame. `width`/`height` are
+ *  the sniffed pixel dimensions, stamped as attributes. Under the fixed
+ *  56px cover-crop thumb (owner 2026-08-27) the CSS owns the box, so they
+ *  no longer drive layout — they stay because they are true, cost nothing,
+ *  and any return to natural sizing needs them for pre-load slot height
+ *  (the morph flight measures that slot). */
+export interface UserImageView {
+  readonly path: string;
+  readonly name: string;
+  readonly caption?: string;
+  readonly width?: number;
+  readonly height?: number;
+}
+
+function imageView(block: SystemBlock): UserImageView | null {
+  const d = block.digest;
+  if (d?.kind !== "attachment" || d.image === undefined) return null;
+  if (d.path.length === 0 || d.unreadable === "removed") return null;
+  return {
+    path: d.path,
+    name: d.name,
+    ...(d.caption !== undefined ? { caption: d.caption } : {}),
+    ...(d.image.width !== undefined ? { width: d.image.width } : {}),
+    ...(d.image.height !== undefined ? { height: d.image.height } : {}),
+  };
+}
+
+/** The record-row source: lifted attachment blocks → views (drops the
+ *  non-image / removed ones). */
+export function imageViewsFromBlocks(
+  blocks: readonly SystemBlock[],
+): readonly UserImageView[] {
+  return blocks.map(imageView).filter((v): v is UserImageView => v !== null);
 }
 
 /** memo: bails historical bubbles out of Conversation's per-delta re-renders
@@ -56,14 +103,47 @@ export const UserBubble = memo(function UserBubble(
   props: UserBubbleProps,
 ): JSX.Element {
   const t = useT();
+  // Stable opener — a context read cannot invalidate this memo.
+  const openLightbox = useLightbox();
   const lang = props.lang ?? "zh";
   const hasActions = props.onRewind !== undefined || props.at !== undefined;
+  const images = props.images ?? [];
   return (
     <div
       className="message-row user-row"
       data-abs-index={props.absIndex}
       style={props.hidden ? { visibility: "hidden" } : undefined}
     >
+      {images.length > 0 && (
+        <div className="message-images">
+          {images.map((img) => (
+            // Click-to-enlarge (ADR 0048 §4a): the 56px thumb is an index
+            // card, the lightbox is the picture. A BUTTON, so the keyboard
+            // reaches it too.
+            <button
+              key={img.path}
+              type="button"
+              className="message-images__open"
+              aria-label={`${t("lightbox.open")} ${img.name}`}
+              onClick={() => openLightbox(img)}
+            >
+              <img
+                className="message-images__thumb"
+                src={attachmentImageUrl(img.path)}
+                // The caption is what the picture IS; the filename is what it
+                // was called. A screen reader wants the former.
+                alt={img.caption ?? img.name}
+                title={img.name}
+                // True pixel dimensions (see UserImageView on why they stay
+                // under the fixed-size thumb CSS).
+                {...(img.width !== undefined ? { width: img.width } : {})}
+                {...(img.height !== undefined ? { height: img.height } : {})}
+                draggable={false}
+              />
+            </button>
+          ))}
+        </div>
+      )}
       <div ref={props.bubbleRef} className="message-bubble user-bubble">
         <div className="message-text">
           {renderBanzhuanText(props.text, "bubble", lang)}

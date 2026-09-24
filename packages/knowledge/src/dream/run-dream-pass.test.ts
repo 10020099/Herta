@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DeepSeekClient } from "../llm/types.js";
 import * as manifestModule from "./manifest.js";
 import { readManifest } from "./manifest.js";
+import * as promoteModule from "./promote.js";
 import { runDreamPass } from "./run-dream-pass.js";
 import type { DreamCreatedRecord } from "./types.js";
 
@@ -579,7 +580,6 @@ describe("runDreamPass", () => {
       summary: "既有正文。",
       critiqueScores: { voice: 0.9, format: 1, novelty: 1 },
       validateFeianPassed: true,
-      estimatedPrefixTokens: 100,
       reactivationCount: 0,
     });
     manifestModule.writeManifest(join(ws, ".herta", "dream"), seeded);
@@ -710,7 +710,6 @@ describe("runDreamPass", () => {
       summary: "既有正文。",
       critiqueScores: { voice: 0.9, format: 1, novelty: 1 },
       validateFeianPassed: true,
-      estimatedPrefixTokens: 100,
       reactivationCount: 0,
     });
     manifestModule.writeManifest(join(ws, ".herta", "dream"), seeded);
@@ -820,7 +819,6 @@ describe("runDreamPass", () => {
       summary: "既有梦境正文。",
       critiqueScores: { voice: 0.9, format: 1, novelty: 1 },
       validateFeianPassed: true,
-      estimatedPrefixTokens: 100,
       reactivationCount: 0,
     });
     manifestModule.writeManifest(join(ws, ".herta", "dream"), seededManifest);
@@ -844,6 +842,62 @@ describe("runDreamPass", () => {
       (genCall?.[0].userPayload ?? "") + (genCall?.[0].systemPrompt ?? "");
     expect(payload).toContain("手写锚点正文");
     expect(payload).toContain("既有梦境正文");
+  });
+
+  it("an excerpt the gate calls mixed is written and judged about the one event it named (dream review 2026-09-22, finding 22)", async () => {
+    const base = fakeClient();
+    const client: DeepSeekClient = {
+      chatJson: vi.fn(async (input) => {
+        if (input.systemPrompt.includes("是否值得被收录")) {
+          return {
+            rawJsonText: JSON.stringify({
+              worthy: true,
+              reason: "dry",
+              occasion: FAKE_OCCASION,
+              mixedTopics: true,
+            }),
+            model: "deepseek-v4-pro",
+          };
+        }
+        return base.chatJson(input);
+      }) as DeepSeekClient["chatJson"],
+    };
+    await runDreamPass({
+      workspaceRoot: ws,
+      sessions: [{ sessionId: "s1", record }],
+      client,
+      runId: "mixed",
+      config: testConfig,
+      now: () => new Date("2026-06-18T09:30:00Z"),
+    });
+    const calls = (client.chatJson as ReturnType<typeof vi.fn>).mock.calls;
+    const gen = calls.find(([a]) =>
+      a.systemPrompt.includes("黑塔人物与说话指南"),
+    )?.[0].systemPrompt;
+    const critique = calls.find(([a]) => a.systemPrompt.includes("逐行"))?.[0]
+      .systemPrompt;
+    expect(gen).toContain("本则废案的取材范围");
+    expect(gen).toContain(FAKE_OCCASION);
+    expect(critique).toContain("这则废案只取其中一件");
+    expect(critique).toContain(FAKE_OCCASION);
+  });
+
+  it("an excerpt about one thing gets no focus section", async () => {
+    const client = fakeClient();
+    await runDreamPass({
+      workspaceRoot: ws,
+      sessions: [{ sessionId: "s1", record }],
+      client,
+      runId: "single",
+      config: testConfig,
+      now: () => new Date("2026-06-18T09:30:00Z"),
+    });
+    const calls = (client.chatJson as ReturnType<typeof vi.fn>).mock.calls;
+    const gen = calls.find(([a]) =>
+      a.systemPrompt.includes("黑塔人物与说话指南"),
+    )?.[0].systemPrompt;
+    expect(gen).toBeDefined();
+    expect(gen).not.toContain("本则废案的取材范围");
   });
 
   it("stale-floor forgets a decayed dream at pass start when the floor is set", async () => {
@@ -871,7 +925,6 @@ describe("runDreamPass", () => {
       summary: "陈旧正文。",
       critiqueScores: { voice: 0.9, format: 1, novelty: 1 },
       validateFeianPassed: true,
-      estimatedPrefixTokens: 100,
       reactivationCount: 0,
     });
     manifestModule.writeManifest(join(ws, ".herta", "dream"), seeded);
@@ -923,7 +976,6 @@ describe("runDreamPass", () => {
       summary: "正文。",
       critiqueScores: { voice: 0.9, format: 1, novelty: 1 },
       validateFeianPassed: true,
-      estimatedPrefixTokens: 100,
       reactivationCount: 0,
     });
     manifestModule.writeManifest(join(ws, ".herta", "dream"), seeded);
@@ -978,7 +1030,6 @@ describe("runDreamPass reconsolidation junction", () => {
       summary: "阮·梅又来了。",
       critiqueScores: { voice: 0.85, format: 1, novelty: 1 },
       validateFeianPassed: true,
-      estimatedPrefixTokens: 100,
       reactivationCount: 2,
     });
     manifestModule.writeManifest(join(ws, ".herta", "dream"), m);
@@ -1162,7 +1213,6 @@ describe("runDreamPass reconsolidation junction", () => {
       summary: "同名的另一版本。",
       critiqueScores: { voice: 0.8, format: 1, novelty: 1 },
       validateFeianPassed: true,
-      estimatedPrefixTokens: 100,
       reactivationCount: 0,
     });
     manifestModule.writeManifest(join(ws, ".herta", "dream"), m0);
@@ -1501,7 +1551,6 @@ describe("runDreamPass reconsolidation junction", () => {
       summary: "在世正文。",
       critiqueScores: { voice: 0.85, format: 1, novelty: 1 },
       validateFeianPassed: true,
-      estimatedPrefixTokens: 100,
       reactivationCount: 0,
     });
     manifestModule.writeManifest(join(ws, ".herta", "dream"), m0);
@@ -1542,6 +1591,160 @@ describe("runDreamPass hardening", () => {
     { kind: "user", text: "（新话题）帮我看个 bug" },
   ];
   const testConfig = { minEpisodeChars: 10 };
+
+  it("stops at maxEpisodes and leaves the rest undreamed for the next pass (dream review 2026-09-22, finding 3)", async () => {
+    const sessions = ["a", "b", "c"].map((id) => ({
+      sessionId: id,
+      record: record.map((b) =>
+        b.kind === "user" ? { ...b, text: `${b.text}（${id}）` } : b,
+      ),
+    }));
+    const first = await runDreamPass({
+      workspaceRoot: ws,
+      sessions,
+      client: fakeClient(),
+      runId: "cap-1",
+      config: testConfig,
+      maxEpisodes: 2,
+      now: () => new Date("2026-06-18T09:30:00Z"),
+    });
+    expect(first.considered).toBe(2);
+    expect(first.budgetStopped).toBe(true);
+    const ledger = readManifest(join(ws, ".herta", "dream")).episodes;
+    expect(ledger.map((e) => e.sessionId).sort()).toEqual(["a", "b"]);
+    // The next pass takes up what the cap left, and only that.
+    const second = await runDreamPass({
+      workspaceRoot: ws,
+      sessions,
+      client: fakeClient(),
+      runId: "cap-2",
+      config: testConfig,
+      maxEpisodes: 2,
+      now: () => new Date("2026-06-26T09:30:00Z"),
+    });
+    expect(second.considered).toBe(1);
+    expect(second.skipped).toBe(2);
+    expect(second.budgetStopped).toBeUndefined();
+  });
+
+  it("dreams only what ends at or before dreamableEnd — the open session's recap boundary — and leaves the rest un-ledgered (ADR 0069 §2)", async () => {
+    const two: TerminalRecord = [
+      { kind: "user", text: "阮·梅又在搞事，你怎么看" },
+      { kind: "herta", surface: "speech", text: "我看她乐在其中。" },
+      { kind: "herta", surface: "speech", text: "至于我，懒得掺和。" },
+      { kind: "user", text: "螺丝咕姆呢？他也掺和了？" },
+      { kind: "herta", surface: "speech", text: "他在算他自己的东西。" },
+      { kind: "herta", surface: "speech", text: "别去打扰，他会记仇。" },
+      { kind: "user", text: "（新话题）帮我看个 bug" },
+    ];
+    const asked: number[] = [];
+    const first = await runDreamPass({
+      workspaceRoot: ws,
+      sessions: [
+        {
+          sessionId: "open",
+          record: two,
+          dreamableEnd: (r) => {
+            asked.push(r.length);
+            return 3;
+          },
+        },
+      ],
+      client: fakeClient(),
+      runId: "open-1",
+      config: testConfig,
+      now: () => new Date("2026-06-18T09:30:00Z"),
+    });
+    // Asked with the loaded record; only the exchange behind it was taken.
+    expect(asked).toEqual([7]);
+    expect(first.considered).toBe(1);
+    const dreamDir = join(ws, ".herta", "dream");
+    expect(readManifest(dreamDir).episodes).toHaveLength(1);
+    // The boundary advanced: the next pass takes up the second exchange.
+    const second = await runDreamPass({
+      workspaceRoot: ws,
+      sessions: [{ sessionId: "open", record: two, dreamableEnd: () => 6 }],
+      client: fakeClient(),
+      runId: "open-2",
+      config: testConfig,
+      now: () => new Date("2026-06-26T09:30:00Z"),
+    });
+    expect(second.considered).toBe(1);
+    expect(second.skipped).toBe(1);
+    expect(readManifest(dreamDir).episodes).toHaveLength(2);
+  });
+
+  it("steps aside between episodes when the user comes back, and resumes at the next idle window instead of a week later (dream review 2026-09-22, finding 12)", async () => {
+    const sessions = ["a", "b", "c"].map((id) => ({
+      sessionId: id,
+      record: record.map((b) =>
+        b.kind === "user" ? { ...b, text: `${b.text}（${id}）` } : b,
+      ),
+    }));
+    const dreamDir = join(ws, ".herta", "dream");
+    let asked = 0;
+    const client = fakeClient();
+    const first = await runDreamPass({
+      workspaceRoot: ws,
+      sessions,
+      client,
+      runId: "yield-1",
+      config: testConfig,
+      now: () => new Date("2026-06-18T09:30:00Z"),
+      // The user returns while the first episode is being dreamed.
+      shouldYield: () => {
+        asked += 1;
+        return asked > 1;
+      },
+    });
+    expect(first.yielded).toBe(true);
+    expect(first.considered).toBe(1);
+    expect(first.aborted).toBeUndefined();
+    const after = readManifest(dreamDir);
+    expect(after.episodes).toHaveLength(1);
+    // Not a completed pass: the weekly anchor stays where it was.
+    expect(after.lastRunAt).toBeUndefined();
+    // The next idle window takes up the rest, and completes.
+    const second = await runDreamPass({
+      workspaceRoot: ws,
+      sessions,
+      client: fakeClient(),
+      runId: "yield-2",
+      config: testConfig,
+      now: () => new Date("2026-06-18T11:30:00Z"),
+      shouldYield: () => false,
+    });
+    expect(second.yielded).toBeUndefined();
+    expect(second.skipped).toBe(1);
+    expect(second.considered).toBe(2);
+    expect(readManifest(dreamDir).lastRunAt).toBe("2026-06-18T11:30:00.000Z");
+  });
+
+  it("records the verdict cut's cutover at the first pass that runs with it, and never moves it (ADR 0069 §4)", async () => {
+    const dreamDir = join(ws, ".herta", "dream");
+    await runDreamPass({
+      workspaceRoot: ws,
+      sessions: [{ sessionId: "s1", record }],
+      client: fakeClient(),
+      runId: "cut-1",
+      config: testConfig,
+      now: () => new Date("2026-09-24T00:00:00Z"),
+    });
+    expect(readManifest(dreamDir).segmentationV2Since).toBe(
+      "2026-09-24T00:00:00.000Z",
+    );
+    await runDreamPass({
+      workspaceRoot: ws,
+      sessions: [{ sessionId: "s1", record }],
+      client: fakeClient(),
+      runId: "cut-2",
+      config: testConfig,
+      now: () => new Date("2026-10-02T00:00:00Z"),
+    });
+    expect(readManifest(dreamDir).segmentationV2Since).toBe(
+      "2026-09-24T00:00:00.000Z",
+    );
+  });
 
   it("aborts without consuming episodes when the LLM call itself fails", async () => {
     const failing: DeepSeekClient = {
@@ -1681,7 +1884,6 @@ describe("runDreamPass hardening", () => {
         summary: "正文甲。",
         critiqueScores: { voice: 0.9, format: 1, novelty: 1 },
         validateFeianPassed: true,
-        estimatedPrefixTokens: 100,
         reactivationCount: 0,
         occasion: "开拓者讲过的那次真实事故。",
       },
@@ -1700,7 +1902,6 @@ describe("runDreamPass hardening", () => {
         summary: "旧梦的开篇摘要。",
         critiqueScores: { voice: 0.9, format: 1, novelty: 1 },
         validateFeianPassed: true,
-        estimatedPrefixTokens: 100,
         reactivationCount: 0,
       },
     );
@@ -1804,7 +2005,6 @@ describe("runDreamPass semanticization (forgetting feeds the 开拓者 page)", (
           summary: "全量与侥幸",
           critiqueScores: { voice: 0.9, format: 1, novelty: 1 },
           validateFeianPassed: true,
-          estimatedPrefixTokens: 100,
           reactivationCount: 0,
         },
       ],
@@ -1871,7 +2071,6 @@ describe("runDreamPass semanticization (forgetting feeds the 开拓者 page)", (
           summary: "s",
           critiqueScores: { voice: 0.9, format: 1, novelty: 1 },
           validateFeianPassed: true,
-          estimatedPrefixTokens: 100,
           reactivationCount: 0,
         },
       ],
@@ -1934,7 +2133,6 @@ describe("runDreamPass semanticization (forgetting feeds the 开拓者 page)", (
           summary: "s",
           critiqueScores: { voice: 0.9, format: 1, novelty: 1 },
           validateFeianPassed: true,
-          estimatedPrefixTokens: 100,
           reactivationCount: 0,
         },
       ],
@@ -2011,7 +2209,6 @@ describe("runDreamPass retrieval-echo reinforcement (ADR 0023)", () => {
       summary: "开篇叙事。",
       critiqueScores: { voice: 0.9, format: 1, novelty: 1 },
       validateFeianPassed: true,
-      estimatedPrefixTokens: 100,
       reactivationCount: 0,
       ...over,
     });
@@ -2253,7 +2450,6 @@ describe("runDreamPass living-memory semanticization (ADR 0023)", () => {
       summary: "他一次次证明了同一件事。",
       critiqueScores: { voice: 0.9, format: 1, novelty: 1 },
       validateFeianPassed: true,
-      estimatedPrefixTokens: 100,
       reactivationCount: 3, // == the default semanticizeReactivationThreshold
       lastReactivatedAt: "2026-06-30T00:00:00Z",
       ...over,
@@ -2424,7 +2620,6 @@ describe("runDreamPass default forgetting floor (ADR 0023)", () => {
       summary: "那晚的细节。",
       critiqueScores: { voice: 0.9, format: 1, novelty: 1 },
       validateFeianPassed: true,
-      estimatedPrefixTokens: 100,
       reactivationCount: 0,
     });
     manifestModule.writeManifest(dreamDir, m0);
@@ -2461,6 +2656,183 @@ describe("runDreamPass default forgetting floor (ADR 0023)", () => {
     ).toBe(true);
     // …and its gist folded into the notes page before the archive move.
     expect(res.notesOutcome).toBe("updated");
+    expect(
+      readFileSync(join(narrativeDir, "### 记录：关于开拓者.txt"), "utf8"),
+    ).toContain(notes);
+  });
+});
+
+describe("runDreamPass durability (dream review 2026-09-22, findings 7, 8, 14)", () => {
+  let ws: string;
+  let narrativeDir: string;
+  let dreamDir: string;
+  beforeEach(() => {
+    ws = mkdtempSync(join(tmpdir(), "dream-durable-"));
+    narrativeDir = join(ws, ".herta", "narrative");
+    dreamDir = join(ws, ".herta", "dream");
+    mkdirSync(narrativeDir, { recursive: true });
+    mkdirSync(dreamDir, { recursive: true });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    rmSync(ws, { recursive: true, force: true });
+  });
+
+  const record: TerminalRecord = [
+    { kind: "user", text: "阮·梅又在搞事，你怎么看" },
+    { kind: "herta", surface: "speech", text: "我看她乐在其中。" },
+    { kind: "herta", surface: "speech", text: "至于我，懒得掺和。" },
+    { kind: "user", text: "（新话题）帮我看个 bug" },
+  ];
+  const testConfig = { minEpisodeChars: 10 };
+
+  /** A dying dream: ~426 idle days, below the default floor. */
+  function seedAncient(): string {
+    const file = "### 废案_07：被时间带走的一晚.txt";
+    writeFileSync(
+      join(narrativeDir, file),
+      "### 废案_07：被时间带走的一晚\n那晚的细节，如今只剩一个判断。",
+      "utf8",
+    );
+    const m0 = manifestModule.emptyManifest();
+    m0.created.push({
+      id: "ancient",
+      file,
+      nn: 7,
+      state: "live",
+      sourceSessionId: "s0",
+      sourceEpisodeHash: "hAncient",
+      sourceEpisodes: ["hAncient"],
+      runId: "r0",
+      model: "m",
+      generatedAt: "2025-05-01T00:00:00Z",
+      situationTag: "t",
+      summary: "那晚的细节。",
+      critiqueScores: { voice: 0.9, format: 1, novelty: 1 },
+      validateFeianPassed: true,
+      reactivationCount: 0,
+    });
+    manifestModule.writeManifest(dreamDir, m0);
+    return file;
+  }
+
+  it("a corrupt manifest stops the pass before anything is written — it is copied aside, never replaced by an empty ledger (finding 8)", async () => {
+    const corrupt = '{"version":1,"episodes":[{"sessionId":"s1"';
+    writeFileSync(join(dreamDir, "manifest.json"), corrupt, "utf8");
+    const res = await runDreamPass({
+      workspaceRoot: ws,
+      sessions: [{ sessionId: "s1", record }],
+      client: fakeClient(),
+      runId: "rcorrupt",
+      config: testConfig,
+      now: () => new Date("2026-06-18T09:30:00Z"),
+    });
+    expect(res.aborted).toBe("manifest corrupt");
+    expect(res.promoted).toBe(0);
+    // The broken file is still there for repair, and a copy sits beside it.
+    expect(readFileSync(join(dreamDir, "manifest.json"), "utf8")).toBe(corrupt);
+    expect(
+      readdirSync(dreamDir).some((f) =>
+        /^manifest\.corrupt-[0-9a-f]{8}\.json$/.test(f),
+      ),
+    ).toBe(true);
+    expect(
+      readdirSync(narrativeDir).filter((f) => f.startsWith("### 废案")),
+    ).toEqual([]);
+  });
+
+  it("a promotion the DISK refuses aborts the pass without consuming the episode — the next pass promotes it (finding 7)", async () => {
+    const spy = vi
+      .spyOn(promoteModule, "promoteCandidate")
+      .mockImplementationOnce(() => {
+        throw Object.assign(
+          new Error("EPERM: operation not permitted, rename"),
+          {
+            code: "EPERM",
+          },
+        );
+      });
+    const first = await runDreamPass({
+      workspaceRoot: ws,
+      sessions: [{ sessionId: "s1", record }],
+      client: fakeClient(),
+      runId: "reperm-1",
+      config: testConfig,
+      now: () => new Date("2026-06-18T09:30:00Z"),
+    });
+    expect(first.aborted).toBe("write failed: EPERM");
+    expect(first.archived).toBe(0);
+    expect(readManifest(dreamDir).episodes).toEqual([]);
+    spy.mockRestore();
+    const second = await runDreamPass({
+      workspaceRoot: ws,
+      sessions: [{ sessionId: "s1", record }],
+      client: fakeClient(),
+      runId: "reperm-2",
+      config: testConfig,
+      now: () => new Date("2026-06-18T10:30:00Z"),
+    });
+    expect(second.promoted).toBe(1);
+  });
+
+  it("a forgetting the disk refuses leaves the memory LIVE — never archived in the ledger while its file still loads (finding 7)", async () => {
+    const file = seedAncient();
+    // The archive dir cannot be made: a FILE sits where it should be.
+    writeFileSync(join(dreamDir, "archive"), "", "utf8");
+    await runDreamPass({
+      workspaceRoot: ws,
+      sessions: [],
+      client: fakeClient(),
+      runId: "rblocked",
+      config: {},
+      now: () => new Date("2026-07-01T00:00:00Z"),
+    });
+    const m = readManifest(dreamDir);
+    expect(m.created.find((r) => r.id === "ancient")?.state).toBe("live");
+    expect(m.episodes).toEqual([]);
+    expect(m.pendingFold).toBeUndefined();
+    expect(existsSync(join(narrativeDir, file))).toBe(true);
+  });
+
+  it("a dying gist the pass could not fold stays owed — the next pass folds it from the archive (finding 14)", async () => {
+    const file = seedAncient();
+    const notes = "细节淡了，但那个判断留了下来：他不赖账。";
+    // Pass 1: every model call fails — the episode aborts the pass, and the
+    // fold after the loops fails too.
+    const down: DeepSeekClient = {
+      chatJson: vi.fn(async () => {
+        throw new Error("ECONNRESET");
+      }) as DeepSeekClient["chatJson"],
+    };
+    const first = await runDreamPass({
+      workspaceRoot: ws,
+      sessions: [{ sessionId: "s1", record }],
+      client: down,
+      runId: "rowed-1",
+      config: { ...testConfig },
+      now: () => new Date("2026-07-01T00:00:00Z"),
+    });
+    expect(first.aborted).toBeDefined();
+    expect(existsSync(join(dreamDir, "archive", file))).toBe(true);
+    expect(readManifest(dreamDir).pendingFold).toEqual([file]);
+    // Pass 2: the fold answers; the owed gist reaches the page and is cleared.
+    const up: DeepSeekClient = {
+      chatJson: vi.fn(async ({ systemPrompt }: { systemPrompt: string }) => {
+        if (systemPrompt.includes("自传第六章"))
+          return { rawJsonText: JSON.stringify({ notes }), model: "m" };
+        throw new Error(`unexpected LLM call: ${systemPrompt.slice(0, 30)}`);
+      }) as DeepSeekClient["chatJson"],
+    };
+    const second = await runDreamPass({
+      workspaceRoot: ws,
+      sessions: [],
+      client: up,
+      runId: "rowed-2",
+      config: {},
+      now: () => new Date("2026-07-02T00:00:00Z"),
+    });
+    expect(second.notesOutcome).toBe("updated");
+    expect(readManifest(dreamDir).pendingFold).toBeUndefined();
     expect(
       readFileSync(join(narrativeDir, "### 记录：关于开拓者.txt"), "utf8"),
     ).toContain(notes);

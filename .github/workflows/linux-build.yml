@@ -1,0 +1,204 @@
+name: linux-build
+# Linux AppImage build + launch (2026-09-23 — v0.1.6, the first Linux release).
+# Nobody on the team runs Linux, so like mac-build.yml this runner is both the
+# compiler and the only pair of eyes: it builds the AppImage, proves the native
+# voice runtime loads, LAUNCHES the AppImage the way a user's desktop would,
+# and renders the UI over CDP.
+#
+# MANUAL DISPATCH ONLY. Linux minutes are cheap, but a release build is a
+# deliberate act — the same shape as mac-build.
+#
+# Built on ubuntu-22.04 on purpose: its glibc (2.35) is the floor the
+# AppImage's own native parts are checked against, so it runs on 22.04 and
+# everything newer. The launch step installs fuse3 but NOT libfuse2 — the
+# state of a stock Ubuntu 22.04+ desktop — because the static AppImage runtime
+# (electron-builder.yml `toolsets.appimage`) exists precisely so the app
+# starts there. A legacy FUSE2 AppImage would fail this step.
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+      - run: pnpm --filter @herta/gui typecheck
+
+      # Same payload, same pin as mac-build.yml — GNU tools here (`stat -c`,
+      # `sha256sum`), BSD there. A tree that has the clips skips the fetch.
+      - name: fetch the voice payload (a checkout without the clips)
+        env:
+          VOICE_PAYLOAD_URL: https://github.com/PersonaCLI/Herta/releases/download/voice-clips-2026-09-15/voice-payload.tar.gz
+          VOICE_PAYLOAD_SHA256: 370d1ec45c08f7add6a3195335ebaf124a1e233f7ff40b3dd6dc09f2de015714
+          VOICE_PAYLOAD_BYTES: "8727921"
+        run: |
+          if [ -n "$(find data/voice -name '*.opus' -print -quit 2>/dev/null)" ]; then
+            echo "voice tree present in the checkout — nothing to fetch"
+            exit 0
+          fi
+          curl -fsSL --retry 3 -o /tmp/voice-payload.tar.gz "$VOICE_PAYLOAD_URL"
+          GOT=$(stat -c %s /tmp/voice-payload.tar.gz)
+          [ "$GOT" = "$VOICE_PAYLOAD_BYTES" ] || { echo "::error::voice payload is $GOT bytes, pinned $VOICE_PAYLOAD_BYTES"; exit 1; }
+          echo "$VOICE_PAYLOAD_SHA256  /tmp/voice-payload.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/voice-payload.tar.gz -C .
+          echo "voice clips fetched: $(find data/voice -name '*.opus' | wc -l)"
+          ls -l data/voice-clone/herta-reference.wav
+
+      # A release that ships silent is audit B3 again: strict, always.
+      - name: assert the voice payload is present
+        working-directory: packages/gui
+        run: node scripts/check-voice-payload.mjs
+
+      - name: stage the neural-voice runtime (linux-x64)
+        run: node packages/gui/scripts/stage-tts.mjs --linux
+      - name: assert the voice runtime is linux-x64 only (and the model is not staged)
+        run: node packages/gui/scripts/check-tts-payload.mjs --strict --expect sherpa-onnx-linux-x64
+
+      # The runtime is a prebuilt native addon nobody on the team has loaded on
+      # Linux. Print how it finds its libraries (RUNPATH), fail on any library
+      # the loader cannot resolve, and record the newest glibc symbol it needs.
+      - name: the voice runtime's native libraries resolve (and their glibc floor)
+        run: |
+          set -eu
+          DIR=packages/gui/tts-runtime/sherpa-onnx-linux-x64
+          ls -l "$DIR"
+          echo "--- dynamic section of the addon"
+          readelf -d "$DIR/sherpa-onnx.node" | grep -Ei 'rpath|runpath|needed' || true
+          echo "--- ldd"
+          MISSING=0
+          for f in "$DIR"/*.node "$DIR"/*.so*; do
+            [ -e "$f" ] || continue
+            if ldd "$f" | grep -q "not found"; then
+              echo "::error::$f has unresolved libraries:"; ldd "$f" | grep "not found"; MISSING=1
+            fi
+          done
+          [ "$MISSING" -eq 0 ]
+          echo "--- newest glibc symbol needed"
+          objdump -T "$DIR"/*.node "$DIR"/*.so* 2>/dev/null | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+
+      - name: build the AppImage
+        run: |
+          pnpm --filter @herta/gui exec electron-vite build
+          # Same gate the dist scripts run (audit BL26).
+          node packages/gui/scripts/third-party-notices.mjs --check
+          pnpm --filter @herta/gui exec electron-builder --linux --x64 --publish never
+
+      # Packaging invariant, as in every other job: the shipped app has no
+      # node_modules, so the main bundle must not reference native code.
+      - name: assert no native refs in the main bundle
+        run: "! grep -rqE 'better-sqlite3|node-gyp-build' packages/gui/out/main"
+
+      - name: list what was produced
+        run: ls -lh packages/gui/release/ || true
+
+      # The tree having the payload does not prove the ARTIFACT has it.
+      # linux-unpacked is exactly what the AppImage squashes.
+      - name: assert the payload reached the AppImage
+        run: |
+          set -eu
+          RES=packages/gui/release/linux-unpacked/resources
+          CLIPS=$(find "$RES/voice" -name '*.opus' | wc -l)
+          echo "voice clips: $CLIPS"
+          [ "$CLIPS" -ge 1 ] || { echo "::error::no voice clips — the AppImage would ship silent"; exit 1; }
+          test -f "$RES/voice-clone/herta-reference.wav" || { echo "::error::no herta-reference.wav"; exit 1; }
+          test -f "$RES/tts-runtime/sherpa-onnx-linux-x64/sherpa-onnx.node" || { echo "::error::no linux-x64 voice runtime"; exit 1; }
+          OTHERS=$(find "$RES/tts-runtime" -maxdepth 1 -name 'sherpa-onnx-*-*' ! -name 'sherpa-onnx-linux-x64' | wc -l)
+          [ "$OTHERS" -eq 0 ] || { echo "::error::another platform's voice runtime is in the AppImage"; find "$RES/tts-runtime" -maxdepth 1; exit 1; }
+          test -f "$RES/LICENSE" && test -f "$RES/THIRD-PARTY-NOTICES.md"
+          grep -q "repo: Herta" "$RES/app-update.yml" && grep -q "owner: PersonaCLI" "$RES/app-update.yml" \
+            || { echo "::error::app-update.yml does not point at PersonaCLI/Herta"; cat "$RES/app-update.yml"; exit 1; }
+
+      # electron-updater on Linux reads latest-linux.yml; a stale or
+      # mismatched one is an update that downloads and then fails to verify.
+      - name: latest-linux.yml describes the AppImage that was built
+        run: |
+          set -eu
+          cd packages/gui/release
+          IMG=$(ls *.AppImage | head -1)
+          SHA=$(openssl dgst -sha512 -binary "$IMG" | base64 -w0)
+          SIZE=$(stat -c %s "$IMG")
+          cat latest-linux.yml
+          grep -q "$IMG" latest-linux.yml || { echo "::error::latest-linux.yml does not name $IMG"; exit 1; }
+          grep -q "sha512: $SHA" latest-linux.yml || { echo "::error::latest-linux.yml sha512 does not match $IMG"; exit 1; }
+          grep -q "size: $SIZE" latest-linux.yml || { echo "::error::latest-linux.yml size does not match $IMG"; exit 1; }
+
+      # The packaged runtime, loaded the way the voice worker loads it, with NO
+      # library path set — so only the addon's own RUNPATH can find its
+      # libraries. (The worker's LD_LIBRARY_PATH is a fallback, not a crutch.)
+      - name: the packaged voice runtime loads with no library path set
+        run: |
+          env -u LD_LIBRARY_PATH node -e "
+            const p = require('path').resolve('packages/gui/release/linux-unpacked/resources/tts-runtime/sherpa-onnx-node/sherpa-onnx.js');
+            require(p);
+            console.log('sherpa-onnx runtime loaded from', p);
+          "
+
+      # The question this whole job exists for: does the AppImage START on a
+      # stock desktop? fuse3 yes (every Ubuntu desktop has it), libfuse2 no.
+      # Under Xvfb, with the Chromium sandbox as the AppRun decides it
+      # (user namespaces are allowed on 22.04, so it stays ON here).
+      - name: launch the AppImage, render the UI, attach a document
+        timeout-minutes: 10
+        run: |
+          set -x
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb fuse3
+          if ldconfig -p | grep -q 'libfuse.so.2'; then
+            echo "::warning::libfuse2 is present on this runner — the launch below does not prove the static runtime needs none"
+          fi
+          mkdir -p /tmp/shots
+          IMG=$(ls packages/gui/release/*.AppImage | head -1)
+          chmod +x "$IMG"
+          nohup xvfb-run -a -s "-screen 0 1440x900x24" "$IMG" --remote-debugging-port=9222 \
+            </dev/null >/tmp/shots/herta-boot.log 2>&1 &
+          UP=0
+          for i in $(seq 1 60); do
+            if curl -sS --max-time 2 http://127.0.0.1:9222/json/version >/tmp/shots/cdp-version.json 2>/dev/null; then UP=1; break; fi
+            sleep 2
+          done
+          echo "--- boot log"
+          cat /tmp/shots/herta-boot.log || true
+          if [ "$UP" -ne 1 ]; then
+            echo "::error::the AppImage never opened its debug port — it did not start"
+            exit 1
+          fi
+          sleep 15
+          node packages/gui/scripts/mac-first-look.mjs /tmp/shots 9222 \
+            >/tmp/shots/first-look.txt 2>&1 || true
+          cat /tmp/shots/first-look.txt || true
+          node packages/gui/scripts/mac-attach-probe.mjs /tmp/shots 9222 \
+            >/tmp/shots/attach-probe.txt 2>&1 || true
+          cat /tmp/shots/attach-probe.txt || true
+          echo "--- boot log (settled)"
+          cat /tmp/shots/herta-boot.log || true
+          grep -q "launch:" /tmp/shots/herta-boot.log || echo "::warning::no [herta] launch line in the boot log"
+          grep -q "ATTACH PROBE: PASS" /tmp/shots/attach-probe.txt || { echo "::error::attach probe did not pass inside the AppImage"; exit 1; }
+          pkill -f "$IMG" 2>/dev/null || true
+          pkill -f "/tmp/.mount_" 2>/dev/null || true
+
+      - name: upload screenshots + boot log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-first-look
+          path: /tmp/shots
+          if-no-files-found: warn
+
+      - name: upload the AppImage + update feed
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-dist
+          path: |
+            packages/gui/release/*.AppImage
+            packages/gui/release/latest-linux.yml
+          if-no-files-found: warn

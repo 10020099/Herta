@@ -184,13 +184,14 @@ describe("CardMenu", () => {
   it("shows the empty note for an empty rule list", () => {
     renderWithLocale(<CardMenu {...rulesProps} rules={[]} />);
     fireEvent.click(screen.getByLabelText("device card info"));
-    expect(screen.getByText("No commands remembered yet.")).toBeInTheDocument();
+    expect(screen.getByText("No commands remembered")).toBeInTheDocument();
   });
 
   it("omits the section entirely when rules are undefined (no rule surface)", () => {
-    const { container } = renderWithLocale(<CardMenu {...rulesProps} />);
+    renderWithLocale(<CardMenu {...rulesProps} />);
     fireEvent.click(screen.getByLabelText("device card info"));
-    expect(container.querySelector(".card-menu-rules")).toBeNull();
+    // The menu is a portal at the body (2026-09-17): assert document-wide.
+    expect(document.querySelector(".card-menu-rules")).toBeNull();
     // The workspace half is unaffected by the rules gate.
     expect(screen.getByRole("button", { name: /Set workspace/ })).toBeTruthy();
   });

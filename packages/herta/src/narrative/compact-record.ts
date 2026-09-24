@@ -194,10 +194,21 @@ function renderStructuredDigest(
       // digest line here that stays actionable after compaction — she can
       // send 板砖 back to it. A bare name would leave her knowing a document
       // existed and unable to reach it.
+      // An IMAGE keeps its CAPTION through the fold, where a document keeps
+      // only its citation (ADR 0048 §1). The two look alike and are not: a
+      // document's head was an excerpt of text that is still on disk and
+      // still re-readable, so eliding it loses nothing permanently. A
+      // caption is the ONLY textual form the picture ever had — the actor
+      // cannot re-read pixels — so dropping it here would erase the moment
+      // from precisely the timescales this design exists to reach: the
+      // recap, the 废案 distillation, and the next session's few-shots.
+      // This is why the caption rides the body rather than evidenceDetail.
       const tail =
-        d.unreadable === undefined
-          ? COMPACTION_TEXT[lang].excerptElided
-          : COMPACTION_TEXT[lang].attachmentUnreadable[d.unreadable];
+        d.caption !== undefined
+          ? d.caption
+          : d.unreadable === undefined
+            ? COMPACTION_TEXT[lang].excerptElided
+            : COMPACTION_TEXT[lang].attachmentUnreadable[d.unreadable];
       // The outline sidecar survives the fold by citation (2026-08-23) —
       // path included, for the same reason the document's path is kept.
       const outline =
@@ -291,6 +302,17 @@ function matchCoalesceVerb(
 export interface CompactOptions {
   readonly minRunSize?: number;
   readonly lang?: PromptLang;
+  /**
+   * Attachment fold decisions made elsewhere, over a record this call sees
+   * only a piece of (ADR 0033 §6g amendment, 2026-09-22). The fold's window
+   * counts user turns and later mentions across the WHOLE record, so a
+   * projection that compacts a slice — the beat's head, everything up to the
+   * prior dispatch — must not decide from the slice alone: it would keep a
+   * head the main turn has already folded, and fold one a later mention has
+   * re-opened. Omitted, the decision is made over `record` itself — the
+   * main-turn shape, where the record IS the whole record.
+   */
+  readonly attachmentFolds?: AttachmentFolds;
 }
 
 /**
@@ -299,9 +321,13 @@ export interface CompactOptions {
  * deterministic, does not mutate the input.
  *
  * Compaction is asymmetric: main turns / supervisor / router opt in
- * (default behavior); in-turn beats opt out via the serializer's
- * `compactBridgeOutput: false` option so the beat sees the full
- * board output of the invocation that just fired it.
+ * (default behavior); an in-turn beat runs it only over the record up to
+ * the PRIOR dispatch's marker and keeps the fresh window after it
+ * verbatim (`verbatimSinceLastDispatch`, serialize.ts) so the beat sees
+ * the full board output of the invocation that just fired it. The
+ * attachment fold is the one lane that reaches the fresh window too —
+ * decided over the whole record, applied by `foldAttachments` (ADR 0033
+ * §6g amendment, 2026-09-22).
  *
  * Per-`@板砖`-invocation collapse is the design intent; this
  * function approximates it as per-contiguous-system-run collapse.
@@ -338,7 +364,18 @@ export const ATTACHMENT_VERBATIM_USER_TURNS = 3;
 export const ATTACHMENT_HINT_USER_TURNS = 3;
 
 /** The attachment projection's three states — see foldAttachmentForPrompt. */
-type AttachmentFoldState = "verbatim" | "citation-hint" | "citation";
+export type AttachmentFoldState = "verbatim" | "citation-hint" | "citation";
+
+/**
+ * The fold state of every attachment block in a record, keyed by BLOCK
+ * IDENTITY — the record's blocks are distinct objects, and a `slice` keeps
+ * them, so a decision made over the whole record can be applied to any piece
+ * of it. Produced by `decideAttachmentFolds`; consumed by
+ * `compactRecordForPrompt` (its `attachmentFolds` option) and by
+ * `foldAttachments`. A block absent from the map is treated as verbatim: the
+ * projection never folds what nobody decided.
+ */
+export type AttachmentFolds = ReadonlyMap<SystemBlock, AttachmentFoldState>;
 
 /**
  * How many user turns after the newest FOLDED done-marker the compaction
@@ -592,18 +629,22 @@ function foldStrandedDetail(
   };
 }
 
-export function compactRecordForPrompt(
-  record: TerminalRecord,
-  opts?: CompactOptions,
-): TerminalRecord {
-  const minRunSize = opts?.minRunSize ?? 2;
-  const lang = opts?.lang ?? "zh";
-
-  // The newest herta SPEECH lower-bounds the attachment folds: a block she
-  // has not yet responded to stays verbatim regardless of the user-turn
-  // window. Same speech-only rule as the done-marker walk below and for the
-  // same reason (audit 2026-07-24, 1.10) — a （我 想） committed after the
-  // block must not flip it.
+/**
+ * The record positions the two-state lanes count from: the newest herta
+ * SPEECH and every user block, in order.
+ *
+ * The speech lower-bounds the attachment and stranded-detail folds — a block
+ * she has not yet responded to stays verbatim regardless of the user-turn
+ * window. Speech only, same rule as the done-marker walk and for the same
+ * reason (audit 2026-07-24, 1.10): a （我 想） committed after the block must
+ * not flip it. The user indices are what the attachment fold's window and
+ * anchor search count (attachmentFoldDecision) and what the diff re-read
+ * hint counts; collected once per record.
+ */
+function recordLandmarks(record: TerminalRecord): {
+  lastSpeechIdx: number;
+  userIdxs: readonly number[];
+} {
   let lastSpeechIdx = -1;
   for (let k = record.length - 1; k >= 0; k--) {
     const b = record[k];
@@ -612,15 +653,23 @@ export function compactRecordForPrompt(
       break;
     }
   }
-
-  // User-block indices, in order — the attachment fold's window and anchor
-  // search both count these (attachmentFoldDecision). Collected once; empty
-  // when the record has no attachments to spend it on is still cheap.
   const userIdxs: number[] = [];
   record.forEach((b, k) => {
     if (b.kind === "user") userIdxs.push(k);
   });
+  return { lastSpeechIdx, userIdxs };
+}
 
+/**
+ * Decide the fold state of every attachment block in `record`, over the whole
+ * of it (ADR 0033 §6g). This is the one place the decision is made; the
+ * main-turn `compactRecordForPrompt` calls it on the record it is given, and
+ * a projection that renders the record in pieces calls it on the whole record
+ * FIRST and hands the result to each piece — see `CompactOptions.
+ * attachmentFolds` for why the piece must not decide for itself.
+ */
+export function decideAttachmentFolds(record: TerminalRecord): AttachmentFolds {
+  const { lastSpeechIdx, userIdxs } = recordLandmarks(record);
   // Every attachment display name in the record (lowercased) — the sibling
   // set mentionsFile uses to keep a short name from matching inside a longer
   // sibling's occurrence (the CJK-flank collision the boundary class cannot
@@ -630,6 +679,59 @@ export function compactRecordForPrompt(
     .map((b) => (b.digest?.kind === "attachment" ? b.digest.name : ""))
     .filter((n) => n.length > 0)
     .map((n) => n.toLowerCase());
+  const folds = new Map<SystemBlock, AttachmentFoldState>();
+  record.forEach((b, k) => {
+    if (isAttachmentBlock(b)) {
+      folds.set(
+        b,
+        attachmentFoldDecision(
+          record,
+          k,
+          b,
+          lastSpeechIdx,
+          userIdxs,
+          attachmentNames,
+        ),
+      );
+    }
+  });
+  return folds;
+}
+
+/**
+ * Apply already-decided attachment folds to `blocks` and nothing else: no
+ * run compaction, no stranded-detail fold, no diff treatment. This is the
+ * attachment lane on its own, for a projection that wants a piece of the
+ * record otherwise verbatim — the beat's fresh window (serialize.ts), which
+ * must show the CURRENT run in full and yet not re-inflate a document the
+ * main turn has already folded (ADR 0033 §6g amendment, 2026-09-22).
+ */
+export function foldAttachments(
+  blocks: TerminalRecord,
+  folds: AttachmentFolds,
+  lang: PromptLang = "zh",
+): TerminalRecord {
+  return blocks.map((b) =>
+    isAttachmentBlock(b)
+      ? foldAttachmentForPrompt(b, folds.get(b) ?? "verbatim", lang)
+      : b,
+  );
+}
+
+export function compactRecordForPrompt(
+  record: TerminalRecord,
+  opts?: CompactOptions,
+): TerminalRecord {
+  const minRunSize = opts?.minRunSize ?? 2;
+  const lang = opts?.lang ?? "zh";
+
+  const { lastSpeechIdx, userIdxs } = recordLandmarks(record);
+
+  // The attachment folds: decided here over `record` in the main-turn shape,
+  // or handed in by a caller that decided over a larger record this is a
+  // piece of (see CompactOptions.attachmentFolds).
+  const attachmentFolds =
+    opts?.attachmentFolds ?? decideAttachmentFolds(record);
 
   // Done-marker two-state lifecycle: find the last done-marker; the verdict
   // is "spoken" if any herta block appears after it. In State 1 (verdict turn,
@@ -709,14 +811,7 @@ export function compactRecordForPrompt(
         output.push(
           foldAttachmentForPrompt(
             current,
-            attachmentFoldDecision(
-              record,
-              i,
-              current,
-              lastSpeechIdx,
-              userIdxs,
-              attachmentNames,
-            ),
+            attachmentFolds.get(current) ?? "verbatim",
             lang,
           ),
         );

@@ -27,6 +27,33 @@ if (typeof window !== "undefined") {
       disconnect(): void {}
     } as unknown as typeof ResizeObserver;
   }
+  // jsdom 26 stopped exposing `localStorage` under Node ≥ 25 (it guards the
+  // storage behind a Node version check that this runtime falls outside), so
+  // every renderer test that persists a preference threw "setItem is not a
+  // function". A plain in-memory Storage keeps them running on any Node.
+  if (typeof window.localStorage?.setItem !== "function") {
+    const store = new Map<string, string>();
+    const memoryStorage: Storage = {
+      get length() {
+        return store.size;
+      },
+      key: (index) => [...store.keys()][index] ?? null,
+      getItem: (key) => store.get(key) ?? null,
+      setItem: (key, value) => {
+        store.set(key, String(value));
+      },
+      removeItem: (key) => {
+        store.delete(key);
+      },
+      clear: () => {
+        store.clear();
+      },
+    };
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      value: memoryStorage,
+    });
+  }
 }
 
 beforeEach(() => {

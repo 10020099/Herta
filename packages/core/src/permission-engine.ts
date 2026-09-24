@@ -8,6 +8,22 @@ export type RiskLevel =
   | "workspace_destructive"
   | "network";
 
+/**
+ * What a command will do to work the harness cannot get back (ADR 0049 §5)
+ * — a neutral machine code (D2) the display surfaces map to one localized
+ * sentence on the approval card. INFORMATIONAL ONLY: never consulted by
+ * verdicts, the approval cache, or rule derivation (the CC
+ * destructive-command-warning pattern — the note explains, the tier
+ * enforces).
+ */
+export type CommandConsequence =
+  | "discards_uncommitted"
+  | "deletes_untracked"
+  | "deletes_stash"
+  | "rewrites_local_history"
+  | "rewrites_remote_history"
+  | "concludes_in_progress_operation";
+
 export type RuleVerdict =
   | { kind: "allow" }
   | {
@@ -40,6 +56,9 @@ export type RuleVerdict =
        *  names the rest — `kill 574; curl localhost` is "network" AND
        *  "ends processes". Absent or length 1 → nothing extra to say. */
       codes?: readonly string[];
+      /** One-sentence consequence note for the card (ADR 0049 §5); see
+       *  {@link CommandConsequence}. Display-only, absent for most asks. */
+      consequence?: CommandConsequence;
     }
   | {
       kind: "deny";
@@ -50,6 +69,18 @@ export type RuleVerdict =
        *  the loop sends verbatim instead of `failed: <code>` + JSON. Absent
        *  → the loop's default rendering (unchanged for every other rule). */
       modelText?: string;
+      /** The move that fixes the refusal (2026-09-18) — the corrective half
+       *  every tool failure carries, for a rule-deny whose code the loop's
+       *  own table does not know (an editor's `edit_not_found`, say). Wins
+       *  over the loop's default suggestion when present. */
+      suggestion?: string;
+      /** The tier of what was REFUSED, when the rule can say (2026-08-26).
+       *  A `workspace_read` refusal is a withheld read, not a refused
+       *  mutation, and must not cap the brief's status — the git-dev lab
+       *  caught the reader guard's `.git`/`.herta` denials capping fully
+       *  completed briefs at 部分完成. Absent → the status gate stays
+       *  conservative and counts the denial. */
+      risk?: RiskLevel;
     };
 
 export type PermissionRule = (
@@ -71,7 +102,17 @@ export type PermissionDecision =
       request: PermissionRequest;
       decision: Promise<"allow" | "deny">;
     }
-  | { kind: "deny"; reason: string; code?: string; modelText?: string };
+  | {
+      kind: "deny";
+      reason: string;
+      code?: string;
+      modelText?: string;
+      /** See RuleVerdict deny — the rule's own corrective hint. */
+      suggestion?: string;
+      /** See RuleVerdict deny — threaded so the status gate can tell a
+       *  withheld read from a refused mutation. */
+      risk?: RiskLevel;
+    };
 
 export interface PermissionEngine {
   check(call: ToolCallRequest, ctx: ToolContext): Promise<PermissionDecision>;
@@ -123,6 +164,10 @@ export class RulePermissionEngine implements PermissionEngine {
         ...(verdict.modelText !== undefined
           ? { modelText: verdict.modelText }
           : {}),
+        ...(verdict.suggestion !== undefined
+          ? { suggestion: verdict.suggestion }
+          : {}),
+        ...(verdict.risk !== undefined ? { risk: verdict.risk } : {}),
       };
     }
 
@@ -138,6 +183,9 @@ export class RulePermissionEngine implements PermissionEngine {
       ...(verdict.argv !== undefined ? { argv: verdict.argv } : {}),
       ...(verdict.programs !== undefined ? { programs: verdict.programs } : {}),
       ...(verdict.codes !== undefined ? { codes: verdict.codes } : {}),
+      ...(verdict.consequence !== undefined
+        ? { consequence: verdict.consequence }
+        : {}),
     };
     const decision = this.ask.present(request, ctx.signal);
     return { kind: "ask", request, decision };

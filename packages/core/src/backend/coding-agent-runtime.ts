@@ -11,19 +11,24 @@ import { FindingsLedger } from "../findings-ledger.js";
 import type { MemoryManager } from "../memory-manager.js";
 import type { PermissionEngine, RiskLevel } from "../permission-engine.js";
 import { ReadLedger } from "../read-ledger.js";
+import { countDiffLines } from "../text/diff-lines.js";
 import { TodoStore } from "../todo-store.js";
 import type { ToolRegistry } from "../tool-registry.js";
 import { TranscriptStore } from "../transcript-store.js";
 import type { AgentEvent } from "../types/events.js";
 import type { ProviderAdapter } from "../types/provider.js";
-import type { BackendContextBuilder } from "./backend-context-builder.js";
+import type {
+  BackendContextBuilder,
+  RepoContextSnapshot,
+} from "./backend-context-builder.js";
 import { runBackendTurnLoop } from "./backend-turn-loop.js";
 import { BackgroundHost } from "./background-host.js";
 import type { BackendPromptBudget } from "./context-budget.js";
+import { renderScopedMemory } from "./scoped-memory.js";
 
 /**
  * Tools whose SUCCESS argues that the task advanced (audit 2026-07-24, 1.2).
- * Read-only and bookkeeping tools — read_file, list_files, search_text, glob,
+ * Read-only and bookkeeping tools — read_file, search_text, glob,
  * git_status, git_diff, todo_write, command_output — execute successfully
  * while changing nothing, so counting them as completion evidence let a
  * backend that merely investigated report 完成.
@@ -72,6 +77,41 @@ export interface CodingAgentRuntimeDeps {
    * simply falls back to the editors' own harvest, exactly as before.
    */
   repoProbe?: (signal?: AbortSignal) => Promise<RepoSnapshot | null>;
+  /**
+   * The files a committed range `fromHead..toHead` touched, or null when the
+   * range cannot be attributed (toHead does not descend from fromHead —
+   * rebase/amend/reset — or git could not answer). Injected for the same
+   * reason as `repoProbe`.
+   *
+   * Added 2026-08-26 (git-dev lab): the probe's HEAD-moved refusal fired on
+   * every brief that ended in a commit — the NORMAL ending of a git brief —
+   * so shell-written files vanished from `changedFiles` all over again the
+   * moment the model committed them. A new HEAD that DESCENDS from the old
+   * one is this dispatch's own forward work (commits, merges) and is
+   * attributable; anything else keeps the honest refusal.
+   */
+  repoRangeDiff?: (
+    fromHead: string,
+    toHead: string,
+    signal?: AbortSignal,
+  ) => Promise<readonly RepoRangeFile[] | null>;
+  /**
+   * The richer repo description rendered into the backend frame's repo-
+   * snapshot section (ADR 0049 §2): branch, upstream ±counts, in-progress
+   * state, bounded dirty set, recent subjects. Injected for the same reason
+   * as `repoProbe`; gathered once at brief START in parallel with the
+   * baseline. Absent, or returning null, and the frame simply omits the
+   * section — byte-identical to before.
+   */
+  repoContext?: (signal?: AbortSignal) => Promise<RepoContextSnapshot | null>;
+  /**
+   * The steer source (ADR 0063): user messages sent while a brief runs,
+   * drained by the turn loop at the top of each iteration. Owned by the
+   * session (it accepts the text and projects it into the record); the
+   * runtime only threads it into the loop's handle. Absent: no steer ever
+   * reaches the loop — the CLI and tests.
+   */
+  pendingUserInput?: () => readonly string[];
 }
 
 /** What the workspace's VCS looked like at one instant. */
@@ -83,9 +123,21 @@ export interface RepoSnapshot {
   readonly dirty: readonly string[];
 }
 
+/** One file a committed range touched (see `repoRangeDiff`). */
+export interface RepoRangeFile {
+  readonly path: string;
+  readonly kind: "created" | "modified" | "deleted";
+}
+
 export interface RunBriefOptions {
   signal?: AbortSignal;
   scopedRepoInstructions?: string;
+  /**
+   * The frame's project-memory text. UNDEFINED (the production dispatch)
+   * means the runtime recalls the store itself at brief start and renders
+   * it (`renderScopedMemory`, ADR 0060); a string — even `""` — is taken as
+   * the caller's decision and no recall happens.
+   */
   scopedMemory?: string;
   /**
    * User-only message history threaded by the actor. The backend reads
@@ -138,6 +190,52 @@ export class CodingAgentRuntime {
     }
   }
 
+  /** The frame's repo snapshot, or null when there is no describer, no repo,
+   *  or the probe failed. Same never-throws contract as `probeRepo`: prompt
+   *  context is a nicety and must not fail a brief. */
+  private async describeRepo(
+    signal?: AbortSignal,
+  ): Promise<RepoContextSnapshot | null> {
+    if (this.deps.repoContext === undefined) return null;
+    try {
+      return await this.deps.repoContext(signal);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The frame's project-memory text (ADR 0060): everything the store holds,
+   * rendered newest-last under the count/char caps — or `""` when the store
+   * is empty or could not be read. Same never-throws contract as `probeRepo`:
+   * memory is P2 context, and a corrupt or unreadable store must cost the
+   * brief its hints, not the brief.
+   */
+  private async recallScopedMemory(lang: "zh" | "en"): Promise<string> {
+    try {
+      const items = await this.deps.memory.recall({});
+      return renderScopedMemory(items, lang);
+    } catch {
+      return "";
+    }
+  }
+
+  /** The committed range's files, or null when unattributable (non-descendant
+   *  move, no injected differ, git failure). Same never-throws contract as
+   *  `probeRepo` and for the same reason. */
+  private async rangeDiff(
+    fromHead: string,
+    toHead: string,
+    signal?: AbortSignal,
+  ): Promise<readonly RepoRangeFile[] | null> {
+    if (this.deps.repoRangeDiff === undefined) return null;
+    try {
+      return await this.deps.repoRangeDiff(fromHead, toHead, signal);
+    } catch {
+      return null;
+    }
+  }
+
   async runBrief(
     brief: HertaToAgentBrief,
     opts: RunBriefOptions = {},
@@ -183,9 +281,17 @@ export class CodingAgentRuntime {
       // - okEvidence: only successful tool results argue for "completed" —
       //   a run whose sole evidence is `denied`/failures must not claim it.
       // - deniedPermissions: makes the `blocked` status reachable.
+      // "deleted" only ever arrives from the committed-range attribution
+      // (2026-08-26) — no editor can delete, which is exactly why the range
+      // matters: the highest-blast-radius operation was the one the report
+      // was structurally blind to.
       const changedByPath = new Map<
         string,
-        { path: string; kind: "created" | "modified"; diffSummary: string }
+        {
+          path: string;
+          kind: "created" | "modified" | "deleted";
+          diffSummary: string;
+        }
       >();
       let okEvidence = 0;
       let deniedPermissions = 0;
@@ -202,7 +308,18 @@ export class CodingAgentRuntime {
       // dispatch is credited with. Without the start snapshot an end-only
       // status would report the USER's own pre-existing uncommitted work as
       // 板砖's — the same lie inverted.
-      const baseline = await this.probeRepo(opts.signal);
+      // The frame's repo snapshot (ADR 0049 §2) rides the same instant —
+      // gathered in parallel; every wrapper swallows its own failures. The
+      // project-memory recall (ADR 0060) joins them: one small file read
+      // per dispatch, skipped when the caller already decided the text.
+      const lang = opts.lang ?? "zh";
+      const [baseline, repoContext, recalledMemory] = await Promise.all([
+        this.probeRepo(opts.signal),
+        this.describeRepo(opts.signal),
+        opts.scopedMemory === undefined
+          ? this.recallScopedMemory(lang)
+          : Promise.resolve(opts.scopedMemory),
+      ]);
 
       const absorb = (event: AgentEvent): void => {
         // Backend-layer only (audit 2026-07-10 §6): the per-session bus is
@@ -330,9 +447,21 @@ export class CodingAgentRuntime {
             });
             // Blocked counts like denied for the status gate (finding 6): a
             // run whose mutations were refused — by the user OR by policy —
-            // must not report 完成.
+            // must not report 完成. The intent has always named MUTATIONS
+            // (git-dev lab 2026-08-26): a withheld READ (the reader guard
+            // refusing a `.git`/`.herta` probe the model then routed around)
+            // and a malformed call (`invalid_input` — bad argument shape,
+            // retried, not a refusal of anything) capped fully completed
+            // briefs at 部分完成. A user deny carries its risk on the
+            // request; a rule-deny now carries it on the event; anything
+            // without a stated risk still counts, conservatively.
             if (event.decision === "deny" || event.decision === "blocked") {
-              deniedPermissions += 1;
+              const refusedRisk =
+                event.decision === "deny" ? pending?.risk : event.risk;
+              const withheldRead = refusedRisk === "workspace_read";
+              const malformed =
+                event.decision === "blocked" && event.code === "invalid_input";
+              if (!withheldRead && !malformed) deniedPermissions += 1;
             }
             pendingPermissions.delete(event.id);
             break;
@@ -371,10 +500,14 @@ export class CodingAgentRuntime {
         userMessages: opts.userMessages ?? [],
         omittedUserMessages: opts.omittedUserMessages ?? 0,
         scopedRepoInstructions: opts.scopedRepoInstructions ?? "",
-        scopedMemory: opts.scopedMemory ?? "",
+        scopedMemory: recalledMemory,
         recentDialogue: opts.recentDialogue ?? "",
         workingHistory: opts.workingHistory ?? "",
-        lang: opts.lang ?? "zh",
+        lang,
+        ...(repoContext !== null ? { repoContext } : {}),
+        ...(this.deps.pendingUserInput !== undefined
+          ? { takePendingUserInput: this.deps.pendingUserInput }
+          : {}),
       };
 
       let stoppedBackground = 0;
@@ -408,11 +541,38 @@ export class CodingAgentRuntime {
       }
 
       // Attribute anything the editors did not report — shell writes, moves,
-      // deletes — by diffing the workspace against the START snapshot.
+      // deletes — by diffing the workspace against the START snapshot. When
+      // HEAD moved FORWARD (the new head descends from the old one — 板砖
+      // committed or merged, the normal ending of a git brief), the committed
+      // range is this dispatch's own work and attributes too (2026-08-26; the
+      // blanket refusal below used to fire on nearly every git brief and
+      // swallowed shell-written files the moment the model committed them).
       if (baseline !== null) {
         const after = await this.probeRepo(opts.signal);
-        if (after !== null && after.head === baseline.head) {
+        const range =
+          after === null ||
+          after.head === baseline.head ||
+          baseline.head === null ||
+          after.head === null
+            ? null
+            : await this.rangeDiff(baseline.head, after.head, opts.signal);
+        if (
+          after !== null &&
+          (after.head === baseline.head || range !== null)
+        ) {
           const wasDirty = new Set(baseline.dirty);
+          for (const f of range ?? []) {
+            // Already dirty before the brief: partly the user's edit, even
+            // if this dispatch committed it — outside this mechanism's
+            // reach, and the carried note below says so.
+            if (wasDirty.has(f.path)) continue;
+            if (changedByPath.has(f.path)) continue;
+            changedByPath.set(f.path, {
+              path: f.path,
+              kind: f.kind,
+              diffSummary: "changed and committed during this dispatch",
+            });
+          }
           for (const path of after.dirty) {
             // Already dirty before the brief: outside this mechanism's reach.
             // The report says so rather than claiming it.
@@ -431,9 +591,10 @@ export class CodingAgentRuntime {
             );
           }
         } else if (after !== null && after.head !== baseline.head) {
-          // A commit (or checkout) moved HEAD, so "dirty vs HEAD" no longer
-          // describes the same tree at both ends. Say that instead of
-          // computing a difference that means nothing.
+          // HEAD moved somewhere the old head cannot reach (rebase, amend,
+          // reset, history rewrite) — or the range could not be read. "Dirty
+          // vs HEAD" no longer describes the same tree at both ends; say
+          // that instead of computing a difference that means nothing.
           builder.addResidualRisk(
             "HEAD moved during this dispatch, so file changes could not be attributed by comparing against the starting commit",
           );
@@ -506,13 +667,15 @@ export class CodingAgentRuntime {
   }
 }
 
-function summarizeDiff(diff: string): string {
-  const lines = diff.split("\n");
-  const adds = lines.filter(
-    (l) => l.startsWith("+") && !l.startsWith("+++"),
-  ).length;
-  const dels = lines.filter(
-    (l) => l.startsWith("-") && !l.startsWith("---"),
-  ).length;
-  return `+${adds} -${dels}`;
+/**
+ * The `+N -M` a changed file reports. Through the ONE diff-line counter
+ * (`text/diff-lines.ts`): this used to be a fifth private copy with the
+ * exact defect that counter was written to fix — a deleted line whose text
+ * begins with `--` (YAML front matter, a markdown rule, an SQL comment)
+ * read as a `---` header and was dropped, so the done marker under-counted
+ * work the record presents as ground truth. Exported for the test.
+ */
+export function summarizeDiff(diff: string): string {
+  const { add, del } = countDiffLines(diff);
+  return `+${add} -${del}`;
 }

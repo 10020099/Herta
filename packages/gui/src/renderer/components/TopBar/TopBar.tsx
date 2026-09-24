@@ -6,6 +6,7 @@ import {
   useSessionSelector,
 } from "../../hooks/useSessionSelector.js";
 import { useT } from "../../i18n/LocaleProvider.js";
+import { isRepeatClick } from "../../lib/repeat-click.js";
 import { TitleText } from "../TitleText.js";
 import { Tooltip } from "../Tooltip/Tooltip.js";
 import { NewSessionIcon, PanelToggleIcon, SearchIcon } from "./icons.js";
@@ -133,8 +134,12 @@ export function TopBar(props: TopBarProps): JSX.Element {
           className={`sidebar-header-icon${newArmed ? " is-armed" : ""}`}
           aria-label={t("topbar.newSession")}
           disabled={gatePending}
-          onClick={() => {
+          onClick={(e) => {
             if (creating.current) return;
+            // The second click of a double-click is never the arm's confirm:
+            // it interrupted the reply the arm exists to protect (UX review
+            // 2026-09-22, item 3). A fresh click after the tint confirms.
+            if (isRepeatClick(e)) return;
             if (turnInFlight && !newArmed) {
               armNew();
               return;
@@ -145,9 +150,15 @@ export function TopBar(props: TopBarProps): JSX.Element {
             }
             setNewArmed(false);
             creating.current = true;
-            void bridge.createSession({}).finally(() => {
-              creating.current = false;
-            });
+            // A failed create answers null (main points the window at
+            // whatever the host has open); a rejected invoke is caught so it
+            // never surfaces as an unhandled rejection.
+            void bridge
+              .createSession({})
+              .catch(() => null)
+              .finally(() => {
+                creating.current = false;
+              });
           }}
         >
           <NewSessionIcon />

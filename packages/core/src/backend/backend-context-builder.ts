@@ -1,4 +1,5 @@
 import type { HertaToAgentBrief } from "../bridge/types.js";
+import { workspaceRelativeRepoPath } from "../text/repo-path.js";
 import type { ToolRegistry } from "../tool-registry.js";
 import type { BackendPromptFrame } from "../types/prompt.js";
 import type { Message } from "../types/transcript.js";
@@ -64,10 +65,10 @@ export const BACKEND_EXECUTION_CONTRACT = `你是后端的编码执行智能体�
     是拖延。
 
 如果是「探查」：
-  - 用 search_text（搜内容）、glob（按文件名找文件，新改动的排前面）、
-    list_files 和有针对性的 read_file。
-  - 结论用 report_finding 逐条记录：一条结论一次调用，claim 是一句话，
-    cites 给出支持它的 path:line 或 path:from-to（必须是你真读到过的位置，
+  - 用 search_text（搜内容）、glob（按文件名找文件，新改动的排前面）
+    和有针对性的 read_file。
+  - 结论用 report_finding 逐条记录：一条结论一次调用，claim 是一句话，用中文写
+    （它会原样给开拓者看），cites 给出支持它的 path:line 或 path:from-to（必须是你真读到过的位置，
     工具会逐条核对存在）。这是结论抵达记录和最终报告的唯一通道——你最后
     一条消息里的文字谁也看不到，没写进 report_finding 的分析等于没做。
   - 决定性的那几行用 show_excerpt 亮出来，让人能看见你引用的东西。
@@ -92,7 +93,8 @@ search_text 的命中行（前 40 条，带 path:line）会自动进记录，不
 
 多步任务（三个以上不同动作的复合活，例如「定位 → 修改 → 验证」）先用 todo_write
 把步骤列成清单再动手：全量重写整份清单，状态用 pending / in_progress / completed，
-同一时刻只留一项 in_progress。「脚本」类和一步就能做完的小活不必列。
+同一时刻只留一项 in_progress。条目用中文写——开拓者在对话里直接看这份清单，它的
+语言要跟对话一致，不跟工具说明一致。「脚本」类和一步就能做完的小活不必列。
 
 更新的节奏是一步一次，不许攒着一起报：动手前把那一步标 in_progress，做完立刻标
 completed 并把下一步标上 in_progress。别连做两三步再一次性把它们全标完——开拓者
@@ -182,9 +184,10 @@ If scope = "edit":
 
 If scope = "explore":
   - DO use search_text (contents), glob (find files by name, newest
-    first), list_files, and targeted read_file.
+    first), and targeted read_file.
   - DO record each conclusion with report_finding: one call per
-    conclusion, "claim" one sentence, "cites" the path:line or
+    conclusion, "claim" one sentence written in English (it is shown to
+    the user verbatim), "cites" the path:line or
     path:from-to locations that support it (places you actually read —
     the tool checks each one exists). This is the ONLY channel by which
     a conclusion reaches the record and the final report: the text of
@@ -218,8 +221,10 @@ may name a single file.
 For multi-step tasks (three or more distinct actions, e.g. locate → edit →
 verify), lay the steps out with todo_write BEFORE you start: rewrite the
 full list every call, statuses pending / in_progress / completed, at most
-one item in_progress at a time. Skip it for "script" scope and single-step
-jobs.
+one item in_progress at a time. Write the items in English — the user reads
+this list right in the conversation, and its language follows the
+conversation, not the tool descriptions. Skip it for "script" scope and
+single-step jobs.
 
 Update one step at a time, never in batches: mark a step in_progress before
 you begin it, and the moment it is done mark it completed and the next one
@@ -336,8 +341,10 @@ export function serializeUserHistory(
  * Which model-facing tool contract the backend runs (ADR 0040).
  *   standard — the 15-tool set (`createMvpTools`) + BACKEND_EXECUTION_CONTRACT.
  *   minimal  — the trained shape: persistent `bash` + `str_replace_editor`
- *              (+ report_finding / show_excerpt as the record channels) and
- *              the short 板砖 prompt below.
+ *              (+ report_finding / show_excerpt as the record channels, and
+ *              todo_write since ADR 0047 §4 — the plan channel the GUI rail
+ *              card and cross-dispatch inheritance read) and the short 板砖
+ *              prompt below.
  */
 export type BackendContract = "standard" | "minimal";
 
@@ -347,7 +354,24 @@ export type BackendContract = "standard" | "minimal";
  * trigger), what it produces, and where it works. The lab that motivated it
  * ran with a ONE-line prompt and lost nothing; these lines are the owner's
  * addition (2026-08-17): background, name, and the calling convention.
- * D6 still holds — no speaking to the user, no playing Herta.
+ * The todo sentence joined with todo_write (ADR 0047 §4, 2026-08-26) — the
+ * WHEN and the two reasons it matters (the user sees the list; unfinished
+ * items cross the dispatch boundary); the HOW lives in the tool's own
+ * description. D6 still holds — no speaking to the user, no playing Herta.
+ */
+/**
+ * NOT here: a line about `view_image` (ADR 0048 §5).
+ *
+ * One was written and then removed the same hour. The evidence for it — a
+ * model that spent a whole brief on `pwd`/`ls`/`find` and never opened the
+ * picture — turned out to be a broken probe passing bare strings as
+ * `userMessages`, so the model was reacting to an EMPTY request. With the
+ * brief actually delivered, the tool's own description is enough: 3 of 3
+ * live briefs called `view_image` first, with zero `bash` calls, at 8-12s.
+ *
+ * The tool description is self-gating (it exists only when the tool is
+ * mounted); a contract line is bytes on the shared, cached prefix. Prompt
+ * text has to earn its place with measured behaviour, not a plausible story.
  */
 export function minimalBackendContract(
   lang: "zh" | "en",
@@ -356,7 +380,8 @@ export function minimalBackendContract(
   const zh = [
     "你是板砖，黑塔的差分协处理器——负责实际动手的软件工程师助手。",
     "开拓者（用户）在和黑塔对话；凡是要读文件、改代码、跑命令的活，开拓者或黑塔会在话里写 @板砖 派给你，你收到的任务就是开拓者的原话。",
-    "你不和开拓者说话，也不扮演黑塔。你的产出是仓库里的改动和命令的结果；分析得出的结论要用 report_finding 逐条记下（附 path:line 出处），要给人看某几行时用 show_excerpt——你最后一条消息里的文字没有人会看到。",
+    "你不和开拓者说话，也不扮演黑塔。你的产出是仓库里的改动和命令的结果；分析得出的结论要用 report_finding 逐条记下（claim 用中文写，附 path:line 出处），要给人看某几行时用 show_excerpt——你最后一条消息里的文字没有人会看到。",
+    "三步以上的任务先用 todo_write 把步骤列出来（条目用中文写，跟对话同一种语言，不跟工具说明走），做完一步就更新状态——这份清单开拓者看得到，没做完的项也会留给下次接手的你。",
     "审查项目文件来找 bug、安全漏洞、性能、可靠性或结构风险是只读探查：读代码和配置、记录有出处的结论，不要因为审查任务就改文件；只有开拓者明确要求修改时才动手改。",
     ...(workspaceHint !== undefined && workspaceHint.length > 0
       ? [
@@ -367,7 +392,8 @@ export function minimalBackendContract(
   const en = [
     "You are Brick (板砖), Herta's differential coprocessor — the software engineer assistant that does the hands-on work.",
     "The user is talking with Herta; whenever a task means reading files, changing code or running commands, the user or Herta hands it to you by writing @Brick (or @板砖) in the conversation, and what you receive is the user's own words.",
-    "You do not speak to the user and you do not play Herta. Your output is the changes in the repository and the results of the commands you run; record analytical conclusions one by one with report_finding (cite path:line), and use show_excerpt when someone needs to see specific lines — the text of your final message is seen by no one.",
+    "You do not speak to the user and you do not play Herta. Your output is the changes in the repository and the results of the commands you run; record analytical conclusions one by one with report_finding (claim in English, cite path:line), and use show_excerpt when someone needs to see specific lines — the text of your final message is seen by no one.",
+    "For tasks of three or more steps, lay the steps out with todo_write first (items in English, the conversation's language) and update statuses as you go — the user sees this list, and unfinished items carry over to the next you.",
     "Reviewing project files for bugs, security flaws, performance, reliability, or structural risks is read-only exploration: inspect code and configuration, record sourced conclusions, and do not edit merely because the task is a review; make changes only when the user explicitly asks for them.",
     ...(workspaceHint !== undefined && workspaceHint.length > 0
       ? [
@@ -400,16 +426,266 @@ export function windowsBackendHostNote(lang: "zh" | "en"): string {
 This machine runs Windows and has no bash: Unix utilities (grep, sed, ls,
 cat) do not exist here, and run_command executes an argv directly — no shell
 expansion, no pipes, no redirection. Search content with search_text, find
-files with glob / list_files, read with read_file, edit with edit_file /
+files with glob, read with read_file, edit with edit_file /
 write_new_file; a command that must run (node, npm test, …) gets its argv
 directly. Do not reach for Unix tools or try to compose pipelines.`
     : `# 主机环境
 
 这台机器是 Windows，没有 bash：grep、sed、ls、cat 这类 Unix 命令不存在，
 run_command 直接按 argv 执行，没有 shell 展开、管道和重定向。搜内容用
-search_text，找文件用 glob / list_files，读文件用 read_file，改文件用
+search_text，找文件用 glob，读文件用 read_file，改文件用
 edit_file / write_new_file；要跑的命令（node、npm test 等）直接给 argv。
 不要试 Unix 工具，也不要拼管道。`;
+}
+
+/**
+ * Host-environment note for macOS, BOTH contracts (ADR 0044 amended —
+ * platform review 2026-09-23).
+ *
+ * The backend's training bias is GNU/Linux, and a Mac's command line is BSD:
+ * `sed -i 's/a/b/' f` is an error there (and `sed -i -e …` leaves `f-e`
+ * backup files behind), `grep -P`, `date -d`, `stat -c`, `find -printf` and
+ * `timeout` are missing or different, and Apple's /bin/bash is 3.2 — no
+ * associative arrays, `mapfile`, `${x,,}` or `globstar`. Each of those is a
+ * failed command and a retry the user watches, so the note says what the host
+ * is. Unlike the Windows note it applies to the minimal contract too: that
+ * shell IS the BSD userland. Text only; the wiring decides when it applies.
+ */
+export function darwinBackendHostNote(lang: "zh" | "en"): string {
+  return lang === "en"
+    ? `# Host environment
+
+This machine runs macOS. Its command-line tools are the BSD versions, not
+GNU: \`sed -i\` needs an explicit empty suffix (\`sed -i '' 's/a/b/' file\`),
+and \`grep -P\`, \`date -d\`, \`stat -c\`, \`find -printf\` and \`timeout\` are
+missing or behave differently. Apple's /bin/bash is version 3.2 (check
+\`echo $BASH_VERSION\`): no \`declare -A\`, \`mapfile\`, \`\${var,,}\` or
+\`globstar\`. Prefer portable POSIX forms.`
+    : `# 主机环境
+
+这台机器是 macOS，命令行工具是 BSD 版本，不是 GNU：\`sed -i\` 必须带一个空后缀
+（\`sed -i '' 's/a/b/' file\`）；\`grep -P\`、\`date -d\`、\`stat -c\`、\`find -printf\`
+和 \`timeout\` 不存在或行为不同。苹果自带的 /bin/bash 是 3.2 版（\`echo $BASH_VERSION\`
+可查）：没有 \`declare -A\`、\`mapfile\`、\`\${var,,}\` 和 \`globstar\`。优先用可移植的
+POSIX 写法。`;
+}
+
+/** A repo operation the working tree is in the middle of (ADR 0049 §1). */
+export type RepoInProgressState =
+  | "merge"
+  | "rebase"
+  | "cherry-pick"
+  | "revert"
+  | "bisect";
+
+/** One uncommitted path with its porcelain XY status, for the snapshot. */
+export interface RepoContextDirtyFile {
+  /** Index (staged) status column, " " when unchanged. */
+  readonly x: string;
+  /** Worktree status column, " " when unchanged. */
+  readonly y: string;
+  readonly path: string;
+}
+
+/**
+ * What the repo looked like when the dispatch started (ADR 0049 §2) —
+ * the structured input the builder renders into the frame's repo-snapshot
+ * section. Produced by the git probe in `@herta/tools` (core cannot import
+ * tools); every field is best-effort and the whole snapshot is optional:
+ * no repo, no git, or a probe failure simply omits the section.
+ *
+ * This is PROMPT context, not record: the user's record gets real
+ * `git_status` blocks when git work happens. The section exists so the
+ * backend stops spending tool calls rediscovering facts the harness
+ * already held at brief start.
+ */
+export interface RepoContextSnapshot {
+  /** The working tree's top-level directory as git spells it (absolute,
+   *  forward slashes even on Windows). */
+  readonly root: string;
+  /** The workspace's path INSIDE the repository — `git rev-parse
+   *  --show-prefix`: `packages/gui/` (trailing slash), "" when the
+   *  workspace is the root. `dirty` / `conflicted` keep git's root-relative
+   *  spelling; readers that resolve against the workspace rebase them with
+   *  `workspaceRelativeRepoPath` (ADR 0058 amendment, 2026-09-07). */
+  readonly prefix: string;
+  /** The (per-worktree) git dir, absolute — what a watcher follows for
+   *  commits, checkouts and fetches made outside the app. Null when it
+   *  could not be located without spawning. */
+  readonly gitDir: string | null;
+  /** Current branch name, or null when detached / unknowable. */
+  readonly branch: string | null;
+  /** HEAD is not on any branch. */
+  readonly detached: boolean;
+  /** Short commit id of HEAD, or null on an unborn branch. */
+  readonly headShort: string | null;
+  /** The tracked upstream ref (e.g. "origin/main"), or null when unset. */
+  readonly upstream: string | null;
+  /** The upstream is set but its ref is gone (deleted on the remote, ADR
+   *  0058 §7): the counts read 0 only because git cannot measure against
+   *  it, and every commit here is unpublished. */
+  readonly upstreamGone: boolean;
+  readonly ahead: number;
+  readonly behind: number;
+  /** The remote's default branch (from origin/HEAD), or null when unset. */
+  readonly defaultBranch: string | null;
+  /** An operation mid-flight (merge/rebase/…), or null when none. */
+  readonly inProgress: RepoInProgressState | null;
+  /** Paths with unmerged (conflict) status. Bounded by the producer. */
+  readonly conflicted: readonly string[];
+  /** Uncommitted paths (staged, unstaged, untracked). Bounded by the
+   *  producer; `dirtyTotal` keeps the true count. */
+  readonly dirty: readonly RepoContextDirtyFile[];
+  readonly dirtyTotal: number;
+  /** `<short sha> <subject>` lines, newest first, bounded by the producer —
+   *  the frame's text form of `recentCommits`. */
+  readonly recentSubjects: readonly string[];
+  /** The same commits, structured, for the rail card (ADR 0058 §5.4/§5.6):
+   *  the card draws id, subject and an unpushed mark apart. */
+  readonly recentCommits: readonly RepoRecentCommit[];
+}
+
+/** One recent commit as the card draws it. */
+export interface RepoRecentCommit {
+  readonly sha: string;
+  readonly shortSha: string;
+  readonly subject: string;
+  /** Not on the tracked upstream yet (false when there is no upstream). */
+  readonly unpushed: boolean;
+}
+
+/**
+ * Render the repo snapshot as one bounded prompt section (ADR 0049 §2).
+ * Exported for tests. The full-status pointer names the tool the CONTRACT
+ * actually mounts — `git_status` on standard, `git status` via bash on
+ * minimal — so the honest-truncation line never recommends a tool the
+ * model cannot call.
+ */
+/** Recent subjects the FRAME renders; the snapshot may carry more. */
+const MAX_PROMPT_SUBJECTS = 5;
+
+export function renderRepoContext(
+  snapshot: RepoContextSnapshot,
+  lang: "zh" | "en",
+  contract: BackendContract,
+): string {
+  const zh = lang !== "en";
+  const statusPointer = zh
+    ? contract === "minimal"
+      ? "在 bash 里跑 git status 看全量"
+      : "全量用 git_status 查看"
+    : contract === "minimal"
+      ? "run git status in bash for the full set"
+      : "run git_status for the full set";
+
+  const lines: string[] = [
+    zh ? "# 仓库快照" : "# Repo snapshot",
+    zh
+      ? "（本次派活开始时采集；你开始改动后即过期，以工具的实时结果为准。）"
+      : "(taken when this dispatch started; stale once you start changing things — trust live tool output.)",
+  ];
+
+  // Branch line: detached and unborn are stated plainly rather than dressed
+  // up as a branch that isn't there.
+  if (snapshot.detached) {
+    const at = snapshot.headShort ?? "?";
+    lines.push(
+      zh ? `分支: 游离 HEAD @ ${at}` : `branch: detached HEAD @ ${at}`,
+    );
+  } else if (snapshot.branch !== null) {
+    const name = snapshot.branch;
+    if (snapshot.headShort === null) {
+      lines.push(
+        zh ? `分支: ${name}（尚无提交）` : `branch: ${name} (no commits yet)`,
+      );
+    } else if (snapshot.upstream !== null) {
+      const counts = snapshot.upstreamGone
+        ? zh
+          ? "（上游已不存在，本地提交均未发布）"
+          : " (upstream gone; nothing here is published)"
+        : zh
+          ? `（领先 ${snapshot.ahead}，落后 ${snapshot.behind}）`
+          : ` (ahead ${snapshot.ahead}, behind ${snapshot.behind})`;
+      lines.push(
+        zh
+          ? `分支: ${name} → ${snapshot.upstream}${counts}`
+          : `branch: ${name} → ${snapshot.upstream}${counts}`,
+      );
+    } else {
+      lines.push(
+        zh ? `分支: ${name}（无上游）` : `branch: ${name} (no upstream)`,
+      );
+    }
+  }
+  if (snapshot.defaultBranch !== null) {
+    lines.push(
+      zh
+        ? `默认分支: ${snapshot.defaultBranch}`
+        : `default branch: ${snapshot.defaultBranch}`,
+    );
+  }
+
+  // A workspace that is a SUBFOLDER of its repository: say so once, and
+  // spell every path from the workspace — what the tools resolve against
+  // and what `git status` prints from that cwd. A `../` path is outside the
+  // workspace and outside the tools' reach; stating it beats a path that
+  // resolves nowhere (ADR 0058 amendment, 2026-09-07).
+  const prefix = snapshot.prefix;
+  const spell = (p: string): string => workspaceRelativeRepoPath(p, prefix);
+  if (prefix.length > 0) {
+    lines.push(
+      zh
+        ? `仓库根目录: ${snapshot.root}（工作区是其中的 ${prefix}；下列路径相对工作区，../ 开头的在工作区之外）`
+        : `repo root: ${snapshot.root} (the workspace is its ${prefix}; paths below are workspace-relative, ../ means outside the workspace)`,
+    );
+  }
+
+  if (snapshot.inProgress !== null) {
+    lines.push(
+      zh
+        ? `进行中的操作: ${snapshot.inProgress}`
+        : `operation in progress: ${snapshot.inProgress}`,
+    );
+    if (snapshot.conflicted.length > 0) {
+      const shown = snapshot.conflicted.map(spell).join(zh ? "、" : ", ");
+      lines.push(
+        zh
+          ? `冲突文件 ${snapshot.conflicted.length} 个: ${shown}`
+          : `conflicted (${snapshot.conflicted.length}): ${shown}`,
+      );
+    }
+  }
+
+  if (snapshot.dirtyTotal === 0) {
+    lines.push(zh ? "未提交改动: 无" : "uncommitted changes: none");
+  } else {
+    lines.push(
+      zh
+        ? `未提交改动 ${snapshot.dirtyTotal} 项:`
+        : `uncommitted changes (${snapshot.dirtyTotal}):`,
+    );
+    for (const f of snapshot.dirty) {
+      lines.push(`${f.x}${f.y} ${spell(f.path)}`);
+    }
+    const omitted = snapshot.dirtyTotal - snapshot.dirty.length;
+    if (omitted > 0) {
+      lines.push(
+        zh
+          ? `（另有 ${omitted} 项未列出；${statusPointer}）`
+          : `(${omitted} more not listed; ${statusPointer})`,
+      );
+    }
+  }
+
+  if (snapshot.recentSubjects.length > 0) {
+    lines.push(zh ? "最近提交:" : "recent commits:");
+    // The probe carries more for the rail's commit list (ADR 0058 §5.4);
+    // the frame keeps the five it always had — prompt bytes are a budget.
+    for (const s of snapshot.recentSubjects.slice(0, MAX_PROMPT_SUBJECTS))
+      lines.push(`  ${s}`);
+  }
+
+  return lines.join("\n");
 }
 
 export interface BackendContextBuilderDeps {
@@ -429,11 +705,12 @@ export interface BackendContextBuilderDeps {
    */
   projectRules?: () => string;
   /**
-   * Host-environment section appended to the STANDARD contract (ADR 0044) —
-   * the wiring passes `windowsBackendHostNote(lang)` on win32 and nothing
-   * elsewhere. Ignored under the minimal contract (bash exists there by
-   * construction). Undefined / "" → the section is omitted and the frame is
-   * byte-identical to before.
+   * Host-environment section appended to the contract (ADR 0044). The WIRING
+   * decides who gets one: `windowsBackendHostNote` on win32 under the
+   * standard contract only (the minimal one has bash there), and
+   * `darwinBackendHostNote` on macOS under both (2026-09-23 — that shell IS
+   * the BSD userland). Undefined / "" → the section is omitted and the frame
+   * is byte-identical to before.
    */
   hostNote?: string;
 }
@@ -460,6 +737,10 @@ export interface BackendBuildInput {
    *  "zh" keeps it Chinese, byte-identical to before. Only the backend's
    *  instructions localize — the received task content is verbatim either way. */
   lang?: "zh" | "en";
+  /** The repo snapshot taken at brief start (ADR 0049 §2), rendered as one
+   *  bounded section after the contract. Absent → section omitted, frame
+   *  byte-identical to before (the `hostNote` pattern). */
+  repoContext?: RepoContextSnapshot;
   scopedRepoInstructions: string;
   scopedMemory: string;
   messages: readonly Message[];
@@ -468,9 +749,10 @@ export interface BackendBuildInput {
 /**
  * Pure constructor of `BackendPromptFrame` from explicit inputs.
  *
- * Runs no capsule activation pipeline by design — the actor side
- * (`HertaActorRuntime`) is responsible for selecting which scoped repo
- * instructions and memory to pass in. This keeps the backend frame
+ * Runs no capsule activation pipeline by design — the caller decides the
+ * scoped strings (`CodingAgentRuntime` renders the project memory at brief
+ * start, ADR 0060; nothing populates the repo-instructions slot, per
+ * CLAUDE.md's no-HERTA.md rule). This keeps the backend frame
  * deterministic and free of Herta-identity context.
  */
 export class BackendContextBuilder {
@@ -504,17 +786,24 @@ export class BackendContextBuilder {
       lang === "en"
         ? BACKEND_EXECUTION_CONTRACT_EN
         : BACKEND_EXECUTION_CONTRACT;
-    const contract =
+    const base =
       this.contractKind === "minimal"
         ? minimalBackendContract(lang, this.workspaceHint?.())
-        : this.hostNote !== undefined && this.hostNote.length > 0
-          ? `${standardBase}\n\n${this.hostNote}`
-          : standardBase;
+        : standardBase;
+    const contract =
+      this.hostNote !== undefined && this.hostNote.length > 0
+        ? `${base}\n\n${this.hostNote}`
+        : base;
     const workingHeader =
       lang === "en" ? WORKING_HISTORY_HEADER_EN : WORKING_HISTORY_HEADER;
     const recentHeader =
       lang === "en" ? RECENT_DIALOGUE_HEADER_EN : RECENT_DIALOGUE_HEADER;
     const sections: string[] = [contract];
+    if (input.repoContext !== undefined) {
+      sections.push(
+        renderRepoContext(input.repoContext, lang, this.contractKind),
+      );
+    }
     if (input.workingHistory !== undefined && input.workingHistory.length > 0) {
       sections.push(`${workingHeader}\n\n${input.workingHistory}`);
     }

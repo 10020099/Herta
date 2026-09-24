@@ -35,6 +35,28 @@ describe("SettingsModal", () => {
     expect(document.activeElement).toBe(dialog);
   });
 
+  it("opened from the CLOSED state, focus lands in the card — the trap engages (UX review 2026-09-22, item 10)", () => {
+    // The card does not exist in the flush that first sees `open`: a focus
+    // keyed on `open` alone found nothing, and Tab walked the workspace
+    // behind the backdrop.
+    const mock = createMockHertaBridge();
+    const ui = (open: boolean): JSX.Element => (
+      <HertaBridgeProvider bridge={mock.bridge}>
+        <SettingsModal open={open} onClose={() => {}} />
+      </HertaBridgeProvider>
+    );
+    const trigger = document.createElement("button");
+    document.body.appendChild(trigger);
+    try {
+      trigger.focus();
+      const { rerender, getByRole } = renderWithLocale(ui(false));
+      rerender(ui(true));
+      expect(document.activeElement).toBe(getByRole("dialog"));
+    } finally {
+      trigger.remove();
+    }
+  });
+
   it("does NOT steal focus to the Settings button on initial mount (closed)", () => {
     const btn = document.createElement("button");
     btn.className = "sidebar-settings";

@@ -17,7 +17,7 @@
  *   - connect → createSession → the fixed opening line streams in;
  *   - anything the visitor sends gets the download/GitHub funnel reply
  *     (first send: full hint + generated title; repeats: shorter);
- *   - ONE unsealed archive opens to a settled showcase transcript — FOUR
+ *   - ONE unsealed archive opens to a settled showcase transcript — SIX
  *     topics, so the topic rail shows and its jumps genuinely scroll
  *     (2026-07-12; the whole record is loaded, so no dead controls); every
  *     other archive is SEALED — openSession resolves null and nothing switches
@@ -40,6 +40,7 @@ import type {
   AgentEvent,
   OverlayEvent,
   RecordEvent,
+  RepoContextSnapshot,
   SessionAgentEvent,
   SessionDeletedEvent,
   SessionMetadata,
@@ -58,6 +59,7 @@ import type {
 // the opening still reveals at voice pace, silently. Duration is unchanged,
 // so `openingVoiceMs` below still describes it.
 import openingVoiceUrl from "./assets/opening-voice.opus";
+import { demoWorkspaceFiles } from "./demo-workspace.js";
 
 export type DemoLang = "zh" | "en";
 
@@ -113,6 +115,60 @@ interface DemoContent {
   readonly showcase: () => {
     record: TerminalRecordBlock[];
     topics: SessionTopic[];
+  };
+  /** The showcase workspace's repository, as the rail's repository card
+   *  shows it (ADR 0058; on the site since 2026-09-10): what the record
+   *  implies — the patched bus and its new test uncommitted, the last
+   *  commit not yet pushed. Carried on the session's own snapshot, the way
+   *  the desktop app answers a probe that has already finished. */
+  readonly repo: RepoContextSnapshot;
+}
+
+/** The showcase repository. The commits are the ones the 0.1.5 release film
+ *  shows on the same card, so the two tell one story. */
+function showcaseRepo(root: string): RepoContextSnapshot {
+  const commits = [
+    {
+      shortSha: "e4f1c02",
+      subject: "fix: reset parser cursor",
+      unpushed: true,
+    },
+    {
+      shortSha: "b7a9d31",
+      subject: "feat: async subscribe()",
+      unpushed: false,
+    },
+    { shortSha: "9c02ee7", subject: "test: drain under load", unpushed: false },
+  ] as const;
+  const recentCommits = commits.map((c) => ({
+    // A full id the card never shows; the tab it would open is not on the
+    // demo bridge, so the ids stay plain text (ADR 0059's optional seam).
+    sha: `${c.shortSha}${"0123456789abcdef".repeat(3).slice(0, 33)}`,
+    shortSha: c.shortSha,
+    subject: c.subject,
+    unpushed: c.unpushed,
+  }));
+  return {
+    root,
+    prefix: "",
+    gitDir: null,
+    branch: "main",
+    detached: false,
+    headShort: "e4f1c02",
+    upstream: "origin/main",
+    ahead: 1,
+    behind: 0,
+    upstreamGone: false,
+    defaultBranch: "origin/main",
+    inProgress: null,
+    conflicted: [],
+    dirty: [
+      { x: " ", y: "M", path: "packages/core/src/event-bus.ts" },
+      { x: "A", y: " ", path: "packages/core/src/event-bus.test.ts" },
+    ],
+    dirtyTotal: 2,
+    recentSubjects: recentCommits.map((c) => `${c.shortSha} ${c.subject}`),
+    recentCommits,
   };
 }
 
@@ -275,21 +331,80 @@ const todoRow = (items: readonly TodoItem[], layout: boolean): SystemBlock => {
     },
   };
 };
-/** Every real edit is previewed before it lands — labelled 系统, not the
- *  coprocessor, and digest "skip" so the Writing row covers the same ground. */
-const patchPreview = (file: string, diff: string): SystemBlock => ({
+/**
+ * A picture the 开拓者 sent with a message (ADR 0048). Mirrors `buildBlock`'s
+ * image arm in app-server/attachments.ts field for field: label 系统, body
+ * `附件 <name> · 图片 PNG · W×H · <caption> · <path>` — the caption rides the
+ * BODY, because it is the picture's only textual form and must survive every
+ * fold — and the digest carries the same facts so the GUI lifts the block
+ * onto the user bubble as a thumbnail (leading image blocks immediately
+ * after a user block, per liftUserImages) and the lightbox can open it.
+ *
+ * The bytes behind `path` are served by the demo's attachment-image shim
+ * (demo-attachment-image.ts, aliased in vite.config.ts) — the desktop app
+ * serves the same URL from disk over `herta-attachment://`. A new imageRow
+ * needs its path added to that shim's map, or the thumb renders broken.
+ */
+const imageRow = (a: {
+  readonly name: string;
+  readonly path: string;
+  readonly width: number;
+  readonly height: number;
+  readonly caption: string;
+}): SystemBlock => ({
   kind: "system",
   label: "系统",
-  body: [`patch preview: ${file}`, "", "```diff", diff.trimEnd(), "```"].join(
-    "\n",
-  ),
-  digest: { kind: "skip" },
+  body: `附件 ${a.name} · 图片 PNG · ${a.width}×${a.height} · ${a.caption} · ${a.path}`,
+  digest: {
+    kind: "attachment",
+    name: a.name,
+    path: a.path,
+    lines: 0,
+    chars: 0,
+    image: { format: "png", width: a.width, height: a.height },
+    caption: a.caption,
+  },
 });
+/** Added/removed counts of a unified diff — countDiffLines' own rule: `+`/`-`
+ *  content lines only, never the `+++`/`---` file headers or `\ ` markers. */
+const countDiff = (diff: string): { add: number; del: number } => {
+  let add = 0;
+  let del = 0;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("+++") || line.startsWith("---")) continue;
+    if (line.startsWith("+")) add += 1;
+    else if (line.startsWith("-")) del += 1;
+  }
+  return { add, del };
+};
+/** Every real edit is previewed before it lands — labelled 系统, not the
+ *  coprocessor. Since 2026-08-25 the preview states its MAGNITUDE: the body
+ *  head carries `(+N -M)` and the digest is `kind: "patch"` with the counts,
+ *  which is what the GUI's `↳ +N −M` outcome row renders from and what lets
+ *  Herta quote the same number the user sees. */
+const patchPreview = (file: string, diff: string): SystemBlock => {
+  const { add, del } = countDiff(diff);
+  return {
+    kind: "system",
+    label: "系统",
+    body: [
+      `patch preview: ${file} (+${add} -${del})`,
+      "",
+      "```diff",
+      diff.trimEnd(),
+      "```",
+    ].join("\n"),
+    digest: { kind: "patch", files: [file], add, del },
+  };
+};
 /** The run-terminal marker. `tests` counts test COMMANDS, not cases — one
  *  `pnpm test` run is `测试 1/1`, however many cases it executed. */
 const doneMarker = (m: {
   readonly body: string;
   readonly fileCount: number;
+  /** Total added/removed lines (2026-08-25) — present only when EVERY changed
+   *  file carried a per-file diff, exactly as totalChangedLines computes it. */
+  readonly lines?: { readonly add: number; readonly del: number };
   readonly tests?: { readonly passed: number; readonly failed: number };
   /** The last command's output tail, which the real marker folds in first. */
   readonly output?: readonly string[];
@@ -316,6 +431,7 @@ const doneMarker = (m: {
       kind: "done",
       state: "completed",
       fileCount: m.fileCount,
+      ...(m.lines === undefined ? {} : { lines: m.lines }),
       ...(m.tests === undefined ? {} : { tests: m.tests }),
       riskCount: 0,
     },
@@ -335,8 +451,8 @@ interface ShowcaseTopic {
   readonly blocks: readonly TerminalRecordBlock[];
 }
 
-/** FOUR topics (= four topic-rail entries), the EventBus cleanup last so it
- *  stays the session title (latest topic = current title). Rail entries are
+/** The showcase topics (one topic-rail entry each), the EventBus cleanup
+ *  last so it stays the session title (latest topic = current title). Rail entries are
  *  built from the blocks so an anchor can never drift from its user block; the
  *  whole record is loaded, so rail jumps genuinely scroll. */
 function makeShowcase(topics: readonly ShowcaseTopic[]): {
@@ -433,15 +549,54 @@ const EVENT_BUS_DIFF = (deprecatedNote: string): string =>
 +    return this.queues.open(type);
 +  }`;
 
-const EVENT_BUS_DIFF_ZH = EVENT_BUS_DIFF(
-  "@deprecated 用 subscribe()；保留只为不动公开签名。",
-);
-const EVENT_BUS_DIFF_EN = EVENT_BUS_DIFF(
-  "@deprecated use subscribe(); kept only so the public signature holds.",
-);
+/** The one diff line that differs by language — shared with the demo
+ *  workspace's patched file (demo-workspace.ts), so the file the viewer
+ *  opens carries the exact `+` lines the preview showed. */
+const EVENT_BUS_NOTE = {
+  zh: "@deprecated 用 subscribe()；保留只为不动公开签名。",
+  en: "@deprecated use subscribe(); kept only so the public signature holds.",
+} as const;
+const EVENT_BUS_DIFF_ZH = EVENT_BUS_DIFF(EVENT_BUS_NOTE.zh);
+const EVENT_BUS_DIFF_EN = EVENT_BUS_DIFF(EVENT_BUS_NOTE.en);
+
+/** show_excerpt's STARTED row carries the path and range as one arg —
+ *  the shape ADR 0050 parses into an anchored open, so the click lands on
+ *  the cited lines (was a bare `logs/alerts`, which no tool call spells). */
+const ALERTS_EXCERPT = {
+  path: "logs/alerts/2026-07-31.log",
+  from: 41,
+  to: 43,
+} as const;
+const ALERTS_EXCERPT_ARG = `${ALERTS_EXCERPT.path}:${ALERTS_EXCERPT.from}-${ALERTS_EXCERPT.to}`;
+
+/** The patch's magnitude, measured off the diff itself (zh/en twins differ
+ *  only in a comment's wording, so the counts are shared). Feeds the preview
+ *  digest, the done-marker's `lines`, its canonical `+N −M` body segment, and
+ *  the number Herta quotes — all four must be the same measurement. */
+const EVENT_BUS_LINES = countDiff(EVENT_BUS_DIFF_ZH);
+
+/** The two showcase pictures (ADR 0048). ONE pair of stored paths for both
+ *  languages — the bytes are the bundled demo-panel assets, keyed by these
+ *  exact paths in demo-attachment-image.ts; only the captions are per-session
+ *  language (the captioning instrument writes in the session's language). */
+const PANEL_IMAGES = {
+  night: {
+    name: "sensor07-night.png",
+    path: ".herta/attachments/s-4f1c/sensor07-night-3fa1c220.png",
+    width: 640,
+    height: 400,
+  },
+  today: {
+    name: "sensor07-today.png",
+    path: ".herta/attachments/s-4f1c/sensor07-today-b47d9e01.png",
+    width: 640,
+    height: 400,
+  },
+} as const;
 
 const ZH: DemoContent = {
   workspaceRoot: "/黑塔空间站",
+  repo: showcaseRepo("/黑塔空间站"),
   opening:
     "进度条还在跑最后的百分之二。你有一段非常短的窗口期——别寒暄，说正事。",
   openingVoiceMs: 6580,
@@ -469,12 +624,12 @@ const ZH: DemoContent = {
           say(
             "三次踩的是同一个阈值，还是三个不同的？——算了，你要是看得出来就不会来问我。\n@板砖，把凌晨那段告警捞出来。只读，别碰文件。",
           ),
-          op("Reading", "logs/alerts"),
           op("Reading", '"sensor-0"'),
+          op("Reading", ALERTS_EXCERPT_ARG),
           excerptRow(
-            "logs/alerts/2026-07-31.log",
-            41,
-            53,
+            ALERTS_EXCERPT.path,
+            ALERTS_EXCERPT.from,
+            ALERTS_EXCERPT.to,
             "03:14:07  WARN  sensor-07  temp 41.2 > 40.0  (dwell 0.4s)\n" +
               "04:02:51  WARN  sensor-07  temp 40.3 > 40.0  (dwell 0.2s)\n" +
               "05:47:33  WARN  sensor-07  temp 40.1 > 40.0  (dwell 0.1s)",
@@ -547,6 +702,40 @@ const ZH: DemoContent = {
           say("终端我不关。去睡。"),
         ],
       },
+      // Pictures ride a message (ADR 0048): the record order is user block
+      // then its image-attachment blocks, and the GUI lifts the leading
+      // image run onto the bubble as thumbnails (click opens the lightbox).
+      // The caption rides the body — it is the picture's only textual form,
+      // and the only thing SHE can read (view_image is 板砖's, and this
+      // topic needs no dispatch). So she says exactly that, and every fact
+      // in her reply is in a caption: the crossings, the counters, the
+      // labeled gate. The follow-up to topic 1: her fix was applied, and
+      // she refuses the "fixed" the silent panel seems to offer.
+      {
+        title: "两张面板截图",
+        minutesAgo: 145,
+        blocks: [
+          ask(
+            "黑塔女士，阈值和 dwell 门限都按你说的改了。发你两张截图——昨晚的和今天下午的，改完到现在一次都没叫。这算是好了吗？",
+          ),
+          imageRow({
+            ...PANEL_IMAGES.night,
+            caption:
+              "监控界面截图：折线图显示 sensor-07 的温度曲线，三次瞬时越过红色阈值线，右上角计数为“ALERTS 3”。",
+          }),
+          imageRow({
+            ...PANEL_IMAGES.today,
+            caption:
+              "监控界面截图：同一条温度曲线多次接近但未触及标注为“42.0 THRESHOLD · DWELL 2s”的红色阈值线，计数为“ALERTS 0”。",
+          }),
+          say(
+            "图我收到了——准确说，我读的是它们的描述，像素是板砖的活。\n昨晚：三次越线，ALERTS 3。今天：曲线还是那副德行，贴着新阈值线底下抖，只是够不着了，ALERTS 0。",
+          ),
+          say(
+            "所以别急着庆祝。门限吃掉的是告警，不是抖动——sensor-07 本身一根毛都没变。\n安静满两周再来跟我说「好了」；它要是隔着 2 秒的门限还能叫，那就不用修了，直接换。",
+          ),
+        ],
+      },
       // The harness will not dispatch a request it cannot bound, and she says
       // so instead of guessing. Sets up the commission below: he rewrites it.
       {
@@ -587,14 +776,15 @@ const ZH: DemoContent = {
           op("Running", "pnpm test --filter @herta/core"),
           testsRow("exit 0, 12.31s"),
           doneMarker({
-            body: "完成 · 1 个文件 · 测试 1/1",
+            body: `完成 · 1 个文件 · +${EVENT_BUS_LINES.add} −${EVENT_BUS_LINES.del} · 测试 1/1`,
             fileCount: 1,
+            lines: EVENT_BUS_LINES,
             tests: { passed: 1, failed: 0 },
             output: CALL_SITES,
             files: ["packages/core/src/event-bus.ts"],
           }),
           say(
-            "清完了。event-bus.ts 换成类型化订阅，addListener 还在——只剩一层壳，签名一个字没动。diff 在记录里，别听我转述。",
+            `清完了。event-bus.ts 换成类型化订阅，addListener 还在——只剩一层壳，签名一个字没动。+${EVENT_BUS_LINES.add} −${EVENT_BUS_LINES.del}，diff 在记录里，别听我转述。`,
           ),
           say(
             "测试只跑了 @herta/core 这一包，exit 0。不是全量。你要全量，自己再开一条委托。",
@@ -608,6 +798,7 @@ const ZH: DemoContent = {
 
 const EN: DemoContent = {
   workspaceRoot: "/herta-station",
+  repo: showcaseRepo("/herta-station"),
   opening:
     "The progress bar's still crawling through the last two percent. That gives you a very short window — skip the small talk, get to the point.",
   openingVoiceMs: null, // no EN voice clip — EN opens silent, paced by word
@@ -639,12 +830,12 @@ const EN: DemoContent = {
           say(
             "Same threshold all three times, or three different ones? — never mind. If you could tell, you wouldn't be asking.\n@板砖, pull the overnight alerts. Read-only; don't touch anything.",
           ),
-          op("Reading", "logs/alerts"),
           op("Reading", '"sensor-0"'),
+          op("Reading", ALERTS_EXCERPT_ARG),
           excerptRow(
-            "logs/alerts/2026-07-31.log",
-            41,
-            53,
+            ALERTS_EXCERPT.path,
+            ALERTS_EXCERPT.from,
+            ALERTS_EXCERPT.to,
             "03:14:07  WARN  sensor-07  temp 41.2 > 40.0  (dwell 0.4s)\n" +
               "04:02:51  WARN  sensor-07  temp 40.3 > 40.0  (dwell 0.2s)\n" +
               "05:47:33  WARN  sensor-07  temp 40.1 > 40.0  (dwell 0.1s)",
@@ -706,6 +897,34 @@ const EN: DemoContent = {
           say("I'm leaving the terminal open. Go to sleep."),
         ],
       },
+      // The picture twin — same stored paths (one pair of bundled assets),
+      // captions in the session's language, as the captioning instrument
+      // writes them. See the zh comment for the block-order constraint.
+      {
+        title: "Two panel screenshots",
+        minutesAgo: 145,
+        blocks: [
+          ask(
+            "Madam Herta — threshold and dwell gate changed, exactly as you said. Two screenshots: last night, and this afternoon. Not a single alarm since the change. Does that mean it's fixed?",
+          ),
+          imageRow({
+            ...PANEL_IMAGES.night,
+            caption:
+              "Screenshot of a monitoring UI: a line chart of sensor-07's temperature crossing the red threshold line three times, with an “ALERTS 3” counter at the top right.",
+          }),
+          imageRow({
+            ...PANEL_IMAGES.today,
+            caption:
+              "Screenshot of the same monitoring UI: the temperature curve repeatedly approaches but never reaches the red line labeled “42.0 THRESHOLD · DWELL 2s”; the counter reads “ALERTS 0”.",
+          }),
+          say(
+            "Pictures received — what I read are their descriptions, to be precise; pixels are Brick's department.\nLast night: three crossings, ALERTS 3. Today: the curve is the same twitchy thing, scraping along under the new line — it just can't reach it any more. ALERTS 0.",
+          ),
+          say(
+            "So hold the celebration. The gate ate the alarms, not the jitter — sensor-07 itself hasn't changed a hair.\nTwo quiet weeks, then you may say “fixed”. And if it still cries through a 2-second gate, don't repair it — replace it.",
+          ),
+        ],
+      },
       {
         title: "Say it properly first",
         minutesAgo: 132,
@@ -748,14 +967,15 @@ const EN: DemoContent = {
           op("Running", "pnpm test --filter @herta/core"),
           testsRow("exit 0, 12.31s"),
           doneMarker({
-            body: "完成 · 1 个文件 · 测试 1/1",
+            body: `完成 · 1 个文件 · +${EVENT_BUS_LINES.add} −${EVENT_BUS_LINES.del} · 测试 1/1`,
             fileCount: 1,
+            lines: EVENT_BUS_LINES,
             tests: { passed: 1, failed: 0 },
             output: CALL_SITES,
             files: ["packages/core/src/event-bus.ts"],
           }),
           say(
-            "Cleared. event-bus.ts is on typed subscriptions; addListener is still there — a shell now, signature untouched. The diff's in the record; don't take my word for it.",
+            `Cleared. event-bus.ts is on typed subscriptions; addListener is still there — a shell now, signature untouched. +${EVENT_BUS_LINES.add} −${EVENT_BUS_LINES.del}; the diff's in the record, don't take my word for it.`,
           ),
           say(
             "Tests were @herta/core only, exit 0. Not the full suite. You want the full suite, open your own commission for it.",
@@ -828,6 +1048,10 @@ export function createDemoBridge(
   options: DemoBridgeOptions = {},
 ): HertaBridge {
   const c = CONTENT[lang];
+  /** The showcase workspace's files, for the viewer panel (ADR 0050/0054 on
+   *  the site, 2026-09-04). Keyed by the record's own spelling of each path;
+   *  the LIVE session names no files, so only the showcase can read. */
+  const files = demoWorkspaceFiles(EVENT_BUS_NOTE[lang]);
   const record = new Channel<RecordEvent>();
   const overlay = new Channel<OverlayEvent>();
   const speech = new Channel<SpeechControlEvent>();
@@ -941,6 +1165,10 @@ export function createDemoBridge(
       ...(s.topics !== undefined ? { topics: [...s.topics] } : {}),
       backendWorkspace: "~/.herta/workspaces/demo",
       backendWorkspaceIsDefault: true,
+      // The repository card (ADR 0058): the showcase workspace is a
+      // repository, the visitor's own session is the managed sandbox, which
+      // is not — the card slides in for one and stays away for the other.
+      repo: id === SHOWCASE_ID ? c.repo : null,
     };
   };
 
@@ -1271,7 +1499,34 @@ export function createDemoBridge(
       message: "unavailable in the demo",
     }),
     removeAttachment: async () => ({ ok: true }),
+    // Staging is refused for the same reason attachFiles is: the demo has no
+    // filesystem and no captioning instrument, so a visitor pasting a
+    // screenshot gets an honest refusal rather than a strip that never
+    // resolves (ADR 0048 §4).
+    stageImages: async () => ({
+      ok: false,
+      message: "unavailable in the demo",
+    }),
+    unstageImage: async () => false,
     pathForFile: () => "",
+    // The file viewer (ADR 0050 / 0054): the same two reads the desktop app
+    // answers from the session's workspace, answered here from the bundled
+    // demo workspace — so a click on a file name in the showcase opens the
+    // REAL panel and its renderers. Text only: nothing the record names is
+    // a picture or an Office file (the two screenshots ride the lightbox),
+    // so the bytes read has nothing to serve and says so.
+    readWorkspaceFile: async (sessionId, path) => {
+      const content = sessionId === SHOWCASE_ID ? files[path] : undefined;
+      if (content === undefined) return { ok: false, reason: "not_found" };
+      return {
+        ok: true,
+        content,
+        truncated: false,
+        size: new TextEncoder().encode(content).byteLength,
+        relative: path,
+      };
+    },
+    readWorkspaceBytes: async () => ({ ok: false, reason: "not_found" }),
     getDreamConfig: async () => ({ enabled: true }),
     setDreamConfig: async () => {},
     getLocale: async () => lang,

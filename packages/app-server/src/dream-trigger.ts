@@ -14,12 +14,20 @@ export interface DreamTriggerOptions {
   /** Material gate — enough new sessions OR a long-enough single session.
    *  Evaluated last (it scans transcripts) so the common tick stays O(1). */
   hasEnoughMaterial: () => boolean;
+  /** A turn is in flight in the open session. The idle clock reads only the
+   *  user's input, so a 板砖 run longer than the idle window — or a turn
+   *  parked on an approval card while the user is away — counted as idle:
+   *  the pass read the transcript the run was appending to and dreamed the
+   *  half-run as a finished episode (dream review 2026-09-22, finding 2).
+   *  Never fire while this says busy. Optional for tests. */
+  isBusy?: () => boolean;
   /** Detached pass. The trigger never awaits its effects on the turn loop. */
   runPass: () => Promise<void>;
 }
 
 export class DreamTrigger {
   private lastActivity: number;
+  private activitySeq = 0;
   private lastAttempt = Number.NEGATIVE_INFINITY;
   private running = false;
   constructor(private readonly opts: DreamTriggerOptions) {
@@ -27,6 +35,14 @@ export class DreamTrigger {
   }
   noteActivity(): void {
     this.lastActivity = this.opts.now();
+    this.activitySeq += 1;
+  }
+  /** Counts every `noteActivity` — a running pass steps aside once it moves
+   *  past the value it started with (dream review 2026-09-22, finding 12).
+   *  A counter, not a timestamp: an action in the same millisecond the pass
+   *  started still counts. */
+  get activityCount(): number {
+    return this.activitySeq;
   }
   /** Call on a coarse timer (e.g. every few minutes) and on session-end. The gates run
    *  cheapest-first; the material scan only runs after idle + cooldown pass, so
@@ -36,6 +52,10 @@ export class DreamTrigger {
     const t = this.opts.now();
     // (1) user still active — never run during or right after a session.
     if (t - this.lastActivity < this.opts.idleMs) return;
+    // (1b) a turn in flight is activity, however long ago its input came.
+    // Not an attempt: the backoff below must not delay the pass past the
+    // turn's end.
+    if (this.opts.isBusy?.() === true) return;
     // (2) attempted recently — back off so a no-op pass doesn't spin each poll.
     if (t - this.lastAttempt < this.opts.minRetryMs) return;
     // Record the attempt BEFORE the expensive gates (audit BL9). It used to be

@@ -1,5 +1,5 @@
 import type { AgentExecutionReport } from "../bridge/types.js";
-import type { RiskLevel } from "../permission-engine.js";
+import type { CommandConsequence, RiskLevel } from "../permission-engine.js";
 import type { AgentError } from "./errors.js";
 import type { TodoItem } from "./todo.js";
 import type { ToolCallRequest, ToolResult } from "./tool.js";
@@ -25,11 +25,16 @@ export interface PermissionRequest {
   /** Every distinct ask class of a chained shell line, `code` first; the
    *  approval surface names the ones beyond the top label. */
   codes?: readonly string[];
+  /** Consequence note code (ADR 0049 §5) — display-only; see
+   *  `CommandConsequence` in permission-engine. */
+  consequence?: CommandConsequence;
 }
 
-// Opaque in slice B; real shape lives in tools / dialogue specs.
-// biome-ignore lint/complexity/noBannedTypes: deliberate placeholder
-export type VerificationResult = {};
+/** What a test run came back with. `passed` was added 2026-09-03 so the
+ *  beat classifier can tell a green run (no beat — the synthesis reports
+ *  it) from a red one (Herta reacts while 板砖 fixes it); absent when the
+ *  emitter does not know. */
+export type VerificationResult = { readonly passed?: boolean };
 
 export interface TurnSummary {
   durationMs: number;
@@ -77,6 +82,12 @@ export type AgentEvent =
        *  the tool-call id and `tool` carries its own context. */
       decision: "allow" | "deny" | "blocked";
       tool?: string;
+      /** blocked only (2026-08-26): the deny verdict's code and refused-risk
+       *  tier, threaded so the status gate can tell a withheld READ (or a
+       *  malformed call) from a refused mutation — the rule always had both
+       *  in hand and used to drop them here. */
+      code?: string;
+      risk?: RiskLevel;
     }
   | { type: "patch.preview"; layer: EventLayer; diff: string; files: string[] }
   | { type: "verification.started"; layer: EventLayer; command: string }
@@ -102,4 +113,13 @@ export type AgentEvent =
   // only, never enters the durable TerminalRecord. Lets the renderer explain
   // a long reveal-hold (the paced stream parks its tail while the verdict is
   // pending) instead of showing a frozen cursor.
-  | { type: "supervisor.check"; layer: EventLayer; phase: "start" | "end" };
+  | { type: "supervisor.check"; layer: EventLayer; phase: "start" | "end" }
+  // A message the user sent WHILE the backend was working, accepted as a
+  // steer (ADR 0063): the session publishes it (layer "actor" — it is the
+  // user speaking, not backend plumbing) the moment it accepts the text.
+  // The bridge projects it into the shared record as a user block and
+  // stages a beat; the backend loop takes the text at its next sampling
+  // boundary through `BackendTurnHandle.takePendingUserInput`. `id` is the
+  // beat's dedup signature; `text` is the raw user text (escaped for the
+  // prompt by the serializer like every other user block).
+  | { type: "user.steer"; layer: EventLayer; id: string; text: string };

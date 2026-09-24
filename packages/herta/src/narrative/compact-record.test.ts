@@ -7,7 +7,9 @@ import { describe, expect, it } from "vitest";
 import {
   buildCompactionBody,
   compactRecordForPrompt,
+  decideAttachmentFolds,
   digestSystemBlock,
+  foldAttachments,
 } from "./compact-record.js";
 
 describe("digestSystemBlock — 差分协处理器 entries", () => {
@@ -1234,6 +1236,78 @@ describe("done-marker diff re-read hint (E2E 2026-08-11)", () => {
   });
 });
 
+describe("decideAttachmentFolds / foldAttachments — the fold lane on its own (ADR 0033 §6g amendment, 2026-09-22)", () => {
+  // The beat projection renders the record in two pieces and needs the
+  // attachment decision made over the WHOLE record first (serialize.ts).
+  // These pin the seam: the pre-decided folds are what compactRecordForPrompt
+  // would have decided itself, and foldAttachments applies that lane alone.
+  const attachment: SystemBlock = {
+    kind: "system",
+    label: "系统",
+    body: "附件 spec.md · 120 行 · 4.8K 字 · .herta/attachments/s1/spec.md",
+    evidenceDetail: "↳ 附件 spec.md\n# Spec\nCONFIDENTIAL-HEAD-LINE",
+    digest: {
+      kind: "attachment",
+      name: "spec.md",
+      path: ".herta/attachments/s1/spec.md",
+      lines: 120,
+      chars: 4800,
+    },
+  };
+  const readA: SystemBlock = {
+    kind: "system",
+    label: "差分协处理器",
+    body: 'Reading {"path":"a.ts"}',
+  };
+  const readB: SystemBlock = {
+    kind: "system",
+    label: "差分协处理器",
+    body: 'Reading {"path":"b.ts"}',
+  };
+  const record: TerminalRecord = [
+    attachment,
+    { kind: "user", text: "看看这份" },
+    { kind: "herta", surface: "speech", text: "看完了。" },
+    { kind: "user", text: "聊点别的" },
+    { kind: "herta", surface: "speech", text: "行。" },
+    { kind: "user", text: "改一下 a.ts @板砖" },
+    { kind: "herta", surface: "speech", text: "@板砖，处理 a.ts。" },
+    readA,
+    readB,
+  ];
+
+  it("the pre-decided folds are compactRecordForPrompt's own decision", () => {
+    const folds = decideAttachmentFolds(record);
+    expect(folds.size).toBe(1);
+    expect(folds.get(attachment)).toBe("citation-hint");
+    expect(compactRecordForPrompt(record, { attachmentFolds: folds })).toEqual(
+      compactRecordForPrompt(record),
+    );
+  });
+
+  it("foldAttachments applies the attachment lane and nothing else", () => {
+    const out = foldAttachments(record, decideAttachmentFolds(record));
+    expect(out).toHaveLength(record.length);
+    const folded = out[0];
+    expect(folded?.kind === "system" ? folded.evidenceDetail : "?").toBe(
+      undefined,
+    );
+    expect(folded?.kind === "system" ? folded.body : "").toContain(
+      "正文已略去",
+    );
+    // The system run beside it is neither compacted nor touched: the same
+    // block objects come back, uncompacted.
+    expect(out[7]).toBe(readA);
+    expect(out[8]).toBe(readB);
+    expect(JSON.stringify(out)).not.toContain("[历史已压缩");
+  });
+
+  it("a block nobody decided stays verbatim", () => {
+    const out = foldAttachments([attachment], new Map());
+    expect(out[0]).toBe(attachment);
+  });
+});
+
 describe("attachment blocks — per-block two-state fold (ADR 0033)", () => {
   // The run-compaction above never reaches these: an attachment block sits
   // ALONE between a herta block and the user's next message, and a run of one
@@ -1588,6 +1662,91 @@ describe("attachment blocks — per-block two-state fold (ADR 0033)", () => {
     // Window exhausted AND spoken since — deep in State 2 territory, and the
     // body still must not claim an elided body that never existed.
     expect(sys(out)[0]?.body).toBe(unreadable.body);
+  });
+
+  // ── Images (ADR 0048) ────────────────────────────────────────────────────
+
+  const image: SystemBlock = {
+    kind: "system",
+    label: "系统",
+    body: "附件 shot.png · 图片 PNG · 1920×1080 · 一张终端截图，测试全部通过。 · .herta/attachments/s1/shot.png",
+    digest: {
+      kind: "attachment",
+      name: "shot.png",
+      path: ".herta/attachments/s1/shot.png",
+      lines: 0,
+      chars: 0,
+      image: { format: "png", width: 1920, height: 1080 },
+      caption: "一张终端截图，测试全部通过。",
+    },
+  };
+
+  it("a folded image keeps its CAPTION, not an elision note", () => {
+    // The load-bearing case for ADR 0048 §1. A document's head is an excerpt
+    // of text still on disk, so eliding it loses nothing permanently. A
+    // caption is the ONLY textual form the picture ever had — the actor
+    // cannot re-read pixels — so if the fold dropped it, the moment would
+    // vanish from the recap, the 废案 distillation, and every later session.
+    const out = compactRecordForPrompt([
+      image,
+      { kind: "user", text: "看看这个" },
+      { kind: "herta", surface: "speech", text: "看到了。" },
+      { kind: "user", text: "哦" },
+      { kind: "herta", surface: "speech", text: "。" },
+      { kind: "user", text: "换个话题" },
+    ]);
+    const folded = sys(out)[0];
+    expect(folded?.body).toContain("一张终端截图，测试全部通过。");
+    // Never the document elision note: nothing was elided.
+    expect(folded?.body).not.toContain("正文已略去");
+    // The citation still survives whole, so a vision-capable 板砖 can be sent
+    // back to the picture itself (ADR 0048 §5).
+    expect(folded?.body).toContain("shot.png");
+    expect(folded?.body).toContain(".herta/attachments/s1/shot.png");
+  });
+
+  it("an uncaptioned image says so and claims no reading", () => {
+    const uncaptioned: SystemBlock = {
+      kind: "system",
+      label: "系统",
+      body: "附件 shot.png · 图片 PNG · 已存图片，未能读图 · .herta/attachments/s1/shot.png",
+      digest: {
+        kind: "attachment",
+        name: "shot.png",
+        path: ".herta/attachments/s1/shot.png",
+        lines: 0,
+        chars: 0,
+        image: { format: "png" },
+        unreadable: "no_caption",
+      },
+    };
+    const out = compactRecordForPrompt([
+      uncaptioned,
+      { kind: "user", text: "这个呢" },
+      { kind: "herta", surface: "speech", text: "没读上。" },
+      { kind: "user", text: "哦" },
+      { kind: "herta", surface: "speech", text: "。" },
+      { kind: "user", text: "行吧" },
+    ]);
+    expect(sys(out)[0]?.body).toBe(uncaptioned.body);
+  });
+
+  it("the caption survives into an EN session's summary verbatim", () => {
+    // The caption is written in the session language and is content, not
+    // chrome — the compaction template localizes around it, never it.
+    const out = compactRecordForPrompt(
+      [
+        image,
+        { kind: "user", text: "look" },
+        { kind: "herta", surface: "speech", text: "seen." },
+        { kind: "user", text: "ok" },
+        { kind: "herta", surface: "speech", text: "." },
+        { kind: "user", text: "moving on" },
+      ],
+      { lang: "en" },
+    );
+    expect(sys(out)[0]?.body).toContain("一张终端截图，测试全部通过。");
+    expect(sys(out)[0]?.body).not.toContain("body elided");
   });
 
   it("adjacent attachments never fold into a 板砖-headed summary", () => {

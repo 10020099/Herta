@@ -14,6 +14,28 @@ function renderPane(mock = createMockHertaBridge()) {
   return mock;
 }
 
+describe("UpdateSettings — a failed write (UX review 2026-09-22, item 17)", () => {
+  it("snaps the automatic-updates toggle back and says it could not save, like every sibling toggle", async () => {
+    const mock = createMockHertaBridge({ appVersion: "0.1.0" });
+    Object.assign(mock.bridge, {
+      getAutoUpdate: async () => true,
+      setAutoUpdate: async () => {
+        throw new Error("EACCES: permission denied");
+      },
+    });
+    renderPane(mock);
+    const toggle = await screen.findByRole("switch", {
+      name: "Automatic updates",
+    });
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    act(() => toggle.click());
+    expect(
+      await screen.findByText("Could not save — try again."),
+    ).toBeInTheDocument();
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+  });
+});
+
 describe("UpdateSettings", () => {
   it("shows the app version and the manual check button; the button checks", async () => {
     const mock = renderPane(createMockHertaBridge({ appVersion: "0.1.0" }));
@@ -27,7 +49,7 @@ describe("UpdateSettings", () => {
     // (audit 2026-07-24, 1.13); claiming it here told an offline user they
     // were on the newest build.
     expect(screen.getByTestId("update-status")).toHaveTextContent(
-      "Not checked yet.",
+      "Not checked yet",
     );
   });
 
@@ -36,9 +58,33 @@ describe("UpdateSettings", () => {
     act(() => {
       mock.emitUpdate({ phase: "up-to-date" });
     });
-    expect(screen.getByTestId("update-status")).toHaveTextContent(
-      "Up to date.",
+    expect(screen.getByTestId("update-status")).toHaveTextContent("Up to date");
+  });
+
+  it("a feed that cannot be reached says so and offers the netdisk; any other error prints its message (owner 2026-09-09)", async () => {
+    const mock = renderPane(createMockHertaBridge({ appVersion: "0.1.0" }));
+    await screen.findByText("v0.1.0");
+    act(() =>
+      mock.emitUpdate({
+        phase: "error",
+        message: "net::ERR_CONNECTION_CLOSED",
+        network: true,
+      }),
     );
+    const status = screen.getByTestId("update-status");
+    expect(status).toHaveTextContent("could not be reached");
+    expect(status).not.toHaveTextContent("ERR_CONNECTION_CLOSED");
+    screen.getByRole("button", { name: "Open Baidu Netdisk" }).click();
+    expect(mock.calls.openExternal).toEqual([
+      "https://pan.baidu.com/s/1k-47zy6TTDWl0OaT2WCFUg?pwd=y195",
+    ]);
+    act(() => mock.emitUpdate({ phase: "error", message: "HttpError: 404" }));
+    expect(screen.getByTestId("update-status")).toHaveTextContent(
+      "Check failed: HttpError: 404",
+    );
+    expect(
+      screen.queryByRole("button", { name: "Open Baidu Netdisk" }),
+    ).toBeNull();
   });
 
   it("streams state: downloading shows progress, ready swaps in restart-and-install", async () => {
@@ -66,6 +112,22 @@ describe("UpdateSettings", () => {
     expect(
       await screen.findByRole("button", { name: "Restart & update" }),
     ).toBeInTheDocument();
+  });
+
+  it("a Linux install that cannot update itself says so instead of offering a check that never reports (2026-09-23)", async () => {
+    renderPane(
+      createMockHertaBridge({
+        appVersion: "0.1.0",
+        updateState: { phase: "idle", unsupported: true },
+      }),
+    );
+    expect(
+      await screen.findByText("Updates unavailable here"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Check for updates" }),
+    ).toBeNull();
+    expect(screen.queryByTestId("update-status")).not.toBeInTheDocument();
   });
 
   it("hides the update surface on a bridge without it (website demo, fakes)", async () => {

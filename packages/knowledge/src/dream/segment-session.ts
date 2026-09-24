@@ -6,6 +6,23 @@ export interface SegmentOptions {
   readonly episodeGapMs: number;
   readonly maxEpisodeBlocks: number;
   readonly maxEpisodeMs: number;
+  /**
+   * The cutover of segmentation v2 (ADR 0069 §4 and §7), ms epoch. Two rules
+   * apply to blocks stamped at or after it:
+   *  - a done/noop-marker no longer ends its episode: the cut moves to the
+   *    next user block, so Herta's verdict on the run stays in the episode
+   *    that holds the run's evidence;
+   *  - 板砖's rows no longer count toward `maxEpisodeBlocks`: only the
+   *    conversation does, so a long run is one episode from the ask to the
+   *    verdict (bounded in time by `maxEpisodeMs`) instead of being chopped
+   *    into chunks that separate the verdict from the ask.
+   * A block stamped before it, or unstamped, follows the old rules, so every
+   * episode dreamed before the cutover keeps its hash. The dream manifest
+   * records the cutover the first time a pass runs with these rules
+   * (`DreamManifest.segmentationV2Since`); every segmenter that must agree
+   * with the ledger reads it from there. Absent → the old rules everywhere.
+   */
+  readonly segmentationV2SinceMs?: number;
 }
 
 /**
@@ -23,8 +40,9 @@ export interface SegmentOptions {
  * a NEW episode; the settled tail's blocks — and therefore its episodeHash —
  * are unchanged, and the manifest dedup keeps it single-dreamed.
  *
- * A tail whose last block carries no parseable `at` cannot prove silence and
- * stays unsettled (conservative, matches the stamped-only gap rule).
+ * The silence is measured from the tail's last STAMPED block (the caller
+ * walks back past unstamped ones); only a tail with no stamped block at all
+ * cannot prove silence and stays unsettled (ADR 0024, amended 2026-09-23).
  */
 export function isTailSettled(
   lastBlockAtMs: number | undefined,
@@ -57,12 +75,47 @@ function parseAt(b: TerminalRecordBlock): number | undefined {
   return Number.isFinite(t) ? t : undefined;
 }
 
+function isMarker(b: TerminalRecordBlock): boolean {
+  return (
+    b.kind === "system" &&
+    (b.role === "done-marker" || b.role === "noop-marker")
+  );
+}
+
+/** A block stamped at or after the segmentation-v2 cutover; see
+ *  `SegmentOptions.segmentationV2SinceMs`. An unstamped block never is. */
+function pastV2Cutover(b: TerminalRecordBlock, opts: SegmentOptions): boolean {
+  if (opts.segmentationV2SinceMs === undefined) return false;
+  const at = parseAt(b);
+  return at !== undefined && at >= opts.segmentationV2SinceMs;
+}
+
+/** A marker past the cutover defers its cut to the next user block
+ *  (ADR 0069 §4). */
+function defersToVerdict(
+  marker: TerminalRecordBlock,
+  opts: SegmentOptions,
+): boolean {
+  return pastV2Cutover(marker, opts);
+}
+
+/** Whether a block counts toward `maxEpisodeBlocks`: every block before
+ *  the cutover, and only the conversation after it (ADR 0069 §7). Shared
+ *  with the tests that check the cap. */
+export function countsTowardBlockCap(
+  b: TerminalRecordBlock,
+  opts: SegmentOptions,
+): boolean {
+  return b.kind !== "system" || !pastV2Cutover(b, opts);
+}
+
 /**
  * True between record[i-1] and record[i]: a topic boundary starts at i.
  *
  * Priority order:
  *   (a) idle gap        — both blocks timestamped and gap > episodeGapMs
- *   (b) done/noop-marker — structural settled point
+ *   (b) done/noop-marker — structural settled point (a marker past the
+ *       verdict cutover defers to the next user block — the caller's rule)
  *   (c) duration cap    — episode wall-clock span exceeds maxEpisodeMs
  *   (d) per-turn fallback — herta→user when timestamps are unavailable
  */
@@ -80,11 +133,8 @@ function isBoundary(
     if (curMs - prevMs > opts.episodeGapMs) return true;
   }
 
-  // (b) Structural done/noop-marker.
-  if (
-    prev.kind === "system" &&
-    (prev.role === "done-marker" || prev.role === "noop-marker")
-  ) {
+  // (b) Structural done/noop-marker — before the verdict cutover only.
+  if (isMarker(prev) && !defersToVerdict(prev, opts)) {
     return true;
   }
 
@@ -155,6 +205,17 @@ export function segmentSession(
     // the first stamped block encountered in the loop below.
   };
 
+  // A marker past the v2 cutover was seen in the current episode: the
+  // episode ends at the next user block instead, after Herta's verdict on
+  // the run (ADR 0069 §4). The review found the old cut stranding it: the
+  // run's evidence closed one episode, and the verdict opened the next as
+  // an ungrounded claim over a digest with no evidence in it.
+  let verdictPending = false;
+  // Blocks in [start, i) that count toward the block cap — every block
+  // before the v2 cutover (so this equals `i - start` there), only the
+  // conversation after it (ADR 0069 §7).
+  let counted =
+    firstBlock !== undefined && countsTowardBlockCap(firstBlock, opts) ? 1 : 0;
   for (let i = 1; i < record.length; i++) {
     const cur = record[i];
     const prev = record[i - 1];
@@ -166,12 +227,18 @@ export function segmentSession(
       if (t !== undefined) episodeStartMs = t;
     }
 
+    if (isMarker(prev) && defersToVerdict(prev, opts)) verdictPending = true;
+
     if (
       isBoundary(prev, cur, episodeStartMs, opts) ||
-      i - start >= opts.maxEpisodeBlocks
+      (verdictPending && cur.kind === "user") ||
+      counted >= opts.maxEpisodeBlocks
     ) {
       flush(i);
+      verdictPending = false;
+      counted = 0;
     }
+    if (countsTowardBlockCap(cur, opts)) counted += 1;
   }
   flush(record.length);
   return episodes;

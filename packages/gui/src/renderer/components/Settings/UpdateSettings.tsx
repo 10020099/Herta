@@ -1,9 +1,13 @@
 import { useEffect, useState } from "react";
+import { NETDISK_URL } from "../../../shared/links.js";
 import { useHertaBridge } from "../../context/HertaBridgeContext.js";
 import { useT } from "../../i18n/LocaleProvider.js";
 import type { UpdateState } from "../../ipc/bridge-types.js";
 import { SettingRow } from "./SettingRow.js";
+import { useRememberedSetting } from "./settings-snapshot.js";
 import { Toggle } from "./Toggle.js";
+
+const IDLE_STATE: UpdateState = { phase: "idle" };
 
 /**
  * Settings → Update (2026-07-10): current version + update state + the two
@@ -18,13 +22,33 @@ import { Toggle } from "./Toggle.js";
 export function UpdateSettings(): JSX.Element {
   const t = useT();
   const { bridge } = useHertaBridge();
-  const [version, setVersion] = useState<string | null>(null);
-  const [state, setState] = useState<UpdateState>({ phase: "idle" });
+  // All three start from the last-known value (settings-snapshot.ts), so
+  // the version line never paints "—" first and a `ready` reached while
+  // another section was up shows its button on the first frame.
+  const [version, setVersion] = useRememberedSetting(
+    bridge,
+    "update.version",
+    null,
+  );
+  const [state, setState] = useRememberedSetting(
+    bridge,
+    "update.state",
+    IDLE_STATE,
+  );
   // Automatic checks/downloads (2026-07-12): persisted app-global, applied
   // live by main. Default true; the row hides when the bridge lacks the
   // setting (fakes / the website demo).
-  const [autoUpdate, setAutoUpdate] = useState(true);
-  const supported = bridge.checkForUpdate !== undefined;
+  const [autoUpdate, setAutoUpdate] = useRememberedSetting(
+    bridge,
+    "update.auto",
+    true,
+  );
+  const [autoFailed, setAutoFailed] = useState(false);
+  // Unsupported also when main says this install cannot update itself (a
+  // Linux build outside an AppImage, 2026-09-23): "Check now" would never
+  // report anything there.
+  const supported =
+    bridge.checkForUpdate !== undefined && state.unsupported !== true;
   const autoSupported = bridge.setAutoUpdate !== undefined;
 
   useEffect(() => {
@@ -45,7 +69,7 @@ export function UpdateSettings(): JSX.Element {
       alive = false;
       unsub?.();
     };
-  }, [bridge]);
+  }, [bridge, setVersion, setState, setAutoUpdate]);
 
   const statusText = ((): string => {
     switch (state.phase) {
@@ -58,6 +82,10 @@ export function UpdateSettings(): JSX.Element {
       case "ready":
         return `${t("update.ready")} v${state.version ?? "?"}`;
       case "error":
+        // The feed could not be reached (offline, a blocked region — GitHub
+        // is the feed): say that, and where else the build is, instead of
+        // the raw error (owner 2026-09-09).
+        if (state.network === true) return t("update.unreachable");
         return `${t("update.error")}${
           state.message !== undefined ? `: ${state.message}` : ""
         }`;
@@ -118,16 +146,41 @@ export function UpdateSettings(): JSX.Element {
               checked={autoUpdate}
               ariaLabel={t("update.auto")}
               onChange={(next) => {
+                // Optimistic, with the failure path every sibling toggle
+                // has: a write that never reached disk snaps back and says
+                // so (UX review 2026-09-22, item 17 — this one kept
+                // claiming a state main never stored).
                 setAutoUpdate(next);
-                void bridge.setAutoUpdate?.(next);
+                setAutoFailed(false);
+                bridge.setAutoUpdate?.(next).catch(() => {
+                  setAutoUpdate(!next);
+                  setAutoFailed(true);
+                });
               }}
             />
           }
         />
       )}
+      {supported && autoSupported && autoFailed && (
+        <p className="settings-note">{t("common.couldntSave")}</p>
+      )}
       {supported && (
         <p className="settings-note" data-testid="update-status">
           {statusText}
+          {state.phase === "error" &&
+            state.network === true &&
+            bridge.openExternal !== undefined && (
+              <>
+                {" "}
+                <button
+                  type="button"
+                  className="settings-note-action"
+                  onClick={() => void bridge.openExternal?.(NETDISK_URL)}
+                >
+                  {t("update.netdisk")}
+                </button>
+              </>
+            )}
         </p>
       )}
       {/* Attribution (audit S12). The app carries the character's name, her

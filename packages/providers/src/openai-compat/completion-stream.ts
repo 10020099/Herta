@@ -1,5 +1,7 @@
 import type { CompletionEvent } from "@herta/core";
 import { ProviderError } from "../errors.js";
+import { parseUsageChunk } from "../usage.js";
+import type { StreamUsage } from "./stream.js";
 
 interface CompletionDeltaChunk {
   choices?: ReadonlyArray<{
@@ -12,12 +14,18 @@ interface CompletionDeltaChunk {
 export async function* mapCompletionStream(
   events: AsyncIterable<unknown>,
   signal: AbortSignal,
+  /** As `mapStream`'s: told the usage before the chunk's `finish` goes out. */
+  onUsage?: (usage: StreamUsage) => void,
 ): AsyncGenerator<CompletionEvent, void, void> {
   let sawFinish = false;
   let sawText = false;
 
   for await (const ev of events) {
     signal.throwIfAborted();
+    if (onUsage !== undefined) {
+      const usage = parseUsageChunk(ev);
+      if (usage !== null) onUsage(usage);
+    }
     // A chunk carrying an `error` payload instead of `choices` was silently
     // dropped by the guard below on its way to the "assume stop" default
     // (audit 2026-07-24, 1.9) — surface it as the failure it is. `!= null`,

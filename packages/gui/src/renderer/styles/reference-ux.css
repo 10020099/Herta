@@ -294,10 +294,11 @@
 :root[data-theme="dark"] .transfer-icon.transfer-icon--night {
   display: block;
 }
-/* The HRT-001 device render swaps for its night version (user-provided art,
-   2026-07-13; identical pose/geometry, unlit ring — the DeviceGlow shader
-   is its only light in the dark). Both stay mounted so a theme flip swaps
-   with no decode flash. */
+/* The HRT-001 device render swaps for its night version. Both are the 3D
+   device rendered at the card's framing (ADR 0057 §2.14, replacing the
+   hand-drawn art of 2026-07-13), their ring unlit — the DeviceGlow layer
+   is the lamp. Both stay mounted so a theme flip swaps with no decode
+   flash. */
 .agent-device-img--night {
   display: none;
 }
@@ -422,6 +423,60 @@ body:after{
      pre-blurred gradient above — identical look over a static backdrop,
      none of the per-frame re-filtering cost. */
 }
+/* ── Selection policy (owner 2026-09-11) ────────────────────────────────
+   Chrome is not selectable; content is — the line Codex draws. A drag or
+   Ctrl+A across the window used to paint the sidebar's session names,
+   dates and group labels, the composer's placeholder, the rail cards'
+   labels and their … menu, the bubble timestamps, the record's fold
+   rows — all blue, as if they were the conversation. `user-select` is
+   inherited through `auto`, so the body says none and the content
+   surfaces below opt back in with `text`. Editable controls (the
+   composer textarea, the settings inputs, the history search) resolve to
+   `contain` on their own and keep working under the body's none. Chrome
+   nested INSIDE a content surface — a bubble's action row, a record
+   row's ×, a code card's head, the viewer's gutters, grid heads, slide
+   bars and every button — says none again. Portals (tooltips, the
+   lightbox, the confirm pill) hang off body, so body is the root, not
+   .app. */
+body {
+  user-select: none;
+}
+.message-text,
+.code-block,
+.code-standalone,
+.activity-step__text,
+.activity-step__headline,
+.activity-step__detail,
+.activity-plan__text,
+.diff-body,
+.file-viewer__body {
+  user-select: text;
+}
+button,
+[role="button"],
+[role="tab"],
+.message-actions,
+.streaming-caret,
+.code-card__head,
+.activity-step__icon,
+.activity-step__fold-chevron,
+.activity-step__remove,
+.activity-step__detail-toggle,
+.diff-body__gutter,
+.file-viewer__gutter,
+.file-viewer__anchor,
+.file-viewer__gridhead,
+.file-viewer__rowhead,
+.file-viewer__colhead,
+.file-viewer__corner,
+.file-viewer__sheet-tabs,
+.file-viewer__slides-bar,
+.file-viewer__thumbs,
+.log-view__tools,
+.log-view__more {
+  user-select: none;
+}
+
 .sidebar{
   /* Expanded content-box width: column 276 − margin-left 18 − padding 36.
      The collapse pins children to THIS width (see below) so text never
@@ -599,15 +654,52 @@ body:after{
 .workspace-body{
   min-height:0;
   display:grid;
-  grid-template-columns:minmax(560px,1fr) 338px;
+  /* THREE tracks since ADR 0050: conversation | rail | file viewer. The
+     viewer track rests at 0 and the old 24px column gap moved onto the
+     conversation's margin-right (gap:0 below) — an explicit gap beside a
+     0-width third track would shove the rail 24px off its resting spot.
+     The conversation minimum is 584 = the 560px content floor + its own
+     24px margin, so the CONTENT floor is unchanged. Same-count templates
+     interpolate, which is what the open/close slide rides.
+     --rail-w is the rail track's RESTING width; .utility-rail pins its own
+     width to it (2026-09-02), so a collapsing track clips/uncovers a
+     full-width card instead of re-centring the device in each frame's
+     sliver. */
+  --rail-w:338px;
+  grid-template-columns:minmax(584px,1fr) var(--rail-w) 0px;
   /* Explicit definite row: without it the implicit auto row is sized by the
      utility rail's fixed card stack (~680px), .workspace{height:100%} can't
      resolve, and the footer + approval panel overflow past the .app clip on
      short viewports (the rail cards flex-shrink gracefully instead). */
   grid-template-rows:minmax(0,1fr);
-  gap:24px;
-  padding:0 24px 26px 28px;
+  gap:0;
+  /* The padding as tokens: the rail and the file viewer leave the grid for
+     their slides (see the viewer block) and sit absolute on the SAME
+     geometry as their tracks — the offsets below are those tokens, so the
+     two can never drift apart (the ≤1200px media block re-tokens both). */
+  --body-pad-top:0px;
+  --body-pad-right:24px;
+  --body-pad-bottom:26px;
+  --body-pad-left:28px;
+  padding:var(--body-pad-top) var(--body-pad-right) var(--body-pad-bottom) var(--body-pad-left);
+  /* The overlay-mode sheet and the sliding rail/panel anchor here. */
+  position:relative;
 }
+/* Mode A — the rail yields (ADR 0050, owner-picked): the rail track
+   collapses while the viewer track opens to the dragged width; the same
+   track interpolation the disconnect slide already animates. The min()
+   cap is the HARD guarantee (owner 2026-08-31: a maximize→restore left
+   the panel wider than the window, its head buttons clipped outside):
+   whatever the JS clamp last wrote, the track can never exceed the
+   content width minus the conversation's 584px floor. */
+.workspace-body.viewer-docked{
+  grid-template-columns:minmax(584px,1fr) 0px min(var(--viewer-w,480px), calc(100% - 584px));
+}
+/* Divider drag: every frame writes --viewer-w; an eased track would lag
+   the pointer, so the drag suppresses the slide transitions. */
+.workspace-body.is-resizing,
+.workspace-body.is-resizing .workspace,
+.workspace-body.is-resizing .utility-rail{transition:none}
 .conversation{position:relative;min-height:0;padding:4px 10px var(--approval-reserve,0px) 0;overflow-y:auto;overflow-x:hidden;overflow-anchor:none}
 /* --approval-reserve (2026-07-27): the approval panel is absolute at the
    footer's bottom and TALLER than the footer, so its top reaches over the
@@ -636,7 +728,15 @@ body:after{
    changes (100% width, auto margins collapse), so the sidebar-open layout
    is untouched. The approval panel is absolute inside the footer
    (left/right 0), so it inherits the same measure. */
-.workspace{--flow-measure:880px}
+.workspace{
+  --flow-measure:880px;
+  /* The old grid gap, as this item's own margin (ADR 0050 — see the
+     three-track note on .workspace-body). Transitioned because the
+     disconnect state zeroes it where it used to zero the gap. */
+  margin-right:24px;
+  min-width:0;
+  transition:margin-right var(--dur-morph) var(--ease-signature);
+}
 .workspace-footer{width:100%;max-width:var(--flow-measure);margin:0 auto}
 /* Turn headroom (2026-07-29): room reserved under the newest turn so a reply
    arrives into a region instead of crawling along the bottom edge. Sized
@@ -915,23 +1015,26 @@ body:after{
 }
 /* The hovered topic's label: title + anchoring user message, floating beside
    the rail at the hovered tick's height (`top` is inline, transitioned so
-   it GLIDES between ticks while the pointer walks the rail). Styled as a
-   compact DARK chip, deliberately unlike anything in the record (user
-   2026-07-12: the first white-card version read as another Herta bubble):
-   bubbles and panels here are all light frosted surfaces with 18px radii,
-   so the inverted slate chip — small radius, tight padding, no border —
-   is unambiguous overlay chrome (the minimap-tooltip idiom), and stays
-   legible over any background without frosting. pointer-events none —
-   it's a label, never a hover target, so it can't trap the cursor. */
+   it GLIDES between ticks while the pointer walks the rail). A compact
+   chip deliberately unlike anything in the record (user 2026-07-12: the
+   first white-card version read as another Herta bubble): bubbles and
+   panels are frosted surfaces with 18px radii and no border, so the small
+   radius, tight padding and hairline border mark it as overlay chrome.
+   It was an inverted slate chip until 2026-09-13 (owner: a dark card in
+   the light theme is a bug) — now it is the house pop, the same surface
+   as the hover tip and the tooltip pill: --surface-pop, ink text, a
+   hairline, so it follows the theme like every other pop. pointer-events
+   none — it's a label, never a hover target, so it can't trap the
+   cursor. */
 .topic-rail__card {
   position: absolute;
   left: 52px;
   max-width: 250px;
   padding: 7px 11px;
-  border: 0;
+  border: 1px solid var(--ink-a14);
   border-radius: 9px;
-  background: rgba(38, 45, 54, 0.95);
-  box-shadow: 0 8px 22px rgba(17, 24, 32, 0.26);
+  background: var(--surface-pop);
+  box-shadow: 0 8px 22px var(--shadow-pop);
   pointer-events: none;
   opacity: 0;
   transform: translateX(-6px);
@@ -948,7 +1051,7 @@ body:after{
   margin: 0 0 2px;
   font-size: 12px;
   font-weight: 600;
-  color: #f4f7fa;
+  color: var(--ink);
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -956,7 +1059,7 @@ body:after{
 .topic-rail__card-preview {
   margin: 0;
   font-size: 11.5px;
-  color: rgba(238, 242, 246, 0.62);
+  color: var(--muted-3);
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -991,7 +1094,13 @@ body:after{
 .user-turn{display:flex;justify-content:flex-end;gap:14px;margin:0 0 26px}.user-bubble{max-width:430px;padding:15px 18px 13px;border-radius:18px;background:var(--bubble-user);box-shadow:inset 0 1px 0 var(--glass-a62);font-size:15px;line-height:1.42}.time{display:block;margin-top:7px;font-size:12px;color:var(--muted-3);text-align:right}.user-avatar{width:42px;height:42px;border-radius:999px;display:grid;place-items:center;background:rgba(255,255,255,.52);border:1px solid var(--ink-a06);color:var(--ink);align-self:center}.assistant-turn{display:grid;grid-template-columns:50px minmax(280px,440px);gap:18px;margin:22px 0 34px 34px}.assistant-card{padding:20px 24px 16px;border-radius:18px;border:1px solid rgba(17,20,23,.105);background:rgba(255,255,255,.64);box-shadow:0 12px 32px rgba(32,45,58,.045),inset 0 1px 0 var(--glass-a72);font-size:16px;line-height:1.62}.assistant-card p{margin:0 0 6px}.assistant-card .time{text-align:left;margin-top:10px}.second-user{margin-top:8px;margin-right:0}.second-assistant{margin-top:14px;margin-left:34px}
 .status-row{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:14px;width:78%;margin:6px auto 26px;color:var(--muted-2);font-size:15px;letter-spacing:.16em}.status-row:before,.status-row:after{content:"";height:1px;background:var(--ink-a11)}.status-core{display:flex;gap:12px;align-items:center;white-space:nowrap}.transfer-icon{width:24px;height:24px;object-fit:contain;opacity:.68;filter:grayscale(1) brightness(.82);letter-spacing:0}.transfer-text{letter-spacing:.16em}
 .composer{height:78px;margin-bottom:0;border-radius:18px;border:1px solid var(--hairline);background:var(--composer-bg);box-shadow:0 2px 8px rgba(32,45,58,.10),inset 0 1px 0 var(--glass-a78);padding:0 18px 0 22px;display:flex;align-items:center;justify-content:space-between}.placeholder{font-size:16px;color:var(--muted-4)}.send{width:42px;height:42px;border:0;border-radius:50%;display:grid;place-items:center;background:rgba(154,160,181,.55);color:white;font-size:22px;line-height:1;cursor:default}
-.utility-rail{display:flex;flex-direction:column;gap:20px;min-width:0}.device-card{position:relative;border-radius:18px;background:var(--speech-card-bg);border:1px solid var(--speech-border);box-shadow:0 18px 48px var(--speech-shadow),inset 0 1px 0 rgba(255,255,255,.82);backdrop-filter:blur(18px) saturate(140%);overflow:hidden;height:330px;display:grid;place-items:center}.device-card:before{content:"";position:absolute;inset:0;background:linear-gradient(180deg,var(--glass-a72),var(--glass-a44));pointer-events:none}
+/* The rail's box is PINNED at the resting track width (--rail-w on
+   .workspace-body): its track animates to 0 for the disconnect and
+   viewer-open slides, and an unpinned rail shrank with it — the device
+   card re-centred its 216px PNG inside a 90px card (2026-09-02). Fixed
+   tracks ignore item size, so the pin never widens the track; while the
+   rail overflows its collapsed track it is translated off + faded. */
+.utility-rail{grid-column:2;display:flex;flex-direction:column;gap:20px;min-width:0;width:var(--rail-w)}.device-card{position:relative;border-radius:18px;background:var(--speech-card-bg);border:1px solid var(--speech-border);box-shadow:0 18px 48px var(--speech-shadow),inset 0 1px 0 rgba(255,255,255,.82);backdrop-filter:blur(18px) saturate(140%);overflow:hidden;height:330px;display:grid;place-items:center}.device-card:before{content:"";position:absolute;inset:0;background:linear-gradient(180deg,var(--glass-a72),var(--glass-a44));pointer-events:none}
 .agent-preview{position:relative;width:216px;height:270px;z-index:2}.agent-layer{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;user-select:none;pointer-events:none}.agent-shadow{z-index:1;opacity:.85}.agent-device-img{z-index:2}.agent-spill{position:absolute;z-index:3;left:44.56%;top:33.17%;width:41.9%;height:37.1%;transform:translate(-50%,-45%);opacity:.68;pointer-events:none;mix-blend-mode:screen;filter:blur(5px);background:radial-gradient(ellipse 20% 20% at 50% 38%,rgba(230,255,255,.64) 0%,rgba(126,236,255,.48) 42%,rgba(85,156,255,.20) 70%,rgba(85,156,255,0) 100%),radial-gradient(ellipse 42% 42% at 50% 38%,rgba(98,156,255,.54) 0%,rgba(72,133,255,.38) 38%,rgba(80,140,255,.18) 66%,rgba(80,140,255,0) 86%),radial-gradient(ellipse 54% 62% at 50% 44%,rgba(125,190,255,.34) 0%,rgba(95,150,255,.22) 46%,rgba(95,150,255,.08) 72%,rgba(95,150,255,0) 90%);animation:spillBreathe var(--agent-breathe-duration) ease-in-out infinite}.agent-ring{position:absolute;z-index:4;left:44.56%;top:33.17%;width:8.91%;height:7.49%;transform:translate(-50%,-50%);opacity:var(--agent-ring-opacity);animation:ringBreathe var(--agent-breathe-duration) ease-in-out infinite}.agent-ring svg{width:100%;height:100%;display:block;overflow:visible}@keyframes ringBreathe{0%,100%{opacity:.93;transform:translate(-50%,-50%) scale(.997);filter:brightness(.98) saturate(1.03)}50%{opacity:1;transform:translate(-50%,-50%) scale(1.012);filter:brightness(1.10) saturate(1.12)}}@keyframes spillBreathe{0%,100%{opacity:.50;transform:translate(-50%,-45%) scale(.992)}50%{opacity:.66;transform:translate(-50%,-45%) scale(1.012)}}.disclaimer{height:34px;display:flex;align-items:center;justify-content:center;font-size:12px;color:var(--muted-2);border-top:1px solid rgba(17,20,23,.045);background:var(--strip-bg)}
 /* Morph-flight frost suspension (perf 2026-07-13): the device card's
    backdrop-filter re-samples its backdrop EVERY FRAME while the card is
@@ -1004,8 +1113,8 @@ body:after{
 .app:has(.workspace.is-morphing) .device-card {
   backdrop-filter: none;
 }
-@media(max-width:1200px){.app{grid-template-columns:230px 1fr}.sidebar{--sidebar-content-w:176px}.workspace-body{grid-template-columns:1fr 300px;gap:18px;padding:18px}.assistant-turn{margin-left:0}.status-row{width:90%}.device-card{height:300px}.composer{height:104px}}
-@media(max-width:900px){.utility-rail{display:none}.workspace-body{grid-template-columns:1fr}.app{grid-template-columns:210px 1fr}.sidebar{--sidebar-content-w:156px}}
+@media(max-width:1200px){.app{grid-template-columns:230px 1fr}.sidebar{--sidebar-content-w:176px}.workspace-body{--rail-w:300px;grid-template-columns:minmax(0,1fr) var(--rail-w) 0px;gap:0;--body-pad-top:18px;--body-pad-right:18px;--body-pad-bottom:18px;--body-pad-left:18px}.workspace{margin-right:18px}.workspace-body.viewer-docked{grid-template-columns:minmax(0,1fr) 0px min(var(--viewer-w,420px), calc(100% - 440px))}.assistant-turn{margin-left:0}.status-row{width:90%}.device-card{height:300px}.composer{height:104px}}
+@media(max-width:900px){.utility-rail{display:none}.workspace-body{grid-template-columns:minmax(0,1fr) 0px 0px}.workspace{margin-right:0}.app{grid-template-columns:210px 1fr}.sidebar{--sidebar-content-w:156px}}
 /* Slice 3 additions — Conversation message rows and bubbles */
 .message-row {
   position: relative; /* anchor for the hover-reveal timestamp below the bubble */
@@ -1116,12 +1225,17 @@ body:after{
   border-bottom: 1px solid rgba(17, 20, 23, 0.055);
   background: var(--strip-bg);
 }
+/* Every monospace stack in this file reads the same way (platform review
+   2026-09-23): `ui-monospace` is Safari's alone — Chromium on a Mac skips it —
+   so "SF Mono" / Menlo come next; the Cascadia Mono stacks named neither and
+   left a Mac to Chromium's generic monospace. Windows and Linux have neither
+   font and land where they always did: Cascadia / Consolas, or the generic. */
 .code-card__lang {
   padding: 1px 8px;
   border-radius: 999px;
   background: rgba(148, 163, 184, 0.16);
   color: var(--muted-slate);
-  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-family: ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, monospace;
   font-size: 11px;
   letter-spacing: 0.04em;
 }
@@ -1131,7 +1245,7 @@ body:after{
   border: 0;
   background: transparent;
   color: var(--ink-2);
-  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-family: ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, monospace;
   font-size: 13px;
   line-height: 1.55;
   white-space: pre;
@@ -1159,7 +1273,7 @@ body:after{
 /* Inline `code` spans: monospace, backticks left visible (the streamed and
    committed characters are identical — only the styling changes). */
 .message-text .inline-code {
-  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-family: ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, monospace;
   font-size: 0.92em;
   background: var(--ink-a05);
   border-radius: 4px;
@@ -1222,6 +1336,13 @@ body:after{
    handler holds the real guard (it re-checks the store on click); this is only
    the affordance. `display: none` and not opacity, so it also leaves the tab
    order while it cannot be used. */
+/* The attachment take-back hides the same way while a turn runs (2026-09-03):
+   its factory used to be withheld mid-turn, which re-rendered every
+   historical activity group at each turn boundary. The handler now checks
+   the live status; the control just is not shown. */
+.conversation-flow.is-busy .activity-step__remove {
+  display: none;
+}
 .conversation-flow.is-busy .message-rewind {
   display: none;
 }
@@ -1278,7 +1399,7 @@ body:after{
   color: var(--muted-strong);
   white-space: pre-wrap;
   word-break: break-all;
-  font-family: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+  font-family: ui-monospace, "SF Mono", Menlo, "Cascadia Code", "Source Code Pro", Consolas, "DejaVu Sans Mono", monospace;
 }
 
 /* Slice 3 additions — SessionItem (sidebar list items) */
@@ -1686,8 +1807,10 @@ body:after{
   transition: transform 300ms ease-out, opacity 300ms ease-out;
   /* Anchor the shrink to the ground contact so the shadow stays put and
      only gets smaller/fainter as the device lifts — scaling from the box
-     center would drag the (below-center) shadow visibly upward. */
-  transform-origin: 50% 88%;
+     center would drag the (below-center) shadow visibly upward. The
+     shadow is the 3D scene's contact shadow (ADR 0057 §2.14), the soft
+     band under the device's base, which sits at 83.2 % of the box. */
+  transform-origin: 50% 84%;
 }
 
 /* Device LED shader layer (2026-07-12): one WebGL canvas replacing the
@@ -1695,7 +1818,11 @@ body:after{
    PNG (z2) exactly where the spill (z3) / ring (z4) layers lived; inside
    .agent-lift-group so drag-to-lift carries it. The legacy stack stays in
    the DOM as the no-WebGL fallback — hidden unless the canvas flags that
-   GL init or the shader compile failed. */
+   GL init or the shader compile failed.
+   Since ADR 0057 §2.14 the pass draws the 3D scene's own lamp layer —
+   the lamp's light on the device — and it is LIGHT: plus-lighter adds it
+   to whatever is under it (the art, the card), the way emission adds in
+   the scene. */
 .device-glow-canvas {
   position: absolute;
   inset: 0;
@@ -1703,6 +1830,7 @@ body:after{
   height: 100%;
   z-index: 3;
   pointer-events: none;
+  mix-blend-mode: plus-lighter;
 }
 .device-glow-fallback {
   display: none;
@@ -1717,6 +1845,98 @@ body:after{
   display: contents;
 }
 
+/* 3D device card (ADR 0057): one canvas filling the card's content box —
+   the baked room is the card's background, the device framed to the flat
+   render's silhouette height. Stacked under .agent-preview (z2, the drag
+   surface) and .card-menu (z5), over the card's own frost. The flat stack
+   stays in the DOM and is hidden only while the scene is LIVE (a frame has
+   been presented), so the card is never blank: no GPU path, a load failure
+   or a lost device drops the attribute and the renders return. */
+.device-scene-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+  pointer-events: none;
+}
+/* While a scene is EXPECTED (§2.13) the flat device shows THROUGH FROSTED
+   GLASS — an 8 px blur of the art that is already there, the lamp still
+   breathing behind it — so the card is never blank, and on the scene's
+   first frame the glass clears: the flat stack sharpens and fades out
+   over the 3D canvas fading in, the same silhouette, so it reads as the
+   device coming into focus (owner 2026-09-07: an empty white card that
+   "suddenly changed" to 3D). A prepared blurred 3D picture would have to
+   match the live scene's theme, hour, weather and lamp, and go stale with
+   every lighting tune; the live art matches by construction. Visibility
+   follows the fade so the hidden stack costs nothing afterwards. */
+.device-card[data-scene="pending"] .agent-lift-group,
+.device-card[data-scene="pending"] .agent-shadow {
+  filter: blur(8px);
+  opacity: 0.92;
+}
+.device-card[data-scene="live"] .agent-lift-group,
+.device-card[data-scene="live"] .agent-shadow {
+  filter: blur(0);
+  opacity: 0;
+  visibility: hidden;
+}
+.device-card[data-scene] .agent-lift-group {
+  transition:
+    transform 300ms ease-out,
+    filter 700ms ease,
+    opacity 700ms ease,
+    visibility 0s linear 700ms;
+}
+.device-card[data-scene] .agent-shadow {
+  transition:
+    transform 300ms ease-out,
+    filter 700ms ease,
+    opacity 700ms ease,
+    visibility 0s linear 700ms;
+}
+.device-scene-canvas {
+  opacity: 0;
+  transition: opacity 700ms ease;
+}
+.device-card[data-scene="live"] .device-scene-canvas {
+  opacity: 1;
+}
+/* The glass proper (§2.13, owner: the flat art is a different drawing of
+   the device — "make the frosted images from the 3D rendered results"):
+   the scene's own last rendering, a quarter-size JPEG kept per theme, or
+   the bundled rendering of the scene until one exists (never the flat
+   art, which is the device alone since §2.14), stretched over the canvas
+   box and blurred; scaled up a little so the blur's transparent fringe
+   stays outside the card. With it the flat stack is not shown at all. It
+   clears with the same focus as the rest. */
+.device-frost {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+  pointer-events: none;
+  object-fit: fill;
+  transform: scale(1.06);
+  filter: blur(8px);
+  opacity: 1;
+  transition:
+    filter 700ms ease,
+    opacity 700ms ease,
+    visibility 0s linear 700ms;
+}
+.device-card[data-scene="live"] .device-frost {
+  filter: blur(0);
+  opacity: 0;
+  visibility: hidden;
+}
+.device-card.has-frost[data-scene="pending"] .agent-lift-group,
+.device-card.has-frost[data-scene="pending"] .agent-shadow {
+  visibility: hidden;
+  transition: none;
+}
+
 /* Slice 3 addition — reset UA button styles on .agent-preview (Task 13
    changed the element from <div> to <button> for a11y; UA defaults
    would otherwise distort the 4-layer composite). */
@@ -1728,9 +1948,25 @@ button.agent-preview {
   -webkit-appearance: none;
   font: inherit;
   color: inherit;
+  cursor: default;
+}
+/* The grab cursor only over the DEVICE (owner 2026-09-07: "the draggable
+   area is obviously larger than the device"): the drag hook ignores a
+   press off the silhouette, and the cursor says the same. The box is
+   DEVICE_SILHOUETTE in dragTracker.ts — the flat art's opaque extent,
+   which the 3D device is framed to. A pseudo-element carries the cursor
+   so the button stays one element for events and a11y. */
+.agent-preview::after {
+  content: "";
+  position: absolute;
+  left: 24.91%;
+  top: 16.79%;
+  width: 50.18%;
+  height: 66.43%;
   cursor: grab;
 }
-button.agent-preview:active {
+.agent-preview.is-lifting,
+.agent-preview.is-lifting::after {
   cursor: grabbing;
 }
 
@@ -1775,6 +2011,16 @@ button.agent-preview:active {
 .card-menu-tooltip.is-leaving {
   animation: cardMenuOut 120ms ease both;
   pointer-events: none;
+}
+/* The menu escapes the card (2026-09-17): `.device-card` clips its overflow
+   for the frost and the scene, and once the trust row joined the rules the
+   menu ran past the card's bottom edge and was cut off. CardMenu renders it
+   through a portal at the body, fixed at the ⋯ button's corner (inline
+   top/right), so the card's clip never reaches it. z = OVERLAY_Z.cardMenu. */
+.card-menu-tooltip--floating {
+  position: fixed;
+  margin-top: 0;
+  z-index: 70;
 }
 @keyframes cardMenuIn {
   from {
@@ -1823,8 +2069,8 @@ button.agent-preview:active {
 .card-menu-path {
   display: block;
   margin-top: 2px;
-  font-family: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo,
-    Consolas, "DejaVu Sans Mono", monospace;
+  font-family: ui-monospace, "SF Mono", Menlo, "Cascadia Code",
+    "Source Code Pro", Consolas, "DejaVu Sans Mono", monospace;
   font-size: 11px;
   line-height: 1.5;
   color: var(--ink-3);
@@ -1876,6 +2122,27 @@ button.agent-preview:active {
 .card-menu-rules-empty {
   font-size: 11px;
   color: var(--muted-slate);
+}
+/* Workspace trust row (ADR 0064): the label, the one-line state, and the
+   toggle — same register as the rules section it sits above. */
+.card-menu-trust {
+  padding: 6px 12px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.card-menu-trust-state {
+  font-size: 11px;
+  color: var(--muted-slate);
+}
+.card-menu-trust-toggle {
+  /* Bleeds through the section's 12px side padding so its hover band runs
+     edge to edge like the rows above it. The width has to bleed WITH the
+     margins: `.card-menu-item` is `width: 100%`, and a negative left margin
+     only shifts a box of fixed width — the band started at the menu's left
+     edge and stopped 24px short of its right one (owner 2026-09-21). */
+  margin: 2px -12px 0;
+  width: calc(100% + 24px);
 }
 .card-menu-rules-list {
   list-style: none;
@@ -2091,6 +2358,12 @@ button.agent-preview:active {
 .app.is-mac .topbar {
   padding-left: 86px;
 }
+/* …except in full screen, where macOS hides the lights (they come back with
+   the menu bar, in a strip ABOVE the window's content), and the room kept for
+   them was an empty 86px gap (platform review 2026-09-23). */
+.app.is-mac.is-fullscreen .topbar {
+  padding-left: 18px;
+}
 .topbar .sidebar-header-icon {
   -webkit-app-region: no-drag;
 }
@@ -2200,7 +2473,7 @@ button.agent-preview:active {
 }
 .app-error-panel h2 { margin: 0 0 0.5rem; }
 .app-error-panel code {
-  font-family: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+  font-family: ui-monospace, "SF Mono", Menlo, "Cascadia Code", "Source Code Pro", Consolas, "DejaVu Sans Mono", monospace;
   background: var(--soft-gray);
   padding: 0.1em 0.35em;
   border-radius: 4px;
@@ -2376,6 +2649,24 @@ button.agent-preview:active {
 }
 .morph-clone.is-settled {
   will-change: auto;
+  /* The landing (owner 2026-08-27): the swap is HELD for SHADOW_SETTLE_MS
+     (Conversation.tsx) while the parked clone fades its flight shadows —
+     unmounting on the settle commit popped them off with no transition.
+     The float (::after) fades because is-moving left; box-shadow joins the
+     transition list here so the user-variant rule below can fade the rest
+     shadow too. Animating box-shadow is fine HERE: the element is parked
+     and small, unlike the per-frame flight repaint the ::after cross-fade
+     exists to avoid. */
+  transition:
+    opacity 0.12s linear,
+    box-shadow var(--morph-shadow-duration) var(--ease-signature);
+}
+/* The real user bubble carries NO drop shadow (only its inset highlight),
+   so the user clone's rest shadow fades to a zero-alpha twin — a same-
+   geometry shadow, because `none` does not interpolate. The herta clone
+   keeps its rest shadow: the real herta bubble wears one just like it. */
+.morph-clone.user-bubble.is-settled {
+  box-shadow: 0 8px 22px rgba(32, 45, 58, 0);
 }
 
 /* ── Disconnect morph: the composer rises + morphs into the connect button.
@@ -2591,8 +2882,17 @@ button.agent-preview:active {
 .composer {
   /* Anchor for the rewind file-edit spill (.composer-notice) that floats above. */
   position: relative;
+  /* Bottom-anchored lines (ADR 0048 §4): the composer grows UPWARD when the
+     staged-image strip is up, and the input row must not move while it does.
+     With wrap already on (the strip rule below), align-content applies even
+     to the single-line state — flex-end pins the line(s) to the bottom, and
+     the padding-bottom values reproduce what align-items:center gave at each
+     fixed height (78/104/60px), so the resting look is unchanged. */
+  align-content: flex-end;
+  padding-bottom: 15px;
   transition:
     height 0.44s var(--ease-signature),
+    padding 0.44s var(--ease-signature),
     opacity 0.18s ease,
     border-color 0.18s ease,
     box-shadow 0.18s ease,
@@ -2676,6 +2976,7 @@ button.agent-preview:active {
   visibility: hidden;
   transition:
     height 0.44s var(--ease-signature),
+    padding 0.44s var(--ease-signature),
     opacity 0.18s ease,
     border-color 0.18s ease,
     box-shadow 0.18s ease,
@@ -2698,6 +2999,8 @@ button.agent-preview:active {
    0.44s signature height transition both ways. */
 .composer.is-shrunk {
   height: 60px;
+  /* (58 − line)/2 — see the bottom-anchored note on .composer. */
+  padding-bottom: 6px;
 }
 
 /* Galaxy transfer entrance. Opacity is deliberately LATE-weighted (user
@@ -2765,6 +3068,9 @@ button.agent-preview:active {
   .status-row::before,
   .status-row::after {
     transition: none !important;
+  }
+  .composer-staged {
+    animation: none;
   }
   .activity-line-group.is-pending {
     animation: none;
@@ -2837,6 +3143,13 @@ button.agent-preview:active {
   border: 1px solid rgba(148, 163, 184, 0.35);
   animation: approval-rise 220ms var(--ease-pop);
 }
+/* A fresh gate focuses the dialog itself, not a button (UX review
+   2026-09-22): the card is its own focus sign, so no ring around it. The
+   buttons keep theirs. */
+.approval-panel:focus,
+.approval-panel:focus-visible {
+  outline: none;
+}
 .approval-panel.is-out {
   opacity: 0;
   transform: translateY(12px);
@@ -2876,6 +3189,11 @@ button.agent-preview:active {
 /* The other ask classes of a chained shell line (2026-08-17) — a dim line
    under the top label, same register as the project-rule note below. */
 .approval-panel__also { margin: 0; font-size: 12px; color: var(--muted-slate); }
+/* Consequence note (ADR 0049 §5): what this command does to work that cannot
+   be recovered. One quiet warning line — informational, the tier enforces.
+   Same amber register as the armed-switch warning badge. */
+.approval-panel__consequence { margin: 0; font-size: 12px; color: #b45309; }
+:root[data-theme="dark"] .approval-panel__consequence { color: #ffc46b; }
 .approval-panel__command {
   margin: 0;
   padding: 8px 10px;
@@ -4178,13 +4496,11 @@ button.session-item__badge--dismiss {
 /* Rows are append-only within a dispatch, so each mounts exactly once —
    a small rise-and-fade entrance makes the trace visibly GROW instead of
    rows teleporting in. */
+/* The per-mount fade this row used to carry gave way to the family's
+   shared row motion (ADR 0058 §5.7): an appended op enters with it, the
+   first trace lands still with the card's slide. */
 .trace-card__row {
   align-items: center;
-  animation: trace-row-in 200ms ease both;
-}
-@keyframes trace-row-in {
-  from { opacity: 0; transform: translateY(4px); }
-  to { opacity: 1; transform: none; }
 }
 /* A long-run dispatch lands hundreds of ops (owner 2026-08-17): the list
    caps its VISIBLE height (~6 rows) and scrolls inside — with the fog
@@ -4237,6 +4553,295 @@ button.session-item__badge--dismiss {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+
+/* ── 仓库 rail card (ADR 0058) — rides the .plan-card chrome ────────────
+   The workspace's repository under the device: the branch line reads at
+   a glance (name, upstream, ↑↓), the rows are the uncommitted files with
+   git's own status letter as the mark, the last line the last commit.
+   Facts in FORM, nothing moves; the list caps like the trace card's. */
+.repo-card__branch {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  font-size: 13.5px;
+  color: var(--ink);
+}
+.repo-card__branch-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.repo-card__upstream {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--muted-4);
+}
+.repo-card__upstream.is-gone {
+  text-decoration: line-through;
+  text-decoration-color: var(--muted-faint);
+}
+/* The upstream was deleted on the remote (ADR 0058 §7): a small word in the
+   row's muted ink, beside the struck name — a fact, not an alarm. */
+.repo-card__gone {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--muted-4);
+  border: 1px solid var(--muted-faint);
+  border-radius: 3px;
+  padding: 0 4px;
+  line-height: 15px;
+}
+.repo-card__delta {
+  flex: none;
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--muted-2);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .02em;
+}
+/* An operation left mid-flight (merge, rebase, …): a fact the next commit
+   would conclude, stated in the row's ink, not in an alarm colour — the
+   command card says what a commit would do (ADR 0049 §5). */
+.repo-card__flag {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink);
+}
+.repo-card .plan-card__list {
+  max-height: 168px;
+}
+.repo-card__row {
+  align-items: center;
+}
+.repo-card__row .plan-card__mark {
+  margin-top: 0;
+  width: auto;
+  min-width: 10px;
+  font-family: ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, monospace;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--muted-4);
+}
+.repo-card__row.is-added .plan-card__mark {
+  color: var(--banzhuan-led);
+}
+.repo-card__row.is-untracked .plan-card__mark {
+  color: var(--muted-faint);
+}
+.repo-card__row.is-conflict .plan-card__mark {
+  color: #9a5b5b;
+}
+/* One line per path, ellipsized — a path is an address, not the content
+   (the hover title carries it whole). A button where the viewer can open
+   it (ADR 0050), a span where it cannot; same look either way. */
+.repo-card__path {
+  min-width: 0;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+}
+button.repo-card__path {
+  cursor: pointer;
+}
+button.repo-card__path:hover {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.repo-card__more,
+.repo-card__scope,
+.repo-card__commit {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--muted-4);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* A row for a path OUTSIDE a subfolder workspace (ADR 0058 amendment):
+   stated, spelled with ../, not openable — quieter than its siblings. */
+.repo-card__row.is-outside .repo-card__path {
+  color: var(--muted-4);
+}
+/* The recent commits (ADR 0058 §5.4): a small section label, then rows
+   with the abbreviated id as the mark and the subject as the commit tab's
+   opener (ADR 0059) — the same row grammar as the dirty list, capped a
+   little shorter so both lists fit the card. The label's right end opens
+   the full history (ADR 0059 §6). */
+.repo-card__section {
+  margin: 4px 0 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11px;
+  letter-spacing: .02em;
+  color: var(--muted-4);
+}
+.repo-card__all {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  background: none;
+  border: 0;
+  padding: 1px 4px;
+  margin-right: -4px;
+  border-radius: 6px;
+  font: inherit;
+  letter-spacing: inherit;
+  color: var(--muted-4);
+  cursor: pointer;
+  transition: color 140ms ease, background-color 140ms ease;
+}
+.repo-card__all:hover,
+.repo-card__all:focus-visible {
+  color: var(--ink);
+  background: var(--ink-a13);
+  outline: none;
+}
+.repo-card__all svg {
+  transition: transform 180ms var(--ease-signature);
+}
+.repo-card__all:hover svg {
+  transform: translateX(1px);
+}
+.repo-card .repo-card__log {
+  max-height: 118px;
+}
+.repo-card__log-row .plan-card__mark.repo-card__sha {
+  min-width: 0;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+.repo-card__subject {
+  font-size: 12px;
+  color: var(--muted-2);
+}
+/* Not on the upstream yet (ADR 0058 §5.6): the header's ↑n says how many,
+   the mark says which. The LED tint, so it reads with the count above. */
+.repo-card__unpushed {
+  flex: none;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--banzhuan-led);
+  opacity: .85;
+}
+
+/* ── The card's motion (ADR 0058 §5.7) ────────────────────────────────────
+   Change and touch move; facts do not pulse (the 2026-07-27 rule). A row
+   under the pointer lifts as the record's own glass pill; a row that
+   arrives eases in where it sits, a row that leaves eases out where it was
+   — the list's height follows the row, so nothing below it jumps. The
+   header's count, the branch and ↑↓ swap in place (SwapText). Lengths
+   match REPO_ROW_ENTER_MS / REPO_ROW_LEAVE_MS in RepoCard.tsx. */
+/* The pill bleeds 6px into the card's padding on both sides. The LIST
+   carries the negative margin and the ROW the matching padding — a row
+   with its own negative margin overflows the scroll container sideways,
+   and `overflow-y: auto` then paints a horizontal bar under every list
+   (seen in the built app, 2026-09-07). */
+.repo-card .plan-card__list {
+  margin-left: -6px;
+  margin-right: -6px;
+}
+.repo-card__row {
+  position: relative;
+  border-radius: 6px;
+  padding: 1px 6px;
+  transition: background-color 140ms ease, color 260ms ease;
+}
+.repo-card__row:has(> button:hover),
+.repo-card__row:has(> button:focus-visible) {
+  background: var(--ink-a13);
+}
+.repo-card__row:has(> button:active) {
+  background: var(--ink-a22);
+  transition-duration: 60ms;
+}
+.repo-card__row:has(> button:hover) .plan-card__mark,
+.repo-card__row:has(> button:hover) .repo-card__path {
+  color: var(--ink);
+}
+button.repo-card__path:hover {
+  text-decoration: none;
+}
+button.repo-card__path,
+.repo-card__row .plan-card__mark {
+  transition: color 140ms ease;
+}
+/* Row entrance / exit, shared by every card in the family (repository,
+   plan, trace — card-motion.ts). The height animates to and from `auto`
+   (`interpolate-size`, Chromium 129+): a plan step that wraps to two
+   lines opens to its own height, not to a guessed cap. The 7px list gap
+   collapses with the row (the negative margin) so the rows below settle
+   without a jump; opacity leads the exit so the row is gone before its
+   space closes. */
+.plan-card__row.is-entering,
+.plan-card__row.is-leaving {
+  interpolate-size: allow-keywords;
+  overflow: hidden;
+}
+.plan-card__row.is-entering {
+  animation: card-row-in 300ms var(--ease-signature) both;
+}
+.plan-card__row.is-leaving {
+  animation: card-row-out 220ms ease both;
+  pointer-events: none;
+}
+@keyframes card-row-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+    height: 0;
+    margin-top: -7px;
+  }
+  60% {
+    height: auto;
+    margin-top: 0;
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    height: auto;
+    margin-top: 0;
+  }
+}
+@keyframes card-row-out {
+  from {
+    opacity: 1;
+    transform: none;
+    height: auto;
+    margin-top: 0;
+  }
+  40% {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-3px);
+    height: 0;
+    margin-top: -7px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .plan-card__row.is-entering,
+  .plan-card__row.is-leaving { animation: none; }
+  .plan-card__row.is-leaving { display: none; }
+  .repo-card__all svg { transition: none; }
+}
 .trace-card__note.is-fail {
   color: #9a5b5b;
 }
@@ -4280,8 +4885,8 @@ button.session-item__badge--dismiss {
   color: var(--muted-strong);
   white-space: pre-wrap;
   word-break: break-word;
-  font-family: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, Consolas,
-    "DejaVu Sans Mono", monospace;
+  font-family: ui-monospace, "SF Mono", Menlo, "Cascadia Code",
+    "Source Code Pro", Consolas, "DejaVu Sans Mono", monospace;
 }
 /* Failure rows (tool-fail digest, incl. tool_crashed containment results,
    2026-07-23): the same amber the armed-switch warning badge uses, so a
@@ -4401,7 +5006,9 @@ button.session-item__badge--dismiss {
 }
 /* Measured max-height reveal, same as the activity history panel: the px
    target is set by the JS in ActivityStep (a transition needs a length, and
-   `auto` is not one). */
+   `auto` is not one). Shared by the folded patch and the evidence-detail
+   pane (2026-08-26 — the 明细 used to pop with no animation while the diff
+   beside it eased). */
 .activity-step__fold {
   overflow: hidden;
   max-height: 0;
@@ -4427,8 +5034,8 @@ button.session-item__badge--dismiss {
   border-radius: 8px;
   overflow: hidden;
   background: color-mix(in srgb, var(--muted-faint) 6%, transparent);
-  font-family: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, Consolas,
-    "DejaVu Sans Mono", monospace;
+  font-family: ui-monospace, "SF Mono", Menlo, "Cascadia Code",
+    "Source Code Pro", Consolas, "DejaVu Sans Mono", monospace;
   font-size: 11.5px;
   line-height: 1.55;
 }
@@ -4583,8 +5190,8 @@ button.session-item__badge--dismiss {
   border-radius: 6px;
   white-space: pre-wrap;
   word-break: break-word;
-  font-family: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, Consolas,
-    "DejaVu Sans Mono", monospace;
+  font-family: ui-monospace, "SF Mono", Menlo, "Cascadia Code",
+    "Source Code Pro", Consolas, "DejaVu Sans Mono", monospace;
 }
 
 /* ── SwapText: in-place line swap (2026-06-12 seamless-workbench §6.2) ── */
@@ -4843,11 +5450,18 @@ button.session-item__badge--dismiss {
     gap var(--dur-morph) var(--ease-signature);
 }
 .app.is-disconnected .workspace-body {
-  grid-template-columns: minmax(0, 1fr) 0;
+  /* Three tracks since ADR 0050 — counts must match the base template or
+     the collapse JUMPS instead of interpolating. */
+  grid-template-columns: minmax(0, 1fr) 0 0;
   gap: 0;
   transition:
     grid-template-columns var(--dur-morph) var(--ease-signature) 400ms,
     gap var(--dur-morph) var(--ease-signature) 400ms;
+}
+/* The old gap-to-zero reclaim, now on the margin that replaced the gap. */
+.app.is-disconnected .workspace {
+  margin-right: 0;
+  transition: margin-right var(--dur-morph) var(--ease-signature) 400ms;
 }
 .utility-rail {
   transition:
@@ -4855,7 +5469,11 @@ button.session-item__badge--dismiss {
     opacity 360ms ease;
 }
 .app.is-disconnected .utility-rail {
-  transform: translateX(130%);
+  /* A PIXEL distance, not a percentage: 130% resolved against the rail's
+     own box, and that box rode the collapsing track — a %-translate times
+     a shrinking width is a hump, not a slide (2026-09-02; the viewer rule
+     below has the full account). Same 1.3 × rail width as before. */
+  transform: translateX(calc(var(--rail-w) * 1.3));
   opacity: 0;
   pointer-events: none;
   /* Once the fade completes (400ms delay + 360ms) the rail is invisible but
@@ -4877,9 +5495,1109 @@ button.session-item__badge--dismiss {
 }
 @media (prefers-reduced-motion: reduce) {
   .workspace-body,
-  .utility-rail {
+  .workspace,
+  .utility-rail,
+  .file-viewer {
     transition: none;
   }
+}
+
+/* ── File viewer (ADR 0050): the rail parks behind the docked panel ──────
+   The disconnect choreography, reused for viewer-open: content translates
+   right + fades, and content-visibility flips once the fade lands so the
+   parked subtree stops costing layout/paint — the WebGL loops are gated in
+   JS on the same signal (useRailParked). Closing reverts to the base
+   transition list: contents lay out again instantly, before the slide-in,
+   exactly like reconnect.
+
+   2026-09-02 (owner: on every toggle the device card "bounced" left-right
+   and its PNG sat in the middle of a half-width card, then drifted to the
+   card's true middle as the card widened). Two causes, traced by seeking
+   the transitions frame by frame: translateX(130%) resolved against the
+   rail's OWN box, which rode the collapsing 338px→0 track — 130% × a
+   shrinking width is a hump, and the card's place-items:center re-centred
+   the device in each frame's sliver. The rail was pinned at --rail-w (see
+   .utility-rail) and the translate added --viewer-w to cancel the slot's
+   own drift — which held only while the two moved in lockstep.
+
+   2026-09-11 (owner: on close the cards "suddenly appear in the middle of
+   the empty space", get "pushed to the edge of the app", then "jump back";
+   most often after a width drag or with several tabs open). The transform
+   runs on the COMPOSITOR thread; the grid-template-columns slide that
+   moved the rail's slot runs on the MAIN thread. A busy main thread at
+   close — the record re-wrapping to a wider column every frame, the tabs'
+   views unmounting — lets the rail finish its slide over a FROZEN slot,
+   and when layout catches up the slot drags the rail to the edge and it
+   snaps back (reproduced with a 350ms stall: screencast frames 437/660/803
+   are the owner's three pictures). No compensation term can hold two
+   threads in step, so the rail LEAVES the grid for both slides: absolute
+   on its rest geometry (the padding tokens — the same box as its track),
+   translated a constant 777px (2.3 × --rail-w, the disconnect slide's
+   338 + 1.3 × 338) with no --viewer-w term, because the slot no longer
+   moves under it. The shell holds `viewer-closing` for the close slide's
+   length (the grid's own transitionend), and only then does the rail
+   become the track item again — at the same place and width. Under any
+   stall the rail now arrives at its rest and waits for the conversation.
+   The transform starts WITH the track (delay 0); the fade keeps its 120ms
+   stagger. */
+.workspace-body.viewer-docked .utility-rail,
+.workspace-body.viewer-closing .utility-rail {
+  position: absolute;
+  /* An absolute grid child's containing block is the grid AREA its
+     placement names; auto names the padding box, which the offsets below
+     are written against. */
+  grid-column: auto;
+  top: var(--body-pad-top);
+  right: var(--body-pad-right);
+  bottom: var(--body-pad-bottom);
+}
+.workspace-body.viewer-docked .utility-rail {
+  transform: translateX(calc(var(--rail-w) * 2.3));
+  opacity: 0;
+  pointer-events: none;
+  content-visibility: hidden;
+  transition-property: transform, opacity, content-visibility;
+  transition-duration: var(--dur-morph), 360ms, 0s;
+  transition-timing-function: var(--ease-signature), ease, linear;
+  transition-delay: 0s, 120ms, 500ms;
+  transition-behavior: normal, normal, allow-discrete;
+}
+
+/* The panel itself: a glass card in the rail cards' family. No
+   backdrop-filter — it MOVES during the slide, and a moving blur
+   re-samples its backdrop every frame (the device-card morph lesson). */
+.file-viewer {
+  position: relative;
+  /* Placed by NAME, as is the rail (grid-column: 2): the rail leaves the
+     grid (position: absolute) while the viewer is docked, and an absolute
+     child takes no cell, so an auto-placed panel slid into the rail's 0px
+     column and collapsed — caught live 2026-09-11. The absolute states
+     below reset the placement to auto so their offsets resolve against
+     the body's padding box, not a track. */
+  grid-column: 3;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--glass-a72);
+  border-radius: 18px;
+  box-shadow:
+    0 12px 32px rgba(32, 45, 58, 0.045),
+    inset 0 1px 0 var(--glass-a72);
+  opacity: 0;
+  transition: opacity 360ms ease;
+}
+/* The panel takes programmatic focus on open (so Escape lands); the
+   focus is functional, not navigational — no ring. */
+.file-viewer:focus,
+.file-viewer:focus-visible {
+  outline: none;
+}
+.workspace-body.viewer-docked .file-viewer {
+  opacity: 1;
+  transition-delay: 180ms;
+}
+/* The open slide moves a FINISHED layout (owner 2026-09-11: the panel was
+   sized by its track on every frame, so the text re-wrapped as the track
+   widened and only settled at the end — Codex lays the panel out at its
+   final width first, then slides it in). While the shell holds
+   `viewer-opening` — exactly the track transition's length — the panel
+   LEAVES the grid: absolute at its final place (the track's area, the
+   overlay sheet's coordinates) and its final width, and it slides in by
+   transform on the track's own clock and curve, so it rides the yielding
+   conversation edge to the pixel. Out of flow on purpose: a grid item
+   with an explicit width feeds that width into the workspace's intrinsic
+   size, the .app 1fr column grows past the window to fit it, the body
+   re-measures wider, the 40% default chases it — measured live as a
+   stuttering slide whose width kept changing. When the hold drops the
+   panel is the track item again, at the same place and width (the
+   track's min() cap keeps ruling the steady state — the three-layer
+   width guarantee is untouched; --viewer-w is already clamped to it). */
+.workspace-body.viewer-opening .file-viewer {
+  position: absolute;
+  grid-column: auto;
+  top: var(--body-pad-top);
+  bottom: var(--body-pad-bottom);
+  right: var(--body-pad-right);
+  width: var(--viewer-w, 480px);
+  animation: fileViewerDockIn var(--dur-morph) var(--ease-signature) both;
+}
+@keyframes fileViewerDockIn {
+  from {
+    transform: translateX(
+      calc(var(--viewer-w, 480px) + var(--body-pad-right, 24px))
+    );
+  }
+  to { transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .workspace-body.viewer-opening .file-viewer { animation: none; }
+}
+/* Threshold fallback (ADR 0050): the sheet floats over the right side —
+   nothing reflows, the rail stays live. */
+.workspace-body.viewer-overlay .file-viewer {
+  position: absolute;
+  grid-column: auto;
+  top: var(--body-pad-top);
+  bottom: var(--body-pad-bottom);
+  right: var(--body-pad-right);
+  width: min(var(--viewer-w, 420px), calc(100% - 160px));
+  z-index: 40;
+  opacity: 1;
+  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.22);
+  animation: fileViewerSheetIn 280ms var(--ease-signature) both;
+}
+@keyframes fileViewerSheetIn {
+  from { transform: translateX(18px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .workspace-body.viewer-overlay .file-viewer { animation: none; }
+}
+
+.file-viewer__divider {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 9px;
+  cursor: col-resize;
+  z-index: 3;
+}
+.file-viewer__divider::after {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  border-radius: 2px;
+  background: transparent;
+  transition: background-color 140ms ease;
+}
+.file-viewer__divider:hover::after { background: var(--ink-a22); }
+
+.file-viewer__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px 9px 16px;
+  border-bottom: 1px solid var(--hairline);
+  flex: none;
+  min-width: 0;
+}
+/* The tab strip (ADR 0050 v1.5): bounded chips, active one raised on
+   glass; each chip's × closes that file, the header × closes the panel. */
+.file-viewer__tabs {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  gap: 4px;
+  overflow: hidden;
+}
+.file-viewer__tab {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 180px;
+  border-radius: 8px;
+  padding: 0 2px 0 0;
+  transition: background-color 140ms ease;
+}
+.file-viewer__tab.is-active {
+  background: var(--glass-a78);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+}
+.file-viewer__tab:not(.is-active):hover { background: var(--ink-a13); }
+.file-viewer__tab-name {
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  padding: 4px 2px 4px 9px;
+  font-size: 12px;
+  color: var(--muted-slate);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.file-viewer__tab.is-active .file-viewer__tab-name {
+  color: var(--slate-deep);
+  font-weight: 600;
+}
+.file-viewer__tab-x {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  /* Chromium's default button padding (1px 6px) is INSIDE the 18px box,
+     so the 9px glyph sat 6px in, off-centre (owner 2026-09-03). */
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted-slate);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 140ms ease, background-color 140ms ease;
+}
+.file-viewer__tab:hover .file-viewer__tab-x,
+.file-viewer__tab.is-active .file-viewer__tab-x,
+.file-viewer__tab-x:focus-visible { opacity: 1; }
+.file-viewer__tab-x:hover { background: var(--ink-a13); color: var(--slate-deep); }
+.file-viewer__actions { display: flex; gap: 2px; flex: none; }
+.file-viewer__action {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted-slate);
+  cursor: pointer;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+.file-viewer__action:hover { background: var(--ink-a13); color: var(--slate-deep); }
+
+.file-viewer__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.file-viewer__code {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  font-family: ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+/* House scrollbars, both axes (owner 2026-08-31: the panel showed the OS
+   defaults) — the conversation's pill thumb, plus a transparent corner so
+   the axes' junction doesn't paint a system-grey square. */
+.file-viewer__code::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.file-viewer__code::-webkit-scrollbar-track {
+  background: transparent;
+}
+.file-viewer__code::-webkit-scrollbar-corner {
+  background: transparent;
+}
+.file-viewer__code::-webkit-scrollbar-thumb {
+  background: var(--ink-a13);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+.file-viewer__code::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-a22);
+  background-clip: padding-box;
+}
+/* The scroll content: gutter + text side by side over one relative box so
+   the cite-anchor band (absolute, full row width) can sit behind both.
+   width:max-content + min-width:100% keeps the band covering the full
+   scrollable row even when long lines scroll horizontally. */
+.file-viewer__code-inner {
+  position: relative;
+  display: flex;
+  width: max-content;
+  min-width: 100%;
+}
+/* Cite anchor (ADR 0050 v1.5): the cited lines' highlight band. */
+.file-viewer__anchor {
+  position: absolute;
+  left: 0;
+  right: 0;
+  background: rgba(37, 99, 235, 0.10);
+  border-left: 2px solid var(--accent-blue);
+  pointer-events: none;
+}
+.file-viewer__gutter {
+  margin: 0;
+  padding: 10px 8px 18px 14px;
+  text-align: right;
+  color: var(--muted-slate);
+  opacity: 0.55;
+  user-select: none;
+  flex: none;
+}
+.file-viewer__text {
+  margin: 0;
+  padding: 10px 18px 18px 10px;
+  white-space: pre;
+  color: var(--slate-deep);
+  flex: 1;
+}
+/* The text as blocks of LINES_PER_CHUNK lines (ADR 0068 §13): each block is
+   its own formatting context, so swapping one block's plain text for its
+   tokens lays out that block alone — one `<pre>` of 29K spans laid out at
+   once cost half a second and a one-second frame at the viewer's cap. A
+   block ends without a newline; the block boundary is the line break, so a
+   copied selection crosses it with exactly one. */
+.file-viewer__chunk {
+  display: block;
+}
+.file-viewer__notice {
+  margin: 0;
+  padding: 10px 16px 14px;
+  font-size: 12px;
+  color: var(--muted-slate);
+}
+
+/* ── The rich renderers (ADR 0054) ───────────────────────────────────────
+   One scroller class shared by every kind that is not the code layout;
+   the house scrollbar from .file-viewer__code, repeated on it. */
+.file-viewer__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.file-viewer__scroll::-webkit-scrollbar { width: 10px; height: 10px; }
+.file-viewer__scroll::-webkit-scrollbar-track { background: transparent; }
+.file-viewer__scroll::-webkit-scrollbar-corner { background: transparent; }
+.file-viewer__scroll::-webkit-scrollbar-thumb {
+  background: var(--ink-a13);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+.file-viewer__scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-a22);
+  background-clip: padding-box;
+}
+
+/* ── The commit tab (ADR 0059) ────────────────────────────────────────────
+   The message and its facts, then one section per file: git's letter as
+   the mark, the path, the counts, the hunks in the record's own diff
+   rendering. Review, not action — nothing here touches the repository. */
+.commit-view {
+  padding: 14px 18px 24px;
+  font-size: 12.5px;
+  color: var(--slate-deep);
+}
+.commit-view__head {
+  margin: 0 0 14px;
+}
+.commit-view__subject {
+  margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.commit-view__meta {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--muted-4);
+}
+.commit-view__sha {
+  font-family: ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, monospace;
+  color: var(--muted-2);
+}
+.commit-view__message {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border-left: 2px solid var(--hairline);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--muted-2);
+}
+.commit-view__stat {
+  margin: 10px 0 0;
+  display: flex;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--muted-4);
+  font-variant-numeric: tabular-nums;
+}
+.commit-view__totals {
+  color: var(--muted-2);
+}
+.commit-view__file {
+  margin: 0 0 12px;
+}
+.commit-view__file-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 0;
+  font-family: ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, monospace;
+  font-size: 11.5px;
+}
+.commit-view__mark {
+  flex: none;
+  min-width: 10px;
+  font-weight: 600;
+  color: var(--muted-4);
+}
+.commit-view__file.is-added .commit-view__mark { color: #3f7d50; }
+.commit-view__file.is-deleted .commit-view__mark { color: #a4544c; }
+.commit-view__file.is-unmerged .commit-view__mark { color: #9a5b5b; }
+.commit-view__path {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--slate-deep);
+  text-align: left;
+}
+button.commit-view__path {
+  cursor: pointer;
+}
+button.commit-view__path:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.commit-view__counts {
+  flex: none;
+  color: var(--muted-4);
+  font-variant-numeric: tabular-nums;
+}
+.commit-view .diff-body {
+  margin: 0;
+}
+
+/* ── The history tab (ADR 0059 §6) ───────────────────────────────────────
+   One row per commit, the commit tab's opener whole; the unpushed mark in
+   the LED tint; a page's rows ease in one after another, and "load more"
+   appends the next page the same way. */
+.log-view__head {
+  margin-bottom: 8px;
+}
+.log-view__branch {
+  color: var(--slate-deep);
+  font-weight: 600;
+}
+/* The read-only controls (ADR 0059 §6 amendment): the branch picker rides
+   the Settings Select (menu opening LEFT-aligned here, capped and
+   scrolling for a repository with many branches); the search is a quiet
+   glass field that fills the rest of the row. */
+.log-view__tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.log-view__pick .settings-select-trigger {
+  font-size: 12px;
+  padding: 4px 8px 4px 9px;
+  max-width: 200px;
+}
+.log-view__pick .settings-select__value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.log-view__pick .settings-select-menu {
+  left: 0;
+  right: auto;
+  transform-origin: top left;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.log-view__search {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 9px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--glass-a44);
+  font: inherit;
+  font-size: 12px;
+  color: var(--slate-deep);
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+.log-view__search::placeholder {
+  color: var(--muted-4);
+}
+.log-view__search:focus {
+  outline: none;
+  border-color: var(--accent, #2f7d92);
+  background: var(--glass-a82);
+}
+.log-view__search::-webkit-search-cancel-button {
+  cursor: pointer;
+}
+.log-view__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.log-view__row {
+  margin: 0 -8px;
+}
+.log-view__row.is-entering {
+  animation: log-row-in 260ms var(--ease-signature) both;
+}
+@keyframes log-row-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+.log-view__commit {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  font: inherit;
+  text-align: left;
+  color: var(--slate-deep);
+  cursor: pointer;
+  transition: background-color 140ms ease;
+}
+.log-view__commit:hover,
+.log-view__commit:focus-visible {
+  background: var(--ink-a13);
+  outline: none;
+}
+.log-view__commit:active {
+  background: var(--ink-a22);
+  transition-duration: 60ms;
+}
+.log-view__sha {
+  font-family: ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, monospace;
+  font-size: 11.5px;
+  color: var(--muted-4);
+}
+.log-view__subject {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+}
+.log-view__unpushed {
+  font-size: 11px;
+  color: var(--banzhuan-led);
+}
+.log-view__row:not(.is-unpushed) .log-view__unpushed {
+  display: none;
+}
+.log-view__who {
+  display: inline-flex;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--muted-4);
+  white-space: nowrap;
+}
+.log-view__more {
+  display: block;
+  margin: 10px auto 0;
+  padding: 5px 14px;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  background: var(--glass-a44);
+  font: inherit;
+  font-size: 12px;
+  color: var(--muted-2);
+  cursor: pointer;
+  transition: background-color 140ms ease, color 140ms ease, transform 180ms var(--ease-signature);
+}
+.log-view__more:hover:not(:disabled) {
+  background: var(--ink-a13);
+  color: var(--ink);
+}
+.log-view__more:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.log-view__more:disabled {
+  opacity: .6;
+  cursor: default;
+}
+.log-view__end {
+  text-align: center;
+}
+@media (prefers-reduced-motion: reduce) {
+  .log-view__row.is-entering { animation: none; }
+  .log-view__more { transition: none; }
+}
+.file-viewer__action.is-on {
+  background: var(--ink-a13);
+  color: var(--slate-deep);
+}
+
+/* Code tokens (highlight.js classes) in house ink — both themes read the
+   same tokens, so the palette lives here once and follows the ink. */
+.file-viewer .hljs-comment,
+.file-viewer .hljs-quote { color: var(--muted-3); font-style: italic; }
+.file-viewer .hljs-keyword,
+.file-viewer .hljs-selector-tag,
+.file-viewer .hljs-doctag,
+.file-viewer .hljs-meta { color: #7c3aed; }
+.file-viewer .hljs-string,
+.file-viewer .hljs-regexp,
+.file-viewer .hljs-addition,
+.file-viewer .hljs-template-tag { color: #0f766e; }
+.file-viewer .hljs-number,
+.file-viewer .hljs-literal,
+.file-viewer .hljs-symbol,
+.file-viewer .hljs-bullet { color: #b45309; }
+.file-viewer .hljs-title,
+.file-viewer .hljs-title.function_,
+.file-viewer .hljs-title.class_,
+.file-viewer .hljs-section,
+.file-viewer .hljs-name { color: #1d4ed8; }
+.file-viewer .hljs-attr,
+.file-viewer .hljs-attribute,
+.file-viewer .hljs-variable,
+.file-viewer .hljs-template-variable,
+.file-viewer .hljs-property { color: #0e7490; }
+.file-viewer .hljs-built_in,
+.file-viewer .hljs-type,
+.file-viewer .hljs-selector-class,
+.file-viewer .hljs-selector-id { color: #9d174d; }
+.file-viewer .hljs-deletion { color: #b91c1c; }
+.file-viewer .hljs-emphasis { font-style: italic; }
+.file-viewer .hljs-strong { font-weight: 700; }
+:root[data-theme="dark"] .file-viewer .hljs-keyword,
+:root[data-theme="dark"] .file-viewer .hljs-selector-tag,
+:root[data-theme="dark"] .file-viewer .hljs-doctag,
+:root[data-theme="dark"] .file-viewer .hljs-meta { color: #c4b5fd; }
+:root[data-theme="dark"] .file-viewer .hljs-string,
+:root[data-theme="dark"] .file-viewer .hljs-regexp,
+:root[data-theme="dark"] .file-viewer .hljs-addition,
+:root[data-theme="dark"] .file-viewer .hljs-template-tag { color: #5eead4; }
+:root[data-theme="dark"] .file-viewer .hljs-number,
+:root[data-theme="dark"] .file-viewer .hljs-literal,
+:root[data-theme="dark"] .file-viewer .hljs-symbol,
+:root[data-theme="dark"] .file-viewer .hljs-bullet { color: #fcd34d; }
+:root[data-theme="dark"] .file-viewer .hljs-title,
+:root[data-theme="dark"] .file-viewer .hljs-title.function_,
+:root[data-theme="dark"] .file-viewer .hljs-title.class_,
+:root[data-theme="dark"] .file-viewer .hljs-section,
+:root[data-theme="dark"] .file-viewer .hljs-name { color: #93c5fd; }
+:root[data-theme="dark"] .file-viewer .hljs-attr,
+:root[data-theme="dark"] .file-viewer .hljs-attribute,
+:root[data-theme="dark"] .file-viewer .hljs-variable,
+:root[data-theme="dark"] .file-viewer .hljs-template-variable,
+:root[data-theme="dark"] .file-viewer .hljs-property { color: #67e8f9; }
+:root[data-theme="dark"] .file-viewer .hljs-built_in,
+:root[data-theme="dark"] .file-viewer .hljs-type,
+:root[data-theme="dark"] .file-viewer .hljs-selector-class,
+:root[data-theme="dark"] .file-viewer .hljs-selector-id { color: #f9a8d4; }
+:root[data-theme="dark"] .file-viewer .hljs-deletion { color: #fca5a5; }
+
+/* Markdown as the page: the record's reading measure, house type. */
+.file-viewer__doc {
+  padding: 18px 22px 28px;
+  font-size: 13.5px;
+  line-height: 1.65;
+  color: var(--ink-3);
+  overflow-wrap: anywhere;
+}
+.file-viewer__doc > :first-child { margin-top: 0; }
+.file-viewer__doc h1,
+.file-viewer__doc h2,
+.file-viewer__doc h3,
+.file-viewer__doc h4,
+.file-viewer__doc h5,
+.file-viewer__doc h6 {
+  margin: 1.5em 0 0.5em;
+  line-height: 1.3;
+  color: var(--ink-2);
+  font-weight: 650;
+}
+.file-viewer__doc h1 { font-size: 1.55em; padding-bottom: 0.3em; border-bottom: 1px solid var(--hairline); }
+.file-viewer__doc h2 { font-size: 1.3em; padding-bottom: 0.25em; border-bottom: 1px solid var(--hairline); }
+.file-viewer__doc h3 { font-size: 1.12em; }
+.file-viewer__doc h4 { font-size: 1em; }
+.file-viewer__doc h5,
+.file-viewer__doc h6 { font-size: 0.92em; color: var(--muted-slate); }
+.file-viewer__doc p,
+.file-viewer__doc ul,
+.file-viewer__doc ol,
+.file-viewer__doc blockquote,
+.file-viewer__doc pre,
+.file-viewer__doc table { margin: 0 0 0.9em; }
+.file-viewer__doc ul,
+.file-viewer__doc ol { padding-left: 1.6em; }
+.file-viewer__doc li + li { margin-top: 0.2em; }
+.file-viewer__doc li > p { margin-bottom: 0.35em; }
+.file-viewer__doc input[type="checkbox"] { margin: 0 0.4em 0 -1.3em; vertical-align: -1px; }
+.file-viewer__doc a { color: var(--accent-blue); text-decoration: underline; text-decoration-color: var(--ink-a22); text-underline-offset: 2px; cursor: default; }
+.file-viewer__doc code {
+  font-family: ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, monospace;
+  font-size: 0.9em;
+  background: var(--ink-a06);
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+}
+.file-viewer__doc pre {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--ink-a05);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.file-viewer__doc pre code { background: transparent; padding: 0; font-size: inherit; }
+.file-viewer__doc blockquote {
+  padding: 0.1em 0 0.1em 0.9em;
+  border-left: 3px solid var(--ink-a13);
+  color: var(--muted-slate);
+}
+.file-viewer__doc hr { border: 0; border-top: 1px solid var(--hairline); margin: 1.4em 0; }
+.file-viewer__doc img { max-width: 100%; height: auto; border-radius: 8px; }
+.file-viewer__doc table { border-collapse: collapse; font-size: 0.93em; display: block; max-width: 100%; overflow: auto; }
+.file-viewer__doc th,
+.file-viewer__doc td { padding: 5px 10px; border: 1px solid var(--hairline-strong); text-align: left; vertical-align: top; }
+.file-viewer__doc th { background: var(--ink-a05); font-weight: 600; color: var(--ink-2); }
+.file-viewer__doc tr:nth-child(even) td { background: var(--ink-a03); }
+.file-viewer__diagram {
+  margin: 0 0 1em;
+  padding: 12px;
+  border-radius: 10px;
+  background: var(--glass-a55);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+  overflow: auto;
+  text-align: center;
+}
+.file-viewer__diagram svg { max-width: 100%; height: auto; }
+.file-viewer__diagram-failed {
+  margin: 0 0 0.4em;
+  font-size: 12px;
+  color: var(--muted-slate);
+}
+
+/* Pictures: fit by default, 1:1 on click, centred on the glass. */
+.file-viewer__image-wrap {
+  display: grid;
+  place-items: center;
+  padding: 16px;
+}
+.file-viewer__image-btn {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: zoom-in;
+  max-width: 100%;
+  line-height: 0;
+}
+.file-viewer__image-wrap.is-actual { place-items: start; }
+.file-viewer__image-wrap.is-actual .file-viewer__image-btn { cursor: zoom-out; max-width: none; }
+.file-viewer__image {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+  background:
+    linear-gradient(45deg, var(--ink-a05) 25%, transparent 25%, transparent 75%, var(--ink-a05) 75%),
+    linear-gradient(45deg, var(--ink-a05) 25%, transparent 25%, transparent 75%, var(--ink-a05) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 8px 8px;
+}
+.file-viewer__image-wrap.is-actual .file-viewer__image { max-width: none; }
+.file-viewer__image-meta,
+.file-viewer__pdf-meta { padding-top: 6px; padding-bottom: 10px; font-variant-numeric: tabular-nums; }
+
+/* PDF pages: paper on the glass, one column, fit to width. */
+.file-viewer__pdf { padding: 16px; display: flex; flex-direction: column; align-items: center; gap: 14px; }
+.file-viewer__pdf-page {
+  /* A flex item in a column of definite height SHRINKS to fit by default,
+     and overflow:hidden lets it shrink to nothing: a 52-page PDF rendered
+     as 52 hairlines (owner 2026-09-03). Pages keep their size. */
+  flex: none;
+  background: #fff;
+  border-radius: 4px;
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.14), 0 0 0 1px rgba(15, 23, 42, 0.06);
+  overflow: hidden;
+}
+.file-viewer__pdf-page canvas { display: block; }
+
+/* Word: docx-preview's page wrapper, restyled to the glass. The renderer
+   sets widths/fonts inline; only the frame is ours. */
+.file-viewer__docx { padding: 12px 16px 24px; }
+.file-viewer__docx .docx-wrapper { background: transparent; padding: 0; display: block; }
+.file-viewer__docx .docx-wrapper > section.docx {
+  width: auto !important;
+  min-height: 0 !important;
+  margin: 0 0 14px;
+  padding: 28px 30px !important;
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.12), 0 0 0 1px rgba(15, 23, 42, 0.06);
+  border-radius: 4px;
+  background: #fff;
+  color: #111417;
+  box-sizing: border-box;
+  overflow-wrap: anywhere;
+}
+.file-viewer__docx .docx-wrapper > section.docx img { max-width: 100%; height: auto; }
+.file-viewer__docx .docx-wrapper > section.docx table { max-width: 100%; }
+.file-viewer__docx a { pointer-events: none; }
+
+/* The grid (spreadsheets, CSV): sticky letters and numbers, virtualized
+   rows on a fixed height (GridView.ROW_H). */
+.file-viewer__grid {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--slate-deep);
+}
+.file-viewer__grid-canvas { position: relative; }
+.file-viewer__gridhead {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  height: 24px;
+  background: var(--glass-a78);
+  border-bottom: 1px solid var(--hairline-strong);
+}
+.file-viewer__corner {
+  position: sticky;
+  left: 0;
+  z-index: 3;
+  display: inline-block;
+  height: 24px;
+  background: var(--glass-a78);
+  border-right: 1px solid var(--hairline-strong);
+}
+.file-viewer__colhead {
+  position: absolute;
+  top: 0;
+  height: 24px;
+  line-height: 24px;
+  text-align: center;
+  color: var(--muted-slate);
+  border-right: 1px solid var(--hairline);
+  box-sizing: border-box;
+  overflow: hidden;
+  font-weight: 600;
+}
+.file-viewer__row {
+  position: absolute;
+  left: 0;
+  height: 24px;
+  border-bottom: 1px solid var(--hairline);
+  box-sizing: border-box;
+}
+.file-viewer__rowhead {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  display: inline-block;
+  height: 24px;
+  line-height: 23px;
+  text-align: center;
+  color: var(--muted-slate);
+  background: var(--glass-a78);
+  border-right: 1px solid var(--hairline-strong);
+  box-sizing: border-box;
+  font-weight: 600;
+}
+.file-viewer__cell {
+  position: absolute;
+  top: 0;
+  height: 24px;
+  line-height: 23px;
+  padding: 0 6px;
+  box-sizing: border-box;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-right: 1px solid var(--hairline);
+}
+.file-viewer__cell.is-n,
+.file-viewer__cell.is-d { text-align: right; }
+.file-viewer__cell.is-b { text-align: center; color: var(--muted-slate); }
+.file-viewer__cell.is-e { color: #b91c1c; }
+.file-viewer__sheet-tabs {
+  flex: none;
+  display: flex;
+  gap: 4px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--hairline);
+  overflow-x: auto;
+}
+.file-viewer__sheet-tab {
+  border: 0;
+  border-radius: 7px;
+  padding: 3px 10px;
+  font-size: 12px;
+  background: transparent;
+  color: var(--muted-slate);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.file-viewer__sheet-tab:hover { background: var(--ink-a13); }
+.file-viewer__sheet-tab.is-active {
+  background: var(--glass-a78);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+  color: var(--slate-deep);
+  font-weight: 600;
+}
+
+/* Decks: thumbnail strip, the current slide fit to width, a page bar. */
+.file-viewer__slides { outline: none; }
+.file-viewer__slides-row {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.file-viewer__thumbs {
+  flex: none;
+  width: 164px;
+  overflow-y: auto;
+  padding: 12px 10px;
+  border-right: 1px solid var(--hairline);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.file-viewer__thumbs::-webkit-scrollbar { width: 8px; }
+.file-viewer__thumbs::-webkit-scrollbar-track { background: transparent; }
+.file-viewer__thumbs::-webkit-scrollbar-thumb { background: var(--ink-a13); border-radius: 999px; border: 2px solid transparent; background-clip: padding-box; }
+.file-viewer__thumb {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+.file-viewer__thumb-n {
+  flex: none;
+  width: 14px;
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--muted-slate);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.file-viewer__thumb-box {
+  display: block;
+  border-radius: 4px;
+  overflow: hidden;
+  background: #fff;
+  box-shadow: 0 0 0 1px var(--hairline-strong);
+  transition: box-shadow 140ms ease;
+}
+.file-viewer__thumb:hover .file-viewer__thumb-box { box-shadow: 0 0 0 1px var(--ink-a35); }
+.file-viewer__thumb.is-active .file-viewer__thumb-box { box-shadow: 0 0 0 2px var(--accent-blue); }
+.file-viewer__slide-main {
+  padding: 24px;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+.file-viewer__slide {
+  position: relative;
+  overflow: hidden;
+  border-radius: 4px;
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.14), 0 0 0 1px rgba(15, 23, 42, 0.06);
+  background: #fff;
+  flex: none;
+}
+.file-viewer__slide-inner {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  font-family: Calibri, "Segoe UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", Inter, sans-serif;
+  color: #111417;
+}
+.file-viewer__shape {
+  position: absolute;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+.file-viewer__shape.is-picture img { max-width: none; }
+.file-viewer__shape.is-line { pointer-events: none; }
+.file-viewer__shape.is-placeholder {
+  display: grid;
+  place-items: center;
+  border: 1.5px dashed rgba(17, 20, 23, 0.25);
+  border-radius: 6px;
+  color: rgba(17, 20, 23, 0.45);
+  font-size: 18px;
+}
+.file-viewer__textbody {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+.file-viewer__textbody.is-middle { justify-content: center; }
+.file-viewer__textbody.is-bottom { justify-content: flex-end; }
+.file-viewer__textbody.is-vertical { writing-mode: vertical-rl; }
+.file-viewer__pp { min-width: 0; }
+.file-viewer__bullet { flex: none; display: inline-block; }
+.file-viewer__runs { flex: 1 1 auto; min-width: 0; }
+.file-viewer__slide-table {
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 18px;
+}
+.file-viewer__slide-table td {
+  border: 1px solid rgba(17, 20, 23, 0.25);
+  padding: 4px 8px;
+  vertical-align: top;
+  overflow: hidden;
+}
+.file-viewer__slides-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--hairline);
+}
+.file-viewer__slides-bar .file-viewer__action:disabled { opacity: 0.35; cursor: default; }
+.file-viewer__slides-count {
+  font-size: 12px;
+  color: var(--muted-slate);
+  font-variant-numeric: tabular-nums;
+  min-width: 54px;
+  text-align: center;
+}
+.file-viewer__slides-bar .file-viewer__notice { padding: 0 0 0 8px; }
+
+/* ── The clickable file NAME in a record row (ADR 0050 §1) ────────────────
+   The name, not the row, and not a blue link: ink text with a faint dotted
+   underline; hover firms the underline and raises a soft glass pill. */
+.file-open-name {
+  cursor: pointer;
+  border-radius: 5px;
+  padding: 0 2px;
+  margin: 0 -2px;
+  text-decoration: underline dotted;
+  text-decoration-color: var(--ink-a22);
+  text-underline-offset: 3px;
+  transition: background-color 140ms ease, text-decoration-color 140ms ease;
+}
+.file-open-name:hover,
+.file-open-name:focus-visible {
+  background: var(--ink-a13);
+  text-decoration-color: var(--muted-slate);
+  outline: none;
 }
 
 /* ── Launch-disconnected: static (no connect transition) ──────────────────
@@ -5153,6 +6871,42 @@ button.session-item__badge--dismiss {
   background: var(--ink-a22);
   background-clip: padding-box;
 }
+/* A pane whose option rows scroll (owner 2026-09-06: the Coprocessor pane
+   had grown past the floor with its third row, so the card resized on
+   every switch into it). The pane becomes a column; every child keeps its
+   size except .settings-rows, which gives way and scrolls — with the same
+   slim pill bar as the pane, never the OS bar. Flex items do not collapse
+   margins, so the intro→rows gap is carried by the intro alone. On a
+   short window the floor shrinks with the card and the rows give way
+   first, down to about one row; past that the pane itself scrolls. */
+.settings-content:has(> .settings-rows) {
+  display: flex;
+  flex-direction: column;
+  /* Floor AND ceiling: the pane is exactly the floor (its stretched height
+     was otherwise its own content's, and the rows never had to give way). */
+  min-height: min(630px, calc(100vh - 98px));
+  max-height: min(630px, calc(100vh - 98px));
+}
+.settings-content:has(> .settings-rows) > * { flex: none; }
+.settings-content > .settings-rows {
+  flex: 0 1 auto;
+  min-height: 84px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.settings-rows > .settings-row:first-child { margin-top: 0; }
+.settings-rows::-webkit-scrollbar { width: 10px; }
+.settings-rows::-webkit-scrollbar-track { background: transparent; }
+.settings-rows::-webkit-scrollbar-thumb {
+  background: var(--ink-a13);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+.settings-rows::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-a22);
+  background-clip: padding-box;
+}
 .settings-close {
   position: absolute;
   right: 13px;
@@ -5316,7 +7070,7 @@ button.session-item__badge--dismiss {
   flex-direction: column;
   align-items: center;
   gap: 6px;
-  margin: 2px 0 14px;
+  margin: 2px 0 10px;
 }
 /* Strip the rail card's panel chrome — show only the (scaled) device visual. */
 .device-card.settings-bz-card {
@@ -5334,9 +7088,12 @@ button.session-item__badge--dismiss {
   height: 165px;
   cursor: default;
 }
+.settings-bz-card .agent-preview::after {
+  cursor: default;
+}
 .settings-bz-caption {
   text-align: center;
-  min-height: 42px;
+  min-height: 40px;
 }
 .settings-bz-caption-name {
   display: block;
@@ -5355,7 +7112,10 @@ button.session-item__badge--dismiss {
   /* 3 columns → the five states fit in two rows (3 + 2). */
   grid-template-columns: repeat(3, 1fr);
   gap: 7px 14px;
-  padding-top: 14px;
+  /* 14 → 11 with the demo's bottom margin 14 → 10 and the caption 42 → 40
+     (2026-09-06): the three-row pane fits the 630 floor in zh exactly, so
+     its rows scroll only where the prose runs longer (EN). */
+  padding-top: 11px;
   border-top: 1px solid var(--hairline);
 }
 .settings-bz-legend-item {
@@ -5382,6 +7142,7 @@ button.session-item__badge--dismiss {
 }
 .settings-key-state.is-muted { color: var(--muted); }
 .settings-key-state.is-connected { color: #1f7a3d; }
+.settings-key-state.is-rejected { color: #b23b3b; }
 .settings-key-dot {
   width: 7px;
   height: 7px;
@@ -5392,6 +7153,136 @@ button.session-item__badge--dismiss {
   display: flex;
   gap: 8px;
   align-items: stretch;
+}
+/* A key as one card row (the voice pane's two MiniMax keys, owner
+   2026-09-08 — "a card with a form hanging under it is ugly"): the field
+   sits inside the row under the description, compact; the masked status
+   and the delete link stack in the control column; a note a save leaves
+   stays inside the row, so the card group never breaks around it. */
+/* The text column takes the row's width in a key row (its content would
+   otherwise size it, and a short description left the second key's field
+   a hundred pixels narrower than the first's — measured 387 vs 286). */
+.settings-row--key .settings-row-text { flex: 1 1 auto; }
+.settings-key-inline {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+  margin-top: 8px;
+  max-width: 420px;
+}
+.settings-key-input.is-compact {
+  height: 30px;
+  font-size: 12.5px;
+  border-radius: 8px;
+}
+.settings-key-save.is-compact {
+  height: 30px;
+  padding: 0 13px;
+  font-size: 12.5px;
+  border-radius: 8px;
+}
+.settings-key-control {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+.settings-key-delete.is-inline { margin: 0; font-size: 12px; }
+.settings-note.is-inline { margin-top: 8px; }
+/* The "?" help circle after a row title (owner 2026-09-08: the two MiniMax
+   keys' roles wanted a word in place). Hover and keyboard focus open the
+   tip through CSS; a click pins it (`.is-open`). The tip floats ABOVE the
+   circle inside the scrolling rows box — the rows above the first key row
+   give it room, and the box's overflow clip is why it does not float
+   below, where the next rows would hide it. */
+.settings-help {
+  position: relative;
+  display: inline-flex;
+  margin-left: 6px;
+  vertical-align: 1px;
+}
+.settings-help-btn {
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: inherit;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--muted);
+  background: var(--ink-a03);
+  border: 1px solid var(--ink-a22);
+  border-radius: 50%;
+  cursor: help;
+  transition: color .15s, border-color .15s;
+}
+.settings-help-btn:hover,
+.settings-help-btn:focus-visible,
+.settings-help.is-open .settings-help-btn {
+  color: var(--ink);
+  border-color: var(--ink-a40);
+}
+.settings-help-btn:focus-visible {
+  outline: 2px solid var(--banzhuan-led);
+  outline-offset: 2px;
+}
+.settings-help-tip {
+  display: none;
+  position: absolute;
+  left: -10px;
+  bottom: calc(100% + 9px);
+  width: 330px;
+  padding: 10px 12px;
+  font-size: 12.5px;
+  font-weight: 400;
+  line-height: 1.55;
+  color: var(--ink);
+  background: var(--surface-pop);
+  border: 1px solid var(--ink-a14);
+  border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(17, 20, 23, 0.18);
+  z-index: 5;
+  white-space: normal;
+}
+.settings-help:hover .settings-help-tip,
+.settings-help:focus-within .settings-help-tip,
+.settings-help.is-open .settings-help-tip {
+  display: block;
+}
+/* The app's hover tip (owner 2026-09-09: the commit rows raised the OS
+   tooltip). One fixed box, rendered by HoverTipLayer at the app root and
+   positioned from the anchor's rectangle, so no scrolling card clips it.
+   The settings "?" tip's face, floating. */
+.hover-tip {
+  position: fixed;
+  z-index: 60;
+  padding: 7px 10px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink);
+  background: var(--surface-pop);
+  border: 1px solid var(--ink-a14);
+  border-radius: 9px;
+  box-shadow: 0 10px 30px rgba(17, 20, 23, 0.16);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  animation: hover-tip-in 120ms ease-out both;
+}
+@keyframes hover-tip-in {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: none; }
+}
+.hover-tip.is-below { animation-name: hover-tip-in-below; }
+@keyframes hover-tip-in-below {
+  from { opacity: 0; transform: translateY(-2px); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hover-tip { animation: none; }
 }
 .settings-key-input {
   flex: 1 1 auto;
@@ -5637,6 +7528,46 @@ button.session-item__badge--dismiss {
   transition: background .18s;
 }
 .settings-toggle[aria-checked="true"] { background: var(--banzhuan-led); }
+/* The setting cannot apply on this install (ADR 0042: real-time voice with
+   no model bundle). Same dimming as .settings-slider-wrap.is-disabled, so
+   the two inert controls read alike. */
+.settings-toggle.is-disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+/* The voice model's download progress (ADR 0061): a hairline under the
+   model row, LED-filled like the volume slider's track. It exists only
+   while a download runs — the settings pane's motion rule (2026-07-27):
+   motion means the live thing. */
+.settings-progress {
+  height: 3px;
+  margin: -6px 0 10px;
+  border-radius: 2px;
+  background: var(--panel-line);
+  overflow: hidden;
+}
+.settings-progress__fill {
+  display: block;
+  height: 100%;
+  background: var(--banzhuan-led);
+  transition: width 0.25s ease-out;
+}
+/* An action inside a note's sentence (ADR 0062: the clone's retry) — the
+   note's own type, underlined, no chrome. */
+.settings-note-action {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: var(--banzhuan-led);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.settings-note-action:focus-visible {
+  outline: 2px solid var(--banzhuan-led);
+  outline-offset: 2px;
+}
 .settings-toggle:focus-visible {
   outline: 2px solid var(--banzhuan-led);
   outline-offset: 2px;
@@ -5909,6 +7840,281 @@ button.session-item__badge--dismiss {
 .composer-context {
   width: 28px;
   height: 28px;
+/* ── Staged images (ADR 0048 §4) ─────────────────────────────────────────
+   Pictures waiting in the composer for the message they belong to. The strip
+   sits ABOVE the input, inside the composer's own box, and the composer GROWS
+   to hold it (.has-staged below) — the picture and the sentence about it stay
+   one object.
+
+   The composer is a flex ROW (attach · input · send); this strip is a full-
+   width sibling, so the row is wrapped and the strip claims its own line.
+   The lines are bottom-anchored (see .composer's align-content), so the
+   growth extends the top edge upward and the input row never moves. */
+.composer {
+  flex-wrap: wrap;
+}
+/* 78px base + 56px thumbs + 10px strip gap. Owner report 2026-08-27: without
+   this the fixed 78px box kept its height and the strip painted OVER the
+   input. Rides the 0.44s signature height transition both ways; the strip
+   itself fades in under the grow (below). */
+.composer.has-staged {
+  height: 144px;
+}
+@media (max-width: 1200px) {
+  /* The 104px media height, same growth. And the bottom-anchor padding that
+     reproduces centering at 104px — (102 − line)/2. */
+  .composer {
+    padding-bottom: 28px;
+  }
+  .composer.has-staged {
+    height: 170px;
+  }
+}
+/* ── The held message (ADR 0063) ─────────────────────────────────────────
+   A message sent while 板砖 works waits here: a card BEHIND the composer,
+   its bottom tucked under the composer's top edge (owner 2026-09-15, after
+   Codex: "another card behind the composer card, its bottom about 20%
+   hidden by it"). It is a sibling of the composer in the footer, in flow,
+   so the footer grows by the card's visible height and the record above
+   moves up instead of being covered — the first cut lived INSIDE the
+   composer, whose height is a fixed animated value, and overflowed over
+   the coprocessor rows. Nothing in it is in the record. Icon, text, and
+   the three answers Codex gives such a message: interject it into the
+   running work now, take it back to edit, or discard it. Doing nothing
+   sends it as the next turn — flying from THIS card (the outgoing morph
+   takes the card's rect as its lift-off). The composer's translucent
+   glass lets the tucked strip show through faintly, which is the point:
+   the card reads as sitting behind. */
+.composer-held {
+  /* Positioned so the paint order is the tree order: the composer, later
+     in the footer, paints over this card's tucked bottom. No z-index above
+     the composer — ever. */
+  position: relative;
+  z-index: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  /* The stack's geometry: a card the composer's material and radius,
+     inset 12px a side so it reads as the next card down, its bottom 14px
+     under the composer's top edge (≈ a quarter of its 60px). */
+  margin: 0 12px -14px;
+  padding: 8px 10px 22px 16px;
+  border-radius: 18px;
+  border: 1px solid var(--hairline);
+  /* The composer's glass, dimmed a step: the card behind is the same
+     material, one layer further from the light. */
+  background:
+    linear-gradient(var(--ink-a05), var(--ink-a05)),
+    var(--composer-bg);
+  /* Less lift than the composer's own shadow, which falls onto this card
+     and does the depth. */
+  box-shadow:
+    0 1px 4px rgba(32, 45, 58, 0.06),
+    inset 0 1px 0 var(--glass-a55);
+  /* Its OWN entrance: the notice pill's `notice-in` ends on a
+     translate(-50%, 0) for a centered absolute pill, and borrowed here it
+     parked the strip half its width to the left (seen live 2026-09-15).
+     Rises out from behind the composer. */
+  animation: held-in 260ms var(--ease-pop) both;
+}
+.composer-held__icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  color: var(--muted-3);
+}
+.composer-held__icon svg {
+  width: 14px;
+  height: 14px;
+}
+@keyframes held-in {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.composer-held__text {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  line-height: 28px;
+  color: var(--ink-2);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  user-select: text;
+}
+.composer-held__actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.composer-held__action {
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  background: transparent;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--muted-2);
+  cursor: pointer;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease;
+}
+.composer-held__action:hover {
+  background: var(--ink-a09);
+  color: var(--ink);
+}
+.composer-held__action:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+/* The interject is the one that changes the running work: it reads as
+   the primary of the three — a quiet pill, the others plain text. */
+.composer-held__action--steer {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 4px;
+  padding: 0 11px 0 9px;
+  border-color: var(--ink-a14);
+  background: var(--glass-a55);
+  color: var(--ink);
+}
+.composer-held__action--steer:hover {
+  border-color: var(--ink-a22);
+}
+.composer-held__action--steer svg {
+  width: 11px;
+  height: 11px;
+}
+.composer-held__action--discard {
+  width: 28px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+}
+.composer-held__action--discard svg {
+  width: 10px;
+  height: 10px;
+}
+/* An approval gate drops the composer below the footer (see
+   .composer.is-suppressed); the card behind it goes the same way, or it
+   would sit alone above the approval panel. */
+.composer-held.is-suppressed {
+  transform: translateY(120%);
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+  transition:
+    opacity 0.18s ease,
+    transform 0.24s var(--ease-pop),
+    visibility 0s linear 0.24s;
+}
+@media (prefers-reduced-motion: reduce) {
+  .composer-held {
+    animation: none;
+  }
+}
+
+.composer-staged {
+  order: -1; /* before the attach button, whatever the DOM order */
+  flex-basis: 100%;
+  display: flex;
+  /* ONE row, always: wrapping would make the composer's grown height depend
+     on the count, and the 0.44s height transition needs a fixed target.
+     Overflow pans horizontally, Codex-style. */
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  max-width: 100%;
+  gap: 8px;
+  margin: 0 0 10px;
+  padding: 0;
+  list-style: none;
+  /* Above .composer-wave, which is a positioned first child — non-positioned
+     in-flow content slips beneath it (same reason .composer-attach is
+     positioned). */
+  position: relative;
+  /* The strip mounts at its final slot while the box is still growing over
+     it — fading in under the grow keeps the first frames from showing
+     thumbnails outside the glass. */
+  animation: staged-strip-in 0.28s ease 0.14s both;
+}
+@keyframes staged-strip-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+/* Same slim pill scrollbar as .composer-input, for the overflow pan. */
+.composer-staged::-webkit-scrollbar {
+  height: 8px;
+}
+.composer-staged::-webkit-scrollbar-track {
+  background: transparent;
+}
+.composer-staged::-webkit-scrollbar-thumb {
+  background: var(--ink-a13);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.composer-staged__item {
+  position: relative;
+  flex: 0 0 auto; /* nowrap strip: never squeezed by its siblings */
+  width: 56px;
+  height: 56px;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--ink-a10);
+  background: var(--ink-a05);
+}
+/* The thumb's click surface (click-to-enlarge, ADR 0048 §4a): a reset
+   button filling the item; the × floats above it. */
+.composer-staged__open {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: zoom-in;
+}
+.composer-staged__open:focus-visible {
+  outline: 2px solid var(--accent, #4d86ff);
+  outline-offset: -2px;
+}
+.composer-staged__thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  /* A staged picture is not a link and not draggable content — dragging one
+     out of the strip would start a file drag back into the composer. */
+  user-select: none;
+}
+/* The ✕ that truly un-happens it. Always visible rather than hover-revealed:
+   this is the ONLY moment the picture can be taken back before it enters an
+   append-only record, so the control must not be a discovery. */
+.composer-staged__remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 18px;
+  height: 18px;
   padding: 0;
   border: 0;
   border-radius: 50%;
@@ -6155,4 +8361,249 @@ button.session-item__badge--dismiss {
 .settings-select-menu.is-inline .settings-select__option-label {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+  background: var(--scrim-strong, rgba(20, 26, 34, 0.62));
+  color: #fff;
+  cursor: pointer;
+  opacity: 0.86;
+  transition:
+    opacity 0.15s ease,
+    background 0.15s ease;
+}
+.composer-staged__remove:hover {
+  opacity: 1;
+  background: rgba(20, 26, 34, 0.82);
+}
+.composer-staged__remove svg {
+  width: 10px;
+  height: 10px;
+}
+
+/* ── Sent images, above their bubble (ADR 0048 §4) ───────────────────────
+   The record holds these blocks AFTER the user block (inside the turn's span,
+   so a rewind takes both); the screen reads better with the picture above the
+   words, the way the 开拓者 sent it. Same record, different overlay — D7. */
+/* `.message-row` is a flex ROW (bubble, then the hover action row), so an
+   images div dropped in becomes a COLUMN beside the bubble — which is what it
+   did on first live run: the picture sat to the left of the text instead of
+   above it. Wrapping the row and claiming a full basis puts the pictures on
+   their own line; `order: -1` puts that line first whatever the DOM order. */
+.user-row:has(.message-images) {
+  flex-wrap: wrap;
+}
+.message-images {
+  order: -1;
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end; /* user side of the thread */
+  gap: 8px;
+  margin-bottom: 6px;
+}
+/* THUMBNAILS, the composer strip's own design (owner 2026-08-27): the first
+   cut rendered natural-size images up to 320×240, and a few of them ate the
+   whole pane. The sent row now reads like the strip it lifted off from —
+   fixed cover-cropped squares — and with the five-picture cap it is always
+   one quiet line over the bubble. The pixels stay one click away in the
+   store; the caption (alt/title below) is the record's textual truth. */
+.message-images__thumb {
+  width: 56px;
+  height: 56px;
+  border-radius: 10px;
+  border: 1px solid var(--ink-a10);
+  background: var(--ink-a05);
+  display: block;
+  object-fit: cover;
+  user-select: none;
+}
+/* The send morph's copy of the strip (ADR 0048 §4): the pictures fly WITH
+   the bubble. Absolutely hung off the clone's top edge so the flight
+   geometry — which aims the BUBBLE at its measured slot — is untouched;
+   right-aligned to the bubble's right edge, which is exactly where the
+   landed row's strip sits (the row justifies its images flex-end against
+   the same edge). bottom:100% + the 6px margin reproduce the row strip's
+   6px gap, so the settle swap is seamless. */
+.morph-clone-images {
+  position: absolute;
+  bottom: 100%;
+  right: 0;
+  /* The landed row separates its wrapped lines by .message-row's row-gap
+     (the 14px `gap` shorthand) PLUS the strip's own 6px margin — the clone
+     must hang its strip at the same 20px, or the pictures jump upward by
+     the row-gap at the swap (owner 2026-08-27: "suddenly moving upwards").
+     Keep in sync with .message-row's gap and .message-images' margin. */
+  margin: 0 0 20px;
+  /* Width comes inline, measured off the hidden pending row's strip, so the
+     clone wraps its pictures exactly like the row it swaps for. Wrapping and
+     flex-end justification are inherited from .message-images. */
+}
+/* The sent thumb's click surface (click-to-enlarge, ADR 0048 §4a). */
+.message-images__open {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: none;
+  border-radius: 10px;
+  cursor: zoom-in;
+}
+.message-images__open:focus-visible {
+  outline: 2px solid var(--accent, #4d86ff);
+  outline-offset: 1px;
+}
+
+/* ── Image lightbox (ADR 0048 §4a, the Codex reference) ──────────────────
+   A thumbnail opens the whole picture in an in-app overlay: dark ground,
+   the image centered (scrolling when zoomed past the pane), a −/percent/+
+   pill at the bottom, ✕ top-right. Sits ABOVE the settings/key-prompt
+   backdrops (an intentional viewer the user just opened) and below the
+   floating menus — keep in sync with OVERLAY_Z.lightbox. */
+.lightbox-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 64;
+  background: rgba(10, 14, 20, 0.82);
+  animation: lightbox-in 0.18s ease both;
+}
+@keyframes lightbox-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.lightbox-viewport {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  display: flex;
+  padding: 44px;
+}
+/* Drag-to-pan (owner 2026-08-28) — the grab cursor appears only while the
+   picture actually overflows, so it never promises a drag that does
+   nothing. `is-pannable` is toggled per zoom commit by the component. */
+.lightbox-viewport.is-pannable {
+  cursor: grab;
+}
+.lightbox-viewport.is-pannable:active {
+  cursor: grabbing;
+}
+/* The house scrollbar (same geometry as .conversation / .composer-input),
+   in its light-on-dark form: a zoomed image panned with the OS's chunky
+   default bars, arrow buttons and all, on top of the frosted app (owner
+   2026-08-27) — and the ink-tinted thumb the light surfaces use would be
+   invisible on this ground. */
+.lightbox-viewport::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.lightbox-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}
+.lightbox-viewport::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+.lightbox-viewport::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.36);
+  background-clip: padding-box;
+}
+/* Both bars up (zoomed past the pane on BOTH axes) meet in a corner square
+   that defaults to opaque white on the dark ground. */
+.lightbox-viewport::-webkit-scrollbar-corner {
+  background: transparent;
+}
+.lightbox-img {
+  /* margin:auto in a flex container BOTH centers a small image and keeps a
+     zoomed-past-the-pane one scrollable from its true top-left: auto margins
+     resolve to zero once free space goes negative, so the image sits at the
+     start edge and overflows to the end (plain centering clips the far edges
+     of overflowing flex content). */
+  margin: auto;
+  /* THE ZOOM CAP BUG (owner 2026-08-28): a flex item shrinks by default, so
+     past the viewport's width the inline `width` this component sets was
+     shrunk straight back — the picture stopped growing at whatever filled
+     the pane while the percentage kept counting to 500%. `flex: none` makes
+     the written width authoritative and lets the viewport scroll instead. */
+  flex: none;
+  display: block;
+  border-radius: 6px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+  user-select: none;
+}
+.lightbox-close {
+  position: absolute;
+  /* Below the window titlebar controls — top:16 sat the ✕ directly on the
+     app's own close button (seen live 2026-08-27). */
+  top: 52px;
+  right: 18px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  cursor: pointer;
+  transition: background 0.15s ease;
+  /* The mount focuses this button (keyboard users land in the dialog); the
+     UA default ring read as a highlighted control. Keep a ring for the
+     keyboard, styled, and none for pointer opens. */
+  outline: none;
+}
+.lightbox-close:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.55);
+  outline-offset: 2px;
+}
+.lightbox-close:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+.lightbox-close svg {
+  width: 12px;
+  height: 12px;
+}
+.lightbox-zoom {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 6px;
+  border-radius: 999px;
+  background: rgba(20, 26, 34, 0.72);
+  backdrop-filter: blur(14px);
+}
+.lightbox-zoom__btn {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: #fff;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.lightbox-zoom__btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+.lightbox-zoom__label {
+  min-width: 46px;
+  text-align: center;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.85);
+  font-variant-numeric: tabular-nums;
+}
+@media (prefers-reduced-motion: reduce) {
+  .lightbox-backdrop {
+    animation: none;
+  }
 }

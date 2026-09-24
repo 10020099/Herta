@@ -1,7 +1,8 @@
-import { type ChildProcess, spawn, spawnSync } from "node:child_process";
+import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import type { BackgroundProcess } from "@herta/core";
+import { dirname, join, resolve } from "node:path";
+import { type BackgroundProcess, isPathInside } from "@herta/core";
+import { childProcessEnv } from "../child-env.js";
 import { type ShellPaths, shellPathsFor } from "./shell-paths.js";
 
 /**
@@ -57,6 +58,13 @@ export const SHELL_BG_ID = "shell";
 
 const DEFAULT_MAX_OUTPUT = 1_048_576;
 const KILL_GRACE_MS = 3_000;
+/** Every protocol marker's length: `__HERTA_SH_` / `__HERTA_WS_` (11) +
+ *  12 hex digits + `__` (2). `onData` keeps one less than this as its tail. */
+const MARKER_LEN = 25;
+const markerFor = (kind: "SH" | "WS"): string =>
+  `__HERTA_${kind}_${randomBytes(6).toString("hex")}__`;
+/** How long `taskkill /T` may take to fell the shell's process tree. */
+const TASKKILL_TIMEOUT_MS = 15_000;
 
 interface Waiter {
   marker: string;
@@ -77,8 +85,18 @@ export class PersistentShell implements BackgroundProcess {
   readonly paths: ShellPaths;
   /** The shell's own spelling of the workspace (what `pwd` prints there). */
   private shellWs: string | null = null;
+  /** Set while a spawned shell still owes its workspace line. */
+  private wsMarker: string | null = null;
   private child: ChildProcess | null = null;
+  /** POSIX process groups (= pids) of shells that have exited; a job they
+   *  backgrounded may still run in one. See `isRunning`. */
+  private readonly exitedGroups = new Set<number>();
   private buf = "";
+  /** The last `MARKER_LEN − 1` characters received — what a marker split
+   *  across chunks would have left behind. */
+  private tail = "";
+  /** The waiting command's marker is in `buf`; its line may not be yet. */
+  private markerSeen = false;
   private waiter: Waiter | null = null;
   private currentCwd: string;
   private spawnCount = 0;
@@ -109,13 +127,51 @@ export class PersistentShell implements BackgroundProcess {
     return this.shellWs ?? this.paths.toShell(this.opts.workspaceRoot);
   }
 
-  isRunning(): boolean {
+  /** The shell process itself — what decides whether the next command needs
+   *  a fresh one. */
+  private shellAlive(): boolean {
     return this.child !== null && this.child.exitCode === null;
+  }
+
+  /**
+   * Whether anything this shell started may still be running — the
+   * BackgroundHost's question at brief end, not "is the shell up".
+   *
+   * POSIX (platform review 2026-09-23): the shell runs in its own process
+   * group, and a job it backgrounded (`npm run dev > log &`) stays in that
+   * group after the SHELL exits — `set -e` plus a failing command, or a
+   * plain `exit`. The old answer looked at the shell alone, so `stopAll`
+   * skipped the entry and the dev server outlived the brief and the app,
+   * holding its port. Exited shells' groups are remembered and count here
+   * while any member lives. (A job that made its OWN group — `set -m` — is
+   * out of reach of a group kill, as it always was.)
+   */
+  isRunning(): boolean {
+    if (this.shellAlive()) return true;
+    this.pruneGroups();
+    return this.exitedGroups.size > 0;
+  }
+
+  /** Forget every remembered group with no member left, so an id is never
+   *  held past its group's end for a later group to reuse. */
+  private pruneGroups(): void {
+    for (const group of this.exitedGroups) {
+      if (!groupAlive(group)) this.exitedGroups.delete(group);
+    }
   }
 
   async kill(): Promise<void> {
     const child = this.child;
     this.child = null;
+    // What exited shells left behind first — including when no shell is up.
+    for (const group of this.exitedGroups) {
+      try {
+        process.kill(-group, "SIGKILL");
+      } catch {
+        // already empty
+      }
+    }
+    this.exitedGroups.clear();
     if (child === null) return;
     await killTree(child);
     // Only a waiter still bound to THIS child fails; a fresh shell may
@@ -138,7 +194,8 @@ export class PersistentShell implements BackgroundProcess {
       : [];
     const inheritedPath = process.env.PATH ?? process.env.Path ?? "";
     const env: NodeJS.ProcessEnv = {
-      ...process.env,
+      // Minus the AppImage launcher's own entries (child-env.ts, 2026-09-23).
+      ...childProcessEnv(),
       ...(extraPath.length > 0
         ? { PATH: [...extraPath, inheritedPath].join(isWin ? ";" : ":") }
         : {}),
@@ -164,8 +221,14 @@ export class PersistentShell implements BackgroundProcess {
     child.stdout?.setEncoding("utf8");
     child.stderr?.setEncoding("utf8");
     const onData = (chunk: string): void => {
-      this.buf += chunk.replace(/\r\n/g, "\n");
-      this.pump();
+      const text = chunk.replace(/\r\n/g, "\n");
+      // The newest window — this chunk plus the few characters before it a
+      // marker could straddle — is all that can hold a marker that was not
+      // there a moment ago.
+      const window = this.tail + text;
+      this.tail = window.slice(-(MARKER_LEN - 1));
+      this.buf += text;
+      this.onOutput(window);
     };
     child.stdout?.on("data", onData);
     child.stderr?.on("data", onData);
@@ -173,7 +236,23 @@ export class PersistentShell implements BackgroundProcess {
     // timeout the old process may exit late, while a fresh shell is already
     // serving the next command.
     child.on("exit", () => {
-      if (this.child === child) this.child = null;
+      // `kill()` lets go of the child before killing its whole group, so
+      // only a shell that exited ON ITS OWN is still `this.child` here.
+      const ownExit = this.child === child;
+      if (ownExit) this.child = null;
+      // Its process group outlives it while a backgrounded job runs there
+      // (see isRunning). Remembered only if a member is alive right now: a
+      // group that is already empty, or one kill() just felled, would be a
+      // stale id that a later, unrelated group could take over (review
+      // 2026-09-23). POSIX only: Windows has no process groups to kill.
+      if (
+        ownExit &&
+        !isWin &&
+        child.pid !== undefined &&
+        groupAlive(child.pid)
+      ) {
+        this.exitedGroups.add(child.pid);
+      }
       if (this.waiter?.child === child)
         this.failWaiter({ shellExited: true, timedOut: false });
     });
@@ -183,35 +262,49 @@ export class PersistentShell implements BackgroundProcess {
         this.failWaiter({ shellExited: true, timedOut: false });
     });
     // Merge stderr into stdout in ORDER; remember the workspace spelling.
-    child.stdin?.write('exec 2>&1\nset +o history\n__herta_ws="$(pwd)"\n');
+    //
+    // The shell reports that spelling itself, on a line of its own ahead of
+    // any command's output (`takeWorkspaceLine`). It used to be asked of a
+    // SECOND bash, synchronously — `spawnSync(bash -c pwd)`, 70–120 ms warm
+    // on Windows and far more cold — on the first command of every brief,
+    // which in the desktop app is the Electron main thread: the paced
+    // reveal and the voice IPC stalled behind it (perf audit 2026-09-20).
+    // Nothing needed it that early: the prompt's line is built from a shell
+    // that never spawns (the mapping), and every other reader asks after a
+    // command has run.
+    const wsMarker = this.shellWs === null ? markerFor("WS") : null;
+    this.wsMarker = wsMarker;
+    child.stdin?.write(
+      `exec 2>&1\nset +o history\n__herta_ws="$(pwd)"\n${
+        wsMarker !== null
+          ? `printf '%s:%s\\n' '${wsMarker}' "$__herta_ws"\n`
+          : ""
+      }`,
+    );
     this.child = child;
     this.currentCwd = this.opts.workspaceRoot;
-    if (this.shellWs === null) {
-      // Ask once, synchronously, so `workspaceShellPath` is exact from the
-      // first call (the model reads it in its prompt).
-      try {
-        const r = spawnSync(
-          this.opts.bashPath,
-          ["--noprofile", "--norc", "-c", "pwd"],
-          {
-            cwd: this.opts.workspaceRoot,
-            encoding: "utf8",
-            timeout: 10_000,
-            windowsHide: true,
-          },
-        );
-        const out = (r.stdout ?? "").trim().split(/\r?\n/)[0] ?? "";
-        if (r.status === 0 && out.startsWith("/")) this.shellWs = out;
-      } catch {
-        // keep the mapping fallback
-      }
-    }
+  }
+
+  /** Lift the shell's own `<marker>:<pwd>` line out of the buffer — it is
+   *  protocol, never a command's output. Waits for the whole line. */
+  private takeWorkspaceLine(): void {
+    const marker = this.wsMarker;
+    if (marker === null) return;
+    const at = this.buf.indexOf(marker);
+    if (at === -1) return;
+    const end = this.buf.indexOf("\n", at);
+    if (end === -1) return;
+    const spelled = this.buf.slice(at + marker.length + 1, end);
+    if (spelled.startsWith("/")) this.shellWs = spelled;
+    this.buf = this.buf.slice(0, at) + this.buf.slice(end + 1);
+    this.wsMarker = null;
   }
 
   private failWaiter(how: { shellExited: boolean; timedOut: boolean }): void {
     const w = this.waiter;
     if (w === null) return;
     this.waiter = null;
+    this.markerSeen = false;
     if (w.timer !== null) clearTimeout(w.timer);
     if (w.onAbort !== null && w.signal !== undefined)
       w.signal.removeEventListener("abort", w.onAbort);
@@ -229,27 +322,73 @@ export class PersistentShell implements BackgroundProcess {
     });
   }
 
-  private pump(): void {
+  /**
+   * One chunk arrived. The expensive look — `pump`, which searches and cuts
+   * the WHOLE buffer — runs only when it can find something: while the
+   * shell still owes its workspace line (the first chunks after a spawn), or
+   * once the waiting command's marker is in. Otherwise the chunk is only
+   * appended and the buffer bounded.
+   *
+   * It used to `indexOf` the whole buffer on every chunk. `buf += chunk`
+   * builds a rope; a search flattens it — a copy of everything received so
+   * far, per chunk. A test log of a few megabytes arriving line by line
+   * (`PYTHONUNBUFFERED=1` is set above) cost gigabytes of copying, on the
+   * desktop app's main thread (perf audit 2026-09-20).
+   */
+  private onOutput(window: string): void {
     const w = this.waiter;
-    if (w === null) return;
-    const idx = this.buf.indexOf(w.marker);
-    if (idx === -1) {
-      // Bound memory while a chatty command runs (`yes`, a runaway log):
-      // keep the last cap-worth plus a margin, count what was dropped.
-      const limit = this.opts.maxOutputBytes + 4096;
-      if (this.buf.length > limit) {
-        const drop = this.buf.length - limit;
-        w.dropped += Buffer.byteLength(this.buf.slice(0, drop), "utf8");
-        this.buf = this.buf.slice(drop);
-      }
+    if (
+      this.wsMarker !== null ||
+      this.markerSeen ||
+      (w !== null && window.includes(w.marker))
+    ) {
+      this.pump();
       return;
     }
+    this.bound(w);
+  }
+
+  /**
+   * Bound memory while a chatty command runs (`yes`, a runaway log): keep the
+   * last cap-worth plus a margin, count what was dropped. AMORTIZED — the cut
+   * happens once the buffer is twice the limit, so its cost (the cut flattens
+   * the rope) is paid once per limit's worth of output, not per chunk. What
+   * the command finally returns is unchanged: `pump` trims the result to the
+   * cap and reports the same totals. Output that arrives while NO command is
+   * waiting (a background job's chatter) is bounded too, uncounted — it used
+   * to grow without limit until the next command.
+   */
+  private bound(w: Waiter | null): void {
+    const limit = this.opts.maxOutputBytes + 4096;
+    if (this.buf.length <= limit * 2) return;
+    const drop = this.buf.length - limit;
+    if (w !== null)
+      w.dropped += Buffer.byteLength(this.buf.slice(0, drop), "utf8");
+    this.buf = this.buf.slice(drop);
+  }
+
+  private pump(): void {
+    this.takeWorkspaceLine();
+    const w = this.waiter;
+    if (w === null) {
+      this.bound(null);
+      return;
+    }
+    const idx = this.buf.indexOf(w.marker);
+    if (idx === -1) {
+      this.bound(w);
+      return;
+    }
+    // The marker is in: every later chunk must come back here until its
+    // line is complete — the window test above no longer sees it.
+    this.markerSeen = true;
     const after = this.buf.slice(idx + w.marker.length);
     const m = /^:(-?\d+):([01]):([^\n]*)\n/.exec(after);
     if (m === null) return; // marker line not complete yet
     const rawOutput = this.buf.slice(0, idx).replace(/\n$/, "");
     this.buf = after.slice(m[0].length);
     this.waiter = null;
+    this.markerSeen = false;
     if (w.timer !== null) clearTimeout(w.timer);
     if (w.onAbort !== null && w.signal !== undefined)
       w.signal.removeEventListener("abort", w.onAbort);
@@ -269,7 +408,7 @@ export class PersistentShell implements BackgroundProcess {
     const pwdShell = m[3] as string;
     const native = this.paths.toNative(pwdShell);
     this.currentCwd =
-      native !== null && isInside(this.opts.workspaceRoot, native)
+      native !== null && isPathInside(this.opts.workspaceRoot, native)
         ? native
         : this.opts.workspaceRoot;
     w.resolve({
@@ -297,8 +436,9 @@ export class PersistentShell implements BackgroundProcess {
       await new Promise((r) => setTimeout(r, 25));
     }
     const t0 = Date.now();
+    this.pruneGroups();
     let fresh = false;
-    if (!this.isRunning()) {
+    if (!this.shellAlive()) {
       this.spawnShell();
       fresh = true;
     }
@@ -317,7 +457,7 @@ export class PersistentShell implements BackgroundProcess {
         freshShell: fresh,
       };
     }
-    const marker = `__HERTA_SH_${randomBytes(6).toString("hex")}__`;
+    const marker = markerFor("SH");
     const result = await new Promise<
       Omit<ShellRunResult, "durationMs" | "freshShell">
     >((resolvePromise) => {
@@ -373,6 +513,7 @@ export class PersistentShell implements BackgroundProcess {
         opts.signal.addEventListener("abort", w.onAbort, { once: true });
       }
       this.waiter = w;
+      this.markerSeen = false;
       // Group + stdin from /dev/null: a stdin-reading command cannot eat
       // the protocol line that follows. Heredocs still work — they are
       // read from the script text, not from the command's stdin.
@@ -398,9 +539,17 @@ export class PersistentShell implements BackgroundProcess {
   }
 }
 
-function isInside(root: string, p: string): boolean {
-  const rel = relative(root, p);
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+/** Whether a POSIX process group still has a member: signal 0 delivers
+ *  nothing and only checks. Any error — ESRCH (empty), EPERM (the id now
+ *  belongs to someone else's processes) — means there is nothing of ours
+ *  left to kill. */
+function groupAlive(group: number): boolean {
+  try {
+    process.kill(-group, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function killTree(child: ChildProcess): Promise<void> {
@@ -416,9 +565,33 @@ async function killTree(child: ChildProcess): Promise<void> {
   });
   try {
     if (process.platform === "win32") {
-      spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
-        windowsHide: true,
-        timeout: KILL_GRACE_MS,
+      // `taskkill /T` walks the tree — on this machine a scoop shim → git
+      // launcher → usr/bin/bash chain, three processes deep — and on a
+      // loaded machine took longer than the close grace (the permission
+      // lab hung on 2026-09-16 with the whole chain alive after `done.`).
+      // Its own timeout is generous; the grace below only bounds the wait
+      // for the exit event. AWAITED, never `spawnSync`: this runs at the
+      // end of every brief, and blocking here froze the desktop app's main
+      // thread — the reveal, the voice IPC, the window — for as long as the
+      // tree walk took (perf audit 2026-09-20). The order is unchanged:
+      // taskkill settles, then the stdio ends are dropped below.
+      await new Promise<void>((settled) => {
+        execFile(
+          "taskkill",
+          ["/PID", String(pid), "/T", "/F"],
+          { windowsHide: true, timeout: TASKKILL_TIMEOUT_MS },
+          (err) => {
+            // A string code is a failure to LAUNCH taskkill (a number is
+            // its exit status): fell at least the shell itself.
+            if (typeof (err as NodeJS.ErrnoException | null)?.code === "string")
+              try {
+                child.kill("SIGKILL");
+              } catch {
+                // already gone
+              }
+            settled();
+          },
+        );
       });
     } else {
       try {
@@ -433,6 +606,16 @@ async function killTree(child: ChildProcess): Promise<void> {
     } catch {
       // already gone
     }
+  } finally {
+    // Whatever survived the kill must not keep US alive: an orphaned
+    // grandchild holding the inherited pipes leaves the child's stdio
+    // streams open, and an open stdio stream keeps the event loop running
+    // (the lab's process never exited). Drop our ends and unreference the
+    // handle; the streams are ours, nobody reads them after a kill.
+    child.stdin?.destroy();
+    child.stdout?.destroy();
+    child.stderr?.destroy();
+    child.unref();
   }
   await Promise.race([
     closed,

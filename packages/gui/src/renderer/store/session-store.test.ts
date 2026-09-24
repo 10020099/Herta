@@ -12,6 +12,112 @@ function backendDeltaEvent(text: string): AgentEvent {
   return { type: "assistant.delta", layer: "backend", text } as AgentEvent;
 }
 
+describe("SessionStore — the held message (ADR 0063)", () => {
+  it("holds one message; a second send joins it as a paragraph; clear and a new activation drop it", () => {
+    const mock = createMockHertaBridge();
+    const store = new SessionStore();
+    store.connect(mock.bridge);
+    expect(store.getSnapshot().held).toBeNull();
+    store.holdMessage("also rename the test file");
+    expect(store.getSnapshot().held).toBe("also rename the test file");
+    store.holdMessage("and bump the version");
+    expect(store.getSnapshot().held).toBe(
+      "also rename the test file\n\nand bump the version",
+    );
+    store.clearHeld();
+    expect(store.getSnapshot().held).toBeNull();
+    // Idempotent: clearing nothing emits nothing new.
+    store.clearHeld();
+    store.holdMessage("x");
+    mock.emitReset({
+      sessionId: "s2",
+      workspaceRoot: "/r",
+      record: [],
+      overlay: null,
+      backendWorkspace: "/r",
+      backendWorkspaceIsDefault: true,
+    });
+    // A message held for one session's turn never travels to another.
+    expect(store.getSnapshot().held).toBeNull();
+  });
+
+  it("the lift-off point is a side channel read exactly once: armed, taken, then gone", () => {
+    const store = new SessionStore();
+    expect(store.takeLaunch()).toBeNull();
+    store.armLaunch({ left: 120, top: 640 });
+    expect(store.takeLaunch()).toEqual({ left: 120, top: 640 });
+    // Consumed: a later send never inherits a stale point.
+    expect(store.takeLaunch()).toBeNull();
+    // Arming null (an ordinary send) clears whatever was left.
+    store.armLaunch({ left: 1, top: 2 });
+    store.armLaunch(null);
+    expect(store.takeLaunch()).toBeNull();
+  });
+});
+
+describe("SessionStore — a reset that lands mid-turn (UX review 2026-09-22, item 7)", () => {
+  it("a window that reloads during 板砖's run comes back busy, in the hold window, with its staged pictures", () => {
+    const mock = createMockHertaBridge();
+    const store = new SessionStore();
+    store.connect(mock.bridge);
+    mock.emitReset({
+      sessionId: "s",
+      workspaceRoot: "/r",
+      record: [{ kind: "user", text: "fix it @板砖" }],
+      overlay: null,
+      backendWorkspace: "/r",
+      backendWorkspaceIsDefault: true,
+      turn: { backendActive: true },
+      stagedImages: [{ id: "i1", name: "shot.png", path: "a/shot.png" }],
+    });
+    const s = store.getSnapshot();
+    // Pre-fix every reset was idle: no Stop over a running turn.
+    expect(s.status).not.toBe("idle");
+    expect(s.backendActive).toBe(true);
+    expect(s.turnStartedAt).not.toBeNull();
+    expect(s.backendStartedAt).not.toBeNull();
+    expect(s.restagedImages).toEqual([
+      { id: "i1", name: "shot.png", path: "a/shot.png" },
+    ]);
+    store.clearRestagedImages();
+    expect(store.getSnapshot().restagedImages).toBeNull();
+    // The turn's own end still settles it the ordinary way.
+    mock.emitTurn({ kind: "finished", turnId: "t-unknown" });
+    expect(store.getSnapshot().status).toBe("idle");
+  });
+
+  it("connecting asks main for the state — a reloaded page's first reset can have gone out before it subscribed", () => {
+    const mock = createMockHertaBridge();
+    let asked = 0;
+    Object.assign(mock.bridge, {
+      requestSessionSync: async () => {
+        asked += 1;
+      },
+    });
+    const store = new SessionStore();
+    store.connect(mock.bridge);
+    expect(asked).toBe(1);
+  });
+
+  it("an ordinary reset (no turn in flight) is idle, as before", () => {
+    const mock = createMockHertaBridge();
+    const store = new SessionStore();
+    store.connect(mock.bridge);
+    mock.emitReset({
+      sessionId: "s",
+      workspaceRoot: "/r",
+      record: [],
+      overlay: null,
+      backendWorkspace: "/r",
+      backendWorkspaceIsDefault: true,
+    });
+    const s = store.getSnapshot();
+    expect(s.status).toBe("idle");
+    expect(s.backendActive).toBe(false);
+    expect(s.restagedImages).toBeNull();
+  });
+});
+
 describe("SessionStore", () => {
   it("starts idle/empty", () => {
     const mock = createMockHertaBridge();
@@ -331,6 +437,77 @@ describe("SessionStore", () => {
       error: { code: "x", message: "y" },
     });
     expect(store.getSnapshot().pendingUser).toBeNull();
+  });
+
+  // ── Pictures ride their carrier (ADR 0048 §4) ─────────────────────────────
+  // The emit guard clears each image list the moment its carrier clears, no
+  // matter which of the many clearing sites fired — pinned per carrier here.
+  describe("picture-carrier emit guard", () => {
+    const img = { id: "i1", name: "shot.png", path: ".herta/a/shot.png" };
+
+    it("echo images clear WITH the echo when the user block lands", () => {
+      const mock = createMockHertaBridge();
+      const store = new SessionStore();
+      store.connect(mock.bridge);
+      store.markPendingUser("看看这个", [img]);
+      expect(store.getSnapshot().pendingUserImages).toEqual([img]);
+      mock.emitRecord({
+        kind: "block",
+        blockId: "u1",
+        block: { kind: "user", text: "看看这个" },
+      });
+      expect(store.getSnapshot().pendingUserImages).toBeNull();
+    });
+
+    it("echo images clear on turn failed (a site that never mentions them)", () => {
+      const mock = createMockHertaBridge();
+      const store = new SessionStore();
+      store.connect(mock.bridge);
+      store.markPendingUser("oops", [img]);
+      mock.emitTurn({
+        kind: "failed",
+        turnId: "t1",
+        error: { code: "x", message: "y" },
+      });
+      expect(store.getSnapshot().pendingUserImages).toBeNull();
+    });
+
+    it("withdrawPendingUser moves the pictures to the composer draft", () => {
+      const store = new SessionStore();
+      store.markPendingUser("failed send", [img]);
+      store.withdrawPendingUser("failed send", [img]);
+      const s = store.getSnapshot();
+      expect(s.pendingUser).toBeNull();
+      expect(s.pendingUserImages).toBeNull();
+      expect(s.composerDraft).toBe("failed send");
+      expect(s.composerDraftImages).toEqual([img]);
+    });
+
+    it("clearComposerDraft drops the draft images with the draft", () => {
+      const store = new SessionStore();
+      store.requestComposerDraft("text", null, [img]);
+      expect(store.getSnapshot().composerDraftImages).toEqual([img]);
+      store.clearComposerDraft();
+      expect(store.getSnapshot().composerDraftImages).toBeNull();
+    });
+
+    it("requestKeyPrompt moves the pictures from the echo to the hold; closing drops them", () => {
+      const store = new SessionStore();
+      store.markPendingUser("no key yet", [img]);
+      store.requestKeyPrompt("no key yet", [img]);
+      const held = store.getSnapshot();
+      expect(held.pendingUser).toBeNull();
+      expect(held.pendingUserImages).toBeNull();
+      expect(held.needsKeyImages).toEqual([img]);
+      store.clearKeyPrompt();
+      expect(store.getSnapshot().needsKeyImages).toBeNull();
+    });
+
+    it("a rewind draft carries NO images by default (its stored copies are GC'd)", () => {
+      const store = new SessionStore();
+      store.requestComposerDraft("rewound text", "warning");
+      expect(store.getSnapshot().composerDraftImages).toBeNull();
+    });
   });
 
   it("ignores backend-layer deltas (they must not enter Herta's speech bubble)", () => {

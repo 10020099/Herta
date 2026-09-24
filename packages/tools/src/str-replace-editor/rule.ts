@@ -20,6 +20,7 @@ import {
   resolveEditorPath,
 } from "./engine.js";
 import { strReplaceEditorInputSchema } from "./schema.js";
+import { STR_REPLACE_EDITOR_SUGGESTIONS } from "./suggestions.js";
 
 export interface StrReplaceEditorRuleDeps {
   bus?: EventBus<AgentEvent>;
@@ -28,7 +29,14 @@ export interface StrReplaceEditorRuleDeps {
 
 /** A rule deny whose message the model sees verbatim (trained strings). */
 function deny(code: string, message: string): RuleVerdict {
-  return { kind: "deny", code, reason: message, modelText: message };
+  const suggestion = STR_REPLACE_EDITOR_SUGGESTIONS[code];
+  return {
+    kind: "deny",
+    code,
+    reason: message,
+    modelText: message,
+    ...(suggestion !== undefined ? { suggestion } : {}),
+  };
 }
 
 /**

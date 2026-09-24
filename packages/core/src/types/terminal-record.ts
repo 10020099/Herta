@@ -36,6 +36,12 @@ export function isSystemBlockLabel(value: string): value is SystemBlockLabel {
 export interface UserBlock {
   readonly kind: "user";
   readonly text: string;
+  /** A steer (ADR 0063 §1.10): words the user interjected into 板砖's
+   *  running work, projected in event order between the rows they
+   *  interrupted. Not a turn of its own — rewind withdraws the turn that
+   *  holds it, and the ⟲ control never sits on it. Absent on every other
+   *  user block. Never enters the prompt (the serializer reads `text`). */
+  readonly steer?: true;
   /** Wall-clock ISO time the block was emitted/persisted. Optional for
    *  backward compat (pre-timestamp sessions lack it). Stamped at the output
    *  boundaries (live sink emit + JSONL persist), never at construction — the
@@ -117,6 +123,18 @@ export interface DoneMarkerSummary {
    * truth. Absent is the honest answer; the file count still stands.
    */
   readonly lines?: { readonly add: number; readonly del: number };
+  /**
+   * Git outcome identity (ADR 0049 §4): a commit is the one operation whose
+   * IDENTITY is the outcome, and a marker that reports only file counts
+   * drops it. `commit` is the short sha git's own summary line reported for
+   * the run's LAST successful commit; `pushedRef` the destination branch of
+   * its last successful push. Parsed deterministically from command output
+   * by the bridge; absent when the run made no commit/push (the usual case).
+   */
+  readonly git?: {
+    readonly commit?: string;
+    readonly pushedRef?: string;
+  };
   /** Set (only ever `true`) when the run TERMINATED ABNORMALLY — runBrief
    *  itself threw rather than returning a report (the bridge-failure marker,
    *  canonical body `失败 · 运行异常中止`). Neutral machine field (D2):
@@ -293,6 +311,15 @@ export type SystemBlockDigest =
       readonly name: string;
       /** Workspace-relative, so a later dispatch can reach it. */
       readonly path: string;
+      /** The ORIGINAL document's stored copy (ADR 0038 amendment, 2026-09-03):
+       *  `report-<hash>.pdf` beside the `.pdf.txt` above, kept so the file
+       *  viewer (ADR 0054) can show the PDF / Word / spreadsheet / deck
+       *  itself. USER-ONLY: it never enters the block body, a task line or a
+       *  compaction line — 板砖 is never pointed at bytes no tool reads.
+       *  Present for every document the ingest could store, extraction
+       *  outcome aside (a scanned PDF, an .xlsx); absent for text and image
+       *  attachments and on records persisted before it. */
+      readonly source?: string;
       readonly lines: number;
       readonly chars: number;
       /** Set when the stored file is TEXT EXTRACTED from a PDF or Word
@@ -305,6 +332,33 @@ export type SystemBlockDigest =
        *  present on the ordinary path and on `too_large` (page cap) /
        *  `empty` (scanned) outcomes. */
       readonly pages?: number;
+      /** An IMAGE attachment (ADR 0048): the stored file is the picture
+       *  itself, and `caption` below — not an excerpt — is what the record
+       *  says about it. Absent for every text/document attachment. */
+      readonly image?: {
+        readonly format: "png" | "jpeg" | "gif" | "webp" | "bmp";
+        /** Pixel dimensions when the header format makes them cheap to read
+         *  (PNG/GIF/JPEG); absent otherwise — never estimated. */
+        readonly width?: number;
+        readonly height?: number;
+      };
+      /**
+       * What the captioning instrument saw (ADR 0048 §1).
+       *
+       * Unlike a head excerpt this is NOT a preview of something still
+       * readable: it is the image's only textual form, which is why it rides
+       * the block BODY rather than `evidenceDetail`. The detail is dropped
+       * when the block folds; the caption must survive into recaps, dreams
+       * and later sessions, because after the fold it is all that remains of
+       * a moment the 开拓者 actually shared.
+       *
+       * Authored by a vision sidecar, never by Herta — the record keeps it in
+       * the `→ 系统` register for exactly that reason. Same trust class as an
+       * attachment's text: model output about user-supplied bytes, redacted
+       * and sanitized at construction. Absent when captioning was unavailable
+       * or failed (`unreadable: "no_caption"`).
+       */
+      readonly caption?: string;
       /** Why no excerpt was taken, when none was. Absent on the ordinary path.
        *  Present means the block's body SAYS the file could not be read as
        *  text — never silence, because Herta speaking about a document she was
@@ -329,7 +383,14 @@ export type SystemBlockDigest =
        *  not decode (legacy .doc/.xls/.ppt, .xlsx/.pptx, an OLE package named
        *  .docx). Both are actionable by the user in a way `read_error` /
        *  `binary` are not, which is why they are named. Nothing is stored for
-       *  either. */
+       *  either.
+       *
+       *  `no_caption` is an IMAGE that was stored but not read (ADR 0048):
+       *  no key, the instrument errored or timed out, or the picture is over
+       *  the caption ceiling. Named rather than folded into `read_error`
+       *  because the file IS on disk and IS citable — a vision-capable 板砖
+       *  can still be sent to look at it, which is the remedy the row exists
+       *  to leave open. */
       readonly unreadable?:
         | "binary"
         | "too_large"
@@ -338,7 +399,8 @@ export type SystemBlockDigest =
         | "denied"
         | "removed"
         | "encrypted"
-        | "unsupported";
+        | "unsupported"
+        | "no_caption";
       /** The exact page-marker line shape the stored text carries, with `N`
        *  for the number (`── 第 N 页 ──` / `── page N ──`; `pageMarkerShape`
        *  in core). PDF only, 2026-08-23: the ingest opens every page with

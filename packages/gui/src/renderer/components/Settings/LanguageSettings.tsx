@@ -7,6 +7,7 @@ import type {
 } from "../../ipc/bridge-types.js";
 import { Select } from "./Select.js";
 import { SettingRow } from "./SettingRow.js";
+import { useRememberedSetting } from "./settings-snapshot.js";
 
 /** Settings → Language. The UI-language row applies live (no restart). The
  *  control is the app's own Select (2026-07-12) — the native `<select>` popup
@@ -24,9 +25,13 @@ export function LanguageSettings(): JSX.Element {
   // demo omit it); the row hides with it, mirroring UpdateSettings.tsx's
   // `autoSupported`.
   const interactionSupported = bridge.setInteractionLanguage !== undefined;
-  // Default "follow" until the persisted choice loads (follow is the default).
-  const [interaction, setInteraction] =
-    useState<InteractionLanguageChoice>("follow");
+  // The last-known choice on the first frame (settings-snapshot.ts);
+  // "follow" — the default — only when nothing has been read yet.
+  const [interaction, setInteraction] = useRememberedSetting(
+    bridge,
+    "language.interaction",
+    "follow",
+  );
   const [failed, setFailed] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
   // Once the user picks, the in-flight async load must not clobber the pick.
@@ -48,7 +53,27 @@ export function LanguageSettings(): JSX.Element {
     return () => {
       alive = false;
     };
-  }, [bridge]);
+  }, [bridge, setInteraction]);
+
+  // The UI language: live first, then persisted — with the failure path the
+  // interaction row below has always had (UX review 2026-09-22, item 17). It
+  // used to be App's fire-and-forget write, so a failed save kept showing a
+  // language the next launch would not have, and said nothing. The same
+  // latest-wins guard: only the newest pick may snap back.
+  const [localeFailed, setLocaleFailed] = useState(false);
+  const localeSeqRef = useRef(0);
+  const onLocale = (next: Locale): void => {
+    const prev = locale;
+    localeSeqRef.current += 1;
+    const seq = localeSeqRef.current;
+    setLocale(next);
+    setLocaleFailed(false);
+    bridge.setLocale(next).catch(() => {
+      if (seq !== localeSeqRef.current) return;
+      setLocale(prev);
+      setLocaleFailed(true);
+    });
+  };
 
   const onInteraction = (next: InteractionLanguageChoice): void => {
     // Optimistic: show the choice now, persist async. On a failed write, snap
@@ -83,7 +108,7 @@ export function LanguageSettings(): JSX.Element {
               { value: "zh", label: "中文" },
               { value: "en", label: "English" },
             ]}
-            onChange={(next) => setLocale(next)}
+            onChange={onLocale}
           />
         }
       />
@@ -105,7 +130,7 @@ export function LanguageSettings(): JSX.Element {
           }
         />
       )}
-      {failed ? (
+      {failed || localeFailed ? (
         <p className="settings-note">{t("common.couldntSave")}</p>
       ) : (
         loadFailed && (

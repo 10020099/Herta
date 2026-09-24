@@ -1,10 +1,20 @@
 import type {
   AgentEvent,
   ApprovalOverlayState,
+  RepoContextSnapshot,
   SessionTopic,
   TerminalRecord,
   TerminalRecordBlock,
+  WorkspaceTrust,
 } from "@herta/core";
+import type {
+  BranchList,
+  CommitDescription,
+  GitReadTimeout,
+  LogPage,
+  LogQuery,
+  WorkingDiff,
+} from "@herta/tools";
 import type { SessionSearchHit } from "./session-search.js";
 
 // ───── Provider types ─────
@@ -46,14 +56,15 @@ export interface AppServerConfig {
   /** Absolute. Where `<sessionId>.jsonl` files live. Typically
    *  `<workspaceRoot>/.herta/transcript/v2`. */
   readonly transcriptDir: string;
+  /** Absolute. When set, every model call's token usage — as the API states
+   *  it, prompt-cache hits included; numbers only — is appended to this
+   *  JSONL file (`usage-log.ts`). Unset: nothing is recorded. */
+  readonly usageLogPath?: string;
   /** Absolute. Project-scoped memory dir. Typically
    *  `<workspaceRoot>/.herta/memory`. */
   readonly projectMemoryDir: string;
   /** Absolute. User-scoped memory dir. Typically `~/.herta/memory`. */
   readonly userMemoryDir: string;
-  /** Absolute. Capsule store root. Typically
-   *  `<workspaceRoot>/.herta/capsules`. */
-  readonly capsulesDir: string;
   /** Absolute. 废案 narrative corpus root. Typically
    *  `<workspaceRoot>/.herta/narrative`. */
   readonly narrativeDir: string;
@@ -81,12 +92,11 @@ export interface AppServerConfig {
     /** Optional API base URL override. Dev-only staging lever for deepseek/openai-compat. */
     readonly baseUrl?: string;
   };
-  /** Backend reasoning effort. Per the official DeepSeek doc (updated
-   *  2026-07-31): deepseek-v4-flash accepts "low" | "high" | "max";
-   *  deepseek-v4-pro accepts "high" | "max" and maps a sent "low" to
-   *  "high" server-side until its announced early-August-2026 update.
-   *  "off" omits the thinking block. Settings → Coprocessor persists this
-   *  (GUI, restart-to-apply); default "high". */
+  /** Backend reasoning effort. Per the official DeepSeek doc (2026-09-10)
+   *  both `deepseek-flash` and `deepseek-v4-pro` accept "low" | "high" |
+   *  "max"; thinking is on by default at "high". "off" sends the thinking
+   *  block disabled. Settings → Coprocessor persists this (GUI,
+   *  restart-to-apply); default "high". */
   readonly thinking?: ThinkingEffort;
   /**
    * 板砖's model-facing tool contract (ADR 0040). `standard` (default) = the
@@ -123,6 +133,63 @@ export interface AppServerConfig {
     readonly minNewSessions?: number;
     readonly minSessionHertaTurns?: number;
   };
+  /**
+   * Herta's synthesized voice (ADR 0042). The host owns the synthesizer —
+   * in the desktop app a utility process running the Kokoro model — and
+   * every session's streaming sink asks it, at each speech stream's start,
+   * whether it is `available()`; when it is, the reveal is VOICED: sentence
+   * units are synthesized as they arrive and the text types in lockstep
+   * with the audio. Absent (the CLI, tests) → the paced text reveal, byte-
+   * identical to before.
+   */
+  readonly speech?: {
+    readonly synthesizer: SpeechSynthesizer;
+  };
+}
+
+// ───── Speech synthesis (ADR 0042) ─────
+
+/** One unit of Herta's prose to synthesize — the speakable form of a
+ *  sentence-sized span (see voice/speakable-text.ts). `seq` orders units
+ *  within an utterance; the synthesizer may cancel by `utteranceId`. */
+export interface SynthesisRequest {
+  readonly utteranceId: string;
+  readonly seq: number;
+  readonly text: string;
+  readonly lang: "zh" | "en";
+  /** `low`: synthesize when nothing else is queued — the veto reaction's
+   *  filler (ADR 0042 §7b), armed as early as the reply's first unit is in
+   *  flight and never allowed ahead of the reply's own sentences. Absent
+   *  = the reply's units, in order. */
+  readonly priority?: "low";
+}
+
+/** Mono PCM for one unit. Int16 so it crosses IPC compactly (24 kHz mono ≈
+ *  48 KB/s); the renderer converts for Web Audio. */
+export interface SynthesizedAudio {
+  readonly samples: Int16Array;
+  readonly sampleRate: number;
+  readonly durationMs: number;
+}
+
+/**
+ * The host-side speech synthesizer the sink drives. Surface-agnostic: the
+ * app-server never loads a model — it only asks for audio and reports what
+ * to play. Contract:
+ *   - `available()` is read at every stream start (a live toggle, the model's
+ *     presence, the worker's health all fold in); a stream that started
+ *     voiced stays voiced even if this flips mid-way.
+ *   - `synthesize` resolves the audio, or `null` when the request was
+ *     cancelled or failed — the reveal then types that unit unvoiced at the
+ *     read-along cadence rather than stalling (voice is never load-bearing
+ *     for the record).
+ *   - `cancel(utteranceId)` drops queued work for an utterance (a veto, an
+ *     interrupt); in-flight native synthesis may finish and be discarded.
+ */
+export interface SpeechSynthesizer {
+  available(): boolean;
+  synthesize(req: SynthesisRequest): Promise<SynthesizedAudio | null>;
+  cancel(utteranceId: string): void;
 }
 
 // ───── Session lifecycle opts/result ─────
@@ -183,8 +250,24 @@ export interface ResolveApprovalOpts {
   /** "session" → task-scoped remember (ADR 0026, cleared when the brief
    *  ends). "always" → persist the derived PROJECT command rule (ADR 0030,
    *  `.herta/permissions.json`); no-ops when the pending request derives no
-   *  rule — the GUI only offers it when `projectRule` is present. */
-  readonly persistence?: "once" | "session" | "always";
+   *  rule — the GUI only offers it when `projectRule` is present. "trust"
+   *  → turn workspace trust on for this workspace (ADR 0064); no-ops unless
+   *  the pending request's class is one the tier covers — the GUI only
+   *  offers it when `trustable` is present. */
+  readonly persistence?: "once" | "session" | "always" | "trust";
+}
+
+/** Workspace trust as the session sees it (ADR 0064): the owner's explicit
+ *  choice, the default for this workspace kind, and what applies now. */
+export interface WorkspaceTrustState {
+  /** What applies: "workspace" auto-allows the covered classes. */
+  readonly effective: WorkspaceTrust;
+  /** The owner's recorded choice for this workspace, or null when the
+   *  default applies. */
+  readonly explicit: WorkspaceTrust | null;
+  /** The backend workspace is the session's managed sandbox — trusted by
+   *  default; nothing of the user's lives there. */
+  readonly isDefaultWorkspace: boolean;
 }
 
 export type ApprovalResult =
@@ -205,6 +288,11 @@ export type RewindResult =
        *  GUI warns that those filesystem changes are NOT reverted (record-only
        *  rewind, per the 2026-06-21-rewind-last-turn spec). */
       readonly editedFiles: boolean;
+      /** The withdrawn message's pictures, RESTAGED into the composer strip
+       *  (owner 2026-08-27) — the renderer puts them back beside the restored
+       *  draft. Absent when the turn carried none (or the strip was full and
+       *  the GC took them). */
+      readonly images?: readonly StagedImageInfo[];
     }
   | {
       readonly ok: false;
@@ -236,13 +324,48 @@ export type AttachResult =
       readonly reason: "turn_in_progress" | "too_many" | "no_files";
     };
 
+/** One picture waiting in the composer (ADR 0048 §4). Stored and captioning;
+ *  nothing about it is in the record until the message it rides is sent. */
+export interface StagedImageInfo {
+  readonly id: string;
+  readonly name: string;
+  /** Workspace-relative stored path — what the thumbnail protocol serves. */
+  readonly path: string;
+  readonly width?: number;
+  readonly height?: number;
+}
+
+/** Result of `stageImages`. A picture refused at the door (`denied`,
+ *  `too_large`, `read_error`) or that is not an image at all (`not_image` —
+ *  documents ingest immediately instead, ADR 0048 §4) comes back in
+ *  `rejected` while its siblings still stage; only whole-action failures use
+ *  the `ok: false` shape. `too_many_images` is the per-MESSAGE picture cap
+ *  (`MAX_STAGED_IMAGES`, counting what is already staged) — whole-batch,
+ *  like the attachFiles cap, so the refusal can say the rule instead of
+ *  silently staging a prefix. */
+export type StageImagesResult =
+  | {
+      readonly ok: true;
+      readonly staged: readonly StagedImageInfo[];
+      readonly rejected: readonly {
+        readonly name: string;
+        readonly reason: string;
+      }[];
+    }
+  | {
+      readonly ok: false;
+      readonly reason: "turn_in_progress" | "too_many_images" | "no_files";
+    };
+
 /** Result of `removeAttachment`. `removed` counts the blocks marked, which is
- *  >1 when the same document was attached more than once. */
+ *  >1 when the same document was attached more than once. `in_use`: a stored
+ *  copy could not be deleted (on Windows, a file open in another program) —
+ *  nothing is marked, and a retry once it is closed finishes the job. */
 export type RemoveAttachmentResult =
   | { readonly ok: true; readonly removed: number }
   | {
       readonly ok: false;
-      readonly reason: "turn_in_progress" | "not_found";
+      readonly reason: "turn_in_progress" | "not_found" | "in_use";
     };
 
 // ───── Wire events (one type per AsyncIterable subscription) ─────
@@ -316,8 +439,7 @@ export type TurnLifecycleEvent =
         readonly status?: number;
         readonly providerCode?: string;
       };
-    }
-  | { readonly kind: "artifact_created"; readonly handle: string };
+    };
 
 export type TitleEvent =
   | {
@@ -340,6 +462,20 @@ export type WorkspaceEvent =
     }
   | { readonly kind: "dropped"; readonly count: number };
 
+/** The workspace's repository state for the rail's repository card (ADR
+ *  0058): the same snapshot the backend frame carries (ADR 0049 §2),
+ *  probed again on open, on a workspace change, at every turn's end and
+ *  on request. `repo` is null when the workspace is not a repository or
+ *  git cannot answer; `workspace` names the folder it describes, so a late
+ *  answer for a folder the session has since left can be told apart. */
+export type RepoEvent =
+  | {
+      readonly kind: "repo";
+      readonly workspace: string;
+      readonly repo: RepoContextSnapshot | null;
+    }
+  | { readonly kind: "dropped"; readonly count: number };
+
 /** A cue to autoplay a voice clip in the renderer. `category` + `clipId` map to
  *  `<voiceRoot>/<category>/<clipId>.opus` (served via the `herta-voice` protocol).
  *  e.g. { category: "openings", clipId: "004-late-night-audit" }. Extensible to
@@ -347,6 +483,24 @@ export type WorkspaceEvent =
  *  server only says what to play and when. */
 export type VoiceCueEvent =
   | { readonly kind: "cue"; readonly category: string; readonly clipId: string }
+  | {
+      /** One synthesized unit of Herta's speech (ADR 0042): play it now,
+       *  gapless after the previous `seq` of the same utterance. The sink
+       *  emits it the instant that unit's text begins to reveal, so audio
+       *  and text start together. */
+      readonly kind: "tts";
+      readonly utteranceId: string;
+      readonly seq: number;
+      readonly samples: Int16Array;
+      readonly sampleRate: number;
+      readonly durationMs: number;
+    }
+  | {
+      /** Stop playback of an utterance (a veto cut it mid-sentence, an
+       *  interrupt, the reveal ceiling). No `utteranceId` → stop everything. */
+      readonly kind: "ttsStop";
+      readonly utteranceId?: string;
+    }
   | { readonly kind: "dropped"; readonly count: number };
 
 /** Emitted after a session's files are deleted, so the renderer stores can
@@ -362,14 +516,20 @@ export interface SessionHost {
   /** Content search over this workspace's persisted transcripts — the
    *  DIALOGUE only (user + Herta speech blocks), case-insensitive substring,
    *  first match per session, bounded hits with a preview snippet.
-   *  Best-effort: unreadable transcripts are skipped. See session-search.ts. */
-  searchSessions(query: string): SessionSearchHit[];
+   *  Best-effort: unreadable transcripts are skipped. Async since 2026-09-03:
+   *  the scan reads off the event loop chunk by chunk, and a query that
+   *  extends the previous one reads only its hits. See session-search.ts. */
+  searchSessions(query: string): Promise<SessionSearchHit[]>;
   /** Remove a session's persisted files. If it is the active session it is
    *  closed first (releasing the transcript file handle) and `activeSession`
-   *  becomes null. `wasActive` reports whether the deleted session was open. */
+   *  becomes null. `wasActive` reports whether the deleted session was open.
+   *  A remove that fails part-way resolves `ok: false` rather than throwing,
+   *  with `removed` saying whether the session itself is gone (its transcript
+   *  is removed first; a managed workspace held open by another program can
+   *  fail after it) — the caller drops the card only when it is. */
   deleteSession(
     sessionId: string,
-  ): Promise<{ ok: boolean; wasActive: boolean }>;
+  ): Promise<{ ok: boolean; wasActive: boolean; removed?: boolean }>;
   closeActiveSession(): Promise<void>;
   /** Release host-level resources (clears the idle trigger interval, if any).
    *  Call on app shutdown. Idempotent. */
@@ -378,6 +538,11 @@ export interface SessionHost {
    *  session reads it through a getter, so the NEXT turn uses the new value with
    *  no restart. Pass "" to clear. Persistence is the caller's job (key-store). */
   setDeepSeekKey(key: string): void;
+  /** The user did something in the window that is not a turn (a rewind, an
+   *  attachment, a search, a file opened in the viewer): it counts as
+   *  activity for the dream trigger, and a running pass steps aside at its
+   *  next episode. Optional: a host without a dream trigger omits it. */
+  noteUserActivity?(): void;
   readonly activeSession: Session | null;
 }
 
@@ -404,6 +569,15 @@ export type ContextCompactionRequestResult =
 /** The outcome of a configured MCP server's session-start connection attempt.
  * A missing map entry is represented as `unknown` at the GUI boundary. */
 export type McpConnectionStatus = "connected" | "failed";
+
+/** What `steerText` answers (ADR 0063). `accepted`: the backend is running,
+ *  the text is in the record and 板砖 reads it at its next step. `queued`:
+ *  there is no backend step to reach — the turn is Herta's own speech, or
+ *  none is running — so the caller keeps the text for the next turn. Never
+ *  an error: a steer that missed its window is a queued message. */
+export type SteerTextResult =
+  | { readonly accepted: string }
+  | { readonly queued: true };
 
 export interface Session {
   readonly sessionId: string;
@@ -434,8 +608,23 @@ export interface Session {
    *  closes this session, which INTERRUPTS the turn — the tray can't show
    *  a two-step confirm, so it refuses and fronts the window instead. */
   readonly turnInFlight: boolean;
+  /** 板砖's run is in progress inside the current turn — the hold window
+   *  (ADR 0063). A window that reloads mid-turn re-learns it from the reset
+   *  snapshot. Optional: hosts without the GUI's session omit it. */
+  readonly backendActive?: boolean;
+  /** Pictures staged in the composer and not yet sent (ADR 0048 §4) — what
+   *  a reloaded window's strip is rebuilt from. Optional like the above. */
+  readonly stagedImageList?: readonly StagedImageInfo[];
+  /** The dream corpus changed on disk: the next turn re-derives the static
+   *  prefix once (ADR 0069 §1b). Optional like the above. */
+  markPrefixStale?(): void;
 
-  submitText(text: string): Promise<SubmitTextResult>;
+  /** `stagedImageIds` sends pictures with the message (ADR 0048 §4): their
+   *  blocks land right after the user block, inside this turn's span. */
+  submitText(
+    text: string,
+    opts?: { readonly stagedImageIds?: readonly string[] },
+  ): Promise<SubmitTextResult>;
   /** Returns the current actor-prompt estimate for the active session. */
   getContextUsage?(): ContextUsage;
   /** Schedule a one-shot recap before the next submitted message. This never
@@ -466,6 +655,16 @@ export interface Session {
     readonly turnId?: string;
   }): Promise<{ readonly ok: boolean }>;
   /**
+   * A message while 板砖 works (ADR 0063). While the backend loop runs, the
+   * text enters the shared record at once as a user block (Herta sees it,
+   * D7) and reaches 板砖 at its next sampling boundary as the newest user
+   * message; the turn continues. Outside a backend run the answer is
+   * `queued` and nothing is recorded — the caller holds the text and
+   * submits it as the next turn. OPTIONAL: fakes and the website demo omit
+   * it; the composer then offers no steer.
+   */
+  steerText?(text: string): Promise<SteerTextResult>;
+  /**
    * Rewind the latest 开拓者 (user) turn: withdraw it and everything below it
    * (Herta reply, 板砖 system blocks, beats, markers) from every record store,
    * returning the withdrawn user text to restore into the composer. Idle-only —
@@ -494,6 +693,14 @@ export interface Session {
   listCommandRules?(): Promise<readonly string[]>;
   /** Removes one rule by its display form. False when nothing matched. */
   removeCommandRule?(display: string): Promise<boolean>;
+  /** Workspace trust (ADR 0064) for the CURRENT effective workspace.
+   *  Optional: only the GUI SessionImpl implements the pair. */
+  getWorkspaceTrust?(): Promise<WorkspaceTrustState>;
+  /** Record the owner's choice for this workspace; null clears it back to
+   *  the default. Resolves with the state after the change. */
+  setWorkspaceTrust?(
+    value: WorkspaceTrust | null,
+  ): Promise<WorkspaceTrustState>;
   /** Set the effective backend (板砖) workspace. Trusts its caller —
    *  validation happens at the GUI/CLI boundary. Persisted + broadcast.
    *  Idle-only (audit 2026-07-10, finding 13): refused with
@@ -511,6 +718,20 @@ export interface Session {
   /** Take back an attached document: delete the stored file and mark every
    *  block citing it removed. Idle-only, like attachFiles. */
   removeAttachment?(path: string): Promise<RemoveAttachmentResult>;
+  /** Stage pictures in the composer (ADR 0048 §4): store + start captioning
+   *  now, append to the record only when the message is sent. Accepts a path
+   *  (picker, drop) or raw bytes (paste — a clipboard screenshot has no path
+   *  at all). Idle-only, like attachFiles. */
+  stageImages?(
+    inputs: readonly {
+      readonly path?: string;
+      readonly bytes?: Uint8Array;
+      readonly name?: string;
+    }[],
+  ): Promise<StageImagesResult>;
+  /** Drop a staged picture and delete its stored copy. Nothing about it ever
+   *  reached the record, so — unlike removeAttachment — nothing is marked. */
+  unstageImage?(id: string): Promise<boolean>;
 
   subscribeRecord(): AsyncIterable<RecordEvent>;
   subscribeOverlay(): AsyncIterable<OverlayEvent>;
@@ -522,6 +743,41 @@ export interface Session {
   /** Voice-clip autoplay cues (opening voice now; veto / particle / easter-egg
    *  later). Renderer-only playback — the server only emits what to play. */
   subscribeVoice(): AsyncIterable<VoiceCueEvent>;
+  /** The workspace's repository as last probed (ADR 0058): null when it is
+   *  not a repository, git cannot answer, or no probe has finished yet.
+   *  Optional: only the GUI SessionImpl carries the repository card's
+   *  surface. */
+  readonly repo?: RepoContextSnapshot | null;
+  /** Probe the repository again now and emit the answer as a `repo` event
+   *  (the renderer asks on window focus, so a commit made in a terminal
+   *  shows when the user looks back). Coalesced: a request during a probe
+   *  runs exactly one more after it. */
+  refreshRepo?(): Promise<void>;
+  subscribeRepo?(): AsyncIterable<RepoEvent>;
+  /** One commit of the workspace's repository — message, author, the files
+   *  with their counts, the patch — for the viewer's commit tab (ADR 0059).
+   *  `ref` is a hex commit id (abbreviated is fine); null when git cannot
+   *  show it. Optional: the GUI SessionImpl only. */
+  describeCommit?(
+    ref: string,
+  ): Promise<CommitDescription | null | GitReadTimeout>;
+  /** One workspace-relative path's working-tree change against HEAD —
+   *  staged and unstaged together, an untracked file as a whole addition —
+   *  for the viewer's diff tab (ADR 0059 §5). The caller has jailed the
+   *  path to the workspace. Null when git cannot answer. Optional: the GUI
+   *  SessionImpl only. */
+  describeWorkingDiff?(
+    path: string,
+  ): Promise<WorkingDiff | null | GitReadTimeout>;
+  /** A page of the repository's history for the viewer's log tab (ADR
+   *  0059 §6): a ref's log (HEAD by default), newest first, each commit
+   *  marked when not yet on that ref's upstream, optionally filtered by
+   *  message. Null when git cannot answer. Optional: the GUI SessionImpl
+   *  only. */
+  describeLog?(opts: LogQuery): Promise<LogPage | null | GitReadTimeout>;
+  /** The repository's branches for the history tab's read-only picker
+   *  (ADR 0059 §6). Optional like its siblings. */
+  describeBranches?(): Promise<BranchList | null | GitReadTimeout>;
 
   close(): Promise<void>;
 }

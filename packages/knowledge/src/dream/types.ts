@@ -65,7 +65,6 @@ export interface DreamCreatedRecord {
   readonly summary: string;
   readonly critiqueScores: CritiqueScores;
   readonly validateFeianPassed: boolean;
-  readonly estimatedPrefixTokens: number;
   /** How many times a same-move/same-scenario episode has reactivated this
    *  dream. Feeds the retention curve's usefulness term. Dormant (stays 0) until
    *  the slice-2 reconsolidation junction populates it. */
@@ -101,6 +100,21 @@ export interface DreamManifest {
   episodes: EpisodeLedgerEntry[];
   created: DreamCreatedRecord[];
   lastRunAt?: string;
+  /** Archived dying dreams whose gist has not reached the 关于开拓者 page yet
+   *  — names in the dream ARCHIVE dir. The fold runs at the end of a pass,
+   *  after the archive move; a pass that aborted or crashed in between used
+   *  to lose the gist for good (dream review 2026-09-22, finding 14). The
+   *  fold reads the bodies back from the archive and clears the list only
+   *  when the page was written. Absent = nothing pending. */
+  pendingFold?: string[];
+  /** The cutover of segmentation v2 (ADR 0069 §4 and §7, ISO). For blocks
+   *  stamped at or after it, a done/noop-marker no longer ends its episode
+   *  (the cut moves past Herta's verdict to the next user block), and
+   *  板砖's rows no longer count toward the block cap. Set by the first pass
+   *  that runs with v2 and never moved, so every episode ledgered before it
+   *  keeps its hash and the reopen filter keeps matching its 废案. Absent =
+   *  no pass has run with v2 yet: the old rules everywhere. */
+  segmentationV2Since?: string;
 }
 
 export interface DreamConfig {
@@ -200,4 +214,8 @@ export interface DreamConfig {
   /** Thinking budget for the judgment gates — worthiness, critique, refine,
    *  similarity (default "high"). */
   readonly gateEffort: ReasoningEffort;
+  /** Most episodes the AUTOMATIC pass sends through the LLM stages in one
+   *  run; the rest wait for the next pass. The host passes it to
+   *  `runDreamPass` as `maxEpisodes`; a manual pass is not limited by it. */
+  readonly autoPassMaxEpisodes: number;
 }

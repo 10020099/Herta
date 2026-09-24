@@ -1,4 +1,4 @@
-import type { HertaBridge } from "../ipc/bridge-types.js";
+import type { HertaBridge, StagedImageInfo } from "../ipc/bridge-types.js";
 import type { SessionStore } from "../store/session-store.js";
 
 /**
@@ -17,12 +17,29 @@ export function submitMessage(
   bridge: HertaBridge,
   store: SessionStore,
   text: string,
+  /** Pictures staged in the composer that ride THIS message (ADR 0048 §4).
+   *  Their record blocks land right after the user block. The full infos
+   *  (not just ids) so the optimistic echo can show them, and so the no-key
+   *  and rejection paths can hand them back — their staged copies survive
+   *  both (only a successful submit's `commit` consumes them). */
+  staged?: readonly StagedImageInfo[],
+  /** Where the outgoing clone lifts off from, in viewport pixels, when the
+   *  message did not leave the composer's input — a held message (ADR 0063)
+   *  flies from its own card. Absent: the composer's input, as ever. */
+  launch?: { readonly left: number; readonly top: number },
 ): void {
-  store.markPendingUser(text);
-  bridge.submitText(text).then(
+  // Armed BEFORE the echo lands: the conversation's outgoing morph reads it
+  // on the same edge that mounts the flying clone.
+  store.armLaunch(launch ?? null);
+  store.markPendingUser(text, staged);
+  const ids =
+    staged !== undefined && staged.length > 0
+      ? staged.map((s) => s.id)
+      : undefined;
+  bridge.submitText(text, ids).then(
     (result) => {
       if (result && "needsKey" in result) {
-        store.requestKeyPrompt(text);
+        store.requestKeyPrompt(text, staged);
       }
     },
     () => {
@@ -32,8 +49,8 @@ export function submitMessage(
       // is claiming the session), so no turn.started/failed safety net will
       // ever clear the optimistic echo — the phantom user bubble stuck until
       // the next successful turn. Withdraw the echo and restore the text to
-      // the composer so nothing the user typed is lost.
-      store.withdrawPendingUser(text);
+      // the composer (pictures included) so nothing the user staged is lost.
+      store.withdrawPendingUser(text, staged);
     },
   );
 }

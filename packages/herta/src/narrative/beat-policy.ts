@@ -30,7 +30,6 @@ export interface TriggerSpec {
 export function workflowKindForBeat(tool: string): string | null {
   switch (tool) {
     case "read_file":
-    case "list_files":
     case "search_text":
     case "glob":
       return "read";
@@ -69,7 +68,8 @@ export function workflowKindForBeat(tool: string): string | null {
  *  - `tool.call.finished` permission_denied/permission_failed → null.
  *  - `tool.call.finished` other failure → `tool.fail:${tool}:${code}`.
  *  - `patch.preview` → `patch.preview:first`.
- *  - `verification.finished` → `verification.finished`.
+ *  - `verification.finished` with `passed: false` → `verification.finished`;
+ *    a passing run (or one whose outcome is unknown) → null (2026-09-03).
  *  - `plan.updated` → null.
  *  - Turn lifecycle events → null (handled separately via reset()).
  *
@@ -91,6 +91,11 @@ export function workflowKindForBeat(tool: string): string | null {
  * just doesn't narrate them individually.
  */
 export function classifyBeatTrigger(event: AgentEvent): TriggerSpec | null {
+  // A steer (ADR 0063) is the user speaking to Herta mid-commission — the
+  // one actor-layer event that earns a beat: one short acknowledgment in
+  // her voice (owner 2026-09-14: silence until her next commentary reads as
+  // being ignored). The id is the signature, so one steer fires once.
+  if (event.type === "user.steer") return { signature: `steer:${event.id}` };
   if (event.layer !== "backend") return null;
 
   switch (event.type) {
@@ -126,7 +131,15 @@ export function classifyBeatTrigger(event: AgentEvent): TriggerSpec | null {
     case "patch.preview":
       return { signature: "patch.preview:first" };
     case "verification.finished":
-      return { signature: "verification.finished" };
+      // A RED run only (owner 2026-09-03). A green run drew a beat ("全绿，
+      // 0.22 秒…拿着用吧") and, when it was the brief's last step, Herta's
+      // synthesis said the same thing again seconds later. A pass mid-run
+      // is a status row; the reaction that earns its place is to a failure,
+      // while 板砖 is still there to fix it. The producer sends `passed`;
+      // an emitter that does not know sends nothing, and gets no beat.
+      return event.result.passed === false
+        ? { signature: "verification.finished" }
+        : null;
     default:
       return null;
   }

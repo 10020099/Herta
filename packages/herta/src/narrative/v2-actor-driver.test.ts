@@ -13,24 +13,61 @@ import {
   type V2RecordPersister,
 } from "@herta/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { StaticHertaPrefix } from "./actor-prompt.js";
 import * as actorTurn from "./actor-turn.js";
 import * as intentRouter from "./intent-router.js";
 import type { MetaThinkCorpus, MoodState } from "./meta-think.js";
 import type { PreparedRecap, RecapRuntime } from "./session-recap-runtime.js";
 import * as recapRuntime from "./session-recap-runtime.js";
 import type { ActorStreamingSink } from "./streaming-sink.js";
-import { V2ActorDriver } from "./v2-actor-driver.js";
+import {
+  type StaticPrefixRebuilder,
+  V2ActorDriver,
+  type V2ActorDriverDeps,
+} from "./v2-actor-driver.js";
 
 async function* streamOf<T>(events: readonly T[]): AsyncGenerator<T> {
   for (const e of events) yield e;
 }
 
+/** The canned thought the default `mkProvider` answers every thought prompt
+ *  with. Every turn thinks before it speaks (2026-09-03: the single-phase
+ *  path is gone), so a test that only cares about the speech would otherwise
+ *  have to script a thought first — and a speech script consumed by the
+ *  thought phase commits as a thought and leaves the speech phase empty. */
+const AUTO_THOUGHT = "想想看。";
+const AUTO_THOUGHT_BLOCK: TerminalRecordBlock = {
+  kind: "herta",
+  surface: "thought",
+  text: AUTO_THOUGHT,
+};
+
+/** The phase-2 thought prompt ends with its forced open tag (see
+ *  `serializeActorPrompt`: a complete open tag gets a trailing newline). */
+function isThoughtPrompt(req: CompletionRequest): boolean {
+  return req.prompt.endsWith("（我 想）\n");
+}
+
+/**
+ * Scripted actor provider. By default a thought prompt is answered with
+ * `AUTO_THOUGHT` WITHOUT consuming a script, so `scripts` lists only the
+ * speech completions in order. `scriptThoughts: true` opts out: every call
+ * consumes the next script, thought prompts included, for tests that assert
+ * on the thought text or count the calls.
+ */
 function mkProvider(
   scripts: ReadonlyArray<CompletionEvent[]>,
+  opts: { scriptThoughts?: boolean } = {},
 ): CompletionProviderAdapter {
   let idx = 0;
   return {
-    streamCompletion(_req: CompletionRequest): AsyncIterable<CompletionEvent> {
+    streamCompletion(req: CompletionRequest): AsyncIterable<CompletionEvent> {
+      if (opts.scriptThoughts !== true && isThoughtPrompt(req)) {
+        return streamOf<CompletionEvent>([
+          { type: "text-delta", text: `${AUTO_THOUGHT}（/我 想）` },
+          { type: "finish", reason: "stop" },
+        ]);
+      }
       const script = scripts[idx] ?? [{ type: "finish", reason: "stop" }];
       idx += 1;
       return streamOf(script);
@@ -101,7 +138,7 @@ function mkDriver(
 }
 
 describe("V2ActorDriver", () => {
-  it("returns a record with user + herta blocks after one turn", async () => {
+  it("returns a record with user + thought + speech blocks after one turn", async () => {
     const provider = mkProvider([
       [
         { type: "text-delta", text: "好。" },
@@ -110,9 +147,12 @@ describe("V2ActorDriver", () => {
     ]);
     const driver = mkDriver(provider);
     const record = await driver.runTurn("在吗", new AbortController().signal);
-    expect(record).toHaveLength(2);
+    expect(record).toHaveLength(3);
     expect(record[0]).toEqual({ kind: "user", text: "在吗" });
-    expect(record[1]).toEqual({
+    // Every turn thinks first: the default provider's canned thought lands
+    // before the scripted speech.
+    expect(record[1]).toEqual(AUTO_THOUGHT_BLOCK);
+    expect(record[2]).toEqual({
       kind: "herta",
       surface: "speech",
       text: "好。",
@@ -209,11 +249,12 @@ describe("V2ActorDriver", () => {
     const record = await driver.regenerateLastReply(
       new AbortController().signal,
     );
-    expect(record).toHaveLength(3);
+    expect(record).toHaveLength(4);
     // The user block is preserved in place (not duplicated)…
     expect(record[1]).toEqual({ kind: "user", text: "在吗" });
-    // …and the reply is regenerated after it.
-    expect(record[2]).toEqual({
+    // …and the reply is regenerated after it as a full think → speak turn.
+    expect(record[2]).toEqual(AUTO_THOUGHT_BLOCK);
+    expect(record[3]).toEqual({
       kind: "herta",
       surface: "speech",
       text: "迟到的答复。",
@@ -513,7 +554,7 @@ describe("V2ActorDriver", () => {
 
   it("D3: playOpening forwards baseMsOverride to slowStreamSpeech (wav-matched cadence)", async () => {
     const provider = mkProvider([[{ type: "finish", reason: "stop" }]]);
-    const seen: { opts?: { baseMsOverride?: number } } = {};
+    const seen: { opts?: { baseMsOverride?: number; unvoiced?: boolean } } = {};
     const sink: ActorStreamingSink = {
       beginHertaStream: () => undefined,
       streamHertaToken: () => undefined,
@@ -560,9 +601,11 @@ describe("V2ActorDriver", () => {
     // leadMs 0 → no wait; pass a base override.
     await driver.playOpening(seed, 0, undefined, 137);
     expect(seen.opts?.baseMsOverride).toBe(137);
+    // …alongside the unvoiced marker (ADR 0042) — the clip is the voice here.
+    expect(seen.opts?.unvoiced).toBe(true);
   });
 
-  it("D3: playOpening passes no opts when baseMsOverride is omitted", async () => {
+  it("D3: playOpening marks the opening UNVOICED by default; told `voiced`, it opens the stream plain for the sink to speak (ADR 0042 §7a)", async () => {
     const provider = mkProvider([[{ type: "finish", reason: "stop" }]]);
     const seen: { called: boolean; opts?: unknown } = { called: false };
     const sink: ActorStreamingSink = {
@@ -611,6 +654,17 @@ describe("V2ActorDriver", () => {
     };
     await driver.playOpening(seed, 0);
     expect(seen.called).toBe(true);
+    // The opening already HAS a voice — its recorded clip, cued by the caller
+    // in onStreamStart. A sink with a speech synthesizer must not speak the
+    // same line over it, so the flag is set even with no cadence override.
+    expect(seen.opts).toEqual({ unvoiced: true });
+    // With the real-time voice on the session cues no clip and says so:
+    // the stream opens with neither the flag nor the clip's cadence — the
+    // sink's audio paces it.
+    seen.called = false;
+    seen.opts = "untouched";
+    await driver.playOpening(seed, 0, undefined, 137, undefined, true);
+    expect(seen.called).toBe(true);
     expect(seen.opts).toBeUndefined();
   });
 
@@ -627,17 +681,19 @@ describe("V2ActorDriver", () => {
     ]);
     const driver = mkDriver(provider);
     const r1 = await driver.runTurn("一", new AbortController().signal);
-    expect(r1).toHaveLength(2);
+    expect(r1).toHaveLength(3);
     const r2 = await driver.runTurn("二", new AbortController().signal);
-    expect(r2).toHaveLength(4);
+    expect(r2).toHaveLength(6);
     expect(r2[0]).toEqual({ kind: "user", text: "一" });
-    expect(r2[1]).toEqual({
+    expect(r2[1]).toEqual(AUTO_THOUGHT_BLOCK);
+    expect(r2[2]).toEqual({
       kind: "herta",
       surface: "speech",
       text: "第一次。",
     });
-    expect(r2[2]).toEqual({ kind: "user", text: "二" });
-    expect(r2[3]).toEqual({
+    expect(r2[3]).toEqual({ kind: "user", text: "二" });
+    expect(r2[4]).toEqual(AUTO_THOUGHT_BLOCK);
+    expect(r2[5]).toEqual({
       kind: "herta",
       surface: "speech",
       text: "第二次。",
@@ -647,18 +703,18 @@ describe("V2ActorDriver", () => {
   });
 
   it("getRecord() returns the current state without running a turn", async () => {
-    // Must include a valid speech delta (Slice 10: 说） prefix required) so
-    // a HertaBlock is committed and the record grows to length 2.
+    // A closed speech so the turn commits its speech block and ends: the
+    // record grows to user + thought + speech.
     const provider = mkProvider([
       [
-        { type: "text-delta", text: "说）好。（/我 说）" },
+        { type: "text-delta", text: "好。（/我 说）" },
         { type: "finish", reason: "stop" },
       ],
     ]);
     const driver = mkDriver(provider);
     expect(driver.getRecord()).toEqual([]);
     await driver.runTurn("hi", new AbortController().signal);
-    expect(driver.getRecord()).toHaveLength(2);
+    expect(driver.getRecord()).toHaveLength(3);
   });
 
   it("forwards the signal to runActorCompletionTurn", async () => {
@@ -714,13 +770,13 @@ describe("V2ActorDriver", () => {
     const driver = mkDriver(provider);
     await driver.runTurn("一", new AbortController().signal);
     const snapshot = driver.getRecord();
-    expect(snapshot).toHaveLength(2);
+    expect(snapshot).toHaveLength(3);
     await driver.runTurn("二", new AbortController().signal);
     // The captured snapshot reference is from before turn 2; the driver
     // replaced this.record on turn 2 rather than mutating, so the
-    // snapshot still shows length 2.
-    expect(snapshot).toHaveLength(2);
-    expect(driver.getRecord()).toHaveLength(4);
+    // snapshot still shows length 3 (user + thought + speech).
+    expect(snapshot).toHaveLength(3);
+    expect(driver.getRecord()).toHaveLength(6);
   });
 
   describe("persister integration", () => {
@@ -769,9 +825,12 @@ describe("V2ActorDriver", () => {
         metaThinkCorpus: mkEmptyCorpusForHelper(),
       });
       await driver.runTurn("在吗", new AbortController().signal);
-      expect(blocks).toHaveLength(2);
+      // The batch persist covers every block appended at indices
+      // [prevLen, record.length) — the thought is written too.
+      expect(blocks).toHaveLength(3);
       expect(blocks[0]).toEqual({ kind: "user", text: "在吗" });
-      expect(blocks[1]).toEqual({
+      expect(blocks[1]).toEqual(AUTO_THOUGHT_BLOCK);
+      expect(blocks[2]).toEqual({
         kind: "herta",
         surface: "speech",
         text: "好。",
@@ -813,11 +872,12 @@ describe("V2ActorDriver", () => {
         metaThinkCorpus: mkEmptyCorpusForHelper(),
       });
       await driver.runTurn("一", new AbortController().signal);
-      expect(blocks).toHaveLength(2);
+      expect(blocks).toHaveLength(3);
       await driver.runTurn("二", new AbortController().signal);
-      expect(blocks).toHaveLength(4); // 2 prior + 2 new
-      expect(blocks[2]).toEqual({ kind: "user", text: "二" });
-      expect(blocks[3]).toEqual({
+      expect(blocks).toHaveLength(6); // 3 prior + 3 new
+      expect(blocks[3]).toEqual({ kind: "user", text: "二" });
+      expect(blocks[4]).toEqual(AUTO_THOUGHT_BLOCK);
+      expect(blocks[5]).toEqual({
         kind: "herta",
         surface: "speech",
         text: "二。",
@@ -833,7 +893,7 @@ describe("V2ActorDriver", () => {
       ]);
       const driver = mkDriver(provider);
       const record = await driver.runTurn("hi", new AbortController().signal);
-      expect(record).toHaveLength(2);
+      expect(record).toHaveLength(3);
     });
   });
 
@@ -848,11 +908,11 @@ describe("V2ActorDriver", () => {
         endHertaStream: () => {},
         flushBlocks: () => {},
       };
-      // Slice 10: text-delta must include 说） prefix so the loop recognises
-      // the surface and routes tokens through the sink.
+      // The speech phase's prompt forces `（我 说）`; the body streams through
+      // the sink as it arrives.
       const provider = mkProvider([
         [
-          { type: "text-delta", text: "说）好。（/我 说）" },
+          { type: "text-delta", text: "好。（/我 说）" },
           { type: "finish", reason: "stop" },
         ],
       ]);
@@ -879,7 +939,8 @@ describe("V2ActorDriver", () => {
         metaThinkCorpus: mkEmptyCorpusForHelper(),
       });
       await driver.runTurn("hi", new AbortController().signal);
-      // The actor loop should have streamed "好。" via the sink.
+      // The actor loop streamed the speech "好。" via the sink — and nothing
+      // for the thought phase, which streams no tokens (indicator only).
       expect(tokenCapture.join("")).toBe("好。");
     });
 
@@ -893,8 +954,8 @@ describe("V2ActorDriver", () => {
       // Use mkDriver helper which does not set a sink.
       const driver = mkDriver(provider);
       const record = await driver.runTurn("hi", new AbortController().signal);
-      expect(record).toHaveLength(2);
-      expect(record[1]).toEqual({
+      expect(record).toHaveLength(3);
+      expect(record[2]).toEqual({
         kind: "herta",
         surface: "speech",
         text: "ok",
@@ -961,9 +1022,10 @@ describe("V2ActorDriver", () => {
       ]);
       // After load, only new blocks from runTurn should hit the persister.
       await driver.runTurn("new", new AbortController().signal);
-      expect(blocks).toHaveLength(2);
+      expect(blocks).toHaveLength(3);
       expect(blocks[0]).toEqual({ kind: "user", text: "new" });
-      expect(blocks[1]).toEqual({
+      expect(blocks[1]).toEqual(AUTO_THOUGHT_BLOCK);
+      expect(blocks[2]).toEqual({
         kind: "herta",
         surface: "speech",
         text: "after",
@@ -992,6 +1054,30 @@ describe("V2ActorDriver", () => {
         "herta",
         "system",
       ]);
+      expect(driver.getRecord()).toEqual([
+        { kind: "user", text: "u1" },
+        { kind: "herta", surface: "speech", text: "h1" },
+      ]);
+    });
+
+    it("a steer inside the run is not the turn: rewind withdraws from the COMMISSION, and the draft carries every word the user said in it (ADR 0063 §1.10)", () => {
+      const driver = mkDriver(mkProvider([]));
+      driver.loadRecord([
+        { kind: "user", text: "u1" },
+        { kind: "herta", surface: "speech", text: "h1" },
+        { kind: "user", text: "fix the parser @板砖" },
+        { kind: "herta", surface: "speech", text: "on it" },
+        { kind: "system", label: "系统", body: "Reading a.ts" },
+        { kind: "user", text: "also rename the test file", steer: true },
+        { kind: "herta", surface: "speech", text: "noted" },
+        { kind: "system", label: "系统", body: "Writing b.ts" },
+      ]);
+      const result = driver.rewindLastUserTurn();
+      expect(result?.userText).toBe(
+        "fix the parser @板砖\n\nalso rename the test file",
+      );
+      // Pre-fix only the steer and what followed it went; the commission and
+      // the first half of 板砖's run stood with no 完成 marker.
       expect(driver.getRecord()).toEqual([
         { kind: "user", text: "u1" },
         { kind: "herta", surface: "speech", text: "h1" },
@@ -1078,6 +1164,7 @@ describe("V2ActorDriver", () => {
       );
       expect(record).toEqual([
         { kind: "user", text: "u1-edited" },
+        AUTO_THOUGHT_BLOCK,
         { kind: "herta", surface: "speech", text: "再答。" },
       ]);
     });
@@ -1085,11 +1172,11 @@ describe("V2ActorDriver", () => {
 
   describe("onPrompt forwarding (prompt dump)", () => {
     it("forwards onPrompt callback to runActorCompletionTurn", async () => {
-      // Slice 10: must include 说） prefix so the loop commits a speech block
-      // and the turn ends (otherwise it loops infinitely).
+      // One think → speak cycle: the thought prompt is auto-answered, the
+      // speech comes from the script, and the turn ends on that speech.
       const provider = mkProvider([
         [
-          { type: "text-delta", text: "说）好。（/我 说）" },
+          { type: "text-delta", text: "好。（/我 说）" },
           { type: "finish", reason: "stop" },
         ],
       ]);
@@ -1122,22 +1209,33 @@ describe("V2ActorDriver", () => {
         metaThinkCorpus: mkEmptyCorpusForHelper(),
       });
       await driver.runTurn("在吗", new AbortController().signal);
-      // Expect 4 onPrompt calls: "state-out" (router transaction dump) +
-      // "state" (resolved mood, once per turn) + "primary" (request) +
-      // "primary-out" (response dump). The empty corpus means mood routing
-      // is inactive (single-phase path), but "state-out" and "state" both
-      // fire from the driver after the router try/catch.
-      expect(captured).toHaveLength(4);
-      expect(captured[0]?.label).toBe("state-out");
-      expect(captured[1]?.label).toBe("state");
-      expect(captured[2]?.label).toBe("primary");
-      expect(captured[3]?.label).toBe("primary-out");
-      // Prompt must contain the static prefix + user text + open branch tag.
-      // Slice 10: prompt ends with "（我 " (open branch, no surface yet) so
-      // the model chooses between 想）and 说）. Not "（我 说）" as in pre-Slice-10.
+      // Expect 6 onPrompt calls: "state-out" (router transaction dump) +
+      // "state" (resolved mood, once per turn), then one "phase2" (request)
+      // + "phase2-out" (response dump) pair per completion — the thought
+      // phase and the forced speech phase. The empty corpus means no
+      // meta-think attachment, but the turn still thinks then speaks;
+      // "state-out" and "state" both fire from the driver after the router
+      // try/catch.
+      expect(captured.map((c) => c.label)).toEqual([
+        "state-out",
+        "state",
+        "phase2",
+        "phase2-out",
+        "phase2",
+        "phase2-out",
+      ]);
+      // Each phase-2 prompt carries the static prefix + user text and ends
+      // with that phase's FORCED open tag: `（我 想）` for the thought,
+      // `（我 说）` for the speech. The model never picks the surface — the
+      // `（我 ` branch prompt went with the single-phase path (2026-09-03).
       expect(captured[2]?.prompt).toContain("[prefix]");
       expect(captured[2]?.prompt).toContain("在吗");
-      expect(captured[2]?.prompt).toMatch(/（我 $/);
+      expect(captured[2]?.prompt).toMatch(/（我 想）\n$/);
+      expect(captured[4]?.prompt).toContain("[prefix]");
+      expect(captured[4]?.prompt).toContain("在吗");
+      expect(captured[4]?.prompt).toMatch(/（我 说）\n$/);
+      // The speech prompt sees the thought this turn just committed.
+      expect(captured[4]?.prompt).toContain(AUTO_THOUGHT);
     });
 
     it("driver works without onPrompt (optional dep)", async () => {
@@ -1149,7 +1247,7 @@ describe("V2ActorDriver", () => {
       ]);
       const driver = mkDriver(provider);
       const record = await driver.runTurn("hi", new AbortController().signal);
-      expect(record).toHaveLength(2);
+      expect(record).toHaveLength(3);
     });
   });
 
@@ -1202,11 +1300,11 @@ describe("V2ActorDriver", () => {
         metaThinkCorpus: mkEmptyCorpusForHelper(),
       });
       await driver.runTurn("one", new AbortController().signal);
-      expect(blocksA).toHaveLength(2);
+      expect(blocksA).toHaveLength(3); // user + thought + speech
       driver.setPersister(persB);
       await driver.runTurn("two", new AbortController().signal);
-      expect(blocksA).toHaveLength(2); // unchanged
-      expect(blocksB).toHaveLength(2); // new persister received turn 2
+      expect(blocksA).toHaveLength(3); // unchanged
+      expect(blocksB).toHaveLength(3); // new persister received turn 2
     });
   });
 });
@@ -1240,23 +1338,12 @@ describe("V2ActorDriver — mood routing (Slice 13)", () => {
     };
   }
 
-  function mkActorProvider(
-    scripts: ReadonlyArray<CompletionEvent[]>,
-  ): CompletionProviderAdapter {
-    let idx = 0;
-    return {
-      streamCompletion(): AsyncIterable<CompletionEvent> {
-        const script = scripts[idx] ?? [{ type: "finish", reason: "stop" }];
-        idx += 1;
-        return streamOf(script);
-      },
-    };
-  }
-
   function mkMoodDriver(opts: {
     actorProvider: CompletionProviderAdapter;
     routerProvider: ProviderAdapter;
     corpus: MetaThinkCorpus;
+    /** The speak-anchor policy under test (default: the driver's). */
+    speakAnchorPolicy?: "refresh" | "expire";
   }): V2ActorDriver {
     const noopRuntime: CodingAgentRuntime = {
       runBrief: async (brief: HertaToAgentBrief) => ({
@@ -1278,12 +1365,15 @@ describe("V2ActorDriver — mood routing (Slice 13)", () => {
       runtimeFactory: () => noopRuntime,
       routerProvider: opts.routerProvider,
       metaThinkCorpus: opts.corpus,
+      ...(opts.speakAnchorPolicy !== undefined
+        ? { speakAnchorPolicy: opts.speakAnchorPolicy }
+        : {}),
     });
   }
 
   it("default state is 默认 on construction", () => {
     const driver = mkMoodDriver({
-      actorProvider: mkActorProvider([]),
+      actorProvider: mkProvider([]),
       routerProvider: mkRouterProvider([]),
       corpus: mkPartialCorpus(),
     });
@@ -1291,11 +1381,7 @@ describe("V2ActorDriver — mood routing (Slice 13)", () => {
   });
 
   it("runs the router before the actor and updates state", async () => {
-    const actor = mkActorProvider([
-      [
-        { type: "text-delta", text: "说）" },
-        { type: "finish", reason: "stop" },
-      ],
+    const actor = mkProvider([
       [
         { type: "text-delta", text: "好。（/我 说）" },
         { type: "finish", reason: "stop" },
@@ -1312,11 +1398,7 @@ describe("V2ActorDriver — mood routing (Slice 13)", () => {
   });
 
   it("router '不变' output keeps the prior state", async () => {
-    const actor = mkActorProvider([
-      [
-        { type: "text-delta", text: "说）" },
-        { type: "finish", reason: "stop" },
-      ],
+    const actor = mkProvider([
       [
         { type: "text-delta", text: "好。（/我 说）" },
         { type: "finish", reason: "stop" },
@@ -1333,11 +1415,7 @@ describe("V2ActorDriver — mood routing (Slice 13)", () => {
   });
 
   it("router failure keeps prior state and does not throw", async () => {
-    const actor = mkActorProvider([
-      [
-        { type: "text-delta", text: "说）" },
-        { type: "finish", reason: "stop" },
-      ],
+    const actor = mkProvider([
       [
         { type: "text-delta", text: "好。（/我 说）" },
         { type: "finish", reason: "stop" },
@@ -1359,11 +1437,7 @@ describe("V2ActorDriver — mood routing (Slice 13)", () => {
   });
 
   it("loadRecord resets state to 默认", async () => {
-    const actor = mkActorProvider([
-      [
-        { type: "text-delta", text: "说）" },
-        { type: "finish", reason: "stop" },
-      ],
+    const actor = mkProvider([
       [
         { type: "text-delta", text: "好。（/我 说）" },
         { type: "finish", reason: "stop" },
@@ -1400,15 +1474,18 @@ describe("V2ActorDriver — mood routing (Slice 13)", () => {
   //     texts from the corpus.
   //   - `loadRecord` resets the attachment to null; the first post-
   //     resume turn rebuilds it.
-  //   - Empty corpus → no attachment ever (single-phase mode preserved).
+  //   - Empty corpus → no attachment ever; the actor still thinks then
+  //     speaks (the single-phase fallback is gone, 2026-09-03).
   //
-  // Helpers used: `mkMoodDriver`, `mkRouterProvider`, `mkActorProvider`,
-  // `mkPartialCorpus`, all defined at the top of this describe block.
+  // Helpers used: `mkMoodDriver`, `mkRouterProvider`, `mkPartialCorpus`
+  // (top of this describe block) and the file-level `mkProvider`.
 
   /**
    * Build a `CompletionEvent[]` script that produces a thought block
-   * (iter 1) followed by a forced-speech block (iter 2). Two-phase
-   * mode requires two LLM calls per Herta turn.
+   * (iter 1) followed by a forced-speech block (iter 2) — the two LLM
+   * calls of one Herta turn. Pass to `mkProvider` with
+   * `scriptThoughts: true` so the thought script is consumed rather than
+   * auto-answered.
    */
   function twoPhaseTurnScript(thoughtText: string, speechText: string) {
     return [
@@ -1424,7 +1501,9 @@ describe("V2ActorDriver — mood routing (Slice 13)", () => {
   }
 
   it("first turn creates an attachment at beforeBlockIndex=1 (empty starting record)", async () => {
-    const actor = mkActorProvider(twoPhaseTurnScript("想想。", "好。"));
+    const actor = mkProvider(twoPhaseTurnScript("想想。", "好。"), {
+      scriptThoughts: true,
+    });
     const router = mkRouterProvider(["默认"]);
     const driver = mkMoodDriver({
       actorProvider: actor,
@@ -1447,10 +1526,13 @@ describe("V2ActorDriver — mood routing (Slice 13)", () => {
   });
 
   it("same-state second turn advances the think anchor but keeps the speak anchor", async () => {
-    const actor = mkActorProvider([
-      ...twoPhaseTurnScript("一。", "好。"),
-      ...twoPhaseTurnScript("二。", "嗯。"),
-    ]);
+    const actor = mkProvider(
+      [
+        ...twoPhaseTurnScript("一。", "好。"),
+        ...twoPhaseTurnScript("二。", "嗯。"),
+      ],
+      { scriptThoughts: true },
+    );
     const router = mkRouterProvider(["默认", "默认"]);
     const driver = mkMoodDriver({
       actorProvider: actor,
@@ -1486,10 +1568,13 @@ describe("V2ActorDriver — mood routing (Slice 13)", () => {
   });
 
   it("state change creates a fresh attachment at the current turn's position", async () => {
-    const actor = mkActorProvider([
-      ...twoPhaseTurnScript("一。", "好。"),
-      ...twoPhaseTurnScript("二。", "嗯。"),
-    ]);
+    const actor = mkProvider(
+      [
+        ...twoPhaseTurnScript("一。", "好。"),
+        ...twoPhaseTurnScript("二。", "嗯。"),
+      ],
+      { scriptThoughts: true },
+    );
     const router = mkRouterProvider(["默认", "被烦版"]);
     const driver = mkMoodDriver({
       actorProvider: actor,
@@ -1518,8 +1603,9 @@ describe("V2ActorDriver — mood routing (Slice 13)", () => {
     expect(secondAttachment.preThinkText).toBe("ANNOYED_BLOB");
   });
 
-  it("same-state run: think anchor advances every turn; speak anchor sticks for SPEAK_ANCHOR_REFRESH_INTERVAL turns then jumps forward", async () => {
-    // 6 turns, all 默认. With SPEAK_ANCHOR_REFRESH_INTERVAL = 5:
+  it("speakAnchorPolicy 'refresh': think anchor advances every turn; speak anchor sticks for SPEAK_ANCHOR_REFRESH_INTERVAL turns then jumps forward", async () => {
+    // 6 turns, all 默认, under the pre-ADR-0066 policy. With
+    // SPEAK_ANCHOR_REFRESH_INTERVAL = 5:
     //   turn 1 → fresh attachment, counter=0, speak anchor=2
     //   turns 2-5 → counter increments to 4, anchor stays at 2
     //   turn 6 → counter reaches 5, speak anchor REFRESHES to turn 6's
@@ -1530,12 +1616,13 @@ describe("V2ActorDriver — mood routing (Slice 13)", () => {
     for (let i = 0; i < 6; i++) {
       scripts.push(...twoPhaseTurnScript(`想${i}。`, `说${i}。`));
     }
-    const actor = mkActorProvider(scripts);
+    const actor = mkProvider(scripts, { scriptThoughts: true });
     const router = mkRouterProvider(Array(6).fill("默认"));
     const driver = mkMoodDriver({
       actorProvider: actor,
       routerProvider: router,
       corpus: mkPartialCorpus(),
+      speakAnchorPolicy: "refresh",
     });
 
     for (let n = 1; n <= 6; n++) {
@@ -1559,8 +1646,55 @@ describe("V2ActorDriver — mood routing (Slice 13)", () => {
     }
   });
 
+  it("speakAnchorPolicy 'expire' (the default): after SPEAK_ANCHOR_REFRESH_INTERVAL same-state turns the speak preamble is dropped in place and nothing moves until the state changes", async () => {
+    // 8 turns: 默认 ×7, then 被烦版. Under "expire" (passed explicitly,
+    // and also what an omitted policy resolves to — ADR 0066):
+    //   turns 1-5 → speak anchor at 2 with the text (as "refresh")
+    //   turns 6-7 → anchor index UNCHANGED (2), text EMPTY — no jump
+    //   turn 8    → state change: fresh anchor at the tail, text back
+    // The think anchor advances every turn regardless.
+    const scripts = [];
+    for (let i = 0; i < 8; i++) {
+      scripts.push(...twoPhaseTurnScript(`想${i}。`, `说${i}。`));
+    }
+    const actor = mkProvider(scripts, { scriptThoughts: true });
+    const router = mkRouterProvider([...Array(7).fill("默认"), "被烦版"]);
+    const driver = mkMoodDriver({
+      actorProvider: actor,
+      routerProvider: router,
+      corpus: mkPartialCorpus(),
+      speakAnchorPolicy: "expire",
+    });
+
+    for (let n = 1; n <= 8; n++) {
+      await driver.runTurn(`turn ${n}`, new AbortController().signal);
+      const attached = driver.getAttachedMetaThink();
+      expect(attached).not.toBeNull();
+      expect(attached!.beforeThinkIndex).toBe((n - 1) * 3);
+      if (n <= 5) {
+        expect(attached!.state).toBe("默认");
+        expect(attached!.beforeSpeakIndex).toBe(2);
+        expect(attached!.preSpeakText).toBe("DEFAULT_BLOB");
+      } else if (n <= 7) {
+        // Expired: the index stays where the run started, the text is gone.
+        expect(attached!.state).toBe("默认");
+        expect(attached!.beforeSpeakIndex).toBe(2);
+        expect(attached!.preSpeakText).toBe("");
+        expect(attached!.preThinkText).toBe("DEFAULT_BLOB");
+      } else {
+        // State change: a fresh anchor at this turn's speech position
+        // (7 turns × 3 blocks + user + thought = 21 + 2 = 23).
+        expect(attached!.state).toBe("被烦版");
+        expect(attached!.beforeSpeakIndex).toBe(23);
+        expect(attached!.preSpeakText).toBe("ANNOYED_BLOB");
+      }
+    }
+  });
+
   it("loadRecord resets the attachment to null", async () => {
-    const actor = mkActorProvider(twoPhaseTurnScript("想。", "好。"));
+    const actor = mkProvider(twoPhaseTurnScript("想。", "好。"), {
+      scriptThoughts: true,
+    });
     const router = mkRouterProvider(["默认"]);
     const driver = mkMoodDriver({
       actorProvider: actor,
@@ -1573,7 +1707,7 @@ describe("V2ActorDriver — mood routing (Slice 13)", () => {
     expect(driver.getAttachedMetaThink()).toBeNull();
   });
 
-  it("empty corpus → no attachment created (single-phase mode)", async () => {
+  it("empty corpus → no attachment created, but the turn still thinks then speaks", async () => {
     const emptyCorpus: MetaThinkCorpus = {
       preThink: {
         默认: "",
@@ -1596,13 +1730,10 @@ describe("V2ActorDriver — mood routing (Slice 13)", () => {
         倾听版: "",
       },
     };
-    // Single-phase mode: one LLM call (no thought iteration), producing
-    // a speech block via autoregressive surface pick.
-    const actor = mkActorProvider([
-      [
-        { type: "text-delta", text: "说）" },
-        { type: "finish", reason: "stop" },
-      ],
+    // No preamble to splice, but the rhythm does not depend on one: the
+    // turn still runs a thought call (auto-answered here) and then the
+    // forced speech.
+    const actor = mkProvider([
       [
         { type: "text-delta", text: "好。（/我 说）" },
         { type: "finish", reason: "stop" },
@@ -1614,8 +1745,13 @@ describe("V2ActorDriver — mood routing (Slice 13)", () => {
       routerProvider: router,
       corpus: emptyCorpus,
     });
-    await driver.runTurn("hi", new AbortController().signal);
+    const record = await driver.runTurn("hi", new AbortController().signal);
     expect(driver.getAttachedMetaThink()).toBeNull();
+    expect(record).toEqual([
+      { kind: "user", text: "hi" },
+      AUTO_THOUGHT_BLOCK,
+      { kind: "herta", surface: "speech", text: "好。" },
+    ]);
   });
 });
 
@@ -1987,6 +2123,115 @@ describe("V2ActorDriver — recap dependency", () => {
     expect(seen[0]).toBe(await recapSpy.mock.results[0]?.value);
   });
 
+  it("runs the recap and the router CONCURRENTLY — the router is called while the recap is still pending (2026-09-03)", async () => {
+    // The recap resolves only once the router has been called. Under the
+    // old back-to-back order the router never ran before the recap settled,
+    // so this turn would hang; the race below turns that hang into a
+    // failure instead of a timeout.
+    let routerCalled: () => void = () => {};
+    const routerCalledPromise = new Promise<void>((resolve) => {
+      routerCalled = resolve;
+    });
+    const order: string[] = [];
+    vi.spyOn(recapRuntime, "prepareTurnRecap").mockImplementation(async () => {
+      order.push("recap:start");
+      const won = await Promise.race([
+        routerCalledPromise.then(() => "router" as const),
+        new Promise<"timeout">((resolve) =>
+          setTimeout(() => resolve("timeout"), 1000),
+        ),
+      ]);
+      order.push(`recap:end(${won})`);
+      return { recapBoundaryIndex: 0 };
+    });
+    vi.spyOn(actorTurn, "runActorCompletionTurn").mockImplementation(
+      async (state) => ({ record: state.record }),
+    );
+    const router: ProviderAdapter = {
+      streamChat(): AsyncIterable<ProviderEvent> {
+        order.push("router:called");
+        routerCalled();
+        return streamOf<ProviderEvent>([
+          { type: "text-delta", text: "教学版" },
+          { type: "finish", reason: "stop" },
+        ]);
+      },
+    };
+    const noopRuntime: CodingAgentRuntime = {
+      runBrief: async (brief: HertaToAgentBrief) => ({
+        taskId: brief.taskId,
+        status: "completed" as const,
+        evidence: [],
+        changedFiles: [],
+        tests: [],
+        permissions: [],
+        residualRisks: [],
+        nextActions: [],
+      }),
+    } as unknown as CodingAgentRuntime;
+    const driver = new V2ActorDriver({
+      provider: mkProvider([[{ type: "finish", reason: "stop" }]]),
+      model: "test-model",
+      staticPrefix: { bio: "[prefix]", env: "", fewShots: [] },
+      bus: new InMemoryEventBus<AgentEvent>(),
+      runtimeFactory: () => noopRuntime,
+      routerProvider: router,
+      metaThinkCorpus: mkEmptyCorpusForHelper(),
+      recap: mkRecapRuntime(),
+    });
+    await driver.runTurn("一", new AbortController().signal);
+    // The recap was started first (its hint lands first on a compaction
+    // turn), the router ran while it was pending, and the router's verdict
+    // still applied.
+    expect(order).toEqual([
+      "recap:start",
+      "router:called",
+      "recap:end(router)",
+    ]);
+    expect(driver.getCurrentIntentState()).toBe("教学版");
+  });
+
+  it("a failing router still keeps the prior state while the recap runs (non-fatal, no unhandled rejection)", async () => {
+    vi.spyOn(recapRuntime, "prepareTurnRecap").mockImplementation(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 5));
+      return { recapBoundaryIndex: 0 };
+    });
+    vi.spyOn(actorTurn, "runActorCompletionTurn").mockImplementation(
+      async (state) => ({ record: state.record }),
+    );
+    const router: ProviderAdapter = {
+      streamChat(): AsyncIterable<ProviderEvent> {
+        throw new Error("router unreachable");
+      },
+    };
+    const noopRuntime: CodingAgentRuntime = {
+      runBrief: async (brief: HertaToAgentBrief) => ({
+        taskId: brief.taskId,
+        status: "completed" as const,
+        evidence: [],
+        changedFiles: [],
+        tests: [],
+        permissions: [],
+        residualRisks: [],
+        nextActions: [],
+      }),
+    } as unknown as CodingAgentRuntime;
+    const driver = new V2ActorDriver({
+      provider: mkProvider([[{ type: "finish", reason: "stop" }]]),
+      model: "test-model",
+      staticPrefix: { bio: "[prefix]", env: "", fewShots: [] },
+      bus: new InMemoryEventBus<AgentEvent>(),
+      runtimeFactory: () => noopRuntime,
+      routerProvider: router,
+      metaThinkCorpus: mkEmptyCorpusForHelper(),
+      recap: mkRecapRuntime(),
+    });
+    await expect(
+      driver.runTurn("一", new AbortController().signal),
+    ).resolves.toBeDefined();
+    expect(driver.getCurrentIntentState()).toBe("默认");
+  });
+
   it("rewind invalidates the recap sidecar only when the cut lands at/below the cached boundary", () => {
     const invalidate = vi.fn();
     const mk = (boundaryIndex: number): RecapRuntime => ({
@@ -2107,5 +2352,137 @@ describe("V2ActorDriver — interaction language (slice 4)", () => {
     await driver.runTurn("hi", new AbortController().signal);
     expect(intentSpy.mock.calls[0]?.[0]?.lang).toBe("zh");
     expect(seenLangs).toEqual(["zh"]);
+  });
+});
+
+describe("V2ActorDriver — the prefix follows step events, never turns (ADR 0069 §1)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const PREFIX: StaticHertaPrefix = { bio: "[prefix]", env: "", fewShots: [] };
+
+  /** Each turn's recap boundary, in order; the turn itself is stubbed and
+   *  records the prefix it was handed. */
+  function scriptTurns(boundaries: readonly number[]): {
+    prefixes: StaticHertaPrefix[];
+    recaps: Array<RecapRuntime | undefined>;
+  } {
+    const prefixes: StaticHertaPrefix[] = [];
+    const recaps: Array<RecapRuntime | undefined> = [];
+    let turn = 0;
+    vi.spyOn(recapRuntime, "prepareTurnRecap").mockImplementation(
+      async (_record, _prefix, rt) => {
+        recaps.push(rt);
+        const b = boundaries[turn] ?? 0;
+        turn += 1;
+        return { recapBoundaryIndex: b };
+      },
+    );
+    vi.spyOn(actorTurn, "runActorCompletionTurn").mockImplementation(
+      async (state, userText, deps) => {
+        prefixes.push(deps.staticPrefix);
+        return {
+          record: [
+            ...state.record,
+            { kind: "user", text: userText },
+            { kind: "herta", surface: "speech", text: "嗯。" },
+          ],
+        };
+      },
+    );
+    return { prefixes, recaps };
+  }
+
+  function mkStepDriver(
+    rebuild: StaticPrefixRebuilder,
+    extra: Partial<V2ActorDriverDeps> = {},
+  ): V2ActorDriver {
+    return new V2ActorDriver({
+      provider: mkProvider([]),
+      model: "test-model",
+      staticPrefix: PREFIX,
+      bus: new InMemoryEventBus<AgentEvent>(),
+      runtimeFactory: () => ({}) as unknown as CodingAgentRuntime,
+      routerProvider: mkNoopRouter(),
+      metaThinkCorpus: mkEmptyCorpusForHelper(),
+      rebuildStaticPrefix: rebuild,
+      prefixRecapBoundary: 0,
+      ...extra,
+    });
+  }
+
+  it("keeps the prefix while the recap boundary stays, and re-derives it once when a fold moves it", async () => {
+    const { prefixes } = scriptTurns([0, 0, 2, 2]);
+    const calls: Array<{ boundary: number; recordLength: number }> = [];
+    const rebuilt: StaticHertaPrefix = {
+      bio: "[prefix]",
+      env: "",
+      fewShots: ["废案 behind the fold"],
+    };
+    const driver = mkStepDriver(async ({ record, recapBoundaryIndex }) => {
+      calls.push({
+        boundary: recapBoundaryIndex,
+        recordLength: record.length,
+      });
+      return rebuilt;
+    });
+    for (const text of ["一", "二", "三", "四"]) {
+      await driver.runTurn(text, new AbortController().signal);
+    }
+    // One rebuild, at the fold — against the committed record (two turns of
+    // two blocks), not the one with this turn's user block in it.
+    expect(calls).toEqual([{ boundary: 2, recordLength: 4 }]);
+    // The fold's own turn already reads the new prefix; the turns before it
+    // read the one the session opened with.
+    expect(prefixes).toEqual([PREFIX, PREFIX, rebuilt, rebuilt]);
+  });
+
+  it("re-derives on the first turn after a dream pass, and only that turn", async () => {
+    scriptTurns([0, 0, 0]);
+    let rebuilds = 0;
+    const driver = mkStepDriver(async ({ current }) => {
+      rebuilds += 1;
+      return current;
+    });
+    await driver.runTurn("一", new AbortController().signal);
+    expect(rebuilds).toBe(0);
+    driver.markPrefixStale();
+    await driver.runTurn("二", new AbortController().signal);
+    await driver.runTurn("三", new AbortController().signal);
+    expect(rebuilds).toBe(1);
+  });
+
+  it("a failed rebuild keeps the prefix and waits for the next step rather than retrying every turn", async () => {
+    const { prefixes } = scriptTurns([2, 2, 2]);
+    let attempts = 0;
+    const driver = mkStepDriver(async () => {
+      attempts += 1;
+      throw new Error("narrative dir unreadable");
+    });
+    for (const text of ["一", "二", "三"]) {
+      await driver.runTurn(text, new AbortController().signal);
+    }
+    expect(attempts).toBe(1);
+    expect(prefixes).toEqual([PREFIX, PREFIX, PREFIX]);
+  });
+
+  it("rebindSession swaps the prefix, the recap runtime and the rebuilder together (the CLI's /resume)", async () => {
+    const { prefixes, recaps } = scriptTurns([0, 0]);
+    const recapA = { tag: "A" } as unknown as RecapRuntime;
+    const recapB = { tag: "B" } as unknown as RecapRuntime;
+    const prefixB: StaticHertaPrefix = {
+      bio: "[prefix]",
+      env: "",
+      fewShots: ["B's corpus view"],
+    };
+    const driver = mkStepDriver(async ({ current }) => current, {
+      recap: recapA,
+    });
+    await driver.runTurn("一", new AbortController().signal);
+    driver.rebindSession({ staticPrefix: prefixB, recap: recapB });
+    await driver.runTurn("二", new AbortController().signal);
+    expect(recaps).toEqual([recapA, recapB]);
+    expect(prefixes).toEqual([PREFIX, prefixB]);
   });
 });

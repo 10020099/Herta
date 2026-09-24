@@ -223,6 +223,125 @@ const entries = [...packages.values()]
       a.name.localeCompare(b.name) || a.version.localeCompare(b.version),
   );
 
+// ---- files shipped OUTSIDE the bundles --------------------------------------
+
+/**
+ * The 3D device card's Basis Universal transcoder (ADR 0057) is VENDORED into
+ * `src/renderer/public/device-scene/basis/`, which Vite carries into
+ * out/renderer as-is — never rendered into a chunk, so the manifest above
+ * cannot see it. Listed by hand, gated on the file actually being in the build
+ * output, with the Apache-2.0 text kept beside it in resources/licenses
+ * (three's package ships only a README pointer).
+ *
+ * It is NOT three's prebuilt copy any more: that build's embind glue compiles
+ * its invoker functions with the Function constructor, which the packaged CSP
+ * (csp.ts) refuses inside the transcoder's worker — and three's WorkerPool has
+ * no error path, so the atlas load never settles. This pair is rebuilt from
+ * upstream basis_universal v1_50_0_2 with -sDYNAMIC_EXECUTION=0
+ * (scripts/rebuild-basis-transcoder.sh is the recipe and its checks). The
+ * version string below says so: Apache-2.0 §4 asks a modified build be marked.
+ */
+const BASIS_WASM = resolve(
+  HERE,
+  "../out/renderer/device-scene/basis/basis_transcoder.wasm",
+);
+const extras = [];
+if (existsSync(BASIS_WASM)) {
+  const text = readFileSync(
+    resolve(HERE, "../resources/licenses/basis-universal-LICENSE.txt"),
+    "utf8",
+  )
+    .replace(/\r\n?/g, "\n")
+    .replace(/[ \t]+$/gm, "")
+    .trim();
+  extras.push({
+    name: "basis_universal (KTX2 transcoder)",
+    version: "v1_50_0_2, rebuilt with -sDYNAMIC_EXECUTION=0",
+    license: "Apache-2.0",
+    author: "Binomial LLC",
+    url: "https://github.com/BinomialLLC/basis_universal",
+    sections: new Set(["renderer"]),
+    shipped: "renderer assets (out/renderer/device-scene/basis/)",
+    files: [{ name: "LICENSE", text }],
+  });
+}
+/**
+ * The neural-voice runtime (ADR 0042 / ADR 0061): `sherpa-onnx-node` and its
+ * platform package are staged by `scripts/stage-tts.mjs` into
+ * `<resources>/tts-runtime/` as a plain directory — a native addon the
+ * worker `require`s by path, never rendered into a chunk, so the manifest
+ * above cannot see it either. Neither npm package ships a license file; the
+ * texts are kept in resources/licenses. Gated on the DEPENDENCY being
+ * installed rather than on the staged directory: the daily CI regenerates
+ * the notices without ever staging, and gating on `tts-runtime/` would have
+ * it report the release's notices as stale.
+ */
+const SHERPA_PKG = resolve(
+  HERE,
+  "../node_modules/sherpa-onnx-node/package.json",
+);
+if (existsSync(SHERPA_PKG)) {
+  const sherpa = readJson(SHERPA_PKG) ?? {};
+  const licenseText = (name) =>
+    readFileSync(resolve(HERE, `../resources/licenses/${name}`), "utf8")
+      .replace(/\r\n?/g, "\n")
+      .replace(/[ \t]+$/gm, "")
+      .trim();
+  extras.push({
+    name: "sherpa-onnx (neural-voice runtime)",
+    version: String(sherpa.version ?? "unknown"),
+    license: "Apache-2.0",
+    author: "The next-gen Kaldi team (Xiaomi Corporation)",
+    url: "https://github.com/k2-fsa/sherpa-onnx",
+    sections: new Set(["main"]),
+    shipped: "resources/tts-runtime/ (native addon, utility process)",
+    files: [{ name: "LICENSE", text: licenseText("sherpa-onnx-LICENSE.txt") }],
+  });
+  extras.push({
+    name: "onnxruntime (bundled by sherpa-onnx)",
+    version: `as bundled by sherpa-onnx ${sherpa.version ?? "unknown"}`,
+    license: "MIT",
+    author: "Microsoft Corporation",
+    url: "https://github.com/microsoft/onnxruntime",
+    sections: new Set(["main"]),
+    shipped: "resources/tts-runtime/ (native library)",
+    files: [{ name: "LICENSE", text: licenseText("onnxruntime-LICENSE.txt") }],
+  });
+  // The runtime's text frontend, statically linked into sherpa-onnx-c-api
+  // (2026-09-10): espeak-ng is GPL-3.0-or-later, so the binary we ship must
+  // carry that license text and clear directions to the corresponding
+  // source (GPLv3 §6(d)) — the notice file has both, and the release page
+  // repeats the directions. piper-phonemize (MIT) drives it. Both are the
+  // sherpa-onnx fork commits its CMake tree pins for this version.
+  extras.push({
+    name: "espeak-ng (linked into the neural-voice runtime)",
+    version: "sherpa-onnx fork, commit ed530aa1",
+    license: "GPL-3.0-or-later",
+    author: "Jonathan Duddington, Reece H. Dunn and the eSpeak NG contributors",
+    url: "https://github.com/csukuangfj/espeak-ng/tree/ed530aa113046142eb5115cf2fc9157854d0ffe1",
+    sections: new Set(["main"]),
+    shipped:
+      "resources/tts-runtime/ (statically linked into sherpa-onnx-c-api; source at the URL above, built by sherpa-onnx 1.13.6's CMake tree)",
+    files: [{ name: "COPYING", text: licenseText("espeak-ng-LICENSE.txt") }],
+  });
+  extras.push({
+    name: "piper-phonemize (linked into the neural-voice runtime)",
+    version: "sherpa-onnx fork, commit f3ff95af",
+    license: "MIT",
+    author: "Michael Hansen",
+    url: "https://github.com/csukuangfj/piper-phonemize/tree/f3ff95afc03640bc1399e113e83361192a2fafb4",
+    sections: new Set(["main"]),
+    shipped:
+      "resources/tts-runtime/ (statically linked into sherpa-onnx-c-api)",
+    files: [
+      { name: "LICENSE", text: licenseText("piper-phonemize-LICENSE.txt") },
+    ],
+  });
+}
+const listed = [...entries, ...extras].sort(
+  (a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version),
+);
+
 // ---- render ----------------------------------------------------------------
 
 const where = (s) =>
@@ -256,18 +375,22 @@ md +=
 md += "## Summary\n\n";
 md += "| Package | Version | License | Bundled into |\n";
 md += "|---|---|---|---|\n";
-for (const e of entries) {
-  md += `| ${e.name} | ${e.version} | ${e.license} | ${where(e.sections)} |\n`;
+for (const e of listed) {
+  md += `| ${e.name} | ${e.version} | ${e.license} | ${e.shipped ?? where(e.sections)} |\n`;
 }
 md += "\n";
 
 md += "## Licenses\n\n";
-for (const e of entries) {
+for (const e of listed) {
   md += `### ${e.name} ${e.version} — ${e.license}\n\n`;
   const meta = [];
   if (e.author) meta.push(`Author: ${e.author}`);
   if (e.url) meta.push(`Source: ${e.url}`);
-  meta.push(`Bundled into: ${where(e.sections)}`);
+  meta.push(
+    e.shipped
+      ? `Shipped as: ${e.shipped}`
+      : `Bundled into: ${where(e.sections)}`,
+  );
   md += `${meta.map((m) => `- ${m}`).join("\n")}\n\n`;
   for (const f of e.files) {
     if (e.files.length > 1) md += `**${f.name}**\n\n`;
@@ -287,22 +410,22 @@ if (CHECK) {
   if (current !== md) {
     console.error(
       `third-party-notices: ${OUTPUT} is STALE against the current bundle ` +
-        `(${entries.length} packages). Regenerate with\n` +
+        `(${listed.length} packages). Regenerate with\n` +
         "  node packages/gui/scripts/third-party-notices.mjs\n" +
         "and commit the result — a dependency shipped without its notice.",
     );
     process.exit(1);
   }
   console.log(
-    `third-party-notices: up to date (${entries.length} packages: ` +
-      `${entries.map((e) => e.name).join(", ")})`,
+    `third-party-notices: up to date (${listed.length} packages: ` +
+      `${listed.map((e) => e.name).join(", ")})`,
   );
 } else {
   writeFileSync(OUTPUT, md);
   console.log(
-    `third-party-notices: wrote ${OUTPUT} (${entries.length} packages)`,
+    `third-party-notices: wrote ${OUTPUT} (${listed.length} packages)`,
   );
-  for (const e of entries) {
+  for (const e of listed) {
     console.log(
       `  ${e.name}@${e.version}  ${e.license}  [${where(e.sections)}]`,
     );

@@ -1,13 +1,7 @@
-import {
-  closeSync,
-  fsyncSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  renameSync,
-  writeFileSync,
-} from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { writeFileAtomicSync } from "@herta/core";
 import { computeStrength } from "./retention.js";
 import type {
   DreamConfig,
@@ -24,32 +18,132 @@ export function emptyManifest(): DreamManifest {
 /** Back-fill fields added after a record may have been written: `sourceEpisodes`
  *  (was singular `sourceEpisodeHash`) and `reactivationCount` (dormant until
  *  slice 2). Defensive read, matching the `episodes ?? []` pattern — no
- *  destructive migration. */
-function normalizeCreated(r: DreamCreatedRecord): DreamCreatedRecord {
+ *  destructive migration.
+ *
+ *  The one field it drops is `estimatedPrefixTokens`, removed 2026-09-23
+ *  (ADR 0069 §12). Despite the name it held the page's CHAR count, and
+ *  nothing ever read it. Every write re-spreads a loaded record, so a
+ *  record written before then would carry that number in the file forever
+ *  under a name that says tokens; dropped here, the next write sheds it. */
+function normalizeCreated(
+  r: DreamCreatedRecord & { readonly estimatedPrefixTokens?: unknown },
+): DreamCreatedRecord {
+  const { estimatedPrefixTokens: _chars, ...rest } = r;
   const sourceEpisodes =
-    Array.isArray(r.sourceEpisodes) && r.sourceEpisodes.length > 0
-      ? r.sourceEpisodes
-      : [r.sourceEpisodeHash];
+    Array.isArray(rest.sourceEpisodes) && rest.sourceEpisodes.length > 0
+      ? rest.sourceEpisodes
+      : [rest.sourceEpisodeHash];
   return {
-    ...r,
+    ...rest,
     sourceEpisodes,
     reactivationCount:
-      typeof r.reactivationCount === "number" ? r.reactivationCount : 0,
+      typeof rest.reactivationCount === "number" ? rest.reactivationCount : 0,
   };
 }
 
+/** A manifest read that says what went wrong instead of guessing. */
+export type ManifestRead =
+  | { readonly ok: true; readonly manifest: DreamManifest }
+  | { readonly ok: false; readonly reason: string };
+
+/**
+ * Read the manifest, telling a FRESH corpus (no file — an empty ledger)
+ * from a BROKEN one. A corrupt manifest used to become an empty one with no
+ * warning and no copy: dedup, provenance, retention state and the cadence
+ * anchor vanished, the next pass re-dreamed everything as new, and the old
+ * 废案 files stayed forever as untracked "seeds" (dream review 2026-09-22,
+ * finding 8). Now an unparseable file is copied aside once
+ * (`manifest.corrupt-<hash>.json`) and reported; an unreadable one (a lock)
+ * is reported and left alone. The pass refuses to run on either; the
+ * lenient `readManifest` below still answers empty for the readers that
+ * only need a best guess.
+ */
+export function readManifestStrict(dreamDir: string): ManifestRead {
+  let raw: string;
+  try {
+    raw = readFileSync(join(dreamDir, FILE), "utf8");
+  } catch (err) {
+    const code = (err as { code?: string }).code ?? "unknown";
+    if (code === "ENOENT") return { ok: true, manifest: emptyManifest() };
+    return { ok: false, reason: `manifest unreadable: ${code}` };
+  }
+  const manifest = parseManifest(raw);
+  if (manifest === null) {
+    const backup = backUpCorrupt(dreamDir, raw);
+    console.warn(
+      `[herta] dream manifest in ${dreamDir} is corrupt; ${
+        backup === null
+          ? "the copy could not be written"
+          : `copied to ${backup}`
+      }. Dream passes stop until it is repaired or removed.`,
+    );
+    return { ok: false, reason: "manifest corrupt" };
+  }
+  return { ok: true, manifest };
+}
+
+/** The manifest in `raw`, or null when it is not one. */
+function parseManifest(raw: string): DreamManifest | null {
+  let parsed: Partial<DreamManifest> | null;
+  try {
+    parsed = JSON.parse(raw) as Partial<DreamManifest> | null;
+  } catch {
+    return null;
+  }
+  if (
+    parsed === null ||
+    typeof parsed !== "object" ||
+    (parsed.episodes !== undefined && !Array.isArray(parsed.episodes)) ||
+    (parsed.created !== undefined && !Array.isArray(parsed.created))
+  ) {
+    return null;
+  }
+  return {
+    version: 1,
+    episodes: parsed.episodes ?? [],
+    created: (parsed.created ?? []).map(normalizeCreated),
+    ...(parsed.lastRunAt !== undefined ? { lastRunAt: parsed.lastRunAt } : {}),
+    ...(Array.isArray(parsed.pendingFold) && parsed.pendingFold.length > 0
+      ? { pendingFold: parsed.pendingFold }
+      : {}),
+    ...(typeof parsed.segmentationV2Since === "string"
+      ? { segmentationV2Since: parsed.segmentationV2Since }
+      : {}),
+  };
+}
+
+/** The segmenter option that agrees with this manifest's ledger:
+ *  segmentation v2 applies from the cutover the manifest recorded, and not
+ *  at all when it recorded none (ADR 0069 §4 and §7). */
+export function segmentationV2SinceMs(m: DreamManifest): number | undefined {
+  if (m.segmentationV2Since === undefined) return undefined;
+  const t = Date.parse(m.segmentationV2Since);
+  return Number.isNaN(t) ? undefined : t;
+}
+
+/** One copy per distinct corrupt content, beside the manifest. Null when
+ *  it could not be written. */
+function backUpCorrupt(dreamDir: string, raw: string): string | null {
+  const tag = createHash("sha256").update(raw).digest("hex").slice(0, 8);
+  const name = `manifest.corrupt-${tag}.json`;
+  try {
+    const path = join(dreamDir, name);
+    if (!existsSync(path)) writeFileSync(path, raw, "utf8");
+    return name;
+  } catch {
+    return null;
+  }
+}
+
+/** The manifest, or an empty ledger when it is absent OR broken — silently,
+ *  for the readers that only need a best guess (the reopen filter, the
+ *  cadence anchor, listings). The pass uses `readManifestStrict`. */
 export function readManifest(dreamDir: string): DreamManifest {
   try {
-    const raw = readFileSync(join(dreamDir, FILE), "utf8");
-    const parsed = JSON.parse(raw) as DreamManifest;
-    return {
-      version: 1,
-      episodes: parsed.episodes ?? [],
-      created: (parsed.created ?? []).map(normalizeCreated),
-      ...(parsed.lastRunAt !== undefined
-        ? { lastRunAt: parsed.lastRunAt }
-        : {}),
-    };
+    return (
+      parseManifest(readFileSync(join(dreamDir, FILE), "utf8")) ??
+      emptyManifest()
+    );
   } catch {
     return emptyManifest();
   }
@@ -66,31 +160,17 @@ export function lastFullPassAtMs(m: DreamManifest): number | null {
 
 export function writeManifest(dreamDir: string, m: DreamManifest): void {
   mkdirSync(dreamDir, { recursive: true });
-  // Durable atomic replace: write a temp file, fsync its bytes, then rename it
-  // over the target. The fsync makes the new manifest's data durable BEFORE the
-  // rename publishes it, so even a true power-off can only leave the prior
-  // manifest or the new one fully intact — never a renamed-but-empty file that
-  // readManifest would reset to an empty ledger (losing all dedup history,
-  // provenance, and the cadence anchor). The rename is atomic for the name; if
-  // its directory entry isn't yet durable at power-off, the prior manifest
-  // survives — also intact. fsync is best-effort: if the platform/FS rejects it
-  // we fall back to rename-only atomicity (still safe against process-kill, the
-  // dominant crash mode for this detached pass). The pid-suffixed temp keeps two
-  // writers from colliding on the same temp name.
-  const target = join(dreamDir, FILE);
-  const tmp = join(dreamDir, `.${FILE}.${process.pid}.tmp`);
-  writeFileSync(tmp, `${JSON.stringify(m, null, 2)}\n`, "utf8");
-  try {
-    const fd = openSync(tmp, "r+");
-    try {
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
-  } catch {
-    // fsync unsupported/failed — rename-only atomicity remains.
-  }
-  renameSync(tmp, target);
+  // Durable atomic replace (core's helper, fsync on): the new manifest's
+  // data is durable BEFORE the rename publishes it, so even a true power-off
+  // can only leave the prior manifest or the new one fully intact — never a
+  // renamed-but-empty file that readManifest would reset to an empty ledger
+  // (losing all dedup history, provenance, and the cadence anchor). fsync is
+  // best-effort inside the helper: if the platform/FS rejects it, rename-only
+  // atomicity remains (still safe against process-kill, the dominant crash
+  // mode for this detached pass).
+  writeFileAtomicSync(join(dreamDir, FILE), `${JSON.stringify(m, null, 2)}\n`, {
+    fsync: true,
+  });
 }
 
 /** Linear scan of the episode ledger. Fine for a one-off query; `runDreamPass`

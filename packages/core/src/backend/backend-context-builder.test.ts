@@ -5,9 +5,12 @@ import {
   BACKEND_EXECUTION_CONTRACT,
   BACKEND_EXECUTION_CONTRACT_EN,
   BackendContextBuilder,
+  darwinBackendHostNote,
   minimalBackendContract,
   RECENT_DIALOGUE_HEADER,
   RECENT_DIALOGUE_HEADER_EN,
+  type RepoContextSnapshot,
+  renderRepoContext,
   serializeUserHistory,
   WORKING_HISTORY_HEADER,
   WORKING_HISTORY_HEADER_EN,
@@ -404,7 +407,7 @@ describe("EN backend prompt (ADR 0016)", () => {
       "edit_file",
       "read_file",
       "search_text",
-      "list_files",
+      "glob",
       "run_command",
       "package.json",
       "AGENTS.md",
@@ -593,6 +596,44 @@ describe("BackendContextBuilder project rules", () => {
   });
 });
 
+describe("user-facing text follows the conversation's language (ADR 0016 amendment, 2026-09-03)", () => {
+  // The todo list and the findings are shown to the user inside the
+  // conversation. A zh session once got an English task list: nothing in
+  // the contract said which language the items are in, and the model copied
+  // the register of the (English) tool descriptions. Both contracts now say
+  // it, in both languages, next to the tool they govern.
+  it("zh contracts say the todo items and the claim are written in Chinese", () => {
+    expect(BACKEND_EXECUTION_CONTRACT).toContain("条目用中文写");
+    expect(BACKEND_EXECUTION_CONTRACT).toContain("claim 是一句话，用中文写");
+    const minimal = minimalBackendContract("zh");
+    expect(minimal).toContain("条目用中文写");
+    expect(minimal).toContain("claim 用中文写");
+  });
+
+  it("EN contracts say the same in English, with no CJK", () => {
+    expect(BACKEND_EXECUTION_CONTRACT_EN).toContain(
+      "Write the items in English",
+    );
+    expect(BACKEND_EXECUTION_CONTRACT_EN).toContain(
+      '"claim" one sentence written in English',
+    );
+    const minimal = minimalBackendContract("en");
+    expect(minimal).toContain("items in English");
+    expect(minimal).toContain("claim in English");
+  });
+
+  it("the language line sits inside the section that governs the tool, not as a stray rule", () => {
+    const todoSection =
+      BACKEND_EXECUTION_CONTRACT.split("# 任务清单")[1]?.split("# 动手优先")[0];
+    expect(todoSection).toContain("条目用中文写");
+    const todoSectionEn =
+      BACKEND_EXECUTION_CONTRACT_EN.split("# Todo list")[1]?.split(
+        "# Action bias",
+      )[0];
+    expect(todoSectionEn).toContain("Write the items in English");
+  });
+});
+
 describe("host note (ADR 0044)", () => {
   const common = {
     brief: sampleBrief,
@@ -647,13 +688,226 @@ describe("host note (ADR 0044)", () => {
     );
   });
 
-  it("the minimal contract never carries it (bash exists there by construction)", () => {
+  it("the minimal contract carries a note it is given — WHICH note is the wiring's call (2026-09-23)", () => {
+    // The Windows note never reaches minimal (the wiring gives it to the
+    // standard contract only); the macOS note does, because the Mac's shell
+    // is the BSD userland the note describes.
     const tools = new InMemoryToolRegistry();
     const builder = new BackendContextBuilder({
       tools,
       contract: "minimal",
-      hostNote: windowsBackendHostNote("zh"),
+      hostNote: darwinBackendHostNote("zh"),
     });
-    expect(builder.build(common).backendSystem).not.toContain("# 主机环境");
+    const sys = builder.build(common).backendSystem;
+    expect(sys).toContain("# 主机环境");
+    expect(sys).toContain("macOS");
+    const bare = new BackendContextBuilder({ tools, contract: "minimal" });
+    expect(bare.build(common).backendSystem).not.toContain("# 主机环境");
+  });
+
+  it("darwinBackendHostNote names the BSD differences that fail GNU habits, both languages", () => {
+    for (const note of [
+      darwinBackendHostNote("zh"),
+      darwinBackendHostNote("en"),
+    ]) {
+      expect(note).toContain("macOS");
+      expect(note).toContain("sed -i ''");
+      expect(note).toContain("3.2");
+      expect(note).toContain("declare -A");
+    }
+    expect(darwinBackendHostNote("en")).toContain("# Host environment");
+    expect(darwinBackendHostNote("zh")).toContain("# 主机环境");
+  });
+});
+
+describe("repo snapshot section (ADR 0049)", () => {
+  const common = {
+    brief: sampleBrief,
+    userMessages: sampleUserMessages,
+    scopedRepoInstructions: "",
+    scopedMemory: "",
+    messages: [],
+  };
+  const snapshot: RepoContextSnapshot = {
+    root: "E:/repo",
+    prefix: "",
+    gitDir: "E:/repo/.git",
+    branch: "main",
+    detached: false,
+    headShort: "abc1234",
+    upstream: "origin/main",
+    ahead: 2,
+    behind: 1,
+    upstreamGone: false,
+    defaultBranch: "main",
+    inProgress: null,
+    conflicted: [],
+    dirty: [
+      { x: " ", y: "M", path: "packages/foo.ts" },
+      { x: "?", y: "?", path: "scratch.txt" },
+    ],
+    dirtyTotal: 2,
+    recentSubjects: ["abc1234 fix: cursor reset"],
+    recentCommits: [
+      {
+        sha: "abc1234abc1234abc1234abc1234abc1234abc12",
+        shortSha: "abc1234",
+        subject: "fix: cursor reset",
+        unpushed: false,
+      },
+    ],
+  };
+
+  it("renders at most five recent subjects however many the snapshot carries (ADR 0058 §5.4)", () => {
+    const many = renderRepoContext(
+      {
+        ...snapshot,
+        recentSubjects: Array.from(
+          { length: 8 },
+          (_, i) => `sha${i} step ${i}`,
+        ),
+      },
+      "zh",
+      "standard",
+    );
+    expect(many).toContain("  sha4 step 4");
+    expect(many).not.toContain("sha5 step 5");
+  });
+
+  it("a subfolder workspace is named once and every path is spelled from it (ADR 0058 amendment)", () => {
+    const sub = renderRepoContext(
+      {
+        ...snapshot,
+        prefix: "packages/",
+        conflicted: ["packages/foo.ts", "README.md"],
+        inProgress: "merge",
+      },
+      "zh",
+      "standard",
+    );
+    expect(sub).toContain(
+      "仓库根目录: E:/repo（工作区是其中的 packages/；下列路径相对工作区，../ 开头的在工作区之外）",
+    );
+    expect(sub).toContain(" M foo.ts");
+    expect(sub).toContain("?? ../scratch.txt");
+    expect(sub).toContain("冲突文件 2 个: foo.ts、../README.md");
+    const en = renderRepoContext(
+      { ...snapshot, prefix: "packages/" },
+      "en",
+      "standard",
+    );
+    expect(en).toContain("repo root: E:/repo (the workspace is its packages/");
+    // At the root: no such line, paths untouched.
+    const root = renderRepoContext(snapshot, "zh", "standard");
+    expect(root).not.toContain("仓库根目录");
+    expect(root).toContain(" M packages/foo.ts");
+  });
+
+  it("renders branch, upstream counts, default branch, dirty set and log", () => {
+    const zh = renderRepoContext(snapshot, "zh", "standard");
+    expect(zh).toContain("# 仓库快照");
+    expect(zh).toContain("分支: main → origin/main（领先 2，落后 1）");
+    expect(zh).toContain("默认分支: main");
+    expect(zh).toContain("未提交改动 2 项:");
+    expect(zh).toContain(" M packages/foo.ts");
+    expect(zh).toContain("?? scratch.txt");
+    expect(zh).toContain("abc1234 fix: cursor reset");
+    expect(zh).not.toContain("进行中的操作");
+    const en = renderRepoContext(snapshot, "en", "standard");
+    expect(en).toContain("# Repo snapshot");
+    expect(en).toContain("branch: main → origin/main (ahead 2, behind 1)");
+  });
+
+  it("states detached / unborn / no-upstream / clean plainly", () => {
+    expect(
+      renderRepoContext(
+        { ...snapshot, branch: null, detached: true },
+        "zh",
+        "standard",
+      ),
+    ).toContain("分支: 游离 HEAD @ abc1234");
+    expect(
+      renderRepoContext(
+        { ...snapshot, headShort: null, upstream: null },
+        "zh",
+        "standard",
+      ),
+    ).toContain("分支: main（尚无提交）");
+    expect(
+      renderRepoContext({ ...snapshot, upstream: null }, "zh", "standard"),
+    ).toContain("分支: main（无上游）");
+    expect(
+      renderRepoContext(
+        { ...snapshot, dirty: [], dirtyTotal: 0 },
+        "zh",
+        "standard",
+      ),
+    ).toContain("未提交改动: 无");
+  });
+
+  it("shows the in-progress operation with its conflict set", () => {
+    const mid = renderRepoContext(
+      {
+        ...snapshot,
+        inProgress: "merge",
+        conflicted: ["a.ts", "b.ts"],
+      },
+      "zh",
+      "standard",
+    );
+    expect(mid).toContain("进行中的操作: merge");
+    expect(mid).toContain("冲突文件 2 个: a.ts、b.ts");
+  });
+
+  it("the honest-truncation line names the tool the CONTRACT mounts", () => {
+    const truncated = { ...snapshot, dirtyTotal: 45 };
+    expect(renderRepoContext(truncated, "zh", "standard")).toContain(
+      "另有 43 项未列出；全量用 git_status 查看",
+    );
+    expect(renderRepoContext(truncated, "zh", "minimal")).toContain(
+      "在 bash 里跑 git status 看全量",
+    );
+    expect(renderRepoContext(truncated, "en", "minimal")).toContain(
+      "run git status in bash for the full set",
+    );
+  });
+
+  it("build() splices the section right after the contract; absent → byte-identical", () => {
+    const tools = new InMemoryToolRegistry();
+    const builder = new BackendContextBuilder({ tools });
+    const withSnap = builder.build({ ...common, repoContext: snapshot });
+    const without = builder.build(common);
+    const sys = withSnap.backendSystem;
+    expect(sys.indexOf("# 仓库快照")).toBeGreaterThan(
+      sys.indexOf("# 分寸"), // after the contract's last section
+    );
+    expect(sys.indexOf("# 仓库快照")).toBeLessThan(
+      sys.indexOf("--- 开拓者请求 1 ---"),
+    );
+    expect(without.backendSystem).not.toContain("# 仓库快照");
+    expect(without.backendSystem).toBe(
+      `${BACKEND_EXECUTION_CONTRACT}\n\n${serializeUserHistory(sampleUserMessages)}`,
+    );
+  });
+
+  it("rides the minimal contract too, in the session's language", () => {
+    const tools = new InMemoryToolRegistry();
+    const builder = new BackendContextBuilder({ tools, contract: "minimal" });
+    const sys = builder.build({
+      ...common,
+      lang: "en" as const,
+      repoContext: snapshot,
+    }).backendSystem;
+    expect(sys).toContain("# Repo snapshot");
+    expect(sys).toContain("branch: main → origin/main (ahead 2, behind 1)");
+  });
+  it("says the upstream is gone instead of reporting counts against it", () => {
+    const gone = { ...snapshot, ahead: 0, behind: 0, upstreamGone: true };
+    expect(renderRepoContext(gone, "zh", "standard")).toContain(
+      "分支: main → origin/main（上游已不存在，本地提交均未发布）",
+    );
+    expect(renderRepoContext(gone, "en", "standard")).toContain(
+      "branch: main → origin/main (upstream gone; nothing here is published)",
+    );
   });
 });

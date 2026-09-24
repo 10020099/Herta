@@ -54,6 +54,14 @@ export interface CompactionConfig {
 // `bufferFraction` remains the internal representation because the recap
 // boundary code is expressed in free-window space; the exported threshold is
 // what the GUI labels and what users reason about.
+//
+// These are ESTIMATED tokens, and since 2026-09-21 the estimate is
+// calibrated for Chinese (a Han ideograph 0.65 token, measured against the
+// API — ADR 0068 §9). Until then a zh session's estimate ran ~1.35× the
+// real count, so "200K" engaged near 130–150K real tokens and the 60K tail
+// kept ~40K. The numbers below did not change; what they MEAN did: in a
+// Chinese session they are now within a few percent of real tokens, as
+// they always were in an English one.
 const COMPACTION_LEVELS: Readonly<
   Record<
     CompactionLevel,

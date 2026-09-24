@@ -1,6 +1,10 @@
-import { fireEvent, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 import { renderWithLocale } from "../../i18n/test-util.js";
+import { createMockHertaBridge } from "../../ipc/mock-bridge.js";
+import { renderWithSession } from "../../testing/renderWithSession.js";
+import { FileViewerPanel } from "../FileViewer/FileViewerPanel.js";
+import { FileViewerProvider } from "../FileViewer/file-viewer-context.js";
 import { ActivityBlock, type ActivityBlockProps } from "./ActivityBlock.js";
 import type { SystemBlock } from "./group-record.js";
 import type { PlanContext, TodoDigestItem } from "./plan-context.js";
@@ -201,6 +205,42 @@ describe("ActivityBlock", () => {
       container.querySelector(".activity-line__history.is-open"),
     ).not.toBeNull();
     expect(screen.getByText("Reading scripts")).toBeInTheDocument();
+  });
+
+  it("the history's rows mount on the FIRST expand and stay mounted after a collapse (ADR 0068 §11)", () => {
+    // A session carries every dispatch it ever ran; before this, every
+    // historical group built and mounted all of its rows — and folded every
+    // write's diff — at session switch, for a panel nobody had opened.
+    // Measured in jsdom, 40 groups × 13 rows with four 300-line diffs each:
+    // mount 531 → 72 ms, 5401 → 401 DOM nodes.
+    const { container } = renderWithLocale(
+      <A
+        blocks={[
+          step("Reading scripts"),
+          step("Writing a.ts"),
+          done("完成 · 1 file"),
+        ]}
+        active={false}
+        turnStartedAt={null}
+        backendStartedAt={null}
+      />,
+    );
+    // Collapsed at mount: the panel exists (the reveal needs an element to
+    // size), its rows do not.
+    expect(container.querySelector(".activity-line__history")).not.toBeNull();
+    expect(container.querySelectorAll(".activity-step")).toHaveLength(0);
+    expect(screen.queryByText("Reading scripts")).toBeNull();
+    // The first open mounts them, in the same commit as the toggle.
+    fireEvent.click(screen.getByRole("button"));
+    expect(container.querySelectorAll(".activity-step")).toHaveLength(2);
+    expect(screen.getByText("Reading scripts")).toBeInTheDocument();
+    // Collapsing keeps them — the collapse animates the rows out rather than
+    // dropping them, and a re-open has nothing to rebuild.
+    fireEvent.click(screen.getByRole("button"));
+    expect(
+      container.querySelector(".activity-line__history.is-open"),
+    ).toBeNull();
+    expect(container.querySelectorAll(".activity-step")).toHaveLength(2);
   });
 
   it("the toggle is the CONTENT, not the whole row — dead space is not clickable", () => {
@@ -442,6 +482,86 @@ describe("ActivityBlock", () => {
     );
     expect(screen.getByText("差分协处理器")).toBeInTheDocument();
     expect(screen.queryByText("Coprocessor")).toBeNull();
+  });
+
+  it("the done marker's commit sha opens the commit beside the record; plain text without a viewer (ADR 0059)", async () => {
+    const marker = done("完成 · 1 file · 提交 a1b2c3d", {
+      kind: "done",
+      state: "completed",
+      fileCount: 1,
+      riskCount: 0,
+      git: { commit: "a1b2c3d" },
+    });
+    // No viewer: the sha is text inside the headline.
+    const plain = renderWithLocale(
+      <A
+        blocks={[step("Running git commit"), marker]}
+        active={false}
+        turnStartedAt={null}
+        backendStartedAt={null}
+      />,
+    );
+    expect(
+      plain.container.querySelector(".activity-line__summary")?.textContent,
+    ).toContain("a1b2c3d");
+    expect(plain.container.querySelector(".file-open-name")).toBeNull();
+    plain.unmount();
+
+    const mock = createMockHertaBridge();
+    const readWorkspaceCommit = vi.fn(async () => ({
+      ok: true as const,
+      commit: {
+        sha: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+        shortSha: "a1b2c3d",
+        subject: "feat: the work",
+        body: "",
+        author: "Tester",
+        authoredAt: "2026-09-07T10:00:00+08:00",
+        parents: [],
+        files: [],
+        filesTotal: 0,
+        patch: "",
+        patchTruncated: false,
+      },
+    }));
+    Object.assign(mock.bridge, {
+      readWorkspaceFile: vi.fn(async () => ({
+        ok: false as const,
+        reason: "not_found" as const,
+      })),
+      readWorkspaceCommit,
+    });
+    const h = renderWithSession(
+      <FileViewerProvider>
+        <A
+          blocks={[step("Running git commit"), marker]}
+          active={false}
+          turnStartedAt={null}
+          backendStartedAt={null}
+        />
+        <FileViewerPanel />
+      </FileViewerProvider>,
+      { mock },
+    );
+    h.openSession("s1");
+    const sha = h.container.querySelector(
+      ".activity-line__summary .file-open-name",
+    );
+    expect(sha?.textContent).toBe("a1b2c3d");
+    expect(sha?.getAttribute("aria-label")).toBe("View commit a1b2c3d");
+    fireEvent.click(sha as Element);
+    await waitFor(() =>
+      expect(readWorkspaceCommit).toHaveBeenCalledWith("s1", "a1b2c3d"),
+    );
+    await waitFor(() =>
+      expect(
+        h.container.querySelector(".file-viewer")?.getAttribute("data-kind"),
+      ).toBe("commit"),
+    );
+    // The click opened the commit, not the history toggle.
+    expect(
+      h.container.querySelector(".activity-line__history.is-open"),
+    ).toBeNull();
   });
 
   it("mirror: UI locale zh but session en → English chip + done-marker", () => {
@@ -851,6 +971,97 @@ describe("ActivityBlock — attachment groups (ADR 0033, owner 2026-08-10)", () 
     expect(buttons).toHaveLength(1);
     fireEvent.click(buttons[0] as Element);
     expect(removed).toEqual([".herta/attachments/s/spec.md"]);
+  });
+
+  it("a document's row opens the ORIGINAL in the viewer and takes it back by whichever path it has (ADR 0038 amendment / ADR 0054)", async () => {
+    const removed: string[] = [];
+    const mock = createMockHertaBridge();
+    const readWorkspaceFile = vi.fn(async () => ({
+      ok: true as const,
+      content: "",
+      truncated: false,
+      size: 0,
+      relative: "x",
+    }));
+    const readWorkspaceBytes = vi.fn(async (_s: string, p: string) => ({
+      ok: true as const,
+      bytes: new Uint8Array([1]),
+      size: 1,
+      relative: p,
+    }));
+    Object.assign(mock.bridge, { readWorkspaceFile, readWorkspaceBytes });
+    const h = renderWithSession(
+      <FileViewerProvider>
+        <A
+          blocks={[
+            // A PDF with its text extracted: the row names the PDF, the
+            // viewer draws the PDF, the take-back addresses the TEXT path.
+            {
+              ...attach("report.pdf"),
+              digest: {
+                kind: "attachment",
+                name: "report.pdf",
+                path: ".herta/attachments/s/report-ab12cd34.pdf.txt",
+                source: ".herta/attachments/s/report-ab12cd34.pdf",
+                lines: 40,
+                chars: 900,
+                format: "pdf",
+                pages: 2,
+              },
+            },
+            // A spreadsheet: no text for 板砖, the file itself for the
+            // viewer, the take-back addresses the SOURCE path.
+            {
+              ...attach("sheet.xlsx"),
+              digest: {
+                kind: "attachment",
+                name: "sheet.xlsx",
+                path: "",
+                source: ".herta/attachments/s/sheet-ab12cd34.xlsx",
+                lines: 0,
+                chars: 0,
+                unreadable: "unsupported",
+              },
+            },
+          ]}
+          active={false}
+          turnStartedAt={null}
+          backendStartedAt={null}
+          onRemoveAttachment={(p) => () => removed.push(p)}
+        />
+        <FileViewerPanel />
+      </FileViewerProvider>,
+      { mock },
+    );
+    h.openSession("s1");
+    const names = h.container.querySelectorAll(".file-open-name");
+    expect([...names].map((n) => n.textContent)).toEqual([
+      "report.pdf",
+      "sheet.xlsx",
+    ]);
+    fireEvent.click(names[1] as Element);
+    await waitFor(() =>
+      expect(readWorkspaceBytes).toHaveBeenCalledWith(
+        "s1",
+        ".herta/attachments/s/sheet-ab12cd34.xlsx",
+      ),
+    );
+    fireEvent.click(names[0] as Element);
+    await waitFor(() =>
+      expect(readWorkspaceBytes).toHaveBeenCalledWith(
+        "s1",
+        ".herta/attachments/s/report-ab12cd34.pdf",
+      ),
+    );
+    expect(readWorkspaceFile).not.toHaveBeenCalled();
+    const xs = h.container.querySelectorAll(".activity-step__remove");
+    expect(xs).toHaveLength(2);
+    fireEvent.click(xs[0] as Element);
+    fireEvent.click(xs[1] as Element);
+    expect(removed).toEqual([
+      ".herta/attachments/s/report-ab12cd34.pdf.txt",
+      ".herta/attachments/s/sheet-ab12cd34.xlsx",
+    ]);
   });
 
   it("shows no take-back at all when the factory is absent (mid-turn)", () => {

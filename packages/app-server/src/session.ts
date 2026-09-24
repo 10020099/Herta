@@ -5,98 +5,111 @@
  * but without TTY sinks (no NarrativeRenderer, no Input, no CliAskResolver).
  * Turns are driven through a V2ActorDriver, giving the desktop session the
  * same mood-routing + supervisor wiring as the CLI. An all-empty meta-think
- * corpus and empty supervisor reference degrade to single-phase actor mode.
+ * corpus drops the meta-think attachment and an empty supervisor reference
+ * disables the supervisor; the two-phase actor rhythm itself is unconditional
+ * (the single-phase fallback was removed 2026-09-03).
  *
  * v0.3 Slice 2 Task 5 — uses SessionEventProjector for all subscription channels.
  */
 import { randomUUID } from "node:crypto";
-import { rm } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import {
+  type AgentEvent,
   type ApprovalOverlayState,
   defaultWorkspaceFor,
+  type EventBus,
   isAbortError,
   type LastTurnEnd,
   type ProjectCommandRuleStore,
   type ProviderAdapter,
-  readSessionTitle,
-  readSessionTopics,
+  type RepoContextSnapshot,
   ruleDisplay,
   type SessionTopic,
   type SystemBlock,
   type TerminalRecord,
   type TerminalRecordBlock,
   type V2RecordPersister,
-  writeSessionTitle,
+  type WorkspaceTrust,
 } from "@herta/core";
 import {
-  generateSessionTitle,
   type MetaThinkCorpus,
   type OpeningChoice,
   type PromptLang,
   type StaticHertaPrefix,
-  spanMatchedBaseMs,
   V2ActorDriver,
 } from "@herta/herta";
-import type { ApiKey } from "@herta/providers";
-import { digestSidecarFor } from "@herta/tools";
+import { type ApiKey, deepseekVisionCaptioner } from "@herta/providers";
 import {
-  attachmentDirFor,
-  ingestAttachment,
-  MAX_ATTACHMENTS_PER_ACTION,
-  migrateAttachments,
-} from "./attachments.js";
-import {
-  BusActorStreamingSink,
-  SLOW_MS_PER_CHAR,
-} from "./bus-streaming-sink.js";
+  type BranchList,
+  type CommitDescription,
+  describeBranches,
+  describeCommit,
+  describeLog,
+  describeRepoOutcome,
+  describeWorkingDiff,
+  type GitReadTimeout,
+  type LogPage,
+  type LogQuery,
+  type RepoContextOutcome,
+  type WorkingDiff,
+} from "@herta/tools";
+import { type ImageCaptioner, migrateAttachments } from "./attachments.js";
+import { BusActorStreamingSink } from "./bus-streaming-sink.js";
 import { connectMcpServers } from "./mcp/connect.js";
 import { loadEffectiveMcpConfig } from "./mcp/mcp-config.js";
 import { OverlayAskResolver } from "./overlay-ask-resolver.js";
 import { createChatProvider } from "./provider-factory.js";
 import { recordTail } from "./record-window.js";
+import {
+  REPO_WATCH_DEBOUNCE_MS,
+  REPO_WATCH_MAX_WAIT_SPANS,
+  type RepoWatcher,
+  watchGitDir,
+} from "./repo-watch.js";
+import { SessionAttachments } from "./session-attachments.js";
 import { SessionEventProjector } from "./session-event-projector.js";
 import {
-  appendTopic,
-  pruneTopics,
-  synthesizeInitialTopic,
-  topicAnchorText,
-} from "./session-topics.js";
+  createTitleProvider,
+  loadSessionTitleState,
+  SessionTitler,
+} from "./session-titler.js";
+import { loadSessionVoice, type SessionVoice } from "./session-voice.js";
 import {
+  type BackendStack,
   createActorStack,
+  createBackendProvider,
   createBackendStack,
+  defaultDigestModel,
   digestModelFrom,
+  prepareBackendStack,
 } from "./session-wiring.js";
+import type { StagedImage } from "./staged-images.js";
+import { SteerChannel } from "./steer-channel.js";
 import type {
   ApprovalResult,
   AppServerConfig,
-  AttachedFile,
   AttachResult,
   ContextUsage,
   McpConnectionStatus,
   OverlayEvent,
   RecordEvent,
   RemoveAttachmentResult,
+  RepoEvent,
   ResolveApprovalOpts,
   RewindResult,
   Session,
   SessionAgentEvent,
   SpeechControlEvent,
+  StageImagesResult,
+  SteerTextResult,
   TitleEvent,
   TurnLifecycleEvent,
   VoiceCueEvent,
   WorkspaceEvent,
   WorkspaceSetResult,
+  WorkspaceTrustState,
 } from "./types.js";
-import { loadClipStems, pickClipStem } from "./voice/clip-list.js";
-import { readOpusDurationMs } from "./voice/opus-duration.js";
-import {
-  loadParticleCatalog,
-  matchLeadingParticle,
-  pickParticleClip,
-} from "./voice/particle-catalog.js";
-import { pickVetoReaction } from "./voice/veto-reaction.js";
 import { loadEffectiveRules, withProjectRules } from "./workspace-rules.js";
 
 /**
@@ -116,17 +129,11 @@ export function spanEditedFiles(blocks: TerminalRecord): boolean {
   );
 }
 
-// ── Dynamic title tuning ─────────────────────────────────────────────────────
-
-/** Re-title a long session every this many user turns since the last title. */
-const RETITLE_EVERY_N_TURNS = 6;
-/** How many trailing user→Herta exchanges feed a (re)title. At the first turn
- *  this IS the first exchange, so the initial title is unchanged. */
-const TITLE_WINDOW_EXCHANGES = 2;
-/** Cap on consecutive per-turn attempts to produce an initial title (while the
- *  session is still untitled). Bounds the retry on a failing/empty-output title
- *  model to a few turns; the periodic trigger still retries later. */
-const MAX_INITIAL_TITLE_ATTEMPTS = 3;
+// The title machinery — tuning constants, the recent-window input, the
+// provider, the sidecar load and the titler itself — lives in
+// session-titler.ts (2026-09-03). `buildRecentTitleInput` is re-exported
+// for its tests.
+export { buildRecentTitleInput } from "./session-titler.js";
 
 /**
  * The `turn.failed` error payload. Carries the provider's HTTP status when
@@ -159,40 +166,6 @@ export function turnErrorPayload(err: unknown): {
   return { code: "unknown", message: String(err) };
 }
 
-/**
- * Build the title-model input from the RECENT window — the last
- * `windowExchanges` user messages plus the Herta speech from the first of those
- * onward. Returns null when there is no user turn (nothing to title).
- * `startIndex` is the record index of the window's first user block — a title
- * change anchors its TOPIC entry there (session-topics.ts): the new title
- * describes the conversation from that message on. Exported for unit testing.
- */
-export function buildRecentTitleInput(
-  record: TerminalRecord,
-  windowExchanges: number,
-): { userText: string; hertaText: string; startIndex: number } | null {
-  const userIdxs: number[] = [];
-  record.forEach((b, i) => {
-    if (b.kind === "user") userIdxs.push(i);
-  });
-  if (userIdxs.length === 0) return null;
-  // Take the last min(N, windowExchanges) user blocks from the tail.
-  const take = Math.min(userIdxs.length, windowExchanges);
-  const start = userIdxs[userIdxs.length - take] ?? 0;
-  const slice = record.slice(start);
-  const userText = slice
-    .filter((b) => b.kind === "user")
-    .map((b) => (b.kind === "user" ? b.text : ""))
-    .join("\n")
-    .trim();
-  const hertaText = slice
-    .filter((b) => b.kind === "herta" && b.surface === "speech")
-    .map((b) => (b.kind === "herta" ? b.text : ""))
-    .join("\n")
-    .trim();
-  return userText === "" ? null : { userText, hertaText, startIndex: start };
-}
-
 // ── Test-only seam ──────────────────────────────────────────────────────────
 
 /**
@@ -215,8 +188,9 @@ export interface SessionInternalDeps {
   /** Skip the async buildStaticHertaPrefix disk scan. */
   readonly staticPrefixOverride?: StaticHertaPrefix;
   /** Replace the compiled meta-think corpus (M-prompts-1: always fully
-   *  populated in production). An all-empty corpus disables mood routing
-   *  (single-phase actor mode) — stub-session tests rely on that. */
+   *  populated in production). An all-empty corpus drops the meta-think
+   *  attachment from the actor prompts (the rhythm stays two-phase) —
+   *  stub-session tests rely on that. */
   readonly metaThinkOverride?: MetaThinkCorpus;
   /** Replace the config-derived supervisor toggle. Empty string disables
    *  the supervisor (stub tests); production defaults ON via
@@ -245,13 +219,56 @@ export interface SessionInternalDeps {
   /** Random source for the easter-egg 50% roll + clip pick. Defaults to
    *  `Math.random`; tests inject a deterministic source. */
   readonly easterEggRandom?: () => number;
+  /** The repository probe behind the rail's repository card (ADR 0058).
+   *  Defaults to the git probe in `@herta/tools`; tests inject a stub so
+   *  no git runs under them. A `transient` answer (§7.6) keeps the last
+   *  card and watcher; only `absent` retracts them. */
+  readonly repoDescriber?: (
+    workspace: string,
+    signal?: AbortSignal,
+  ) => Promise<RepoContextOutcome>;
+  /** The git-dir watcher behind the card's live updates (ADR 0058
+   *  amendment). Defaults to `watchGitDir`; tests inject a fake that
+   *  records the dir and fires changes on demand. */
+  readonly repoWatcher?: RepoWatcher;
+  /** Trailing debounce for the watcher's bursts, ms. Defaults to
+   *  REPO_WATCH_DEBOUNCE_MS; tests shorten it. */
+  readonly repoWatchDebounceMs?: number;
+  /** One commit's description for the viewer's commit tab (ADR 0059).
+   *  Defaults to the git reader in `@herta/tools`; tests inject a stub. */
+  readonly commitDescriber?: (
+    workspace: string,
+    ref: string,
+    signal?: AbortSignal,
+  ) => Promise<CommitDescription | null | GitReadTimeout>;
+  /** One path's working-tree diff for the viewer's diff tab (ADR 0059
+   *  §5). Defaults to the git reader in `@herta/tools`; tests inject a stub. */
+  readonly workingDiffDescriber?: (
+    workspace: string,
+    path: string,
+    signal?: AbortSignal,
+  ) => Promise<WorkingDiff | null | GitReadTimeout>;
+  /** A page of history for the viewer's log tab (ADR 0059 §6). Defaults to
+   *  the git reader in `@herta/tools`; tests inject a stub. */
+  readonly logDescriber?: (
+    workspace: string,
+    opts: LogQuery,
+    signal?: AbortSignal,
+  ) => Promise<LogPage | null | GitReadTimeout>;
+  /** The branch list for the history tab's picker (ADR 0059 §6). Defaults
+   *  to the git reader in `@herta/tools`; tests inject a stub. */
+  readonly branchesDescriber?: (
+    workspace: string,
+    signal?: AbortSignal,
+  ) => Promise<BranchList | null | GitReadTimeout>;
   /** Clock (ms) for the easter-egg per-session hourly throttle. Defaults to
    *  `Date.now`; tests inject a controllable clock. */
   readonly easterEggNow?: () => number;
+  /** Test seam (ADR 0067): receives the backend stack the session built,
+   *  so a test can watch its tool registry follow the workspace and the
+   *  attachments. Production never passes it. */
+  readonly backendStackObserver?: (stack: BackendStack) => void;
 }
-
-/** Easter-egg voice throttle: ≤1 play per session per hour. */
-const EASTER_EGG_COOLDOWN_MS = 60 * 60 * 1000;
 
 /**
  * ADR 0044: the record note a NEW session carries when the configured
@@ -279,6 +296,53 @@ export class SessionImpl implements Session {
   // Distinct from workspaceRoot (the immutable record-store anchor).
   private readonly wsHolder: { current: string };
   private wsIsDefault: boolean;
+
+  // The workspace's repository as last probed (ADR 0058) — the rail's
+  // repository card. Probed on create, on a workspace change, at every
+  // turn's end and on request; one probe at a time, a request during one
+  // runs exactly one more after it (a burst of focus events is one probe).
+  private _repo: RepoContextSnapshot | null = null;
+  private repoProbeInFlight = false;
+  private repoProbeAgain = false;
+  private readonly repoDescriber: (
+    workspace: string,
+    signal?: AbortSignal,
+  ) => Promise<RepoContextOutcome>;
+  // A probe that could not answer with nothing on screen tries once more,
+  // a max-wait span later (ADR 0058 §7.6); one retry per definite answer.
+  private repoRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private repoRetried = false;
+  // The git-dir watcher (ADR 0058 amendment, 2026-09-07): armed on the git
+  // dir each probe answer names, re-armed when it changes (a workspace
+  // switch), dropped when the answer is "not a repository" or the session
+  // closes. Its bursts debounce into one probe.
+  private readonly repoWatcher: RepoWatcher;
+  private readonly repoWatchDebounceMs: number;
+  private repoWatchedDir: string | null = null;
+  private stopRepoWatch: (() => void) | null = null;
+  private repoWatchTimer: NodeJS.Timeout | null = null;
+  /** When the current burst of watcher events began (the max-wait). */
+  private repoWatchSince: number | null = null;
+  private repoClosed = false;
+  private readonly commitDescriber: (
+    workspace: string,
+    ref: string,
+    signal?: AbortSignal,
+  ) => Promise<CommitDescription | null | GitReadTimeout>;
+  private readonly workingDiffDescriber: (
+    workspace: string,
+    path: string,
+    signal?: AbortSignal,
+  ) => Promise<WorkingDiff | null | GitReadTimeout>;
+  private readonly logDescriber: (
+    workspace: string,
+    opts: LogQuery,
+    signal?: AbortSignal,
+  ) => Promise<LogPage | null | GitReadTimeout>;
+  private readonly branchesDescriber: (
+    workspace: string,
+    signal?: AbortSignal,
+  ) => Promise<BranchList | null | GitReadTimeout>;
 
   // The block persister — owned by the driver for turn blocks, but held here
   // too so setWorkspace/resetWorkspace can append a structured workspace_set
@@ -321,15 +385,10 @@ export class SessionImpl implements Session {
    *  2026-07-24, 1.6). */
   private lastTurnEnd: LastTurnEnd | undefined;
 
-  // Easter-egg voice (SPEC 2026-06-23): clip stems played when the user lifts
-  // the 板砖 device card. Held on the instance (not a factory closure) because
-  // `maybePlayEasterEgg` is called per gesture via IPC and owns the throttle.
-  private readonly easterEggClips: readonly string[];
-  private readonly easterEggRandom: () => number;
-  private readonly easterEggNow: () => number;
-  // Wall-clock (ms) of the last easter-egg play, or null. Per-session: a new
-  // session starts eligible. Enforces ≤1 play per hour.
-  private lastEasterEggAt: number | null = null;
+  /** The session's voice cues — opening clip and cadence, particle, veto
+   *  reaction, easter egg — with their catalogs and repeat-avoidance state
+   *  (session-voice.ts). */
+  private readonly voice: SessionVoice;
 
   // D3 (streaming opening): a NEW session's opening seed, deferred from the
   // in-memory record so playOpening can stream it in like a reply. null for
@@ -343,21 +402,10 @@ export class SessionImpl implements Session {
   // deferred rather than appended at create).
   private pendingContractNote: string | null;
 
-  // Voice clipId for the pending opening (its filename stem, e.g.
-  // "004-late-night-audit"), or null when there's no opening / no voice. Emitted
-  // as a `voice` cue when playOpening streams the seed so the renderer autoplays
-  // `<voiceRoot>/openings/<clipId>.opus`.
-  private readonly openingClipId: string | null;
-
   // D3: the opening-stream lead beat (ms held before the seed streams, so the
   // in-flight hint shows). undefined → the driver's OPENING_LEAD_MS default;
   // tests pass 0 to skip the wall-clock wait.
   private readonly openingLeadMs: number | undefined;
-
-  // Per-char base cadence (ms) for the opening reveal, matched to the voice
-  // clip's duration so the text spans ≈ the audio (SPEC 2026-06-23). undefined
-  // → the sink's read-along default (no clip, or duration unreadable).
-  private readonly openingBaseMs: number | undefined;
 
   // Live DeepSeek key getter (the host's mutable holder). submitText reads it to
   // detect the no-key case; the providers were built with the same getter.
@@ -386,31 +434,26 @@ export class SessionImpl implements Session {
     readonly settled: Promise<void>;
   } | null = null;
 
-  // Title generation. _title holds the current generated/loaded title. The title
-  // re-generates as the conversation continues: on a re-opened titled session's
-  // first new turn (reEntryRetitlePending) and periodically on long sessions
-  // (every RETITLE_EVERY_N_TURNS user turns, tracked by turnsSinceTitle).
-  // titleGenInFlight makes generation single-flight. The flash chat provider, the
-  // transcript dir (sidecar), and an abort source are held here. titlePromise is
-  // a test seam.
-  private _title: string | null;
-  /** Topic history (title changes anchored at their window's first user
-   *  block) — the rail's jump targets. Loaded from the sidecar; appended by
-   *  generateAndEmitTitle; pruned by rewind. */
-  private _topics: readonly SessionTopic[];
-  private reEntryRetitlePending: boolean;
-  private turnsSinceTitle = 0;
-  private titleGenInFlight = false;
-  /** Bumped by every rewind. An in-flight title generation captures the
-   *  epoch at start and drops its result on a mismatch: the window it
-   *  titled was (partly) withdrawn while the model was thinking, and a late
-   *  landing re-set a title for erased content and appended a ghost topic
-   *  whose post-rewind `bornAtLength` even pruneTopics couldn't kill
-   *  (review 2026-07-31). */
-  private titleEpoch = 0;
-  // Consecutive title-gen attempts since the last SUCCESS — bounds the
-  // initial-title retry (while untitled) on a failing title model.
-  private titleAttempts = 0;
+  /** The steer channel (ADR 0063): text sent while 板砖 works, drained by
+   *  the backend loop at its next head. Created in `create` BEFORE the
+   *  backend stack, whose runtime factory closes over its `drain`. */
+  private readonly steer: SteerChannel;
+  /** The shared bus — `steerText` publishes `user.steer` on it for the
+   *  bridge's drain to project and the beat policy to stage. */
+  private readonly bus: EventBus<AgentEvent>;
+  /** ADR 0067: the toolset follows the environment — the backend stack's
+   *  git-tool refresh after a workspace move, and its digest-tool mount
+   *  when the first document lands. Both optional (tests build without). */
+  private readonly onWorkspaceChanged: (() => void) | undefined;
+  private readonly onDocumentAttached: (() => void) | undefined;
+  /** True between the backend's `turn.started` and its `turn.finished` /
+   *  `turn.failed` on the bus — the window in which a steer has a sampling
+   *  boundary to reach. Tracked from the bus, cleared with the turn. */
+  private backendRunning = false;
+
+  /** The session title and its topic history — generation after a user
+   *  turn, the rewind fence, the sidecar (session-titler.ts). */
+  private readonly titler: SessionTitler;
   // Interaction language (slice 4) — held for per-turn language-parameterized
   // calls (the session-title prompt; the driver got its own copy at
   // construction). PUBLIC (implements Session.lang): the GUI surfaces it so the
@@ -418,15 +461,40 @@ export class SessionImpl implements Session {
   public readonly lang: PromptLang;
 
   private readonly transcriptDir: string;
-  private readonly titleProvider: ProviderAdapter;
-  private readonly titleAbort = new AbortController();
-  private titlePromise: Promise<void> | null = null;
+  /** The session's documents and pictures — ingest, take-back, the composer's
+   *  staged images, the rewind GC (session-attachments.ts). */
+  private readonly attachments: SessionAttachments;
 
   private constructor(opts: {
     sessionId: string;
     workspaceRoot: string;
     wsHolder: { current: string };
     isDefaultWorkspace: boolean;
+    repoDescriber: (
+      workspace: string,
+      signal?: AbortSignal,
+    ) => Promise<RepoContextOutcome>;
+    repoWatcher: RepoWatcher;
+    repoWatchDebounceMs: number;
+    commitDescriber: (
+      workspace: string,
+      ref: string,
+      signal?: AbortSignal,
+    ) => Promise<CommitDescription | null | GitReadTimeout>;
+    workingDiffDescriber: (
+      workspace: string,
+      path: string,
+      signal?: AbortSignal,
+    ) => Promise<WorkingDiff | null | GitReadTimeout>;
+    logDescriber: (
+      workspace: string,
+      opts: LogQuery,
+      signal?: AbortSignal,
+    ) => Promise<LogPage | null | GitReadTimeout>;
+    branchesDescriber: (
+      workspace: string,
+      signal?: AbortSignal,
+    ) => Promise<BranchList | null | GitReadTimeout>;
     persister: V2RecordPersister;
     driver: V2ActorDriver;
     sink: BusActorStreamingSink;
@@ -434,28 +502,41 @@ export class SessionImpl implements Session {
     overlayResolver: OverlayAskResolver;
     commandRules: ProjectCommandRuleStore;
     transcriptDir: string;
-    titleProvider: ProviderAdapter;
-    initialTitle: string | null;
-    initialTopics: readonly SessionTopic[];
+    titler: SessionTitler;
     pendingOpening: TerminalRecordBlock | null;
-    openingClipId: string | null;
+    voice: SessionVoice;
     openingLeadMs: number | undefined;
-    openingBaseMs: number | undefined;
-    easterEggClips: readonly string[];
-    easterEggRandom: () => number;
-    easterEggNow: () => number;
     deepSeekKey: () => string;
     mcpDispose?: () => Promise<void>;
     mcpConnectionStatus: Readonly<Record<string, McpConnectionStatus>>;
     lang: PromptLang;
     lastTurnEnd?: LastTurnEnd;
     pendingContractNote: string | null;
+    captionImage: ImageCaptioner | null;
+    steer: SteerChannel;
+    bus: EventBus<AgentEvent>;
+    /** ADR 0067: the toolset follows the environment. Fired after the
+     *  workspace holder moves (setWorkspace / resetWorkspace). */
+    onWorkspaceChanged?: () => void;
+    /** ADR 0067: fired when a readable document is attached. */
+    onDocumentAttached?: () => void;
   }) {
+    this.steer = opts.steer;
+    this.bus = opts.bus;
+    this.onWorkspaceChanged = opts.onWorkspaceChanged;
+    this.onDocumentAttached = opts.onDocumentAttached;
     this.lastTurnEnd = opts.lastTurnEnd;
     this.sessionId = opts.sessionId;
     this.workspaceRoot = opts.workspaceRoot;
     this.wsHolder = opts.wsHolder;
     this.wsIsDefault = opts.isDefaultWorkspace;
+    this.repoDescriber = opts.repoDescriber;
+    this.repoWatcher = opts.repoWatcher;
+    this.repoWatchDebounceMs = opts.repoWatchDebounceMs;
+    this.commitDescriber = opts.commitDescriber;
+    this.workingDiffDescriber = opts.workingDiffDescriber;
+    this.logDescriber = opts.logDescriber;
+    this.branchesDescriber = opts.branchesDescriber;
     this.persister = opts.persister;
     this.driver = opts.driver;
     this.sink = opts.sink;
@@ -466,24 +547,35 @@ export class SessionImpl implements Session {
     this.overlayResolver = opts.overlayResolver;
     this.commandRules = opts.commandRules;
     this.transcriptDir = opts.transcriptDir;
-    this.titleProvider = opts.titleProvider;
-    this._title = opts.initialTitle;
-    this._topics = opts.initialTopics;
-    // A reopened session that already has a title re-titles on its first new
-    // turn (so continuing an old session refreshes the now-stale title).
-    this.reEntryRetitlePending = opts.initialTitle !== null;
+    this.titler = opts.titler;
     this.pendingOpening = opts.pendingOpening;
-    this.openingClipId = opts.openingClipId;
+    this.voice = opts.voice;
     this.openingLeadMs = opts.openingLeadMs;
-    this.openingBaseMs = opts.openingBaseMs;
     this.deepSeekKey = opts.deepSeekKey;
     if (opts.mcpDispose !== undefined) this.mcpDispose = opts.mcpDispose;
     this.mcpConnectionStatus = opts.mcpConnectionStatus;
-    this.easterEggClips = opts.easterEggClips;
-    this.easterEggRandom = opts.easterEggRandom;
-    this.easterEggNow = opts.easterEggNow;
     this.lang = opts.lang;
     this.pendingContractNote = opts.pendingContractNote;
+    this.attachments = new SessionAttachments({
+      sessionId: opts.sessionId,
+      lang: opts.lang,
+      wsHolder: this.wsHolder,
+      captionImage: opts.captionImage,
+      turnInFlight: () => this.currentTurn !== null,
+      driver: this.driver,
+      onAppended: () => {
+        this._record = this.driver.getRecord();
+      },
+      onReplaced: () => {
+        this._record = this.driver.getRecord();
+        // The sink streams by a monotonic cursor and mirrors block
+        // REFERENCES, so a mutation behind the cursor is invisible to it —
+        // re-seed with the new record (same move rewind makes after
+        // truncating), then push the corrected record to the renderer.
+        this.sink.seedEmittedCount(this._record.length, this._record);
+        this.resyncRecord();
+      },
+    });
   }
 
   /**
@@ -510,24 +602,107 @@ export class SessionImpl implements Session {
   }
 
   /**
-   * GUI easter egg (SPEC 2026-06-23): called per successful 板砖-card lift. Rolls
-   * a 50% chance, throttled to ≤1 play per session per hour, and emits an
-   * `easter_egg` voice cue. No-op without clips or within the cooldown.
+   * The one turn skeleton (2026-09-03). Three entry points run a turn — a
+   * user submit, the resume regenerate (D2) and the opening stream (D3) —
+   * and each carried its own copy of the same dozen lines: mint a turn id
+   * and an abort controller, take the single-turn slot, emit `started`, run,
+   * refresh the record snapshot, emit `finished` or `failed`, release the
+   * slot in `finally` (resolving `settled` for close()'s wait) only if this
+   * turn still owns it. The copies had drifted in what they did on failure;
+   * here the skeleton is one function and each path supplies only what
+   * differs: `onFinished` runs after the record refresh and before
+   * `finished` (the submit path records the turn's ending there); `onFailed`
+   * runs before `failed` (reconciliation, the turn-end marker); `rethrow`
+   * says whether the caller sees the error — a user submit does, the two
+   * fire-and-forget paths swallow (see each). Callers gate on `currentTurn`
+   * BEFORE calling: what a busy session means differs per path (throw,
+   * no-op, no-op). Everything `body` does — including work before the
+   * driver call, such as taking the staged pictures — runs under the
+   * try, so a throw anywhere in it releases the slot instead of wedging
+   * the session.
    */
-  maybePlayEasterEgg(): void {
-    if (this.easterEggClips.length === 0) return;
-    const now = this.easterEggNow();
-    if (
-      this.lastEasterEggAt !== null &&
-      now - this.lastEasterEggAt < EASTER_EGG_COOLDOWN_MS
-    ) {
-      return; // within the per-session hourly cooldown
+  private async runAsTurn(
+    body: (signal: AbortSignal) => Promise<unknown>,
+    hooks: {
+      readonly onFinished?: () => void;
+      readonly onFailed?: (err: unknown) => void;
+      readonly rethrow: boolean;
+    },
+  ): Promise<string> {
+    const turnId = randomUUID();
+    const abortController = new AbortController();
+    let settleTurn: () => void = () => {};
+    const settled = new Promise<void>((resolve) => {
+      settleTurn = resolve;
+    });
+    this.currentTurn = { turnId, abortController, settled };
+    this.projector.emitTurnLifecycle({ kind: "started", turnId });
+    try {
+      await body(abortController.signal);
+      // Voiced speech (ADR 0042): a beat still sounding must not outlive its
+      // turn. Land its text, stop its audio, and release the record events it
+      // was gating — BEFORE `finished` is emitted, or the store would see the
+      // turn end with the final herta block still queued and clear the
+      // streaming bubble out from under it. In the shared runner rather than
+      // one caller, so a regenerated reply (D2) settles the same way a
+      // submitted one does; the opening is unvoiced and this is a no-op there.
+      this.sink.settleVoice();
+      this._record = this.driver.getRecord();
+      hooks.onFinished?.();
+      this.projector.emitTurnLifecycle({ kind: "finished", turnId });
+    } catch (err) {
+      // Same reason as the success path above, and the same ordering: the
+      // blocks a voiced beat gated must reach the renderer before `failed`.
+      //
+      // Nothing on the way to `failed` may keep it from being emitted: the
+      // hook appends the turn-end marker to disk, and a throw there (a full
+      // disk, a locked file) used to skip the event — the renderer stayed
+      // busy with a Stop that answered nothing until a session switch (UX
+      // review 2026-09-22, item 6). A secondary failure is logged; the
+      // turn's own error is the one `failed` carries.
+      try {
+        this.sink.settleVoice();
+      } catch (settleErr) {
+        console.warn("[herta] settling voice after a failed turn:", settleErr);
+      }
+      try {
+        hooks.onFailed?.(err);
+      } catch (hookErr) {
+        console.warn("[herta] turn-failure bookkeeping failed:", hookErr);
+      }
+      this.projector.emitTurnLifecycle({
+        kind: "failed",
+        turnId,
+        error: turnErrorPayload(err),
+      });
+      if (hooks.rethrow) throw err;
+    } finally {
+      settleTurn();
+      // A veto reaction armed for this turn and not spent is dropped (ADR
+      // 0042 §7b): the next turn's supervised reply arms its own, and a
+      // veto in a turn that never armed one must not play a filler rolled
+      // against another turn's particle.
+      this.voice.disarmVetoReaction();
+      // A turn may have committed, pushed or dirtied the tree: the
+      // repository card learns at the turn's end (ADR 0058).
+      void this.refreshRepo();
+      // A steer the loop never drained again (an interrupt, a provider
+      // failure between two heads) must not leak into the next dispatch as
+      // a message from nowhere (ADR 0063).
+      this.steer.clear();
+      this.backendRunning = false;
+      // Clear the per-turn state only if this turn still owns it. (A second
+      // entry replacing `currentTurn` mid-turn is what the callers' gates
+      // forbid; the check keeps a wrong release impossible regardless.)
+      if (this.currentTurn?.turnId === turnId) this.currentTurn = null;
     }
-    if (this.easterEggRandom() >= 0.5) return; // 50% gate (cooldown not consumed)
-    const clipId = pickClipStem(this.easterEggClips, this.easterEggRandom);
-    if (clipId === null) return;
-    this.lastEasterEggAt = now;
-    this.projector.emitVoice({ kind: "cue", category: "easter_egg", clipId });
+    return turnId;
+  }
+
+  /** GUI easter egg (SPEC 2026-06-23): called per successful 板砖-card lift
+   *  via IPC. The voice module owns the roll and the hourly throttle. */
+  maybePlayEasterEgg(): void {
+    this.voice.maybePlayEasterEgg();
   }
 
   // ── Session interface ──────────────────────────────────────────────────────
@@ -549,11 +724,11 @@ export class SessionImpl implements Session {
   }
 
   get title(): string | null {
-    return this._title;
+    return this.titler.title;
   }
 
   get topics(): readonly SessionTopic[] {
-    return this._topics;
+    return this.titler.topics;
   }
 
   get turnInFlight(): boolean {
@@ -579,8 +754,42 @@ export class SessionImpl implements Session {
     return { ok: true as const };
   }
 
+  /** Stage pictures in the composer (ADR 0048 §4) — see SessionAttachments. */
+  stageImages(
+    inputs: readonly {
+      readonly path?: string;
+      readonly bytes?: Uint8Array;
+      readonly name?: string;
+    }[],
+  ): Promise<StageImagesResult> {
+    return this.attachments.stageImages(inputs);
+  }
+
+  /** Drop a staged image and delete its stored copy. */
+  unstageImage(id: string): Promise<boolean> {
+    return this.attachments.unstageImage(id);
+  }
+
+  /** What is currently waiting in the composer — for a renderer that
+   *  reconnects (reload, session switch) and needs to redraw the strip. */
+  get stagedImageList(): readonly StagedImage[] {
+    return this.attachments.stagedImageList;
+  }
+
+  /** 板砖's run is in progress (the hold window, ADR 0063). */
+  get backendActive(): boolean {
+    return this.backendRunning;
+  }
+
+  /** A dream pass changed the corpus: the next turn re-derives the prefix
+   *  once (ADR 0069 §1b). */
+  markPrefixStale(): void {
+    this.driver.markPrefixStale();
+  }
+
   async submitText(
     text: string,
+    opts: { readonly stagedImageIds?: readonly string[] } = {},
   ): Promise<{ readonly turnId: string } | { readonly needsKey: true }> {
     // No DeepSeek key yet (first run, or it was cleared): don't run the turn —
     // signal the renderer to prompt for one. The opening (no LLM call) already
@@ -602,54 +811,50 @@ export class SessionImpl implements Session {
     // the contract-fallback note — between turns, before this turn's user
     // block. One-shot no-op everywhere else.
     this.flushContractNote();
-    const turnId = randomUUID();
-    const abortController = new AbortController();
-    let settleTurn: () => void = () => {};
-    const settled = new Promise<void>((resolve) => {
-      settleTurn = resolve;
-    });
-    this.currentTurn = { turnId, abortController, settled };
-    this.projector.emitTurnLifecycle({ kind: "started", turnId });
-
-    try {
-      // The actor sink (BusActorStreamingSink) streams every appended block to
-      // record subscribers in canonical order DURING the turn via flushBlocks
-      // (called at each append site in the actor turn + @板砖 bridge). So
-      // submitText no longer emits records post-turn — it only drives turn
-      // lifecycle and refreshes the synchronous .record snapshot. The driver
-      // persists each new block to JSONL inside runTurn; nothing to re-persist
-      // here. See docs/superpowers/specs/2026-06-01-gui-record-stream-ordering-design.md.
-      await this.driver.runTurn(text, abortController.signal);
-      this._record = this.driver.getRecord();
-      this.recordTurnEnd("completed");
-      this.projector.emitTurnLifecycle({ kind: "finished", turnId });
-      // Refresh the session title as the conversation evolves (initial title,
-      // re-entry, or periodic on a long session). Fire-and-forget — the user
-      // already sees Herta's reply; the title fills/updates after.
-      this.maybeUpdateTitle();
-    } catch (err) {
-      this.reconcileRecordAfterFailure();
-      // Durably record HOW this turn ended, so reopening can tell a deliberate
-      // stop from a crash (audit 2026-07-24, 1.6). An interrupt and a provider
-      // failure both leave a trailing user block; only a crash leaves no
-      // ending at all.
-      this.recordTurnEnd(isAbortError(err) ? "interrupted" : "failed");
-      this.projector.emitTurnLifecycle({
-        kind: "failed",
-        turnId,
-        error: turnErrorPayload(err),
-      });
-      throw err;
-    } finally {
-      settleTurn();
-      // Clear the per-turn state only if this turn still owns it.
-      // (A rapid second call to submitText would replace currentTurn, but
-      // that is disallowed by the single-turn-at-a-time invariant.)
-      if (this.currentTurn?.turnId === turnId) {
-        this.currentTurn = null;
-      }
-    }
-
+    const turnId = await this.runAsTurn(
+      async (signal) => {
+        // Take the staged pictures BEFORE the driver runs (ADR 0048 §4):
+        // their blocks go in right after the user block, so Herta reads the
+        // message and what came with it as one thing. `commit` awaits the
+        // captions started at stage time — usually long since resolved under
+        // the user's typing. Inside the turn, so a failing commit releases
+        // the slot like any other failure instead of leaving it taken.
+        let userAttachments: readonly SystemBlock[] = [];
+        if (
+          opts.stagedImageIds !== undefined &&
+          opts.stagedImageIds.length > 0
+        ) {
+          userAttachments = await this.attachments.commitStaged(
+            opts.stagedImageIds,
+          );
+        }
+        // The actor sink (BusActorStreamingSink) streams every appended block
+        // to record subscribers in canonical order DURING the turn via
+        // flushBlocks (called at each append site in the actor turn + @板砖
+        // bridge). So submitText no longer emits records post-turn — it only
+        // drives turn lifecycle and refreshes the synchronous .record
+        // snapshot. The driver persists each new block to JSONL inside
+        // runTurn; nothing to re-persist here. See
+        // docs/superpowers/specs/2026-06-01-gui-record-stream-ordering-design.md.
+        await this.driver.runTurn(text, signal, true, userAttachments);
+      },
+      {
+        onFinished: () => this.recordTurnEnd("completed"),
+        onFailed: (err) => {
+          this.reconcileRecordAfterFailure();
+          // Durably record HOW this turn ended, so reopening can tell a
+          // deliberate stop from a crash (audit 2026-07-24, 1.6). An
+          // interrupt and a provider failure both leave a trailing user
+          // block; only a crash leaves no ending at all.
+          this.recordTurnEnd(isAbortError(err) ? "interrupted" : "failed");
+        },
+        rethrow: true,
+      },
+    );
+    // Refresh the session title as the conversation evolves (initial title,
+    // re-entry, or periodic on a long session). Fire-and-forget — the user
+    // already sees Herta's reply; the title fills/updates after.
+    this.titler.afterUserTurn();
     return { turnId };
   }
 
@@ -699,50 +904,31 @@ export class SessionImpl implements Session {
     // Single-turn invariant (see submitText): a re-entrant CMD.open must not
     // start a second regenerate while one is in flight.
     if (this.currentTurn !== null) return;
-    const turnId = randomUUID();
-    const abortController = new AbortController();
-    let settleTurn: () => void = () => {};
-    const settled = new Promise<void>((resolve) => {
-      settleTurn = resolve;
-    });
-    this.currentTurn = { turnId, abortController, settled };
-    this.projector.emitTurnLifecycle({ kind: "started", turnId });
-    try {
-      await this.driver.regenerateLastReply(abortController.signal);
-      this._record = this.driver.getRecord();
-      this.projector.emitTurnLifecycle({ kind: "finished", turnId });
-    } catch (err) {
-      this.projector.emitTurnLifecycle({
-        kind: "failed",
-        turnId,
-        error: turnErrorPayload(err),
-      });
+    await this.runAsTurn((signal) => this.driver.regenerateLastReply(signal), {
       // The SAME reconciliation submitText does, not the old unconditional
       // reseed (audit 2026-08-05, S9). regenerateLastReply POPS the orphan
       // user block and `runTurn` re-appends it only in the actor's LOCAL
-      // record; on a non-abort provider throw the driver adopts the partial
-      // record only for ActorTurnAbortedError, so `this.record` sits at N-1
-      // while disk and the screen hold N. Seeding the cursor to N-1 left that
-      // split standing, which cost two things:
-      //   - the orphan message the user is looking at was permanently absent
-      //     from Herta's context (a D7 divergence), and
-      //   - `rewindLastUserTurn` derives its index from the DRIVER record and
-      //     truncates positionally, so the next rewind silently deleted an
-      //     EXTRA user message — one not reported in `withdrawn` and not
-      //     returned as `userText`, i.e. unrecoverable.
-      // Reachable via a crash-left orphan plus a non-retryable HTTP failure
-      // (a 402, say).
-      this.reconcileRecordAfterFailure();
-      // Deliberately NOT calling recordTurnEnd here: leaving `lastTurnEnd`
-      // undefined is what makes the orphan retry on the next open, which is
-      // the documented intent of this recovery path.
+      // record; on a non-abort provider throw the driver adopts the
+      // partial record only for ActorTurnAbortedError, so `this.record`
+      // sits at N-1 while disk and the screen hold N. Seeding the cursor
+      // to N-1 left that split standing, which cost two things:
+      //   - the orphan message the user is looking at was permanently
+      //     absent from Herta's context (a D7 divergence), and
+      //   - `rewindLastUserTurn` derives its index from the DRIVER record
+      //     and truncates positionally, so the next rewind silently
+      //     deleted an EXTRA user message — one not reported in
+      //     `withdrawn` and not returned as `userText`, i.e. unrecoverable.
+      // Reachable via a crash-left orphan plus a non-retryable HTTP
+      // failure (a 402, say).
       //
-      // Intentionally not rethrown — background recovery must not crash the
-      // open handler; the orphan persists and retries on the next resume.
-    } finally {
-      settleTurn();
-      if (this.currentTurn?.turnId === turnId) this.currentTurn = null;
-    }
+      // Deliberately NOT calling recordTurnEnd here: leaving `lastTurnEnd`
+      // undefined is what makes the orphan retry on the next open, which
+      // is the documented intent of this recovery path.
+      onFailed: () => this.reconcileRecordAfterFailure(),
+      // Not rethrown — background recovery must not crash the open handler;
+      // the orphan persists and retries on the next resume.
+      rethrow: false,
+    });
   }
 
   /**
@@ -771,56 +957,40 @@ export class SessionImpl implements Session {
     // create before any turn), so this is a defensive backstop.
     if (this.currentTurn !== null) return;
     this.pendingOpening = null; // one-shot
-    const turnId = randomUUID();
-    const abortController = new AbortController();
-    let settleTurn: () => void = () => {};
-    const settled = new Promise<void>((resolve) => {
-      settleTurn = resolve;
-    });
-    this.currentTurn = { turnId, abortController, settled };
-    this.projector.emitTurnLifecycle({ kind: "started", turnId });
-    try {
-      // Interrupt-as-SKIP (audit 2026-07-10; supersedes the deliberate
-      // non-interruptibility): the composer shows a STOP button during the
-      // opening, and interrupt() reported ok while doing nothing — a dead
-      // affordance. The turn's abort signal now threads into
-      // driver.playOpening, where a stop click cuts the lead beat and
-      // flushes the remaining seed text in ONE delta (fast-forward, never
-      // truncate — the seed still commits verbatim and stays durable).
-      //
-      // The voice cue fires via onStreamStart — AFTER the lead beat, the instant
-      // the text begins streaming — so the opening's voice and its text reveal
-      // land together. No clipId → no cue (opening without a voice file);
-      // a skip BEFORE stream start also suppresses the cue.
-      await this.driver.playOpening(
-        block,
-        this.openingLeadMs,
-        () => {
-          if (this.openingClipId !== null) {
-            this.projector.emitVoice({
-              kind: "cue",
-              category: "openings",
-              clipId: this.openingClipId,
-            });
-          }
-        },
-        this.openingBaseMs,
-        abortController.signal,
-      );
-      this._record = this.driver.getRecord();
-      this.projector.emitTurnLifecycle({ kind: "finished", turnId });
-    } catch (err) {
-      this.projector.emitTurnLifecycle({
-        kind: "failed",
-        turnId,
-        error: turnErrorPayload(err),
-      });
-      // Intentionally not rethrown — fire-and-forget; the seed is durable on
-      // disk and shows as instant history on the next resume.
-    } finally {
-      settleTurn();
-      if (this.currentTurn?.turnId === turnId) this.currentTurn = null;
-    }
+    // Interrupt-as-SKIP (audit 2026-07-10; supersedes the deliberate
+    // non-interruptibility): the composer shows a STOP button during the
+    // opening, and interrupt() reported ok while doing nothing — a dead
+    // affordance. The turn's abort signal threads into driver.playOpening,
+    // where a stop click cuts the lead beat and flushes the remaining seed
+    // text in ONE delta (fast-forward, never truncate — the seed still
+    // commits verbatim and stays durable).
+    //
+    // The voice cue fires via onStreamStart — AFTER the lead beat, the
+    // instant the text begins streaming — so the opening's voice and its
+    // text reveal land together. No clipId → no cue (opening without a voice
+    // file); a skip BEFORE stream start also suppresses the cue.
+    //
+    // With the real-time voice on (ADR 0042 amendment 2026-09-08) the
+    // opening is spoken by the synthesizer like a reply — one voice for
+    // everything she says — so no clip is cued and the sink paces the
+    // reveal by its audio instead of the clip's cadence. Decided ONCE here
+    // and handed to both sides, so the clip and the synthesized line can
+    // never both play.
+    const voiced = this.sink.voiceAvailable();
+    await this.runAsTurn(
+      (signal) =>
+        this.driver.playOpening(
+          block,
+          this.openingLeadMs,
+          () => this.voice.onOpeningStreamStart(voiced),
+          voiced ? undefined : this.voice.openingBaseMs,
+          signal,
+          voiced,
+        ),
+      // Not rethrown — fire-and-forget; the seed is durable on disk and shows
+      // as instant history on the next resume.
+      { rethrow: false },
+    );
     // After the opening settles (success, skip, or failure — the seed is
     // durable either way): the contract-fallback note follows it into the
     // record, so the user reads the opening first and the notice second.
@@ -834,10 +1004,47 @@ export class SessionImpl implements Session {
     if (opts?.turnId !== undefined && opts.turnId !== this.currentTurn.turnId) {
       return { ok: false };
     }
+    // Silence her AT the stop click, not when the turn finishes unwinding
+    // (ADR 0042): the abort reaches the primary controller through the
+    // actor's flush arming, but an in-turn beat's audio has no such path,
+    // and a voice that keeps talking after "stop" reads as a hang. Mirrors
+    // the renderer cutting clip playback on the same click. `interrupt`:
+    // the primary's TEXT is the actor's (cancel or flush, on the abort
+    // below) — landing it here flashed a held candidate (2026-09-10).
+    this.sink.settleVoice({ interrupt: true });
     this.currentTurn.abortController.abort(
       new DOMException("Interrupted by session.interrupt()", "AbortError"),
     );
     return { ok: true };
+  }
+
+  /**
+   * A message while 板砖 works (ADR 0063). Accepted only while the backend
+   * loop is running — the one phase with a sampling boundary to deliver
+   * to. Acceptance is two things in one order: the channel holds the text
+   * for the loop's next head, and the bus carries `user.steer`, which the
+   * bridge projects into the shared record as a user block (Herta sees it,
+   * D7) and stages as a beat. Anything else — idle, Herta's own speech,
+   * the commentary after the run — answers `queued`, records nothing, and
+   * leaves the caller holding the text for the next turn.
+   */
+  async steerText(text: string): Promise<SteerTextResult> {
+    const trimmed = text.trim();
+    if (
+      trimmed.length === 0 ||
+      this.currentTurn === null ||
+      !this.backendRunning
+    ) {
+      return { queued: true };
+    }
+    this.steer.push(trimmed);
+    this.bus.publish({
+      type: "user.steer",
+      layer: "actor",
+      id: randomUUID(),
+      text: trimmed,
+    });
+    return { accepted: this.currentTurn.turnId };
   }
 
   /**
@@ -860,42 +1067,22 @@ export class SessionImpl implements Session {
     if (result === null) {
       return { ok: false, reason: "no_user_turn" };
     }
-    // Title generation fires at turn end and runs while the session is idle
-    // — exactly when this method is allowed — so an in-flight generation may
-    // be titling the window this rewind is about to withdraw. Fence it out
-    // (see titleEpoch); the guard on currentTurn above cannot catch it.
-    this.titleEpoch += 1;
     this._record = this.driver.getRecord();
     // Reset the sink's canonical-diff cursor to the new (shorter) length: the
     // record just shrank, so the next turn's flushBlocks must emit from there,
     // not from the pre-rewind count (which would skip the next turn's blocks).
     // Passing the truncated record re-seeds the sink's resync mirror too.
     this.sink.seedEmittedCount(this._record.length, this._record);
-    // If no user turn remains, the generated title described a now-withdrawn
-    // exchange — clear it so the next turn regenerates from scratch. A surviving
-    // prior turn keeps its title (re-titling continues on the next turn).
-    if (!this._record.some((b) => b.kind === "user")) {
-      this._title = null;
-      this.reEntryRetitlePending = false;
-      this.turnsSinceTitle = 0;
-      this.titleAttempts = 0;
-    }
-    // Topic anchors beyond the truncation no longer exist — prune them (and
-    // persist the pruned history so a resume doesn't resurrect dead jump
-    // targets; skipped when the title itself was cleared above — the next
-    // title write starts the sidecar fresh).
-    const prunedTopics = pruneTopics(this._topics, this._record.length);
-    if (prunedTopics !== this._topics) {
-      this._topics = prunedTopics;
-      if (this._title !== null) {
-        writeSessionTitle(
-          this.transcriptDir,
-          this.sessionId,
-          this._title,
-          this._topics,
-        );
-      }
-    }
+    // Title generation fires at turn end and runs while the session is idle
+    // — exactly when this method is allowed — so an in-flight generation may
+    // be titling the window this rewind is about to withdraw. The titler
+    // fences it out, clears a title whose exchange is gone, and prunes the
+    // topic anchors beyond the truncation (see SessionTitler.onRewind); the
+    // guard on currentTurn above cannot catch any of that.
+    this.titler.onRewind(
+      this._record.length,
+      this._record.some((b) => b.kind === "user"),
+    );
     // Broadcast the truncated record so every subscriber replaces its mirror
     // — windowed like every full-record payload (long sessions, 2026-07-12) —
     // and the pruned topic history with it. The topics ride along because this
@@ -907,12 +1094,22 @@ export class SessionImpl implements Session {
       kind: "reset",
       record: tail.record,
       start: tail.start,
-      topics: this._topics,
+      topics: this.titler.topics,
     });
+    // Stored-attachment GC last: the record is already truncated and
+    // broadcast, and a failed unlink must not fail the rewind (best-effort,
+    // like the ✕). See the method for the D-Record-only amendment. The
+    // withdrawn PICTURES come back as staged entries instead of being
+    // deleted (owner 2026-08-27) — they ride the restored draft.
+    const images = await this.attachments.cleanUpWithdrawn(
+      result.withdrawn,
+      this._record,
+    );
     return {
       ok: true,
       userText: result.userText,
       editedFiles: spanEditedFiles(result.withdrawn),
+      ...(images.length > 0 ? { images } : {}),
     };
   }
 
@@ -1006,6 +1203,23 @@ export class SessionImpl implements Session {
     return this.commandRules.remove(display);
   }
 
+  /** Workspace trust (ADR 0064) for the CURRENT effective workspace — read
+   *  through the resolver's policy so the card and the menu agree. */
+  async getWorkspaceTrust(): Promise<WorkspaceTrustState> {
+    return {
+      effective: this.overlayResolver.workspaceTrusted ? "workspace" : "ask",
+      explicit: this.commandRules.trust(),
+      isDefaultWorkspace: this.backendWorkspaceIsDefault,
+    };
+  }
+
+  async setWorkspaceTrust(
+    value: WorkspaceTrust | null,
+  ): Promise<WorkspaceTrustState> {
+    this.commandRules.setTrust(value);
+    return this.getWorkspaceTrust();
+  }
+
   async resolveApproval(opts: ResolveApprovalOpts): Promise<ApprovalResult> {
     return this.overlayResolver.resolveExternal({
       requestId: opts.requestId,
@@ -1056,12 +1270,15 @@ export class SessionImpl implements Session {
     }
     this.wsHolder.current = workspace;
     this.wsIsDefault = false;
+    // The git tools follow the workspace (ADR 0067) — one cache miss, once.
+    this.onWorkspaceChanged?.();
     this.persister.appendWorkspaceSet(workspace, new Date().toISOString());
     this.projector.emitWorkspace({
       kind: "workspace",
       workspace,
       isDefault: false,
     });
+    void this.refreshRepo();
     // Out-of-turn → 系统 note so the workspace change is visible, persisted,
     // and resumable in the canonical TerminalRecord.
     this.driver.appendSystemNote("系统", `workspace → ${workspace}`);
@@ -1069,176 +1286,22 @@ export class SessionImpl implements Session {
     return { ok: true };
   }
 
-  /**
-   * Ingest documents the 开拓者 handed over (ADR 0033): copy each into the
-   * session's attachment directory under the EFFECTIVE backend workspace and
-   * append one → 系统 block per file.
-   *
-   * The effective workspace, not `this.workspaceRoot`: the block's path is
-   * what 板砖 later resolves, and it resolves against the backend root. A
-   * later workspace change strands the path the same way it strands every
-   * other relative path already in the record — no new class of staleness.
-   *
-   * Idle-only, same guard and rationale as setWorkspace (audit 2026-07-10,
-   * finding 13): `appendSystemBlock` is only safe between turns.
-   */
+  /** Ingest documents the 开拓者 handed over (ADR 0033) — see
+   *  SessionAttachments.attachFiles. */
   async attachFiles(paths: readonly string[]): Promise<AttachResult> {
-    if (this.currentTurn !== null) {
-      return { ok: false, reason: "turn_in_progress" };
+    const result = await this.attachments.attachFiles(paths);
+    // The first readable document mounts `digest_document` for the next
+    // brief (ADR 0067); later ones find it already there.
+    if (result.ok && result.files.some((f) => f.unreadable === undefined)) {
+      this.onDocumentAttached?.();
     }
-    if (paths.length === 0) return { ok: false, reason: "no_files" };
-    // Reject the whole action rather than ingesting a prefix: a user who
-    // dropped 30 files and got 10 with no explanation would reasonably
-    // believe all 30 arrived.
-    if (paths.length > MAX_ATTACHMENTS_PER_ACTION) {
-      return { ok: false, reason: "too_many" };
-    }
-
-    // Phase 1 — ingest (async, disk only, no record mutation). Phase 2 —
-    // guard + append, all synchronous. The first cut appended inside the
-    // await loop, which reopened exactly the hazard the idle-only guard
-    // exists for: every await yields the event loop, submitText can start a
-    // turn in that window, and an out-of-turn append lands MID-turn (dropped
-    // note / rewound sink cursor / duplicate JSONL — audit 2026-07-10,
-    // finding 13). setWorkspace never had this problem only because its
-    // guard-to-append path contains no await; with ingest I/O in between,
-    // the guard must be re-checked on the far side.
-    const ingested = [];
-    for (const sourcePath of paths) {
-      ingested.push({
-        sourcePath,
-        result: await ingestAttachment({
-          sourcePath,
-          workspaceRoot: this.wsHolder.current,
-          sessionId: this.sessionId,
-          lang: this.lang,
-        }),
-      });
-    }
-
-    if (this.currentTurn !== null) {
-      // A turn started while the files were being copied. The copies stay on
-      // disk — harmless, content-hashed, and a retry of the same drop reuses
-      // them byte-for-byte — but no record blocks may be appended now.
-      return { ok: false, reason: "turn_in_progress" };
-    }
-
-    const files: AttachedFile[] = [];
-    for (const { sourcePath, result } of ingested) {
-      this.driver.appendSystemBlock(result.block);
-      files.push({
-        name: basename(sourcePath),
-        path: result.relPath,
-        ...(result.unreadable !== undefined
-          ? { unreadable: result.unreadable }
-          : {}),
-      });
-    }
-    this._record = this.driver.getRecord();
-    return { ok: true, files };
+    return result;
   }
 
-  /**
-   * Take back an attached document (ADR 0033, owner 2026-08-10): delete the
-   * stored file and MARK every block citing it `unreadable: "removed"`.
-   *
-   * Marked, not deleted. Dropping the block would shift every later index —
-   * rewind, topic anchors and the sink cursor all count them — and, the real
-   * reason, if Herta has already spoken about the document then erasing its
-   * citation leaves her own words pointing at something that never happened.
-   * The file goes; the record keeps saying one arrived and was withdrawn.
-   *
-   * The caller supplies a path from the RENDERER, so it is never trusted for
-   * the delete: the block found by that path supplies its own harness-written
-   * path, and that is re-checked against this session's attachment prefix
-   * before anything is unlinked.
-   *
-   * Idle-only, like every other out-of-turn record write.
-   */
-  async removeAttachment(path: string): Promise<RemoveAttachmentResult> {
-    if (this.currentTurn !== null) {
-      return { ok: false, reason: "turn_in_progress" };
-    }
-    const record = this.driver.getRecord();
-    const targets: Array<{ index: number; block: SystemBlock }> = [];
-    record.forEach((b, index) => {
-      if (b.kind !== "system") return;
-      const d = b.digest;
-      if (d?.kind !== "attachment") return;
-      if (d.path !== path || d.path.length === 0) return;
-      if (d.unreadable === "removed") return; // already withdrawn
-      targets.push({ index, block: b });
-    });
-    if (targets.length === 0) return { ok: false, reason: "not_found" };
-
-    // Delete once, from the BLOCK's own path, and only inside this session's
-    // attachment directory — a renderer-supplied path never reaches unlink.
-    const prefix = `${attachmentDirFor(this.sessionId)}/`;
-    const stored = targets[0]?.block.digest;
-    const relPath =
-      stored?.kind === "attachment" && stored.path.startsWith(prefix)
-        ? stored.path
-        : null;
-    if (relPath === null) return { ok: false, reason: "not_found" };
-    // The outline sidecar (2026-08-23) goes with the text, under the same
-    // prefix check — it is the document's own table of contents, and a
-    // withdrawn document must not leave its chapter titles behind.
-    const sidecar =
-      stored?.kind === "attachment" &&
-      stored.outline !== undefined &&
-      stored.outline.path.startsWith(prefix)
-        ? stored.outline.path
-        : null;
-    // …and the digest sidecar (ADR 0043), if 板砖 ever built one: same
-    // directory, same prefix, derived from the text's own path.
-    const digest = digestSidecarFor(relPath);
-    const toRemove = [relPath, digest, ...(sidecar === null ? [] : [sidecar])];
-    for (const rel of toRemove) {
-      try {
-        await rm(join(this.wsHolder.current, ...rel.split("/")), {
-          force: true,
-        });
-      } catch {
-        // Best-effort: a file already gone (manual delete, workspace
-        // switched) must not block the record from recording the withdrawal.
-      }
-    }
-
-    // Guard re-check on the far side of the await — the same hole attachFiles
-    // closed and this method then reintroduced: `rm` yields the event loop,
-    // and a turn starting in that window would make the block replacement and
-    // the sink re-seed below MID-turn mutations. Refusing here is self-healing:
-    // the file is already gone, the block is not yet marked, and the retry
-    // finds the same targets while `rm --force` tolerates the missing file.
-    if (this.currentTurn !== null) {
-      return { ok: false, reason: "turn_in_progress" };
-    }
-
-    for (const { index, block } of targets) {
-      const d = block.digest;
-      if (d?.kind !== "attachment") continue;
-      // Drop the head excerpt with the file. Keeping prompt-visible content
-      // for a document the user just took back would be the opposite of what
-      // they asked for.
-      const { evidenceDetail: _d, evidence: _e, ...rest } = block;
-      // The outline citation goes too: its sidecar was just unlinked, and a
-      // digest pointing at it would be a path to nothing.
-      const { outline: _o, ...digest } = d;
-      this.driver.replaceBlockAt(index, {
-        ...rest,
-        body: `附件 ${d.name} · 已移除`,
-        digest: { ...digest, lines: 0, chars: 0, unreadable: "removed" },
-      });
-    }
-
-    this._record = this.driver.getRecord();
-    // The sink streams by a monotonic cursor and mirrors block REFERENCES, so
-    // a mutation behind the cursor is invisible to it — re-seed with the new
-    // record (same move rewind makes after truncating), then push the
-    // corrected record to the renderer.
-    this.sink.seedEmittedCount(this._record.length, this._record);
-    this.resyncRecord();
-    return { ok: true, removed: targets.length };
+  /** Take back an attached document (ADR 0033, owner 2026-08-10) — see
+   *  SessionAttachments.removeAttachment. */
+  removeAttachment(path: string): Promise<RemoveAttachmentResult> {
+    return this.attachments.removeAttachment(path);
   }
 
   /**
@@ -1271,12 +1334,14 @@ export class SessionImpl implements Session {
     }
     this.wsHolder.current = def;
     this.wsIsDefault = true;
+    this.onWorkspaceChanged?.();
     this.persister.appendWorkspaceSet(def, new Date().toISOString());
     this.projector.emitWorkspace({
       kind: "workspace",
       workspace: def,
       isDefault: true,
     });
+    void this.refreshRepo();
     // Out-of-turn → 系统 note (mirrors setWorkspace) so the reset is visible,
     // persisted, and resumable in the canonical TerminalRecord.
     this.driver.appendSystemNote("系统", `workspace → ${def}`);
@@ -1312,107 +1377,154 @@ export class SessionImpl implements Session {
     return this.projector.subscribeWorkspace();
   }
 
+  get repo(): RepoContextSnapshot | null {
+    return this._repo;
+  }
+
+  subscribeRepo(): AsyncIterable<RepoEvent> {
+    return this.projector.subscribeRepo();
+  }
+
+  /** Probe the workspace's repository and emit the answer (ADR 0058). One
+   *  probe at a time: a request during one is remembered and runs once
+   *  after it, so a burst of triggers (focus flicker, a turn ending as the
+   *  user tabs back) costs one extra probe, not one per trigger. The probe
+   *  never throws (its own contract); a throw here still lands as null. */
+  async refreshRepo(): Promise<void> {
+    if (this.repoClosed) return;
+    if (this.repoProbeInFlight) {
+      this.repoProbeAgain = true;
+      return;
+    }
+    this.repoProbeInFlight = true;
+    try {
+      do {
+        this.repoProbeAgain = false;
+        const workspace = this.wsHolder.current;
+        let outcome: RepoContextOutcome;
+        try {
+          outcome = await this.repoDescriber(workspace);
+        } catch {
+          outcome = { kind: "transient", reason: "aborted" };
+        }
+        if (this.repoClosed) return;
+        if (outcome.kind === "transient") {
+          // A probe that could not answer (a `git status` past its budget
+          // during the rebase the user is watching, a lock, an interrupt)
+          // says nothing about the repository: the card and the watcher
+          // stand, and the next change or focus probes again (§7.6). With
+          // nothing on screen and no watcher to re-probe, try once more.
+          if (
+            this._repo === null &&
+            this.repoWatchedDir === null &&
+            !this.repoRetried
+          ) {
+            this.repoRetried = true;
+            this.repoRetryTimer = setTimeout(() => {
+              this.repoRetryTimer = null;
+              void this.refreshRepo();
+            }, this.repoWatchDebounceMs * REPO_WATCH_MAX_WAIT_SPANS);
+            this.repoRetryTimer.unref?.();
+          }
+          continue;
+        }
+        this.repoRetried = false;
+        const repo = outcome.kind === "repo" ? outcome.repo : null;
+        this._repo = repo;
+        this.syncRepoWatch(repo?.gitDir ?? null);
+        this.projector.emitRepo({ kind: "repo", workspace, repo });
+      } while (this.repoProbeAgain);
+    } finally {
+      this.repoProbeInFlight = false;
+    }
+  }
+
+  /** Keep exactly one watcher, on the git dir the latest answer names. */
+  private syncRepoWatch(gitDir: string | null): void {
+    if (gitDir === this.repoWatchedDir) return;
+    this.stopRepoWatch?.();
+    this.stopRepoWatch = null;
+    this.repoWatchedDir = gitDir;
+    if (gitDir === null || this.repoClosed) return;
+    this.stopRepoWatch = this.repoWatcher(gitDir, (gone) =>
+      this.onRepoChanged(gone === true),
+    );
+  }
+
+  /** A git-dir change: one probe after the burst settles — or at latest a
+   *  few debounce spans after the burst began, so events that never pause
+   *  (a long checkout, a rebase) still reach the card. `gone`: the
+   *  watcher closed itself because its dir vanished (repo-watch.ts); probe
+   *  now, and forget it so the next answer re-arms one even under the
+   *  same path. */
+  private onRepoChanged(gone = false): void {
+    if (this.repoClosed) return;
+    if (gone) {
+      this.stopRepoWatch = null;
+      this.repoWatchedDir = null;
+    }
+    if (this.repoWatchTimer !== null) clearTimeout(this.repoWatchTimer);
+    const now = Date.now();
+    if (this.repoWatchSince === null) this.repoWatchSince = now;
+    const overdue =
+      now - this.repoWatchSince >=
+      this.repoWatchDebounceMs * REPO_WATCH_MAX_WAIT_SPANS;
+    const probe = (): void => {
+      this.repoWatchTimer = null;
+      this.repoWatchSince = null;
+      void this.refreshRepo();
+    };
+    if (gone || overdue) {
+      probe();
+      return;
+    }
+    this.repoWatchTimer = setTimeout(probe, this.repoWatchDebounceMs);
+    this.repoWatchTimer.unref?.();
+  }
+
+  /** The watcher's teardown, and the end of probing: nothing runs git for
+   *  a session that is closing. */
+  private stopRepoTracking(): void {
+    this.repoClosed = true;
+    if (this.repoWatchTimer !== null) {
+      clearTimeout(this.repoWatchTimer);
+      this.repoWatchTimer = null;
+    }
+    if (this.repoRetryTimer !== null) {
+      clearTimeout(this.repoRetryTimer);
+      this.repoRetryTimer = null;
+    }
+    this.syncRepoWatch(null);
+  }
+
+  /** One commit, read from the workspace's repository for the viewer's
+   *  commit tab (ADR 0059). Null for anything git cannot show. */
+  describeCommit(
+    ref: string,
+  ): Promise<CommitDescription | null | GitReadTimeout> {
+    return this.commitDescriber(this.wsHolder.current, ref);
+  }
+
+  /** One workspace-relative path's working-tree change against HEAD, for
+   *  the viewer's diff tab (ADR 0059 §5). The caller jails the path. */
+  describeWorkingDiff(
+    path: string,
+  ): Promise<WorkingDiff | null | GitReadTimeout> {
+    return this.workingDiffDescriber(this.wsHolder.current, path);
+  }
+
+  /** A page of the workspace repository's history (ADR 0059 §6). */
+  describeLog(opts: LogQuery): Promise<LogPage | null | GitReadTimeout> {
+    return this.logDescriber(this.wsHolder.current, opts);
+  }
+
+  /** The workspace repository's branches (ADR 0059 §6) — read-only. */
+  describeBranches(): Promise<BranchList | null | GitReadTimeout> {
+    return this.branchesDescriber(this.wsHolder.current);
+  }
+
   subscribeVoice(): AsyncIterable<VoiceCueEvent> {
     return this.projector.subscribeVoice();
-  }
-
-  /**
-   * Decide whether this just-finished user turn should (re)generate the title,
-   * and if so kick it off (fire-and-forget). Triggers: no title yet (new session
-   * or a prior failed attempt), a re-opened titled session's first new turn, or
-   * every RETITLE_EVERY_N_TURNS turns on a long session. Single-flight: while a
-   * generation runs, later turns keep counting and retry next turn.
-   */
-  private maybeUpdateTitle(): void {
-    this.turnsSinceTitle += 1;
-    const shouldRetitle =
-      (this._title === null &&
-        this.titleAttempts < MAX_INITIAL_TITLE_ATTEMPTS) ||
-      this.reEntryRetitlePending ||
-      this.turnsSinceTitle >= RETITLE_EVERY_N_TURNS;
-    if (!shouldRetitle || this.titleGenInFlight) return;
-    this.reEntryRetitlePending = false;
-    this.turnsSinceTitle = 0;
-    this.titlePromise = this.generateAndEmitTitle();
-  }
-
-  /**
-   * Generate a title from the recent window (last TITLE_WINDOW_EXCHANGES
-   * exchanges — at the first turn that IS the first exchange), persist it, and
-   * emit a title event. Best-effort: any failure (model error, empty output,
-   * disk error) leaves the title unchanged and never throws. Single-flight via
-   * titleGenInFlight. Kept off the critical path — invoked fire-and-forget.
-   */
-  private async generateAndEmitTitle(): Promise<void> {
-    this.titleGenInFlight = true;
-    this.titleAttempts += 1;
-    const epoch = this.titleEpoch;
-    try {
-      const input = buildRecentTitleInput(
-        this.driver.getRecord(),
-        TITLE_WINDOW_EXCHANGES,
-      );
-      if (input === null) return;
-      const title = await generateSessionTitle(
-        this.titleProvider,
-        {
-          ...input,
-          lang: this.lang,
-          // Incumbent-title contract (owner 2026-08-11): a re-title that sees
-          // the current title can say "still on topic" by copying it exactly,
-          // which appendTopic's exact-match dedup then swallows — no churn,
-          // no ghost topic tick on a same-topic re-entry. Absent on the
-          // initial title (nothing to keep).
-          ...(this._title !== null ? { currentTitle: this._title } : {}),
-        },
-        this.titleAbort.signal,
-      );
-      if (title === null) return;
-      // A rewind landed while the model was thinking: `input` describes a
-      // window that no longer exists, and every index below is stale. Drop
-      // the whole result — no title, no topic, no persist, no emit.
-      if (epoch !== this.titleEpoch) return;
-      // Topic history (2026-07-12): a CHANGED title marks a topic boundary,
-      // anchored at the title window's first user block (the message the new
-      // title describes the conversation from). A re-derived same title
-      // appends nothing — the conversation stayed on topic.
-      const recordNow = this.driver.getRecord();
-      const anchorBlock = recordNow[input.startIndex];
-      const appended = appendTopic(this._topics, {
-        title,
-        anchorIndex: input.startIndex,
-        anchorText: topicAnchorText(
-          anchorBlock?.kind === "user" ? anchorBlock.text : input.userText,
-        ),
-        at: new Date().toISOString(),
-        // How much conversation this topic needed to exist. A rewind below it
-        // withdrew the turn that produced this title, so the topic goes with
-        // it — which the anchor cannot express, since the anchor is the title
-        // WINDOW's start and may predate this turn by hours (pruneTopics).
-        bornAtLength: recordNow.length,
-      });
-      if (appended !== null) this._topics = appended;
-      writeSessionTitle(
-        this.transcriptDir,
-        this.sessionId,
-        title,
-        this._topics,
-      );
-      this._title = title;
-      this.titleAttempts = 0; // success → refresh the initial-title budget
-      const newTopic =
-        appended !== null ? this._topics[this._topics.length - 1] : undefined;
-      this.projector.emitTitle({
-        kind: "title",
-        sessionId: this.sessionId,
-        title,
-        ...(newTopic !== undefined ? { topic: newTopic } : {}),
-      });
-    } catch {
-      // best-effort: a title failure never affects the session
-    } finally {
-      this.titleGenInFlight = false;
-    }
   }
 
   /**
@@ -1421,10 +1533,13 @@ export class SessionImpl implements Session {
    * fire-and-forget so it cannot delay a turn.
    */
   async whenTitleSettled(): Promise<void> {
-    if (this.titlePromise !== null) await this.titlePromise;
+    await this.titler.whenSettled();
   }
 
   async close(): Promise<void> {
+    // The repository watcher first: nothing below should be able to start
+    // a probe against a session that is going away.
+    this.stopRepoTracking();
     // Capture BEFORE interrupt: the turn's finally clears currentTurn.
     const inFlight = this.currentTurn?.settled ?? null;
     // Cancel any in-flight turn first. interrupt() is a no-op when
@@ -1432,7 +1547,7 @@ export class SessionImpl implements Session {
     await this.interrupt();
     // Abort any in-flight title generation so a slow flash call can't outlive
     // the session.
-    this.titleAbort.abort();
+    this.titler.dispose();
 
     // Await the interrupted turn's REAL settlement (audit 2026-07-10,
     // finding 14): one setImmediate was not enough — a still-unwinding turn
@@ -1453,6 +1568,12 @@ export class SessionImpl implements Session {
         if (timer !== undefined) clearTimeout(timer);
       }
     }
+
+    // Pictures still sitting in the composer never became part of anything:
+    // no record block ever mentioned them, so their stored copies are pure
+    // orphans (ADR 0048 §4). Best-effort — a copy that survives is a stray
+    // file, never a broken session.
+    await this.attachments.clearStaged();
 
     // Give the turn loop one event-loop tick to observe the AbortSignal and
     // emit turn.failed before we close the projector (which would close all
@@ -1533,10 +1654,10 @@ export class SessionImpl implements Session {
       config.providers.baseUrl !== undefined
         ? { baseUrl: config.providers.baseUrl }
         : {};
-
     // Backend chat adapter — dispatch on provider type via the shared factory.
     // Thinking-effort normalization lives in provider-factory.ts (the broad
-    // ThinkingEffort enum maps onto each vendor's own vocabulary).
+    // ThinkingEffort enum maps onto each vendor's own vocabulary). Settings →
+    // Coprocessor supplies the model and the thinking level (default "high").
     const backendProvider =
       deps.providerOverrides?.backend ??
       createChatProvider({
@@ -1563,18 +1684,38 @@ export class SessionImpl implements Session {
     const mcp = await connectMcpServers(
       loadEffectiveMcpConfig(opts.effectiveWorkspace).mcpServers,
     );
+    // The steer channel (ADR 0063) exists before the stack: the runtime
+    // factory closes over its `drain`, and every dispatch reads it.
+    const steer = new SteerChannel();
+    // The one thing the synchronous build would block on (a bash start, on
+    // the desktop app's main thread) is found out here, awaited.
+    await prepareBackendStack({
+      wantMinimal: config.backendContract === "minimal",
+    });
     const backend = createBackendStack({
       wsHolder,
       workspaceRoot,
       lang,
+      pendingUserInput: () => steer.drain(),
       // The contract the setting asks for (ADR 0040). `minimal` needs a bash
       // on this machine; without one the session runs `standard`. The
       // Settings row shows the detection result (the GUI's getBackendContract
       // reports `bashFound`), and since ADR 0044 a NEW session also carries
       // one `→ 系统` record note naming the remedy (see contractFallbackNote).
       wantMinimal: config.backendContract === "minimal",
+      // ADR 0067: a reopened record that already carries a document mounts
+      // `digest_document` from the start; a fresh session waits for one.
+      attachmentsPresent: initialRecord.some(
+        (b) =>
+          b.kind === "system" &&
+          b.digest?.kind === "attachment" &&
+          b.digest.unreadable !== "removed",
+      ),
       backendProvider,
       extraTools: mcp.tools,
+      // ADR 0048 §5: the stack mounts `view_image` only when this model can
+      // actually see (isVisionModel, one rule for both hosts).
+      backendModel: config.providers.backendModel,
       // The digest tool's side model (ADR 0043): flash-equivalent sidecar,
       // thinking off. Uses the user's configured provider (not a hardcoded
       // DeepSeek flash) so OpenAI / Anthropic / compat sessions can digest.
@@ -1601,6 +1742,11 @@ export class SessionImpl implements Session {
         overlayResolver = new OverlayAskResolver({
           cache,
           rules,
+          // The managed sandbox trusts by default (ADR 0064): a new session's
+          // workspace under ~/.herta/workspaces holds nothing of the user's.
+          // A provider — setWorkspace moves the workspace mid-session.
+          defaultTrust: () =>
+            sessionHolder.session?.backendWorkspaceIsDefault === true,
           setPendingOverlay(overlay) {
             // biome-ignore lint/style/noNonNullAssertion: set before any turn runs
             sessionHolder.session!._overlay = overlay;
@@ -1623,6 +1769,7 @@ export class SessionImpl implements Session {
         return overlayResolver;
       },
     });
+    deps.backendStackObserver?.(backend);
     if (overlayResolver === undefined) {
       throw new Error("createBackendStack did not build the ask resolver");
     }
@@ -1646,6 +1793,16 @@ export class SessionImpl implements Session {
     //     mapped from bus turn.* events — that path would double-emit (backend
     //     loop publishes turn.* on the bus and submitText also emits lifecycle).
     const projector = new SessionEventProjector({ bus, queueCapacity: 1000 });
+    // The backend phase (ADR 0063): a steer has a boundary to reach only
+    // between the backend's turn.started and its end. Read off the bus the
+    // same way the renderer reads it; the turn's `finally` clears it too.
+    bus.onAny((ev) => {
+      const s = sessionHolder.session;
+      if (s === null || ev.layer !== "backend") return;
+      if (ev.type === "turn.started") s.backendRunning = true;
+      else if (ev.type === "turn.finished" || ev.type === "turn.failed")
+        s.backendRunning = false;
+    });
 
     // 2. Actor stack (shared wiring): providers, static prefix (+ reopen
     //    own-dream filter), opening seed, meta-think/hints/supervisor toggle,
@@ -1693,14 +1850,8 @@ export class SessionImpl implements Session {
       },
     });
 
-    // Title provider — a fast flash chat call at thinking "low" (owner
-    // decision 2026-08-03; omitting `thinking` meant the server's DEFAULT
-    // effort, which is "high" — titles were silently paying full reasoning).
-    // NOTE: deepseek-v4-flash is a reasoning model; it streams a reasoning
-    // chain BEFORE the answer, so maxTokens must cover the reasoning PLUS
-    // the (short) title — a tight cap silently starves the answer and yields
-    // an empty title. 1024 stays: generous for low effort, and the model
-    // stops naturally after the title.
+    // The title model (see createTitleProvider) and the title/topics the
+    // session opens with, judged against the record actually loaded.
     const titleProvider =
       deps.providerOverrides?.title ??
       createChatProvider({
@@ -1713,40 +1864,11 @@ export class SessionImpl implements Session {
         temperature: 0.3,
         ...baseUrl,
       });
-    let existingTitle =
-      readSessionTitle(config.transcriptDir, sessionId) ?? null;
-    // Topic history (2026-07-12): persisted alongside the title. Sessions
-    // titled BEFORE the history existed get their first entry synthesized
-    // from the existing title, anchored at the record's first user block
-    // (in-memory; it persists with the next real title write).
-    let existingTopics: readonly SessionTopic[] = readSessionTopics(
+    const existing = loadSessionTitleState(
       config.transcriptDir,
       sessionId,
+      opts.initialRecord ?? [],
     );
-    // The sidecar can outlive the record it described (review 2026-07-31):
-    // rewind-to-empty deliberately skips the sidecar rewrite ("the next
-    // title write starts it fresh" — which never comes if the app closes
-    // first), and a crash can land between the JSONL truncation and the
-    // sidecar write. Without this, resume resurrected the withdrawn title
-    // and dead rail ticks — and the next real title write re-persisted them
-    // for good. Judge the sidecar against the record actually loaded.
-    const loadedRecord = opts.initialRecord ?? [];
-    if (!loadedRecord.some((b) => b.kind === "user")) {
-      // No surviving user turn: whatever the sidecar describes is gone.
-      existingTitle = null;
-      existingTopics = [];
-    } else {
-      existingTopics = pruneTopics(existingTopics, loadedRecord.length);
-    }
-    // Runs AFTER the prune on purpose: a title whose every topic was pruned
-    // re-anchors at the record's first surviving user block, same as a
-    // pre-history sidecar.
-    const synthesized = synthesizeInitialTopic(
-      existingTitle,
-      existingTopics,
-      loadedRecord,
-    );
-    if (synthesized !== null) existingTopics = [synthesized];
 
     const sink = new BusActorStreamingSink(
       bus,
@@ -1758,99 +1880,67 @@ export class SessionImpl implements Session {
       undefined,
       lang,
     );
-
-    // 3. Opening voice pairing (the seed itself came from the actor stack;
-    //    the host adds the clip and the clip-matched cadence).
-    // Voice-clip root, shared by every voice feature below (openings /
-    // particles / veto / easter egg). Config-driven since 2026-07-06 so a
-    // PACKAGED app can point it at its bundled resources copy; the fallback
-    // is the dev layout under the workspace. Every read stays best-effort —
-    // a missing dir just means voice never fires.
-    const voiceAssetsDir =
-      config.voiceAssetsDir ?? join(workspaceRoot, "data", "voice");
-    const { opening, seedBlock } = actor;
-    // The opening's voice clipId = its filename stem (the .opus shares the stem),
-    // captured for the `voice` cue emitted when playOpening streams the seed.
-    // The pairing comes from the picker (slice 4): zh openings carry their
-    // filename stem; EN openings carry NO clip (no EN clips in v1) — never
-    // derive a clip id from `sourceFile` here, or an EN seed would pair with
-    // a CN clip.
-    const openingClipId: string | null = opening?.voiceClipId ?? null;
-    // Matched per-char cadence so the seed reveal spans ≈ the clip's audio
-    // (SPEC 2026-06-23). undefined when there's no clip / the clip is unreadable.
-    let openingBaseMs: number | undefined;
-    if (opening !== undefined) {
-      // Match the text-stream cadence to the voice clip's duration. The clip
-      // lives at <voiceAssetsDir>/openings/<clipId>.opus (mirrors the GUI's
-      // voice-path resolution; Ogg/Opus since the 2026-07-16 cutover).
-      // Best-effort: an unreadable / absent clip — or no clip at all (EN
-      // opening) — leaves openingBaseMs undefined → the sink's read-along
-      // default.
-      const durationMs =
-        deps.openingDurationMs ??
-        (openingClipId !== null
-          ? await readOpusDurationMs(
-              join(voiceAssetsDir, "openings", `${openingClipId}.opus`),
-            )
-          : null);
-      // `durationMs` is number | null (the `??` collapses the seam's undefined).
-      if (durationMs !== null) {
-        openingBaseMs = spanMatchedBaseMs({
-          text: opening.seedText,
-          targetMs: durationMs,
-          fallbackMs: SLOW_MS_PER_CHAR,
-        });
-      }
+    // Herta's synthesized voice (ADR 0042). Attached when the host provides a
+    // synthesizer; the sink asks `available()` at every speech stream's start,
+    // so the user's toggle, a missing model bundle and a dead worker all fold
+    // into one live check — and every path without one (the CLI, tests) keeps
+    // the paced text reveal byte-for-byte.
+    //
+    // Chinese only in v1, for the same reason as every other voice cue (ADR
+    // 0013 §5): the model IS bilingual, but her English speaking voice has
+    // never been reviewed, and shipping an unreviewed voice is a bigger claim
+    // than shipping none.
+    // The cue module is built below; the sink's hook reaches it through
+    // this cell (ADR 0042 §7b: the veto reaction is armed as soon as a
+    // supervised voiced reply has its first unit in flight).
+    let voiceCues: SessionVoice | null = null;
+    if (config.speech !== undefined && lang === "zh") {
+      sink.attachVoice({
+        synth: config.speech.synthesizer,
+        emitVoice: (ev) => projector.emitVoice(ev),
+        onSupervisedVoice: () => voiceCues?.armVetoReaction(),
+      });
     }
+
+    // 3. Voice (session-voice.ts): the opening's clip and clip-matched
+    //    cadence, the particle cue, the veto reaction and the easter egg,
+    //    with their catalogs read once. The clip root is config-driven since
+    //    2026-07-06 so a PACKAGED app can point it at its bundled resources
+    //    copy; the fallback is the dev layout under the workspace.
+    const { opening, seedBlock } = actor;
+    const voice = await loadSessionVoice({
+      voiceAssetsDir:
+        config.voiceAssetsDir ?? join(workspaceRoot, "data", "voice"),
+      lang,
+      opening,
+      emit: (cue) => projector.emitVoice(cue),
+      ...(deps.openingDurationMs !== undefined
+        ? { openingDurationMs: deps.openingDurationMs }
+        : {}),
+      ...(deps.particleRandom !== undefined
+        ? { particleRandom: deps.particleRandom }
+        : {}),
+      ...(deps.vetoRandom !== undefined ? { vetoRandom: deps.vetoRandom } : {}),
+      ...(deps.easterEggRandom !== undefined
+        ? { easterEggRandom: deps.easterEggRandom }
+        : {}),
+      ...(deps.easterEggNow !== undefined
+        ? { easterEggNow: deps.easterEggNow }
+        : {}),
+      // One voice (ADR 0042 amendment 2026-09-08): the cues ask the same
+      // synthesizer the sink speaks with. Chinese only, like the sink.
+      ...(config.speech !== undefined && lang === "zh"
+        ? { synth: config.speech.synthesizer }
+        : {}),
+    });
+    voiceCues = voice;
 
     // 4. V2ActorDriver — owns the growing TerminalRecord, mood routing,
     //     the supervisor, and (via the persister) block persistence. An
-    //     all-empty corpus + empty supervisor reference degrade to
-    //     single-phase actor mode. The per-turn AbortSignal is threaded by
+    //     all-empty corpus drops the meta-think attachment and an empty
+    //     supervisor reference disables the supervisor; the two-phase
+    //     rhythm is unconditional. The per-turn AbortSignal is threaded by
     //     submitText into driver.runTurn so interrupt() can cancel.
-    // Particle voice catalog (SPEC 2026-06-23): leading-interjection tokens +
-    // their variant clips, read once. Best-effort — a missing dir yields an
-    // empty catalog so particles simply never fire. Loaded for every session
-    // (particles fire on normal turns, not just new sessions).
-    const particleCatalog = await loadParticleCatalog(
-      join(voiceAssetsDir, "particle"),
-    );
-    const particleRandom = deps.particleRandom ?? Math.random;
-    // Veto voice clips (SPEC 2026-06-23): full "catching-herself" lines played
-    // when the supervisor rejects the candidate speech. Best-effort — missing
-    // dir → empty → never fires.
-    const vetoClips = await loadClipStems(join(voiceAssetsDir, "veto"));
-    const vetoRandom = deps.vetoRandom ?? Math.random;
-    // Track the last veto clip so two consecutive rejections never play the same
-    // wav — across retries within a turn AND across turns. Session-scoped via
-    // this closure (the onSupervisorVeto callback below is built once per
-    // session). Resets only when a new session is created.
-    let lastVetoClip: string | null = null;
-    // Same idea for the sigh case (its `<category>/<clipId>` key): two
-    // consecutive sigh rolls never repeat the same wav when an alternative
-    // exists. Session-scoped, like lastVetoClip.
-    let lastSighClip: string | null = null;
-    // The particle token cued at this turn's first speech (null = the speech
-    // didn't lead with one). Feeds the veto reaction's sigh-eligibility check.
-    // onPrimarySpeechStart fires on EVERY non-empty speech turn and both actor
-    // fire sites precede the supervisor check, so this is always fresh by the
-    // time a veto can fire — it self-resets each turn with no boundary hook.
-    let particleTokenThisTurn: string | null = null;
-    // No EN voice in v1 (ADR 0013 §5): every voice cue — opening, particle,
-    // veto, easter-egg — is suppressed for a non-zh interaction session (no
-    // EN wavs exist, and the clips that DO exist are all Chinese). The opening
-    // is gated by an absent voiceClipId; the remaining three are gated on this
-    // flag (adversarial review 2026-07-15 found veto + easter-egg firing
-    // Chinese audio in EN sessions).
-    const voiceCuesEnabled = lang === "zh";
-    // Easter-egg voice clips (SPEC 2026-06-23): played on a successful 板砖-card
-    // lift. Best-effort — missing dir → empty → never fires. Empty for non-zh.
-    const easterEggClips = voiceCuesEnabled
-      ? await loadClipStems(join(voiceAssetsDir, "easter_egg"))
-      : [];
-    const easterEggRandom = deps.easterEggRandom ?? Math.random;
-    const easterEggNow = deps.easterEggNow ?? Date.now;
-
     const driver = new V2ActorDriver({
       provider: actor.actorProvider,
       model: config.providers.actorModel,
@@ -1870,54 +1960,28 @@ export class SessionImpl implements Session {
       persister,
       sink,
       onPrompt: actor.onPrompt,
-      // Particle voice: the actor fires this at the FIRST speech of each turn
-      // (not retries/beats/regenerate). Match the leading particle and cue a
-      // random variant on the same voice channel the opening uses.
-      onPrimarySpeechStart: (text: string) => {
-        if (!voiceCuesEnabled) return; // no EN voice in v1 (ADR 0013 §5)
-        const token = matchLeadingParticle(text, particleCatalog);
-        particleTokenThisTurn = token;
-        if (token === null) return;
-        const clip = pickParticleClip(particleCatalog, token, particleRandom);
-        if (clip !== null) {
-          projector.emitVoice({
-            kind: "cue",
-            category: clip.category,
-            clipId: clip.clipId,
-          });
-        }
-      },
-      // Veto voice, diversified (user 2026-07-11): the rejection moment rolls
-      // one of three reactions instead of always a full "catching-herself"
-      // line — a veto/ clip (with the same consecutive repeat avoidance), a
-      // short sigh from particle/唉 · particle/哎 (only when this turn's
-      // speech didn't already cue a sigh-family particle), or silence (the
-      // retract morph alone carries the beat). See pickVetoReaction.
+      // Particle voice at the FIRST speech of each turn (not retries, beats
+      // or regenerate) and the veto reaction — both the voice module's.
+      onPrimarySpeechStart: (text: string) => voice.onPrimarySpeechStart(text),
+      // The reaction's audio holds the voice lane so the retry's first
+      // sentence waits for it (ADR 0042 §7b); 0 = a clip or silence.
       onSupervisorVeto: () => {
-        if (!voiceCuesEnabled) return; // no EN voice in v1 (ADR 0013 §5)
-        const reaction = pickVetoReaction({
-          vetoClips,
-          lastVetoClip,
-          lastSighClip,
-          particleCatalog,
-          particleTokenThisTurn,
-          random: vetoRandom,
-        });
-        if (reaction.kind === "silence") return;
-        if (reaction.fromVetoFolder) lastVetoClip = reaction.clipId;
-        else lastSighClip = `${reaction.category}/${reaction.clipId}`;
-        projector.emitVoice({
-          kind: "cue",
-          category: reaction.category,
-          clipId: reaction.clipId,
-        });
+        sink.holdVoiceLaneUntil(voice.onSupervisorVeto());
       },
       routerProvider: actor.routerProvider,
       metaThinkCorpus: actor.metaThinkCorpus,
       hints: actor.actorHints,
       supervisorProvider: actor.supervisorProvider,
       supervisorReference: actor.supervisorReference,
+      supervisorRevision: actor.supervisorRevision,
+      speculativeThought: actor.speculativeThought,
       recap: actor.recap,
+      // ADR 0069 §1: the prefix follows the corpus at a fold and after a
+      // dream pass (the host marks it stale), never per turn.
+      ...(actor.rebuildStaticPrefix !== undefined
+        ? { rebuildStaticPrefix: actor.rebuildStaticPrefix }
+        : {}),
+      prefixRecapBoundary: actor.prefixRecapBoundary,
       lang,
     });
 
@@ -1952,6 +2016,12 @@ export class SessionImpl implements Session {
     sink.seedEmittedCount(seedRecord.length, seedRecord);
 
     const session = new SessionImpl({
+      steer,
+      bus,
+      // ADR 0067: the git tools follow the workspace, the digest tool waits
+      // for a document — both decided by the backend stack.
+      onWorkspaceChanged: () => backend.refreshGitTools(),
+      onDocumentAttached: () => backend.mountDigestTool(),
       sessionId,
       workspaceRoot,
       wsHolder,
@@ -1966,23 +2036,23 @@ export class SessionImpl implements Session {
       overlayResolver,
       commandRules,
       transcriptDir: config.transcriptDir,
-      titleProvider,
-      initialTitle: existingTitle,
-      initialTopics: existingTopics,
+      titler: new SessionTitler({
+        sessionId,
+        transcriptDir: config.transcriptDir,
+        lang,
+        provider: titleProvider,
+        getRecord: () => driver.getRecord(),
+        emit: (event) => projector.emitTitle(event),
+        initialTitle: existing.title,
+        initialTopics: existing.topics,
+      }),
       // D3: the deferred opening seed (new sessions with an opening). null for
       // resumed sessions (seedBlock is only set when initialRecord is empty) and
       // new sessions without an opening — playOpening then no-ops.
       pendingOpening: seedBlock,
-      // The opening's voice clipId (null when there's no opening) — emitted as a
-      // `voice` cue when playOpening streams the seed.
-      openingClipId,
+      voice,
       // D3: opening-stream lead beat; undefined → the driver's OPENING_LEAD_MS.
       openingLeadMs: deps.openingLeadMs,
-      // Wav-matched seed cadence; undefined → the sink's read-along default.
-      openingBaseMs,
-      easterEggClips,
-      easterEggRandom,
-      easterEggNow,
       deepSeekKey,
       mcpDispose: mcp.dispose,
       mcpConnectionStatus: mcp.connectionStatus,
@@ -1993,8 +2063,27 @@ export class SessionImpl implements Session {
         contractFellBack && initialRecord.length === 0
           ? contractFallbackNote(lang)
           : null,
+      // The captioning instrument (ADR 0048 §3). Same shape as the digest
+      // model above: absent under provider overrides, so a test never reaches
+      // the network — images are then stored and marked `no_caption`, which
+      // is a real production state too (no key, instrument down).
+      captionImage:
+        deps.providerOverrides === undefined
+          ? deepseekVisionCaptioner({ apiKey, ...baseUrl })
+          : null,
+      repoDescriber: deps.repoDescriber ?? describeRepoOutcome,
+      repoWatcher: deps.repoWatcher ?? watchGitDir,
+      repoWatchDebounceMs: deps.repoWatchDebounceMs ?? REPO_WATCH_DEBOUNCE_MS,
+      commitDescriber: deps.commitDescriber ?? describeCommit,
+      workingDiffDescriber: deps.workingDiffDescriber ?? describeWorkingDiff,
+      logDescriber: deps.logDescriber ?? describeLog,
+      branchesDescriber: deps.branchesDescriber ?? describeBranches,
     });
     sessionHolder.session = session;
+    // The repository card's first answer (ADR 0058): fire-and-forget, the
+    // event reaches whoever subscribes; the open/create snapshot carries
+    // whatever has landed by then.
+    void session.refreshRepo();
     return session;
   }
 }

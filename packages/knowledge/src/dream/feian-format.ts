@@ -1,3 +1,4 @@
+import { checkFewShot } from "@herta/herta";
 import type { ValidateResult } from "./types.js";
 
 /** The narrative paragraph(s) of a 废案 — the text between the line-1 header
@@ -19,8 +20,12 @@ export function extractNarrativeOpening(text: string, maxChars = 300): string {
 }
 
 const HEADER_RE = /^### 废案(?:_(\d{2,}))?：(.+)$/;
+// A floor against an empty shell, not a budget: header + `---` + one
+// （我 说） block is ~35 chars, and the smallest seed runs 1 200 zh / 3 700
+// EN chars, so no real page is near it in either script. There is no char
+// CEILING — the page's only length cap is the prefix load gate's estimated-
+// token cap, applied below (ADR 0014 §6, amended 2026-09-23).
 const MIN_CHARS = 60;
-const MAX_CHARS = 16_000;
 // English structural markers that must never leak into a 废案 body. Case-
 // insensitive and whitespace-tolerant before the colon (2026-07-09): the
 // prior `:`-adjacent Titlecase-only form let `verdict:` / `Verdict :` slip
@@ -35,6 +40,19 @@ const MAX_CHARS = 16_000;
 // check — both texts load verbatim into the same static prefix.
 export const LEAK_MARKERS =
   /\b(Verdict|Changed|Evidence|Summary|Risks?|Plan)\s*[:：]/i;
+// The episode digest's own notation (`buildEpisodeDigest`, digest.ts): a
+// backend row as `〔差分协处理器（已核实）：…〕` / `〔系统（失败）：…〕`, the
+// elision line `〔……此处略去 N 条板砖操作记录〕`, and a supervisor veto as
+// `〔黑塔的自我更正：…〕`. None of it is record grammar — the record shows a
+// backend row as `→ 系统` / `→ 差分协处理器` (allowed, and the seeds use it)
+// and a self-correction as a `——…` aside before her line (serialize.ts) —
+// so a page that copies these lines would teach the actor a format it never
+// sees in its own record. The generation prompt asks for a correction to be
+// kept as dialogue and for a body with no structural metadata; a live lab
+// page copied the markers verbatim anyway (ADR 0069, lab for §8 and §9).
+// Any tag in the parentheses: a model inventing （已完成） is the same leak.
+const DIGEST_MARKER =
+  /〔(?:(?:差分协处理器|系统)（[^）\n]*）：|……此处略去|黑塔的自我更正：)/;
 // Title-only one-off identifiers: 2+ western digits (covers ISO dates too),
 // file-ext tokens, drive/abs path fragments. CJK numerals are not matched
 // (\d is ASCII). ISO dates are caught by TITLE_DIGITS (digit-run rule).
@@ -146,7 +164,6 @@ export function validateFeian(text: string): ValidateResult {
     errors.push("invalid codepoint: invisible/control character in body");
   }
   if (text.length < MIN_CHARS) errors.push(`too short (<${MIN_CHARS} chars)`);
-  if (text.length > MAX_CHARS) errors.push(`too long (>${MAX_CHARS} chars)`);
 
   const lines = text.split("\n");
   const firstNonBlank = lines.find((l) => l.trim().length > 0) ?? "";
@@ -164,10 +181,38 @@ export function validateFeian(text: string): ValidateResult {
   if (!/^\s*---\s*$/m.test(text)) errors.push("missing `---` separator");
   if (LEAK_MARKERS.test(text))
     errors.push("leaked English structural marker (Verdict:/Changed:/…)");
+  const digestLines = lines.filter((l) => DIGEST_MARKER.test(l));
+  if (digestLines.length > 0) {
+    const first = (digestLines[0] ?? "").trim();
+    errors.push(
+      `copied session-digest marker (${digestLines.length} line(s), first: ` +
+        `"${first.length > 60 ? `${first.slice(0, 60)}…` : first}") — the ` +
+        "〔…〕 lines are the digest's notation, not the record: retell that " +
+        "work in the dialogue or narrative (or as a → 系统 / → 差分协处理器 " +
+        "row), and a self-correction in her own words",
+    );
+  }
 
   const fenceErr = checkFences(text);
   if (fenceErr !== null) errors.push(fenceErr);
   if (!/（我 说）/.test(text)) errors.push("missing a （我 说） block");
+
+  // The page must also pass the gate that loads it into the prefix
+  // (`checkFewShot`): one-deep fences, no truncated tail, the estimated-token
+  // cap. This validator allowed nested fences, the load gate does not, so a
+  // page could be promoted, take a slot, and then be dropped at every load
+  // with only a console warning — the failure shape of 2026-08-06 (dream
+  // review 2026-09-22, finding 15). Only its verdict is added: the reasons
+  // above already cover the rest.
+  //
+  // The gate's cap is also the page's ONLY length ceiling. This validator
+  // had its own at 16 000 chars, which measured the same prefix cost in the
+  // wrong unit: the EN corpus runs ~3.5 chars per estimated token, zh 1.4–
+  // 2.1, so it rejected the EN 00/02 anchors (27k / 21k chars, 7.6k / 6.5k
+  // tokens) while zh pages of that token size passed — the script bias the
+  // gate itself shed in ADR 0051 §3 (ADR 0014 §6, amended 2026-09-23).
+  const guard = checkFewShot("dream candidate", text);
+  if (!guard.ok) errors.push(`fails the prefix load gate: ${guard.reason}`);
 
   return errors.length === 0 ? { ok: true } : { ok: false, errors };
 }

@@ -9,14 +9,14 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TerminalRecordBlock } from "@herta/core";
-import { writeRecapCache } from "@herta/herta";
+import { type StaticHertaPrefix, writeRecapCache } from "@herta/herta";
 import {
   episodeHash,
   resolveDreamConfig,
   segmentSession,
 } from "@herta/knowledge";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ownDreamExclusions } from "./session-wiring.js";
+import { createActorStack, ownDreamExclusions } from "./session-wiring.js";
 
 const u = (text: string, at: string): TerminalRecordBlock => ({
   kind: "user",
@@ -48,7 +48,12 @@ function episodeHashes(): string[] {
 
 function writeDreamManifest(
   workspaceRoot: string,
-  entries: readonly { file: string; sourceEpisodes: readonly string[] }[],
+  entries: readonly {
+    file: string;
+    sourceEpisodes: readonly string[];
+    /** Defaults to the session under test. */
+    sourceSessionId?: string;
+  }[],
 ): void {
   const dreamDir = join(workspaceRoot, ".herta", "dream");
   mkdirSync(dreamDir, { recursive: true });
@@ -57,7 +62,7 @@ function writeDreamManifest(
     file: e.file,
     nn: 7 + i,
     state: "live",
-    sourceSessionId: SESSION_ID,
+    sourceSessionId: e.sourceSessionId ?? SESSION_ID,
     sourceEpisodeHash: e.sourceEpisodes[0] ?? "",
     sourceEpisodes: e.sourceEpisodes,
     runId: "run",
@@ -67,7 +72,6 @@ function writeDreamManifest(
     summary: "摘要",
     critiqueScores: { voice: 0.9, format: 1, novelty: 1 },
     validateFeianPassed: true,
-    estimatedPrefixTokens: 100,
     reactivationCount: 0,
   }));
   writeFileSync(
@@ -158,9 +162,15 @@ describe("ownDreamExclusions", () => {
         lang: "zh",
       }),
     ).toBeUndefined();
-    // A manifest whose record points at foreign episodes.
+    // A manifest whose record was dreamed from ANOTHER session. (This
+    // fixture used to carry the session under test as its source, which
+    // only passed while an absent own hash failed open.)
     writeDreamManifest(workspaceRoot, [
-      { file: "### 废案_07：other.txt", sourceEpisodes: ["foreign-hash"] },
+      {
+        file: "### 废案_07：other.txt",
+        sourceEpisodes: ["foreign-hash"],
+        sourceSessionId: "sess-elsewhere",
+      },
     ]);
     expect(
       ownDreamExclusions({
@@ -171,6 +181,65 @@ describe("ownDreamExclusions", () => {
         lang: "zh",
       }),
     ).toBeUndefined();
+  });
+
+  it("withholds an own dream whose source episode left the record — a rewind or take-back (dream review 2026-09-22, finding 5)", () => {
+    const [, ep2] = episodeHashes();
+    writeDreamManifest(workspaceRoot, [
+      { file: "### 废案_08：b.txt", sourceEpisodes: [ep2 ?? ""] },
+    ]);
+    // The user rewound topic B's answer away: that episode's bytes changed,
+    // so its hash no longer segments out of the record.
+    const rewound = RECORD.slice(0, 3);
+    const excluded = ownDreamExclusions({
+      workspaceRoot,
+      sessionId: SESSION_ID,
+      record: rewound,
+      dream: undefined,
+      lang: "zh",
+    });
+    expect(excluded).toEqual(new Set(["### 废案_08：b.txt"]));
+  });
+
+  it("the stack's rebuilder lets an own dream in once a fold puts its source behind the boundary (ADR 0069 §1)", async () => {
+    const [ep1] = episodeHashes();
+    const file = "### 废案_07：x.txt";
+    writeDreamManifest(workspaceRoot, [{ file, sourceEpisodes: [ep1 ?? ""] }]);
+    const narrative = join(workspaceRoot, ".herta", "narrative");
+    mkdirSync(narrative, { recursive: true });
+    writeFileSync(
+      join(narrative, file),
+      "### 废案：x\n\nTOPIC_A_DREAM\n\n---\n\n结论。",
+      "utf8",
+    );
+    const stack = await createActorStack({
+      workspaceRoot,
+      sessionId: SESSION_ID,
+      lang: "zh",
+      initialRecord: RECORD,
+      apiKey: "sk-test",
+      supervisorEnabled: false,
+      promptDumpDir: workspaceRoot,
+    });
+    const has = (p: StaticHertaPrefix): boolean =>
+      p.fewShots.some((s) => s.includes("TOPIC_A_DREAM"));
+    // At open, topic A is verbatim: its dream is withheld, and the prefix
+    // remembers it was derived with no recap engaged.
+    expect(has(stack.staticPrefix)).toBe(false);
+    expect(stack.prefixRecapBoundary).toBe(0);
+    // A fold puts topic A behind the boundary: the rebuilt prefix has it.
+    const rebuild = stack.rebuildStaticPrefix;
+    expect(rebuild).toBeDefined();
+    const rebuilt = await rebuild?.({
+      record: RECORD,
+      recapBoundaryIndex: 2,
+      current: stack.staticPrefix,
+    });
+    expect(rebuilt !== undefined && has(rebuilt)).toBe(true);
+    // Another session rebound in place (the CLI's /resume) reads the corpus
+    // from ITS view: the dream is not its own, so it loads.
+    const other = await stack.sessionScope("sess-other", RECORD);
+    expect(has(other.staticPrefix)).toBe(true);
   });
 
   it("hashes here really match the segmentation the dream pass uses", () => {

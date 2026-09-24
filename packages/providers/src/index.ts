@@ -23,6 +23,8 @@ export type { DeepseekCompletionProviderOpts } from "./deepseek/completion-facto
 export { deepseekCompletionProvider } from "./deepseek/completion-factory.js";
 export type { DeepseekProviderOpts } from "./deepseek/factory.js";
 export { deepseekProvider } from "./deepseek/factory.js";
+export type { DeepseekVisionOpts } from "./deepseek/vision-factory.js";
+export { deepseekVisionCaptioner } from "./deepseek/vision-factory.js";
 export type { ProviderErrorCode, ProviderErrorInit } from "./errors.js";
 export { ProviderError } from "./errors.js";
 export type { ApiKey } from "./openai-compat/api-key.js";
@@ -34,6 +36,15 @@ export {
 } from "./openai-compat/completion-provider.js";
 export type { OpenAICompatibleProviderOpts } from "./openai-compat/provider.js";
 export { OpenAICompatibleProvider } from "./openai-compat/provider.js";
+export type {
+  VisionCaptioner,
+  VisionCaptionerOpts,
+  VisionCaptionRequest,
+} from "./openai-compat/vision-caption.js";
+export {
+  DEFAULT_CAPTION_MAX_TOKENS,
+  visionCaptioner,
+} from "./openai-compat/vision-caption.js";
 export type {
   OpenAIResponsesCompletionOpts,
   OpenAIResponsesOpts,
@@ -49,3 +60,9 @@ export {
   providerFetch,
   setProviderFetch,
 } from "./transport.js";
+export type { ProviderUsage, ProviderUsageSink } from "./usage.js";
+export {
+  parseUsageChunk,
+  reportProviderUsage,
+  setProviderUsageSink,
+} from "./usage.js";
