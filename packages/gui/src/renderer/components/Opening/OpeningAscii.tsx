@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { journeyMarkAfterPaint } from "../../lib/journey.js";
+import { holdLaunch, releaseLaunch } from "../../lib/launch-gate.js";
 import type { SegmentData } from "./ascii-renderer.js";
 import { OpeningAsciiCanvas } from "./OpeningAsciiCanvas.js";
 import { pickOpeningSegment } from "./pick-opening-segment.js";
@@ -42,6 +43,16 @@ export function OpeningAscii(props: OpeningAsciiProps): JSX.Element {
   const completedRef = useRef(false);
   const fadeTimerRef = useRef<number>();
 
+  // The launch gate (lib/launch-gate.ts): closed from this FIRST render —
+  // render runs before any effect of the tree the splash covers — so the
+  // rail's GPU setup waits for the opening instead of racing it. Released
+  // below as the opening plays and ends; the unmount releases it too.
+  const heldRef = useRef(false);
+  if (!heldRef.current) {
+    heldRef.current = true;
+    holdLaunch();
+  }
+
   useEffect(() => {
     let cancelled = false;
     const loader = props.loadSegment ?? pickOpeningSegment();
@@ -50,15 +61,19 @@ export function OpeningAscii(props: OpeningAsciiProps): JSX.Element {
         if (cancelled) return;
         setData(seg);
         journeyMarkAfterPaint("launch:opening-painted");
+        releaseLaunch("opening");
       })
       .catch(() => {
-        if (!cancelled) onDoneRef.current();
+        if (cancelled) return;
+        releaseLaunch("settled");
+        onDoneRef.current();
       });
     return () => {
       cancelled = true;
       if (fadeTimerRef.current !== undefined) {
         window.clearTimeout(fadeTimerRef.current);
       }
+      releaseLaunch("settled");
     };
   }, [props.loadSegment]);
 
@@ -69,6 +84,7 @@ export function OpeningAscii(props: OpeningAsciiProps): JSX.Element {
     setFadingOut(true);
     onFadeStartRef.current?.();
     fadeTimerRef.current = window.setTimeout(() => {
+      releaseLaunch("settled");
       onDoneRef.current();
     }, ms);
   };
