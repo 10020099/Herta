@@ -409,10 +409,11 @@ interface SiteCopy {
   readonly dlBody: string;
   readonly dlBtnWin: string;
   readonly dlBtnMac: string;
+  readonly dlBtnLinux: string;
   readonly dlGh: string;
-  /** Third download button when a language has a mirror to offer. Null keeps
-   *  the GitHub link — the two are alternatives, not additions, because a
-   *  fourth chip wraps the row to two lines on a phone. */
+  /** Last chip when a language has a mirror to offer. Null keeps the GitHub
+   *  link — the two are alternatives, not additions, so the row never grows
+   *  past four chips (three platforms since v0.1.6, plus this one). */
   readonly dlPan: string | null;
   readonly dlFine: string;
   readonly footer: string;
@@ -603,9 +604,11 @@ const ZH: SiteCopy = {
     },
   ],
   dlH2: "装到你的桌面",
-  dlBody: "提供 Windows 与 macOS 安装包，填入 DeepSeek API 密钥即可使用。",
+  dlBody:
+    "提供 Windows、macOS 与 Linux 安装包，填入 DeepSeek API 密钥即可使用。",
   dlBtnWin: "Windows 版",
   dlBtnMac: "macOS 版",
+  dlBtnLinux: "Linux 版",
   dlGh: "源码 · GitHub",
   dlPan: "百度网盘",
   // Says where the turns actually GO. The previous 「不联网不上传」 was simply
@@ -616,7 +619,8 @@ const ZH: SiteCopy = {
   // cloud voice (ADR 0062) sends her lines to MiniMax, so it is named too
   // (2026-09-24).
   dlFine:
-    "Windows 10/11 x64 · macOS 12+ · 对话只发送给 DeepSeek API（开启云端语音时，她的台词另发送给 MiniMax）；密钥加密保存在本机",
+    // A no-break space before each dot keeps it at a line's end on a phone.
+    "Windows 10/11 x64 · macOS 12+ · Linux x64 AppImage · 对话只发送给 DeepSeek API（开启云端语音时，她的台词另发送给 MiniMax）；密钥保存在本机，系统密钥链可用时加密",
   footer: "本页演示运行的就是应用本身的界面代码。",
   fanNotice:
     "黑塔是《崩坏：星穹铁道》的角色，版权归米哈游所有。本项目为非官方同人作品，与米哈游无关，亦未获其认可。",
@@ -839,16 +843,17 @@ const EN: SiteCopy = {
   ],
   dlH2: "On your desktop",
   dlBody:
-    "Installers for Windows and macOS. Add a DeepSeek API key, and she is ready.",
+    "Installers for Windows, macOS and Linux. Add a DeepSeek API key, and she is ready.",
   dlBtnWin: "For Windows",
   dlBtnMac: "For macOS",
+  dlBtnLinux: "For Linux",
   dlGh: "Source · GitHub",
   // No Baidu Pan for EN: it needs an account and is slow outside China, so
   // GitHub Releases is the better link for these visitors.
   dlPan: null,
   // See the zh note above — "fully local" was false; turns go to DeepSeek.
   dlFine:
-    "Windows 10/11 x64 · macOS 12+ · your conversation goes only to the DeepSeek API (with cloud voice on, her lines also go to MiniMax) · your key is encrypted on your machine",
+    "Windows 10/11 x64 · macOS 12+ · Linux x64 AppImage · your conversation goes only to the DeepSeek API (with cloud voice on, her lines also go to MiniMax) · your key stays on your machine, encrypted by the OS keychain when one is available",
   footer: "the demo on this page runs the app's own interface code.",
   fanNotice:
     "Herta is a character from Honkai: Star Rail, © HoYoverse. Unofficial fan project, unaffiliated with and not endorsed by HoYoverse.",
@@ -983,7 +988,7 @@ export function Site(): JSX.Element {
           <div className="cta-row reveal">
             {/* Scrolls to the download card rather than leaving for GitHub:
                 the hero button is platform-neutral, and the card below is
-                where the Windows/macOS choice actually lives. Sending someone
+                where the platform choice actually lives. Sending someone
                 straight to the releases list made them pick a build with no
                 context. Same target as the nav's 下载 link; html already
                 smooth-scrolls, gated off for prefers-reduced-motion. */}
@@ -1178,6 +1183,16 @@ export function Site(): JSX.Element {
               >
                 <DownloadIcon />
                 {t.dlBtnMac}
+              </a>
+              {/* v0.1.6 — the first Linux release (an x64 AppImage). */}
+              <a
+                className="cta-dl"
+                href={DOWNLOAD_URL}
+                target="_blank"
+                rel="noreferrer"
+              >
+                <DownloadIcon />
+                {t.dlBtnLinux}
               </a>
               {t.dlPan === null ? (
                 <a
