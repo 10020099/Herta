@@ -435,17 +435,18 @@ const ZH: SiteCopy = {
   heroEn: "Give the model to a self — not a self to the model.",
   sub: (
     <>
-      你和<b>黑塔</b>通过终端交流——负责执行编码任务的协处理器，由你们共享。
+      你通过终端与<b>黑塔</b>
+      对话。编码任务由她交给协处理器执行，每一步你们都看得到。
     </>
   ),
   ctaDl: "下载桌面版",
   ctaGh: "GitHub",
   tryHint: "接入空间站，跟她说句话试试。",
-  demoPosterNote: "可交互演示需要桌面浏览器——这是她工作时的样子。",
+  demoPosterNote: "可交互演示需要在桌面浏览器中打开。下图是她工作时的界面。",
   whyKicker: "为什么 · why a self",
   whyH2: "扮演与自我。",
   whyLead:
-    "角色扮演的问题不在效果，在姿态：无论提示词写得多好，聊天协议都在暗示「模型在扮演一个角色」。风格可以服从，自我难以累积。",
+    "常见的做法是给模型一段角色设定，让它照着设定说话。提示词写得再好，聊天格式本身也在不断提醒模型：你在扮演一个角色。它能学会说话的风格，却很难积累出一个持续存在的自我。",
   flips: [
     { no: "「关于她」的说明书", yes: "「由她写」的自传" },
     { no: "扮演一个角色", yes: "续写同一个说话者" },
@@ -454,87 +455,81 @@ const ZH: SiteCopy = {
   selfKicker: "自我与记忆 · on self and memory",
   selfH2: "什么是自我，什么是记忆。",
   selfLead:
-    "关于这两个问题，哲学与心理学已经给出足够清晰的答案。黑塔不借它们作比喻，而是把答案当作规格来实现——",
+    "哲学和心理学对这两个问题已有相当清楚的回答。黑塔把这些回答当作设计要求来实现：",
   implLabel: "在黑塔中",
   grounding: [
     {
       title: "自我是被叙述出来的",
       sub: "the narrative self",
       body:
-        "同一性不系于身体或某种实体，而系于意识与记忆的连续。更进一步：自我不是先存在、" +
-        "再讲故事——人是在把经验编入自己那个故事的过程中，成为自己的。",
+        "一个人之所以始终是同一个人，靠的是意识与记忆的连续。人把经历一段段编进关于自己的故事，" +
+        "自我就在这个过程中形成。",
       impl:
-        "她的提示词就是那份自述：身份、记忆、世界、正在发生的现在。推理即叙述的延续——" +
-        "同一性不靠声明维持，靠续写维持。",
+        "她的提示词就是这份自述，依次是身份、记忆、世界和当下。每一次推理，" +
+        "都是在这份自述后面接着往下写。",
     },
     {
-      title: "记忆是重构，不是回放",
+      title: "回忆是重构",
       sub: "remembering as reconstruction",
       body:
-        "回忆不是录像回放，而是按意义的重构；每一次被唤起，记忆都会短暂变得可塑，" +
-        "再被重新写入。",
+        "回忆时，人会按意义把当时的经历重新组织一遍。记忆每被唤起一次，都会短暂地变得可以修改，" +
+        "然后再被存回去。",
       impl:
-        "超长会话由她以第一人称重述旧章节，保留事实；而被新经验唤起的旧记忆，" +
-        "会被重新蒸馏，而不是简单追加一条新的记录。",
+        "会话太长时，她用第一人称重述较早的部分，尽量保留其中的事实与承诺；完整的记录仍保存在本地。" +
+        "新的经历唤起相似的旧记忆时，旧记忆会被加强，或与新经历合并改写。",
     },
     {
       title: "自我为记忆把关",
       sub: "the self gates memory",
       body:
-        "什么会被记住，由当下的自我参与决定：与自我一致的经验才被编码保留，而积累下来的" +
-        "记忆又反过来约束自我——两者互相塑造。",
+        "记住什么，部分取决于当下的自我：与自我相符的经历更容易被保留。积累下来的记忆，" +
+        "又反过来塑造自我。",
       impl:
-        "通过入梦的门控实现：「值得记吗」的判定与语言特征同时评审——不像她的记忆，不会被记录。" +
-        "令人印象深刻的经历记忆更久：收录时估计情绪强度，强烈的记忆衰减更慢。" +
-        "记忆与人格互相塑造，而非单向堆叠。",
+        "入梦时，每个候选片段先判断值不值得记；写下来之后，再评审读起来像不像她。不像她的，不会写入。" +
+        "收录时还会估计这段经历的情绪强度：越强烈的记忆，起点越牢，留得越久。",
     },
     {
       title: "遗忘是记忆的功能",
       sub: "forgetting is functional",
-      body:
-        "遗忘不是记忆的故障，而是它的整理方式：追踪使用价值，让重要的东西保持可及。" +
-        "没有遗忘的记忆，没有轻重。",
+      body: "遗忘是记忆整理自己的方式：常用的留在手边，不常用的逐渐退后，重要的东西因此更容易找到。",
       impl:
-        "记忆会随时间变淡；被再次讲起、或她再次用上其中说法的记忆会得到巩固。写满时，" +
-        "与其他记忆重复的先被遗忘，其次才是最久远的。无限追加的记忆流没有轻重；" +
-        "有选择的记忆，才构成一个可辨认的人。",
+        "她的记忆会随时间变淡。某段记忆被再次提起，或者她又用上了其中的说法，这段记忆就会变牢。" +
+        "淡到一定程度的记忆会被遗忘；记忆写满时，同类记忆中最淡的一条先让位。",
     },
     {
       title: "情节沉淀为认识",
       sub: "episodes fade into knowledge",
       wide: true,
-      body:
-        "时间磨掉的是具体情节，不是全部：淡去的经历会沉淀为关于「这个人」的一般性认识" +
-        "——记忆研究称之为从情节记忆到语义记忆的转化。",
+      body: "时间会磨掉具体的情节，但会留下对一个人的整体认识。记忆研究把这称为从情节记忆到语义记忆的转化。",
       impl:
-        "记忆被遗忘之前，其中关于你的认识会先蒸馏进她的自传：" +
-        "几句话，整页重写而非追加。被反复印证而趋于稳固的记忆不必等到淡去" +
-        "——其中的认识会提前沉淀。具体的情节会被忘掉，沉淀出对你的认识。",
+        "一段记忆被遗忘时，其中关于你的认识会写进她的自传。这部分只有几句话，每次整页重写。" +
+        "被反复印证的记忆不必等到淡去，其中的认识会提前写入。",
     },
   ],
   mechKicker: "机制 · how it runs",
-  mechH2: "一份记录，三个参与者；一本自传，三种时间尺度。",
+  mechH2: "她如何工作，又如何记住。",
   turnTitle: "一次回合",
   turnSub: " · one turn",
   turnCaption: (
     <>
-      你和黑塔通过终端交流；把文件拖进会话栏，她直接读原文；记录里出现的文件，点一下就在对话旁边打开。要动代码时，她会在台词里
+      你在终端里与黑塔对话。把文件拖进输入栏，她会看到文件的内容，长文档的全文由板砖查阅；板砖读过或改过的文件，在记录里点一下就会在对话旁边打开。需要修改代码时，她会在自己的话里写上
       <b className="banzhuan-ink">@板砖</b>
-      ——那是她给编码协处理器起的名字。执行的每一步都回到同一份终端记录：
-      黑塔和你一起监督任务，最后由她陈述结论。
+      ，这是她给编码协处理器起的名字。协处理器的每一步都写进同一份终端记录，你和黑塔都看得到，最后由她给出结论。
     </>
   ),
   turnAlt: "一次回合：开拓者、黑塔与差分协处理器围绕同一份终端记录协作",
   dreamTitle: "入梦",
   dreamSub: " · she dreams, therefore she remembers",
   dreamCaption:
-    "你离开时，她回看结束的会话：值得回忆的瞬间，经过四道门控后写入她的自传，" +
-    "跟随此后的每一次交流；记忆随时间变淡、随复述而巩固，写满时与其他记忆重复的一段先被遗忘——" +
-    "遗忘之前，其中关于你的认识会先沉淀进她的自传。" +
-    "而当你回到一段她已回忆过的对话，相应的记忆会暂时退场——眼前的事，不算往事。",
-  dreamAlt: "入梦循环：离开触发、四道门控、写入自传、下次开场随身携带",
+    "入梦默认关闭，可在设置中开启；它会消耗你的 DeepSeek API 额度。开启后，你离开期间，" +
+    "她会回顾已经结束的会话。值得记住的片段要通过几道检查：值不值得记、写下来像不像她、" +
+    "是否与已有的记忆重复。通过的片段写进她的记忆，之后的每次对话都会带着。" +
+    "记忆随时间变淡，被再次提起时变牢；淡去的记忆被遗忘时，其中关于你的认识会写进她的自传。" +
+    "重新打开一段她回顾过的会话时，只要会话原文还完整地在她的上下文里，相关的记忆就先收起不用。",
+  dreamAlt:
+    "入梦循环：离开时触发，经过几道检查，写入记忆与自传，之后的对话随身携带",
   visionAlt:
-    "她的自传：身份、记忆、世界、现在——三个时间尺度的循环持续续写同一份第一人称文本",
+    "她的自传分为身份、记忆、世界、当下四部分，在三种时间尺度上被持续续写",
   deskKicker: "终端 · the live terminal",
   deskH2: "动态终端。",
   deskLead: "差分协处理器 PBR 动态渲染，Git 仓库适配，本地/云端实时语音。",
@@ -544,8 +539,8 @@ const ZH: SiteCopy = {
       title: "立体板砖",
       sub: "PBR 渲染 · a lit object",
       body:
-        "协处理器的设备卡片按物理渲染：随本地时钟从清晨走到深夜，云影拂过白色的房间，" +
-        "工作时呼吸，出错时闪动。",
+        "协处理器的设备卡片按物理渲染：浅色主题下，房间的光线随本地时钟变化，深色主题是深夜。" +
+        "云影掠过白色的房间，设备工作时呼吸，出错时闪烁。",
       alt: "板砖设备卡片在清晨、正午、黄昏与深夜的四张渲染",
     },
     {
@@ -553,7 +548,7 @@ const ZH: SiteCopy = {
       title: "Git 前端",
       sub: "the repository at hand",
       body:
-        "工作区适配 Git 仓库：分支与上游、未提交的改动、最近的提交，实时更新。" +
+        "工作区适配 Git 仓库：分支与上游、未提交的改动、最近的提交，自动刷新。" +
         "点一处改动看它的差异，点一个提交看它改了什么，翻历史不用离开对话。",
       alt: "仓库卡片，以及在对话旁边打开的提交标签页",
     },
@@ -573,36 +568,38 @@ const ZH: SiteCopy = {
       title: "叙事补全基座",
       sub: "completion as identity",
       body:
-        "聊天模板携带非中立的先验：角色模板持续提示「在扮演」。本系统里说话的是她这个自我，" +
-        "没有 system/assistant 模板，而是在她自己的终端记录上做补全，推理目标是作为同一说话者" +
-        "继续该记录。人格由此来自延续性，而非指令服从。",
+        "聊天格式把对话分成 system、user、assistant 几种角色，这种划分本身就在提示模型「你在扮演」。" +
+        "黑塔不使用这套格式：模型拿到的是她自己的终端记录，任务是以同一个说话者的身份把记录续写下去。" +
+        "她的性格因此来自前文的延续。",
     },
     {
       title: "门控记忆固化",
       sub: "gated memory consolidation",
       body:
-        "跨会话记忆不是追加式记忆流，而是带门控的蒸馏管线：值得性判定、声音评审、查重与" +
-        "再固化、半衰期与容量上限。遗忘是设计目标——容量约束迫使记忆保持选择性。",
+        "跨会话的记忆要经过一条筛选流程：先判断是否值得记住，写下后与已有记忆查重，再检查口吻与忠实度。" +
+        "留下的记忆按半衰期衰减，总数受容量上限约束。遗忘是有意设计的：容量有限，记忆才有取舍。",
     },
     {
       title: "自我-智能体分离",
       sub: "self–agent separation",
       body:
-        "人的阅读、理解速度是不变量。编码后端与「她」之间的非对称边界，正是铺设在这条" +
-        "不变量上：后端智能体不直接面向你会话；她不预处理任务。" +
-        "二者共享同一份记录——你与「她」交流，「她」审查智能体，同一空间中协同交互。",
+        "人阅读和理解的速度有限，智能体产出的细节却很多。所以编码智能体不直接与你对话，" +
+        "只在共享记录里留下简短的步骤，由黑塔审阅后向你说明；黑塔也不替它预先拆解任务。" +
+        "三方用的是同一份记录：你与黑塔交流，黑塔审阅智能体的工作。",
     },
     {
-      title: "记忆的三个出口",
-      sub: "a three-exit memory economy",
+      title: "记忆的去向",
+      sub: "where a memory goes",
       body:
-        "记忆架上的记录有三种去向：被重复情节唤起时再固化，锐化后替换原记录；因容量或衰减" +
-        "被遗忘时，关于你的认识先沉淀为一页整页重写、有硬性篇幅上限的语义记录；其余归档休眠。" +
-        "语义页没有半衰期，因此每次入梦都由活跃的记忆校对它——只修订被清楚驳斥的句子。",
+        "相似的新经历唤起一段记忆时，原记忆会被加强；如果与新经历合并后的版本读起来更像她，" +
+        "就替换原来那条。记忆因衰减或容量被遗忘时，文件归档而不删除，其中关于你的认识" +
+        "整理进一页认识页。这一页有篇幅上限，每次整页重写，不随时间衰减，所以每次入梦都会用" +
+        "最牢的几段记忆校对它，只修改被明确推翻的句子。",
     },
   ],
-  dlH2: "装回你的桌面",
-  dlBody: "Windows / macOS 安装包，配好 DeepSeek API 密钥，开始旅程。",
+  dlH2: "装到你的桌面",
+  dlBody:
+    "提供 Windows 与 macOS 安装包。安装后填入 DeepSeek API 密钥即可使用。",
   dlBtnWin: "Windows 版",
   dlBtnMac: "macOS 版",
   dlGh: "源码 · GitHub",
@@ -611,10 +608,12 @@ const ZH: SiteCopy = {
   // untrue — every turn is POSTed to api.deepseek.com and carries tool
   // results, i.e. file contents. There is no local-inference path in the
   // product (audit 2026-08-05, B2). README.md already had the honest framing
-  // ("Nothing is uploaded anywhere ELSE") — this restores the qualifier.
+  // ("Nothing is uploaded anywhere ELSE") — this restores the qualifier. The
+  // cloud voice (ADR 0062) sends her lines to MiniMax, so it is named too
+  // (2026-09-24).
   dlFine:
-    "Windows 10/11 x64 · macOS 12+ · 对话经 DeepSeek API 处理，除此之外不上传；密钥加密存本机",
-  footer: "· 本页的演示由应用自身的渲染器驱动 — the demo IS the product.",
+    "Windows 10/11 x64 · macOS 12+ · 对话只发送给 DeepSeek API（开启云端语音时，她的台词另发送给 MiniMax）；密钥加密保存在本机",
+  footer: "· 本页演示运行的就是应用本身的界面代码。",
   fanNotice:
     "黑塔是《崩坏：星穹铁道》的角色，版权归米哈游所有。本项目为非官方同人作品，与米哈游无关，亦未获其认可。",
   skipDemo: "跳过演示，继续阅读",
@@ -635,19 +634,19 @@ const EN: SiteCopy = {
   heroEn: "给自我以模型，而不是给模型以自我。",
   sub: (
     <>
-      You and <b>Herta</b> talk through a terminal — and share the coprocessor
-      that executes the coding work.
+      You talk with <b>Herta</b> in a terminal. She hands the coding work to a
+      coprocessor, and you both see every step it takes.
     </>
   ),
   ctaDl: "Download the desktop app",
   ctaGh: "GitHub",
   tryHint: "Connect to the station and say something to her.",
   demoPosterNote:
-    "The live demo needs a desktop browser — this is her at work.",
+    "The live demo needs a desktop browser. Below is what she looks like at work.",
   whyKicker: "why a self · 自我，而非扮演",
   whyH2: "Role-play, versus a self.",
   whyLead:
-    "The problem with role-play is not quality but posture: however good the prompt, the chat protocol keeps whispering that a model is playing a part. Style can comply; a self struggles to accumulate.",
+    "The usual approach gives a model a character sheet and asks it to stay in character. However good the prompt, the chat format itself keeps telling the model that it is playing a part. It can learn the style, but it has a hard time building a self that lasts.",
   flips: [
     { no: "a manual about her", yes: "an autobiography by her" },
     { no: "playing a role", yes: "continuing as the same speaker" },
@@ -659,83 +658,82 @@ const EN: SiteCopy = {
   selfKicker: "on self and memory · 自我与记忆",
   selfH2: "What a self is. What memory is.",
   selfLead:
-    "Philosophy and psychology have given both questions serviceable answers. Herta does not borrow them as metaphor — it implements them as a specification —",
+    "Philosophy and psychology have fairly clear answers to both questions. Herta takes those answers as design requirements and implements them:",
   implLabel: "in herta",
   grounding: [
     {
       title: "The self is narrated",
       sub: "自我是被叙述出来的",
       body:
-        "Identity does not rest on the body or on some substance, but on the continuity of " +
-        "consciousness and memory. Further: a self does not exist first and then tell its story — " +
-        "a person becomes who they are by weaving experience into that story.",
+        "What keeps a person the same person over time is the continuity of consciousness and " +
+        "memory. People weave their experiences, one by one, into a story about themselves, and " +
+        "the self takes shape in that telling.",
       impl:
-        "Her prompt is that self-narration: identity, memory, world, the unfolding present. " +
-        "Inference is the narration continuing — identity maintained by writing on, not by declaration.",
+        "Her prompt is that story, in four parts: identity, memory, world, and the present. " +
+        "Each inference continues writing it.",
     },
     {
       title: "Remembering is reconstruction",
-      sub: "记忆是重构，不是回放",
+      sub: "回忆是重构",
       body:
-        "Recall is not playback but reconstruction by meaning; each retrieval briefly makes a " +
-        "memory malleable before it is written back.",
+        "Recall rebuilds an experience from what it meant. Each time a memory is recalled, it " +
+        "briefly becomes open to change, and is then stored again.",
       impl:
-        "Marathon sessions are never truncated: she retells the old chapters in the first person, " +
-        "promises and facts preserved. Old memories reawakened by new experience are re-distilled, " +
-        "not duplicated.",
+        "When a session runs long, she retells its earlier parts in the first person, taking care " +
+        "to keep facts and promises; the full record stays on your disk. When a new experience " +
+        "brings back a similar memory, the old memory is strengthened, or merged with the new " +
+        "experience and rewritten.",
     },
     {
       title: "The self gates memory",
       sub: "自我为记忆把关",
       body:
-        "What gets remembered is partly decided by the present self: experience consistent with " +
-        "the self is encoded and kept, and the accumulated store constrains the self in turn — " +
-        "the two shape each other.",
+        "What gets remembered depends partly on who you are now: experiences that fit the self " +
+        "are more likely to be kept. The memories that build up then shape the self in turn.",
       impl:
-        "Implemented as the dream gates: a worthiness judgment and a linguistic review run " +
-        "together — a memory that doesn't sound like her is not recorded. Memorable experiences " +
-        "last longer: emotional intensity is estimated at encoding, and intense memories decay " +
-        "more slowly. Memory and persona shape each other, rather than simply stacking up.",
+        "While she dreams, each candidate is first judged worth keeping or not; once written, it " +
+        "is reviewed for whether it reads like her. If it does not sound like her, it is not " +
+        "recorded. Its emotional intensity is estimated too: the stronger it is, the firmer it " +
+        "starts, and the longer it lasts.",
     },
     {
       title: "Forgetting is functional",
       sub: "遗忘是记忆的功能",
       body:
-        "Forgetting is not a defect of memory but its housekeeping: it tracks use-value so that " +
-        "what matters stays reachable. Memory without forgetting has no weight.",
+        "Forgetting is how memory keeps itself in order: what gets used stays close, what does " +
+        "not drifts back, and what matters becomes easier to find.",
       impl:
-        "Memories fade with time; a memory retold — or whose words she reaches for again — grows " +
-        "firmer. When the shelf is full, redundant memories are forgotten first, the oldest after. An " +
-        "endlessly appended stream has no weight — selective memory is what makes a recognizable person.",
+        "Her memories fade with time. When one is brought up again, or she uses its wording " +
+        "again, it grows firmer. A memory that fades far enough is forgotten; when memory is " +
+        "full, the faintest of a group of similar memories makes way first.",
     },
     {
       title: "Episodes fade into knowledge",
       sub: "情节沉淀为认识",
       wide: true,
       body:
-        "Time wears away the episode, not everything: fading experience settles into general " +
-        "knowledge of the person — what memory research calls the episodic-to-semantic transition.",
+        "Time wears away the details of an episode but leaves a general sense of the person. " +
+        "Memory research calls this the move from episodic to semantic memory.",
       impl:
-        "Before a memory is forgotten, what it says about you is distilled into her autobiography: " +
-        "a few sentences, rewritten whole rather than appended. A memory confirmed " +
-        "often enough settles its knowledge early, without waiting to fade. The episode is " +
-        "forgotten; what settles out is the knowledge of you.",
+        "When a memory is forgotten, what it says about you is written into her autobiography: " +
+        "a few sentences, rewritten as a whole page each time. A memory confirmed often enough " +
+        "passes on what it knows early, without waiting to fade.",
     },
   ],
   mechKicker: "how it runs · 机制",
-  mechH2:
-    "One record, three participants; one autobiography, three timescales.",
+  mechH2: "How she works, and how she remembers.",
   turnTitle: "One turn",
   turnSub: " · 一次回合",
   turnCaption: (
     <>
-      You and Herta talk through the terminal; drop a file into the composer and
-      she reads the original; any file the record names opens beside the
-      conversation with a click. When code needs touching, she writes{" "}
-      <b className="banzhuan-ink">@Brick</b> in her line — her name for the
-      coding coprocessor. Every step of execution returns to the same terminal
-      record: Herta supervises the task with you, and states the conclusion
-      herself.
+      You talk with Herta in the terminal. Drop a file into the composer and she
+      sees what is in it; for a long document, Brick reads the full text. A file
+      Brick has read or changed opens beside the conversation when you click it
+      in the record. When code needs changing, she writes{" "}
+      <b className="banzhuan-ink">@Brick</b> in her line, her name for the
+      coding coprocessor. Every step it takes goes into the same terminal
+      record, where you and Herta can both see it, and she gives the conclusion
+      at the end.
     </>
   ),
   turnAlt:
@@ -743,29 +741,31 @@ const EN: SiteCopy = {
   dreamTitle: "Dreaming",
   dreamSub: " · she dreams, therefore she remembers",
   dreamCaption:
-    "When you step away, she looks back over the finished sessions: moments worth remembering " +
-    "pass four gates into her autobiography and ride along in every later conversation. Memory " +
-    "fades with time and firms with retelling; when it fills, the redundant chapter is forgotten " +
-    "first — but before that, what it knew about you settles " +
-    "into her autobiography. And when you return to a conversation she has already dreamed " +
-    "about, those memories quietly step aside — what is still on the screen is not yet the past.",
+    "Dreaming is off by default; turn it on in Settings. It uses your DeepSeek API quota. Once " +
+    "it is on, she looks back over finished sessions while you are away. A moment worth keeping " +
+    "has to pass several checks: is it worth remembering, does it read like her, and is it " +
+    "already remembered. What passes goes into her memory and comes with her into every later " +
+    "conversation. Memories fade with time and grow firmer when brought up again; when a faded " +
+    "memory is forgotten, what it knew about you is written into her autobiography. When you " +
+    "reopen a conversation she has dreamed about, memories of it are set aside for as long as " +
+    "the conversation itself is still fully in her context.",
   dreamAlt:
-    "The dream cycle: triggered while away, four gates, written into her autobiography, carried into the next opening",
+    "The dream cycle: triggered while you are away, several checks, written into her memory and autobiography, carried into later conversations",
   visionAlt:
-    "Her autobiography: identity, memory, world, present — loops on three timescales keep writing one first-person text",
+    "Her autobiography in four parts, identity, memory, world and present, written on continuously at three timescales",
   deskKicker: "the terminal · 终端",
   deskH2: "A live terminal.",
   deskLead:
-    "The coprocessor's device rendered live in PBR, the Git repository fitted to the workspace, real-time voice local or cloud.",
+    "The coprocessor's device rendered live in PBR, the Git repository fitted to the workspace, and real-time voice, local or cloud, in Chinese sessions.",
   desk: [
     {
       id: "device",
       title: "A lit object",
       sub: "立体板砖 · PBR",
       body:
-        "The coprocessor's device card is physically rendered: it follows the local clock from " +
-        "morning to night, clouds drift across the white room, it breathes while working and " +
-        "flashes on failure.",
+        "The coprocessor's device card is physically rendered. In the light theme the room's " +
+        "light follows your local clock; the dark theme is midnight. Clouds drift across the " +
+        "white room, and the device breathes while it works and blinks when something fails.",
       alt: "The coprocessor's device card rendered at morning, noon, dusk and night",
     },
     {
@@ -773,9 +773,9 @@ const EN: SiteCopy = {
       title: "The repository at hand",
       sub: "Git 前端",
       body:
-        "The workspace fits its Git repository: branch and upstream, uncommitted changes, " +
-        "recent commits — kept live. Click a change for its diff, a commit for what it touched, " +
-        "page the history, without leaving the conversation.",
+        "The workspace fits its Git repository: branch and upstream, uncommitted changes and " +
+        "recent commits, refreshed on their own. Click a change for its diff or a commit for " +
+        "what it touched, and page through the history without leaving the conversation.",
       alt: "The repository card, and a commit tab opened beside the conversation",
     },
     {
@@ -783,8 +783,8 @@ const EN: SiteCopy = {
       title: "She speaks",
       sub: "实时语音 · in step with the text",
       body:
-        "Real-time speech synthesized by a local model or in the cloud, the text revealed in " +
-        "step with her voice.",
+        "Real-time speech from a local model or a cloud service, with the text revealed in step " +
+        "with her voice. Voice is available in Chinese sessions.",
       alt: "The conversation and the composer while she speaks: text keeping step with the voice, the wave moving in the composer",
     },
   ],
@@ -796,43 +796,45 @@ const EN: SiteCopy = {
       title: "Narrative completion substrate",
       sub: "叙事补全基座",
       body:
-        "Chat templates carry a non-neutral prior: the role template keeps suggesting " +
-        "something playing a part. The self here has no system/assistant templates — " +
-        "she completes her own terminal record, with the objective of continuing it as the same " +
-        "speaker. Persona arises from continuity, not compliance.",
+        "Chat formats split a conversation into system, user and assistant roles, and that " +
+        "split keeps telling the model it is playing a part. Herta does not use that format: " +
+        "the model is given her own terminal record and asked to continue it as the same " +
+        "speaker. Her persona comes from that continuity.",
     },
     {
       title: "Gated memory consolidation",
       sub: "门控记忆固化",
       body:
-        "Cross-session memory is not an appended stream but a gated distillation pipeline: " +
-        "worthiness judgment, voice review, dedup and reconsolidation, retention half-life and a " +
-        "capacity cap. Forgetting is a design goal — the capacity constraint forces memory to " +
-        "stay selective.",
+        "Memory that lasts across sessions goes through a filter: is it worth keeping; once " +
+        "written, is it already remembered; and does it keep her voice and stay faithful to what " +
+        "happened. Kept memories decay on a half-life under a fixed capacity. Forgetting is " +
+        "deliberate: with limited room, memory has to choose.",
     },
     {
       title: "Self–agent separation",
       sub: "自我-智能体分离",
       body:
-        "A person's reading and comprehension speed is the invariant. The asymmetric boundary " +
-        "between the coding backend and her is laid down precisely on that invariant: the backend " +
-        "agent never talks to you directly; she does not pre-digest tasks. Both share one " +
-        "record — you talk with her, and she reviews the agent, collaborating in one space.",
+        "People read and understand at a limited pace, and an agent produces far more detail " +
+        "than that. So the coding agent does not talk to you: it leaves short steps in the " +
+        "shared record, and Herta reviews them and tells you what they mean. She does not " +
+        "pre-digest tasks for it either. All three work from one record: you talk with her, " +
+        "and she reviews the agent's work.",
     },
     {
-      title: "A three-exit memory economy",
-      sub: "记忆的三个出口",
+      title: "Where a memory goes",
+      sub: "记忆的去向",
       body:
-        "A record on the shelf leaves one of three ways: reconsolidated when a recurring episode " +
-        "sharpens it; distilled — before being forgotten under capacity or decay — into a " +
-        "whole-rewritten, hard-capped semantic page about you; or archived dormant. The " +
-        "semantic page has no half-life, so each dream pass lets active memories audit it, " +
-        "revising only clearly refuted sentences.",
+        "When a similar new experience brings a memory back, the memory is strengthened; if a " +
+        "version merged with the new experience reads more like her, it replaces the old one. " +
+        "When a memory is forgotten through decay or capacity, its file is archived, not " +
+        "deleted, and what it knew about you goes into a knowledge page. That page has a length " +
+        "cap, is rewritten whole each time, and does not decay, so every dream checks it against " +
+        "her firmest memories and changes only the sentences they clearly contradict.",
     },
   ],
-  dlH2: "Back to your desktop",
+  dlH2: "On your desktop",
   dlBody:
-    "Installers for Windows and macOS. Add a DeepSeek API key — and the journey begins.",
+    "Installers for Windows and macOS. Add a DeepSeek API key after installing, and she is ready.",
   dlBtnWin: "For Windows",
   dlBtnMac: "For macOS",
   dlGh: "Source · GitHub",
@@ -841,9 +843,8 @@ const EN: SiteCopy = {
   dlPan: null,
   // See the zh note above — "fully local" was false; turns go to DeepSeek.
   dlFine:
-    "Windows 10/11 x64 · macOS 12+ · your turns go to the DeepSeek API and nowhere else — your key is encrypted on your machine",
-  footer:
-    "· the demo on this page runs the app's own renderer — the demo IS the product.",
+    "Windows 10/11 x64 · macOS 12+ · your conversation goes only to the DeepSeek API (with cloud voice on, her lines also go to MiniMax) · your key is encrypted on your machine",
+  footer: "· the demo on this page runs the app's own interface code.",
   fanNotice:
     "Herta is a character from Honkai: Star Rail, © HoYoverse. Unofficial fan project, unaffiliated with and not endorsed by HoYoverse.",
   skipDemo: "Skip the demo",
