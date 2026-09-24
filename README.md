@@ -19,11 +19,12 @@
 
 黑塔 (Herta) is the self that uses the agent — not a coding agent wearing her
 face. You talk with her through a shared terminal record; when code needs
-touching, she delegates to a silent coding coprocessor (she calls it 板砖)
-and supervises the work alongside you.
-When you step away, she dreams: moments worth remembering pass a gated
-distillation pipeline into her first-person autobiography — memory that
-settles, fades, and is selectively forgotten, like a person's.
+changing, she hands the work to a silent coding coprocessor (she calls it
+板砖) and supervises it alongside you.
+Turn on dreaming, and while you are away she looks back over finished
+sessions and keeps what is worth remembering in her first-person
+autobiography. Her memories fade, grow firmer when they come up again, and
+are forgotten selectively, like a person's.
 
 <img src="website/src/assets/demo-poster.png" alt="Herta desktop app — a @板砖 commission: activity lines, test results, and her verdict in one shared record" />
 
@@ -31,45 +32,51 @@ settles, fades, and is selectively forgotten, like a person's.
 
 ## What makes it different
 
-- **Narrative-completion substrate.** The self reads no system/assistant chat
-  envelopes. She completes her own terminal record (DeepSeek completion mode),
-  with the inference objective of continuing it as the same speaker. Persona
-  arises from continuity, not instruction compliance.
-- **Self–agent split.** A person's reading and comprehension speed is the
-  invariant, and the asymmetric boundary between the coding backend and her is
-  laid down on it: the backend produces no user-facing speech, its report has no
-  summary field for her to recite, and she does not pre-digest tasks. Both share
-  one record — you talk with her, and she reviews the agent, collaborating in
-  one space.
-- **Gated dream memory.** Cross-session memory is a distillation pipeline —
-  worthiness gates, voice review, reconsolidation, retention decay, a hard
-  capacity cap — not an append-only log. Forgetting is a design goal; what a
-  fading memory knew about you settles into her autobiography first.
+- **Narrative completion.** Chat formats split a conversation into system,
+  user and assistant roles, and that split keeps telling the model it is
+  playing a part. Herta does not use that format: the model is given her own
+  terminal record (DeepSeek completion mode) and asked to continue it as the
+  same speaker. Her persona comes from that continuity.
+- **Self–agent split.** People read and understand at a limited pace, and an
+  agent produces far more detail than that. So the coding agent does not talk
+  to you: it leaves short steps in the shared record, and Herta reviews them
+  and tells you what they mean. Its report has no summary for her to recite,
+  and she does not pre-digest tasks for it.
+- **Gated dream memory.** Memory that lasts across sessions goes through a
+  filter: is it worth keeping; once written, is it already remembered; and
+  does it keep her voice and stay faithful to what happened. Kept memories
+  decay on a half-life under a fixed capacity, and when one is forgotten,
+  what it knew about you goes into her autobiography first. Forgetting is
+  deliberate: with limited room, memory has to choose.
 - **Deterministic safety.** Permissions, path guards, command policy, and diff
   preview are harness code. The persona never decides what is allowed.
 
 ## One turn · 一次回合
 
-You and Herta talk through the terminal; when code needs touching she writes
-`@板砖` in her line. Every step of execution returns to the same terminal
-record: she supervises the task with you, and states the conclusion herself.
+You talk with Herta in the terminal. When code needs changing, she writes
+`@板砖` in her line. Every step the coprocessor takes goes into the same
+terminal record, where you and Herta can both see it, and she gives the
+conclusion at the end.
 
 <img src=".github/readme-assets/turn-flow.svg" alt="One turn: user, Herta, and the coprocessor collaborate around a single terminal record" />
 
 ## She dreams, therefore she remembers · 入梦
 
-When you step away, she looks back over the finished sessions: moments worth
-remembering pass four gates into her autobiography and ride along in every
-later conversation. When memory fills, the faintest chapter is forgotten —
-but first, what it knew about you settles into her chapter on you.
+Dreaming is off by default; turn it on in Settings. It uses your DeepSeek API
+quota. Once it is on, she looks back over finished sessions while you are
+away. A moment worth keeping has to pass several checks — is it worth
+remembering, is it already remembered, does it read like her — and what
+passes comes with her into every later conversation. When memory fills, the
+faintest of a group of similar memories makes way, and what it knew about
+you is first written into her chapter on you.
 
-<img src=".github/readme-assets/dream-cycle.svg" alt="The dream cycle: idle trigger, four gates, the live shelf, semantic settlement into her autobiography" />
+<img src=".github/readme-assets/dream-cycle.svg" alt="The dream cycle: triggered while you are away, several checks, the live shelf, what a forgotten memory knew about you settling into her autobiography" />
 
 ## Her autobiography · 她的自传
 
-The prompt is not a manual about her — it is a first-person text she keeps
-writing: identity, memories, world, the unfolding present. Three timescales
-write one book, and it never resets.
+Her prompt is a first-person text she keeps writing, in four parts: identity,
+memories, world, and the present. It is written on three timescales, and it
+never resets.
 
 <img src=".github/readme-assets/vision-autobiography.svg" alt="Her first-person autobiography: who I am, what I remember, my world, my present — written on three timescales" />
 
@@ -96,6 +103,14 @@ Installers are on the [releases page](https://github.com/PersonaCLI/Herta/releas
   code-signed, so SmartScreen warns on first run: More info → Run anyway.
 - **macOS 12+** — `Herta-<version>-arm64.dmg` (Apple Silicon) or
   `Herta-<version>-x64.dmg` (Intel). Signed and notarized.
+- **Linux (x64)** — `Herta-x86_64.AppImage`, from v0.1.6. Run
+  `chmod +x Herta-x86_64.AppImage` once, then start it; later versions update
+  in the app. It needs no separate libfuse2. On distributions that restrict
+  unprivileged user namespaces (Ubuntu 24.04's default, for example), it runs
+  with Chromium's sandbox turned off. Without a keyring (gnome-keyring or
+  KWallet), the API key is kept in an owner-only file rather than encrypted.
+  Arch users can also build from source with
+  [`packaging/arch/PKGBUILD`](./packaging/arch/PKGBUILD).
 
 ## Build
 
@@ -111,12 +126,14 @@ pnpm test           # full test suite
 pnpm --filter @herta/gui dev    # run the desktop app in dev mode
 pnpm --filter @herta/gui dist   # package the Windows installer
 pnpm --filter @herta/gui dist:mac # package the macOS app (run on macOS)
+pnpm --filter @herta/gui dist:linux # package the Linux AppImage (run on Linux)
 pnpm --filter @herta/website dev # run the website locally
 ```
 
 At runtime the app needs a DeepSeek API key, configured in-app on first run
 and stored on your machine — encrypted by the OS keychain when one is
-available. Nothing is uploaded anywhere else.
+available. Your conversation goes to the DeepSeek API and nowhere else,
+except that with cloud voice turned on, her lines also go to MiniMax.
 
 Behind a corporate proxy: the desktop app needs no configuration — it uses
 Chromium's network stack, so it picks up your system proxy settings and your
