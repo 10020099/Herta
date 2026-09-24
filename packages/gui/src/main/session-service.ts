@@ -1175,6 +1175,9 @@ export function createSessionService(
           startDir: __dirname,
         }),
         enabled: () => realtimeVoiceEnabled,
+        // Not on this thread at launch: the probe stats every file the
+        // bundle's manifest lists (~50 ms, ADR 0068 §14).
+        probeInBackground: true,
       });
       {
         // The model download (ADR 0061). The archive's location is pinned

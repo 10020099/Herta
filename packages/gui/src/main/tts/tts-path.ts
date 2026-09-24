@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { isManifest } from "./bundle-verify.js";
 
@@ -119,12 +120,82 @@ export function ttsBundleComplete(modelRoot: string): boolean {
       const parsed: unknown = JSON.parse(readFileSync(manifestPath, "utf8"));
       if (!isManifest(parsed)) return false;
       for (const f of parsed.files) {
-        const parts = f.path.split("/");
-        if (parts.some((s) => s === ".." || s === "" || s === ".")) {
-          return false;
-        }
-        const p = join(modelRoot, ...parts);
+        const p = manifestFilePath(modelRoot, f.path);
+        if (p === null) return false;
         if (!existsSync(p) || statSync(p).size !== f.bytes) return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** A manifest entry's file under `modelRoot`, or null for a path that could
+ *  step outside it (`..`, `.`, an empty segment). */
+function manifestFilePath(modelRoot: string, rel: string): string | null {
+  const parts = rel.split("/");
+  if (parts.some((s) => s === ".." || s === "" || s === ".")) return null;
+  return join(modelRoot, ...parts);
+}
+
+/** `stat` that answers null for a path that does not exist — and throws for
+ *  anything else, so an unreadable file fails the check as the sync twin's
+ *  `statSync` does, instead of passing as absent. */
+async function statOrNull(
+  p: string,
+): Promise<Awaited<ReturnType<typeof stat>> | null> {
+  try {
+    return await stat(p);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw e;
+  }
+}
+
+/**
+ * `ttsBundleComplete`, off the main thread (2026-09-24): the same checks
+ * with every stat and the manifest read on libuv's pool, so a probe of a
+ * bundle whose manifest lists hundreds of files no longer holds the app's
+ * main thread (~50 ms at every launch, against ADR 0068's no-long-sync-fs
+ * rule). Same answer as the sync twin for every bundle shape
+ * (`tts-path.test.ts` runs both over the same fixtures).
+ */
+export async function ttsBundleCompleteAsync(
+  modelRoot: string,
+): Promise<boolean> {
+  try {
+    const required = await Promise.all(
+      REQUIRED_FILES.map((rel) => statOrNull(join(modelRoot, rel))),
+    );
+    if (required.some((st) => st === null || !st.isFile() || st.size === 0)) {
+      return false;
+    }
+    const espeak = await statOrNull(
+      join(modelRoot, "frontend", "espeak-ng-data"),
+    );
+    if (espeak === null || !espeak.isDirectory()) return false;
+    const manifestPath = join(modelRoot, "manifest.json");
+    // `existsSync` semantics here, as in the twin: any failure reads "no
+    // manifest"; a manifest that exists but will not read fails below.
+    const hasManifest = await stat(manifestPath).then(
+      () => true,
+      () => false,
+    );
+    if (hasManifest) {
+      const parsed: unknown = JSON.parse(await readFile(manifestPath, "utf8"));
+      if (!isManifest(parsed)) return false;
+      const paths = parsed.files.map((f) =>
+        manifestFilePath(modelRoot, f.path),
+      );
+      if (paths.some((p) => p === null)) return false;
+      const sizes = await Promise.all(
+        paths.map((p) => statOrNull(p as string)),
+      );
+      if (
+        sizes.some((st, i) => st === null || st.size !== parsed.files[i]?.bytes)
+      ) {
+        return false;
       }
     }
     return true;

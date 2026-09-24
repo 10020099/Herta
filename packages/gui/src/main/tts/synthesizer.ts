@@ -6,7 +6,12 @@ import type {
   SynthesizedAudio,
 } from "@herta/app-server";
 import { type UtilityProcess, utilityProcess } from "electron";
-import { TTS_EFFECT, TTS_MODEL_FILE, ttsBundleComplete } from "./tts-path.js";
+import {
+  TTS_EFFECT,
+  TTS_MODEL_FILE,
+  ttsBundleComplete,
+  ttsBundleCompleteAsync,
+} from "./tts-path.js";
 
 /**
  * Herta's neural-voice coordinator (ADR 0042) — the main-process half of the
@@ -110,6 +115,14 @@ export interface TtsSynthesizerOpts {
   /** Diagnostics sink; defaults to console. Content-free by contract — the
    *  text being synthesized is never logged (memory discipline). */
   readonly log?: (line: string) => void;
+  /** Probe the bundle roots in the background instead of at construction
+   *  (2026-09-24). The launch builds the synthesizer on the app's main
+   *  thread, where the synchronous probe — a stat per file the bundle's
+   *  manifest lists — held it ~50 ms. Until the probe answers, `available()`
+   *  is false; no speech stream starts that early (the first is the opening
+   *  line, seconds later). A `refreshBundle()` meanwhile wins over it.
+   *  Default false: probe now. */
+  readonly probeInBackground?: boolean;
 }
 
 export interface TtsSynthesizer extends SpeechSynthesizer {
@@ -144,12 +157,25 @@ export function createTtsSynthesizer(opts: TtsSynthesizerOpts): TtsSynthesizer {
   // workspace's).
   const firstComplete = (): string | null =>
     opts.modelRoots.find((r) => ttsBundleComplete(r)) ?? null;
-  let activeRoot = firstComplete();
-  let bundleOk = activeRoot !== null;
+  const firstCompleteAsync = async (): Promise<string | null> => {
+    for (const r of opts.modelRoots) {
+      if (await ttsBundleCompleteAsync(r)) return r;
+    }
+    return null;
+  };
+  let activeRoot: string | null = null;
+  let bundleOk = false;
+  /** Bumped by every probe, so a background answer landing after a newer
+   *  `refreshBundle()` is dropped instead of overwriting it. */
+  let probeSeq = 0;
+  const adopt = (root: string | null): void => {
+    activeRoot = root;
+    bundleOk = root !== null;
+    if (!bundleOk) {
+      log(`no model bundle under ${opts.modelRoots.join(" | ")} — voice off`);
+    }
+  };
   const runtimeOk = opts.sherpaPath !== null;
-  if (!bundleOk) {
-    log(`no model bundle under ${opts.modelRoots.join(" | ")} — voice off`);
-  }
   if (!runtimeOk) log("sherpa-onnx-node not found — voice disabled");
 
   let worker: UtilityProcess | null = null;
@@ -157,6 +183,15 @@ export function createTtsSynthesizer(opts: TtsSynthesizerOpts): TtsSynthesizer {
   let restarts = 0;
   let failed = false;
   let disposed = false;
+
+  if (opts.probeInBackground === true) {
+    const seq = ++probeSeq;
+    void firstCompleteAsync().then((root) => {
+      if (seq === probeSeq && !disposed) adopt(root);
+    });
+  } else {
+    adopt(firstComplete());
+  }
   let nextId = 1;
   const pending = new Map<number, Pending>();
   /** Utterances cancelled while their worker request was still in flight. */
@@ -426,6 +461,7 @@ export function createTtsSynthesizer(opts: TtsSynthesizerOpts): TtsSynthesizer {
     },
 
     refreshBundle(): boolean {
+      probeSeq += 1;
       const next = firstComplete();
       if (next !== activeRoot && worker !== null) {
         // The worker holds the OLD root's files open; a bundle that moved
