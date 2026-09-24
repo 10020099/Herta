@@ -5,9 +5,12 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     // The temp-dir tracker first (it wraps the fs builtins before any test
-    // module loads), then the jest-dom matchers.
+    // module loads), then the React commit hook (react-dom looks for it once,
+    // at load — and setup-tests.ts loads react-dom), then the jest-dom
+    // matchers.
     setupFiles: [
       "../core/test-setup/track-tmp-dirs.ts",
+      "./src/renderer/test-utils/react-commit-hook.ts",
       "./src/renderer/setup-tests.ts",
     ],
     globals: false,
