@@ -165,6 +165,15 @@ export function Composer(): JSX.Element {
   // item 14). The text set is remembered so the turn's end clears exactly
   // that notice and never a newer one.
   const turnNotice = useRef<string | null>(null);
+  // Stable identity so the memoized ContextIndicator (which reads nothing the
+  // draft touches) is skipped by a keystroke's re-render — render ratchet,
+  // 2026-09-24.
+  const onQueuedNotice = useCallback(
+    (notice: string): void => {
+      sessionStore.setComposerNotice(notice);
+    },
+    [sessionStore],
+  );
   const refuseForTurn = useCallback((): void => {
     const text = t("composer.attach.busy");
     turnNotice.current = text;
@@ -912,7 +921,7 @@ export function Composer(): JSX.Element {
         <ContextIndicator
           sessionId={sessionId}
           busy={busy}
-          onQueued={(notice) => sessionStore.setComposerNotice(notice)}
+          onQueued={onQueuedNotice}
         />
         <button
           ref={sendButtonRef}

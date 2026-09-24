@@ -1,5 +1,5 @@
 import type { ContextUsage } from "@herta/app-server";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useHertaBridge } from "../../context/HertaBridgeContext.js";
 import { useT } from "../../i18n/LocaleProvider.js";
@@ -22,8 +22,14 @@ function formatTokens(tokens: number): string {
  * while the popover always states the estimated token count explicitly. This
  * keeps the quiet affordance useful at a glance without obscuring the real
  * amount of context currently in Herta's prompt.
+ *
+ * Memoized: nothing it reads depends on the draft, so a keystroke in the
+ * composer must not re-render it (render ratchet, 2026-09-24 — a keystroke
+ * costs a fixed number of renders, and this ring was one of them).
  */
-export function ContextIndicator(props: ContextIndicatorProps): JSX.Element {
+export const ContextIndicator = memo(function ContextIndicator(
+  props: ContextIndicatorProps,
+): JSX.Element {
   const { bridge } = useHertaBridge();
   const t = useT();
   const [usage, setUsage] = useState<ContextUsage | null>(null);
@@ -204,4 +210,4 @@ export function ContextIndicator(props: ContextIndicatorProps): JSX.Element {
         )}
     </span>
   );
-}
+});
