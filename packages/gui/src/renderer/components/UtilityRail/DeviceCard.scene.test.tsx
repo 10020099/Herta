@@ -36,6 +36,7 @@ vi.mock("./device-scene/DeviceScene.js", () => ({
 const gpu = vi.hoisted(() => ({ backend: "webgpu" as string | null }));
 vi.mock("./device-scene/capability.js", () => ({
   detectDeviceSceneBackend: () => Promise.resolve(gpu.backend),
+  detectDeviceScenePath: () => Promise.resolve(gpu.backend !== null),
   resetDeviceSceneBackendForTest: () => undefined,
 }));
 

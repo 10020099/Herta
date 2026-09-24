@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { journeyMarkAfterPaint } from "../../lib/journey.js";
+import { journeyMarkAfterPaint, journeyMarkAt } from "../../lib/journey.js";
 import { holdLaunch, releaseLaunch } from "../../lib/launch-gate.js";
 import type { SegmentData } from "./ascii-renderer.js";
 import { OpeningAsciiCanvas } from "./OpeningAsciiCanvas.js";
@@ -8,6 +8,13 @@ import { pickOpeningSegment } from "./pick-opening-segment.js";
 /** Fallback dissolve duration (ms), used only until the canvas reports the real
  *  one (the [38%, 94%] slice of playback) at dissolve-start. */
 const CURTAIN_MS = 700;
+
+/** At the first drawn frame, not at the segment's load: the draw worker says
+ *  when it committed that frame; a frame drawn here is marked after paint. */
+const markOpeningPainted = (atEpochMs?: number): void => {
+  if (atEpochMs === undefined) journeyMarkAfterPaint("launch:opening-painted");
+  else journeyMarkAt("launch:opening-painted", atEpochMs);
+};
 
 export interface OpeningAsciiProps {
   /** Called once when the opening sequence (play + fade-out) finishes, or if
@@ -60,7 +67,6 @@ export function OpeningAscii(props: OpeningAsciiProps): JSX.Element {
       .then((seg) => {
         if (cancelled) return;
         setData(seg);
-        journeyMarkAfterPaint("launch:opening-painted");
         releaseLaunch("opening");
       })
       .catch(() => {
@@ -95,9 +101,13 @@ export function OpeningAscii(props: OpeningAsciiProps): JSX.Element {
       style={fadingOut ? { transitionDuration: `${dissolveMs}ms` } : undefined}
       data-testid="opening-ascii"
     >
-      {data !== null && (
-        <OpeningAsciiCanvas data={data} onComplete={handleComplete} />
-      )}
+      {/* Mounted before the segment loads: its draw worker starts now, in
+          the load's shadow. */}
+      <OpeningAsciiCanvas
+        data={data}
+        onComplete={handleComplete}
+        onFirstFrame={markOpeningPainted}
+      />
     </div>
   );
 }

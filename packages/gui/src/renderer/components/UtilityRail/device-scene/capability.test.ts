@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { probeDeviceSceneBackend } from "./capability.js";
+import { probeDeviceSceneBackend, probeDeviceScenePath } from "./capability.js";
 
 function fakeCanvas(renderer: string | null): HTMLCanvasElement {
   const gl =
@@ -78,5 +78,51 @@ describe("probeDeviceSceneBackend (ADR 0057 §4)", () => {
     await expect(
       probeDeviceSceneBackend({ createCanvas: () => fakeCanvas(null) }),
     ).resolves.toBeNull();
+  });
+});
+
+describe("probeDeviceScenePath (M-opening-3)", () => {
+  it("an adapter is enough — no device is created (it held the GPU process ~0.25 s mid-opening)", async () => {
+    let devices = 0;
+    const gpu = {
+      requestAdapter: async () => ({
+        requestDevice: async () => {
+          devices += 1;
+          return { destroy: () => undefined };
+        },
+      }),
+    };
+    await expect(
+      probeDeviceScenePath({ gpu, createCanvas: () => fakeCanvas(null) }),
+    ).resolves.toBe(true);
+    expect(devices).toBe(0);
+  });
+
+  it("with no adapter, answers what the full probe's WebGL2 check answers", async () => {
+    const noAdapter = { requestAdapter: async () => null };
+    for (const renderer of [
+      "ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11)",
+      "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero)))",
+      null,
+    ]) {
+      const env = { gpu: noAdapter, createCanvas: () => fakeCanvas(renderer) };
+      await expect(probeDeviceScenePath(env)).resolves.toBe(
+        (await probeDeviceSceneBackend(env)) !== null,
+      );
+    }
+  });
+
+  it("an adapter request that throws falls through to WebGL2", async () => {
+    const gpu = {
+      requestAdapter: async () => {
+        throw new Error("no GPU process");
+      },
+    };
+    await expect(
+      probeDeviceScenePath({ gpu, createCanvas: () => fakeCanvas("NVIDIA") }),
+    ).resolves.toBe(true);
+    await expect(
+      probeDeviceScenePath({ gpu, createCanvas: () => fakeCanvas(null) }),
+    ).resolves.toBe(false);
   });
 });

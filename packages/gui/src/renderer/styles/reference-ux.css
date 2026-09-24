@@ -3126,6 +3126,13 @@ button.agent-preview {
   opacity: 0;
   transition: opacity 700ms ease-in-out;
 }
+/* The canvas's box: the component creates the canvas itself (a canvas handed
+   to the draw worker cannot be reused), so it needs a parent that fills the
+   overlay. */
+.opening-ascii-stage {
+  position: absolute;
+  inset: 0;
+}
 .opening-ascii-canvas {
   display: block;
   width: 100%;

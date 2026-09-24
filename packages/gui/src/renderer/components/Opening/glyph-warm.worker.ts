@@ -3,12 +3,13 @@
  *
  * The first draw of a (symbol, size) pair anywhere in the renderer costs
  * ~0.1 ms, most of it glyph metrics the text engine then keeps in a cache the
- * process shares: measured, this worker's measuring made the main thread's
- * later draws cheaper. The opening's reveal meets ~2.4k new pairs in its
- * first half-second, on the main thread during launch, at 70–100 ms a frame.
- * This worker measures every pair while the main thread is still booting, so
- * the reveal finds most of them cached. It shows nothing and answers
- * nothing: it closes when done.
+ * process shares. The opening's reveal meets ~2.4k new pairs in its first
+ * half-second, at 70–100 ms a frame when it drew on the main thread. This
+ * worker measures every pair while the app is still booting, so the reveal
+ * finds most of them cached. Measured both ways: the main thread's draws got
+ * cheaper, and since the draw moved to its own worker (M-opening-3) the hold
+ * runs at 23 fps with this warm-up and 13 without. It shows nothing and
+ * answers nothing: it closes when done.
  */
 
 /** What to warm: the draw loop's sizes, font and symbols. */

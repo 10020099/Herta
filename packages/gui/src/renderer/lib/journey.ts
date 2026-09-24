@@ -59,6 +59,19 @@ export function journeyMark(name: JourneyMark): void {
   performance.mark(full);
 }
 
+/** Mark at a moment another thread saw, given as epoch ms (that thread's
+ *  `performance.timeOrigin + performance.now()`): the opening's draw worker
+ *  reports when its first frame was committed, and the message reaches this
+ *  thread later than the frame reached the screen. */
+export function journeyMarkAt(name: JourneyMark, epochMs: number): void {
+  if (!canMark()) return;
+  const full = PREFIX + name;
+  performance.clearMarks(full);
+  performance.mark(full, {
+    startTime: Math.max(0, epochMs - performance.timeOrigin),
+  });
+}
+
 interface PostTaskScheduler {
   postTask: (cb: () => void, opts: { priority: string }) => Promise<unknown>;
 }
