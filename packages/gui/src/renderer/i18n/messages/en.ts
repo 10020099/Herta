@@ -420,6 +420,7 @@ export const en = {
   "workspace.editsUndoneLeftAlone": "Changes undone; not restored: {files}",
   "workspace.undoFailed": "Undo failed",
   "workspace.listJoin": ", ",
+  "activity.thinking": "Thinking…",
   "activity.undo.chip": "Undo",
   "activity.undo.chipTitle": "Undo Brick's file changes from this turn",
   "activity.undo.chipDone": "Undone",

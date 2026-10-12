@@ -401,6 +401,7 @@ export const zh = {
   "workspace.editsUndoneLeftAlone": "改动已撤销；以下文件未还原：{files}",
   "workspace.undoFailed": "撤销失败",
   "workspace.listJoin": "、",
+  "activity.thinking": "思考中…",
   "activity.undo.chip": "撤销",
   "activity.undo.chipTitle": "撤销本轮板砖的文件改动",
   "activity.undo.chipDone": "已撤销",

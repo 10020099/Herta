@@ -84,6 +84,10 @@ export interface ActivityBlockProps {
    *  the last N op rows shimmer together instead of only the last-started
    *  one. Optional: omitted/1 keeps the classic single-row shimmer. */
   readonly inFlightCount?: number;
+  /** 板砖 has been quiet between steps for a while — its model thinking
+   *  (`useBackendThinking`): the live line says so instead of the last
+   *  step, which would read as still running. Live group only. */
+  readonly thinking?: boolean;
   /**
    * Factory for an attachment row's take-back handler, or undefined when
    * removal is unavailable (no session, or a turn in flight). A FACTORY keyed
@@ -778,7 +782,13 @@ export const ActivityBlock = memo(function ActivityBlock(
             )}
           </span>
           {active ? (
-            <SwapText text={latestStep} reduced={reduced} shimmer />
+            <SwapText
+              text={
+                props.thinking === true ? t("activity.thinking") : latestStep
+              }
+              reduced={reduced}
+              shimmer
+            />
           ) : (
             headline !== null && (
               <span className="activity-line__summary">

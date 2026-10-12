@@ -104,8 +104,8 @@ const VOICE: Record<PromptLang, string> = {
 /** What the line is for, per prompt. */
 const LEAD: Record<PredictionMode, Record<PromptLang, string>> = {
   work: {
-    zh: "接下来是开拓者在终端里打给大黑塔的下一句，一句话。多半是让板砖接着做下一步（就像平时一样写 @板砖，把活交代清楚），或者回她刚才那句；只提上面真实出现过的文件、命令和结果，不编造没发生过的事。",
-    en: "What follows is the Trailblazer's next line to the Herta, typed into the terminal: one line. Most likely the next step for 板砖 (they write @板砖 as usual and say what to do), or an answer to her last line; mention only files, commands and results that actually appear above, and invent nothing that did not happen.",
+    zh: "接下来是开拓者在终端里打给大黑塔的下一句，一句话，八十字以内。多半是让板砖接着做下一步（就像平时一样写 @板砖，把活交代清楚），或者回她刚才那句；只提上面真实出现过的文件、命令和结果，不编造没发生过的事。",
+    en: "What follows is the Trailblazer's next line to the Herta, typed into the terminal: one line, fifty words at most. Most likely the next step for 板砖 (they write @板砖 as usual and say what to do), or an answer to her last line; mention only files, commands and results that actually appear above, and invent nothing that did not happen.",
   },
   chat: {
     zh: "接下来是开拓者在终端里打给大黑塔的下一句，一句，二十来个字以内。多半是接着她刚才那句往下说；只接上面聊过的话，不编造没发生过的事。",
@@ -137,10 +137,17 @@ export const MAX_REPLY_CHARS = 400;
 /** A 板砖 run's digest keeps its header and its last lines: what it did last
  *  is what the next line follows. */
 export const MAX_RUN_LINES = 12;
-/** A typed line is short: anything longer is the model writing a speech. */
-const MAX_PREDICTION_CHARS = 60;
-/** A cap on the completion; a well-formed line closes far below it. */
-const PREDICTION_MAX_TOKENS = 80;
+/** A typed line is short: anything longer is the model writing a speech.
+ *  A step for 板砖 says what to do, so it runs longer: in the desktop app
+ *  (2026-10-12) every next step after a real run was 100–130 characters,
+ *  and a cap of 60 for both dropped them all. */
+const MAX_PREDICTION_CHARS: Record<PredictionMode, number> = {
+  chat: 60,
+  work: 120,
+};
+/** A cap on the completion, past the longest line kept; a line it cuts off
+ *  is dropped, not shown half-written. */
+const PREDICTION_MAX_TOKENS = 160;
 /** The likely line, not an inventive one: a live check (2026-10-10) at the
  *  default had the Trailblazer recall typos and errands that never happened. */
 const PREDICTION_TEMPERATURE = 0.5;
@@ -267,6 +274,7 @@ export async function predictNextUserMessage(
   const prompt = predictionPrompt(deps.record, deps.lang, deps.notes);
   if (prompt === null) return null;
   let text = "";
+  let cutOff = false;
   try {
     for await (const ev of deps.provider.streamCompletion(
       {
@@ -281,13 +289,16 @@ export async function predictNextUserMessage(
       signal,
     )) {
       if (ev.type === "text-delta") text += ev.text;
-      else if (ev.type === "finish") break;
+      else if (ev.type === "finish") {
+        cutOff = ev.reason === "length";
+        break;
+      }
     }
   } catch (err) {
     if (signal.aborted) throw err;
     return null;
   }
-  if (signal.aborted) return null;
+  if (signal.aborted || cutOff) return null;
   return acceptPrediction(text, deps.record, prompt.mode);
 }
 
@@ -311,7 +322,7 @@ export function acceptPrediction(
   text = text.trim();
   if (text.length === 0) return null;
   if (/[\r\n]/.test(text)) return null;
-  if ([...text].length > MAX_PREDICTION_CHARS) return null;
+  if ([...text].length > MAX_PREDICTION_CHARS[mode]) return null;
   if (/[〔〕]/.test(text)) return null;
   if (/^[（(［[【].*[）)］\]】]$/.test(text)) return null;
   // A placeholder, not a line: no word at all, or one letter run (「xxx」,

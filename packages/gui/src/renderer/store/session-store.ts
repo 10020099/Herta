@@ -405,7 +405,12 @@ export class SessionStore {
    *  one included) must not replace them. */
   private onLive(e: LiveToolSnapshot): void {
     if (!this.snapshot.backendActive) return;
-    if (e.views.length === 0 && this.snapshot.live.views.length === 0) return;
+    if (
+      e.views.length === 0 &&
+      this.snapshot.live.views.length === 0 &&
+      e.quietSince === this.snapshot.live.quietSince
+    )
+      return;
     this.emit({ ...this.snapshot, live: e });
   }
 

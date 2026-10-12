@@ -1,6 +1,7 @@
 import { Fragment, memo, useEffect, useRef } from "react";
 import { useHertaBridge } from "../../context/HertaBridgeContext.js";
 import { useActiveSession } from "../../hooks/useActiveSession.js";
+import { useBackendThinking } from "../../hooks/useBackendThinking.js";
 import { useReducedMotion } from "../../hooks/useReducedMotion.js";
 import { useT } from "../../i18n/LocaleProvider.js";
 import { ConversationPinProvider } from "./ConversationPin.js";
@@ -212,6 +213,7 @@ export const Conversation = memo(function Conversation(): JSX.Element {
     sessionStore,
     t,
   });
+  const backendThinking = useBackendThinking();
   const { items, rows } = useConversationRows({
     // The attach in flight shows as placeholder rows after the record's last
     // block — where its real blocks will land (pending-attach.ts).
@@ -223,6 +225,7 @@ export const Conversation = memo(function Conversation(): JSX.Element {
     backendStartedAt,
     backendInFlight,
     backendActive,
+    backendThinking,
     handleRewind,
     removeAttachmentFactory,
     undoable,

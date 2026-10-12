@@ -38,6 +38,7 @@ const CHAT: TerminalRecord = [
 
 function provider(
   reply: string | Error,
+  reason: "stop" | "length" = "stop",
 ): CompletionProviderAdapter & { requests: CompletionRequest[] } {
   const requests: CompletionRequest[] = [];
   return {
@@ -47,7 +48,7 @@ function provider(
       return (async function* () {
         if (reply instanceof Error) throw reply;
         yield { type: "text-delta", text: reply } as const;
-        yield { type: "finish", reason: "stop" } as const;
+        yield { type: "finish", reason } as const;
       })();
     },
   };
@@ -122,12 +123,32 @@ describe("acceptPrediction", () => {
       expect(acceptPrediction(short, RECORD, "work")).toBe(short);
   });
 
+  it("a step for 板砖 may run longer than a line of talk (desktop app 2026-10-12)", () => {
+    // As the desktop app produced it after a real run — 108 characters.
+    const step =
+      "@板砖 把 primes_fast.py 再往上压一档：数到一亿，测耗时和峰值内存，试试分段筛或位数组（bitarray/bytearray 每字节存 8 个奇数），确认结果还是 5761455，跟一千万那版对得上。";
+    expect(acceptPrediction(step, RECORD, "work")).toBe(step);
+    const talk = "很".repeat(61);
+    expect(acceptPrediction(talk, CHAT, "chat")).toBeNull();
+    expect(acceptPrediction("很".repeat(60), CHAT, "chat")).toBe(
+      "很".repeat(60),
+    );
+  });
+
+  it("a line the token cap cut off is dropped, not shown half-written", async () => {
+    const p = provider(
+      "@板砖 把 primes_fast.py 再往上压一档：数到一亿，测",
+      "length",
+    );
+    expect(await predictNextUserMessage(deps(p), signal())).toBeNull();
+  });
+
   it("drops what no user would type", () => {
     for (const raw of [
       "",
       "   ",
       "第一行\n第二行",
-      "很".repeat(61),
+      "很".repeat(121),
       "〔提示〕好的",
       "（展示照片）",
       "[沉默]",

@@ -88,6 +88,8 @@ export function useConversationRows(opts: {
   readonly backendStartedAt: number | null;
   readonly backendInFlight: number;
   readonly backendActive: boolean;
+  /** 板砖 has been thinking for a while (`useBackendThinking`). */
+  readonly backendThinking: boolean;
   readonly handleRewind: () => Promise<void>;
   readonly removeAttachmentFactory: RemoveAttachmentFactory | undefined;
   /** Main says the latest turn's edits can be taken back (ADR 0074 §4). */
@@ -105,6 +107,7 @@ export function useConversationRows(opts: {
     backendStartedAt,
     backendInFlight,
     backendActive,
+    backendThinking,
     handleRewind,
     removeAttachmentFactory,
     undoable,
@@ -254,6 +257,7 @@ export function useConversationRows(opts: {
               }
               lang={lang}
               inFlightCount={isActive ? backendInFlight : 1}
+              thinking={isActive && backendThinking}
               onRemoveAttachment={removeAttachmentFactory}
               {...(idx !== undoCard.card
                 ? {}
@@ -287,6 +291,7 @@ export function useConversationRows(opts: {
       // memo would keep rendering the last group as live after the backend
       // stopped.
       backendActive,
+      backendThinking,
       // The live-turn gate above. Changes only with the record, which
       // already invalidates via `items` — listed for the lint contract.
       lastUserIndex,
