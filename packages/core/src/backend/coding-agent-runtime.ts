@@ -157,7 +157,6 @@ export interface RepoRangeFile {
 
 export interface RunBriefOptions {
   signal?: AbortSignal;
-  scopedRepoInstructions?: string;
   /**
    * The frame's project-memory text. UNDEFINED (the production dispatch)
    * means the runtime recalls the store itself at brief start and renders
@@ -684,8 +683,6 @@ export class CodingAgentRuntime {
         userMessages: frameIn?.userMessages ?? opts.userMessages ?? [],
         omittedUserMessages:
           frameIn?.omittedUserMessages ?? opts.omittedUserMessages ?? 0,
-        scopedRepoInstructions:
-          frameIn?.scopedRepoInstructions ?? opts.scopedRepoInstructions ?? "",
         scopedMemory: recalledMemory,
         recentDialogue: frameIn?.recentDialogue ?? opts.recentDialogue ?? "",
         workingHistory: frameIn?.workingHistory ?? opts.workingHistory ?? "",
@@ -737,7 +734,6 @@ export class CodingAgentRuntime {
           frame: {
             userMessages: handle.userMessages,
             omittedUserMessages: handle.omittedUserMessages,
-            scopedRepoInstructions: handle.scopedRepoInstructions,
             scopedMemory: handle.scopedMemory,
             recentDialogue: handle.recentDialogue,
             workingHistory: handle.workingHistory,

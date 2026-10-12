@@ -526,7 +526,7 @@ describe("CodingAgentRuntime.runBrief", () => {
     expect(first).not.toBe(second);
   });
 
-  it("forwards scopedRepoInstructions and scopedMemory through the loop", async () => {
+  it("forwards scopedMemory through the loop", async () => {
     let capturedFrame: ProviderPromptFrame | undefined;
     const provider = new FakeProvider({
       turns: [
@@ -539,13 +539,11 @@ describe("CodingAgentRuntime.runBrief", () => {
     const { runtime } = makeRuntime(provider);
 
     await runtime.runBrief(sampleBrief, {
-      scopedRepoInstructions: "scoped-repo-text",
       scopedMemory: "scoped-memory-text",
     });
 
     expect(capturedFrame).toBeDefined();
     if (capturedFrame !== undefined && "backendSystem" in capturedFrame) {
-      expect(capturedFrame.scopedRepoInstructions).toBe("scoped-repo-text");
       expect(capturedFrame.scopedMemory).toBe("scoped-memory-text");
     }
   });

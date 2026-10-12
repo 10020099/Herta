@@ -25,7 +25,6 @@ describe("BACKEND_PROVIDER_MAX_RETRIES", () => {
 describe("createBackendProvider — the one backend provider both hosts build (2026-09-03)", () => {
   const frame = {
     stableSystem: "s",
-    repoInstructions: "",
     memoryContext: "",
     retrievedLore: "",
     messages: [
@@ -218,7 +217,6 @@ describe("createBackendStack", () => {
     const buildInput = {
       brief: { taskId: "t-1" },
       userMessages: [{ text: "hi" }],
-      scopedRepoInstructions: "",
       scopedMemory: "",
       messages: [],
     };
@@ -423,7 +421,6 @@ describe("createBackendStack", () => {
       const frame = stack.backendBuilder.build({
         brief: { taskId: "t-1" },
         userMessages: [{ text: "hi" }],
-        scopedRepoInstructions: "",
         scopedMemory: "",
         messages: [],
       });

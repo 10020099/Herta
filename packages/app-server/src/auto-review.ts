@@ -172,7 +172,6 @@ export function reviewModelFrom(provider: ProviderAdapter): ReviewModel {
     for await (const ev of provider.streamChat(
       {
         stableSystem: system,
-        repoInstructions: "",
         memoryContext: "",
         retrievedLore: "",
         messages: [{ role: "user", text: user, ts: new Date().toISOString() }],

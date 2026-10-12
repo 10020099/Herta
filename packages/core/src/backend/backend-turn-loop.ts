@@ -128,11 +128,6 @@ export interface BackendTurnHandle {
   /** Elided older user messages (ADR 0025 slice 2); defaults to 0. */
   omittedUserMessages?: number;
   /**
-   * Optional scoped repo instructions selected by the actor for this dispatch.
-   * Threaded into `BackendPromptFrame.scopedRepoInstructions`. Defaults to `""`.
-   */
-  scopedRepoInstructions?: string;
-  /**
    * The rendered project memory for this dispatch — `CodingAgentRuntime`
    * recalls and renders it at brief start (ADR 0060). Threaded into
    * `BackendPromptFrame.scopedMemory`. Defaults to `""`.
@@ -363,7 +358,6 @@ export async function* runBackendTurnLoop(
       brief,
       userMessages: handle.userMessages,
       omittedUserMessages: handle.omittedUserMessages ?? 0,
-      scopedRepoInstructions: handle.scopedRepoInstructions ?? "",
       scopedMemory: handle.scopedMemory ?? "",
       messages: [],
       recentDialogue: handle.recentDialogue,

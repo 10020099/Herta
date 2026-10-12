@@ -644,7 +644,7 @@ describe("runBackendTurnLoop", () => {
     }
   });
 
-  it("threads scopedRepoInstructions and scopedMemory into the frame", async () => {
+  it("threads scopedMemory into the frame", async () => {
     let capturedFrame: ProviderPromptFrame | undefined;
     const provider = new FakeProvider({
       turns: [
@@ -659,7 +659,6 @@ describe("runBackendTurnLoop", () => {
     for await (const _ of runBackendTurnLoop(deps, sampleBrief, {
       signal: new AbortController().signal,
       userMessages: sampleUserMessages,
-      scopedRepoInstructions: "Prefer edit_file over write_new_file.",
       scopedMemory: "User dislikes long replies.",
     })) {
       // drain
@@ -667,9 +666,6 @@ describe("runBackendTurnLoop", () => {
 
     expect(capturedFrame).toBeDefined();
     if (capturedFrame !== undefined && "backendSystem" in capturedFrame) {
-      expect(capturedFrame.scopedRepoInstructions).toBe(
-        "Prefer edit_file over write_new_file.",
-      );
       expect(capturedFrame.scopedMemory).toBe("User dislikes long replies.");
     }
   });

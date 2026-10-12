@@ -211,7 +211,6 @@ export function digestModelFrom(provider: ProviderAdapter): DigestModel {
     for await (const ev of provider.streamChat(
       {
         stableSystem: system,
-        repoInstructions: "",
         memoryContext: "",
         retrievedLore: "",
         messages: [{ role: "user", text: user, ts: new Date().toISOString() }],
