@@ -337,6 +337,9 @@ export function createMinimalTools(opts: MinimalToolsOpts): HertaTool[] {
       ...(opts.lang !== undefined ? { lang: opts.lang } : {}),
     }),
     showExcerptTool({ mapPath }),
+    // Project memory on the default contract too (ADR 0077): ADR 0060's
+    // recall had nothing to read on a default install.
+    memorySaveTool(),
     ...(opts.digest !== false
       ? [
           digestDocumentTool({

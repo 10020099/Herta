@@ -401,6 +401,21 @@ export function projectBackendEventUnsanitized(
             digest: { kind: "finding", claim: data.claim, cites },
           };
         }
+        // A saved fact, as the store holds it — redacted (ADR 0077). The op
+        // row names only its kind; this says what 板砖 will remember, so the
+        // user and Herta can see it (PHILOSOPHY §9). Bounded: a fact is one
+        // sentence by schema.
+        if (event.tool === "memory_save") {
+          const data = event.result.data as { text?: unknown } | undefined;
+          if (typeof data?.text !== "string") return null;
+          const fact =
+            data.text.length > 200 ? `${data.text.slice(0, 200)}…` : data.text;
+          return {
+            kind: "system",
+            label: "差分协处理器",
+            body: `↳ remembered: ${fact.replace(/\s+/g, " ").trim()}`,
+          };
+        }
         // search_text surfaces its hits (2026-08-17). Same reasoning as
         // show_excerpt and for the same lane: a search's op row said only that
         // a search happened, so "which lines mention X" — the answer 板砖 was

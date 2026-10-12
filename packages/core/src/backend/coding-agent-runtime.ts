@@ -48,7 +48,10 @@ const MUTATING_TOOLS: ReadonlySet<string> = new Set([
   "write_new_file",
   "run_command",
   "command_stop",
-  "memory_save",
+  // Not `memory_save` (ADR 0077): a saved fact changes the harness's own
+  // store, not the user's task, and on the default contract a run that
+  // read, failed and saved a fact would have reported 完成 — the trap the
+  // reads were taken out of (audit 2026-07-24, 1.2).
   // Minimal contract (ADR 0040): `bash` counts like run_command (exit 0
   // only, see below); the editor counts only for its writing commands —
   // a `view` is a read and proves nothing (the result data says which).
