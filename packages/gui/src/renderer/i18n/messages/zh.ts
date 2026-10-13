@@ -568,7 +568,9 @@ export const zh = {
   "viewer.log.noMatch": "没有匹配的提交",
   // 操作轨迹 rail card (2026-08-17; phases and the live pane, ADR 0073).
   "trace.card.title": "操作轨迹",
+  "trace.card.stepOne": "1 步",
   "trace.card.steps": "{n} 步",
+  "trace.card.fileOne": "1 文件",
   "trace.card.files": "{n} 文件",
   "trace.phase.explore": "探索",
   "trace.phase.modify": "修改",

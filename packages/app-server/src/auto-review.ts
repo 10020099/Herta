@@ -475,9 +475,51 @@ function ownerOnly(
   const codes = requestCodes(request);
   return (
     codes.includes("command_ask_harness_state") ||
-    namesHertaState(command, workspace) ||
+    namesHertaState(withoutHertaExclusions(command), workspace) ||
     bodyUnreadable(codes, request.reason, command)
   );
+}
+
+/** An argument as a shell spells it: quoted, or a bare word. */
+const ARG = String.raw`(?:'[^']*'|"[^"]*"|[^\s;&|)]+)`;
+
+/** The ways a command leaves `.herta` OUT: a find that skips it, a search
+ *  or archive told to exclude it, a git pathspec that excludes it, lines
+ *  filtered away by `grep -v`. 板砖 writes them on its own when it lists a
+ *  sandbox (live, 2026-10-13: `find . -maxdepth 2 -not -path './.herta/*'
+ *  -not -name '.herta'`), and naming `.herta` there reaches nothing. */
+const HERTA_EXCLUSIONS: readonly RegExp[] = [
+  // find: -not/! -path|-name … , and -path … -prune
+  new RegExp(
+    String.raw`(?:-not|\\?!)\s+-(?:i?path|i?wholename|i?name|i?regex)\s+${ARG}`,
+    "gi",
+  ),
+  new RegExp(
+    String.raw`-(?:i?path|i?wholename|i?name)\s+${ARG}\s+-prune`,
+    "gi",
+  ),
+  // grep/rg/rsync/tar/ls: --exclude-dir=…, --exclude …, --ignore=…, --hide=…
+  new RegExp(
+    String.raw`--(?:exclude-dir|exclude|ignore-dir|ignore|hide)(?:=|\s+)${ARG}`,
+    "gi",
+  ),
+  // rg/fd: a negated glob
+  /(?:-g|--i?glob)(?:=|\s+)(?:'![^']*'|"![^"]*"|![^\s;&|)]+)/gi,
+  // git: an excluding pathspec
+  /['"]?:(?:!|\^|\(exclude\))[^\s'"]*['"]?/gi,
+  // grep -v …: lines filtered out of the output
+  new RegExp(String.raw`\bgrep\s+-[A-Za-z]*v[A-Za-z]*\s+${ARG}`, "gi"),
+];
+
+/** The command with every exclusion of `.herta` taken out; what remains is
+ *  what the owner-only check reads. Anything not recognised as one stays,
+ *  and goes to the owner. */
+function withoutHertaExclusions(command: string): string {
+  let out = command;
+  for (const re of HERTA_EXCLUSIONS) {
+    out = out.replace(re, (m) => (/\.herta/i.test(m) ? " " : m));
+  }
+  return out;
 }
 
 /**

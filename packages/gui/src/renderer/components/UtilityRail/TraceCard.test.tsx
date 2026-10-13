@@ -80,6 +80,17 @@ const view = (over: Partial<LiveToolView>): LiveToolView => ({
   ...over,
 });
 
+/** The card in a session whose language is the app's, unless told
+ *  otherwise: it reads in the session's language (ADR 0019). */
+function renderCard(
+  opts: Parameters<typeof renderWithSession>[1] = {},
+): ReturnType<typeof renderWithSession> {
+  return renderWithSession(<TraceCard />, {
+    lang: opts.locale ?? "en",
+    ...opts,
+  });
+}
+
 const card = () => document.querySelector('[data-testid="trace-card"]');
 const isOpen = () => card()?.className.includes("is-open") ?? false;
 const nodes = () => [...document.querySelectorAll(".trace-node")];
@@ -109,14 +120,14 @@ const settle = (ms = 400) =>
 
 describe("TraceCard — the timeline (ADR 0073)", () => {
   it("is absent for a session with no dispatch ops", () => {
-    const h = renderWithSession(<TraceCard />);
+    const h = renderCard();
     expect(card()).toBeNull();
     push(h, user());
     expect(card()).toBeNull();
   });
 
   it("one node per phase stretch: finished ones fold to a counted line with how they ended; the one in flight names its step", () => {
-    const h = renderWithSession(<TraceCard />);
+    const h = renderCard();
     push(
       h,
       user(),
@@ -150,8 +161,8 @@ describe("TraceCard — the timeline (ADR 0073)", () => {
     );
   });
 
-  it("zh: phases and summaries speak the UI language", () => {
-    const h = renderWithSession(<TraceCard />, { locale: "zh" });
+  it("zh: phases and summaries speak the session's language", () => {
+    const h = renderCard({ locale: "zh" });
     push(
       h,
       user(),
@@ -166,9 +177,20 @@ describe("TraceCard — the timeline (ADR 0073)", () => {
     ]);
   });
 
+  it("an English session in a Chinese app reads in English, as the activity line does (ADR 0019; release review 2026-10-13)", () => {
+    const h = renderCard({ locale: "zh", lang: "en" });
+    push(h, user(), op("Reading", "src/a.ts"), op("Writing", "src/a.ts"));
+    expect(lines()).toEqual(["Explore Read a.ts", "Edit* Writing src/a.ts"]);
+    expect(card()?.getAttribute("aria-label")).toBe("Operation trace");
+    // One of each is singular (seen live: "1 steps").
+    expect(document.querySelector(".plan-card__count")?.textContent).toBe(
+      "2 steps · 1 file",
+    );
+  });
+
   it("HOLDS past the done-marker with every node folded, then slides back and unmounts", () => {
     vi.useFakeTimers();
-    const h = renderWithSession(<TraceCard />);
+    const h = renderCard();
     push(h, user(), op("Running", "npm test"));
     expect(lines()).toEqual(["Verify* Running npm test"]);
     push(h, doneMarker);
@@ -187,7 +209,7 @@ describe("TraceCard — the timeline (ADR 0073)", () => {
   });
 
   it("parked on a permission gate, the card says so (is-waiting)", () => {
-    const h = renderWithSession(<TraceCard />);
+    const h = renderCard();
     push(h, user(), op("Running", "npm install"));
     act(() => {
       h.mock.emitOverlay({
@@ -210,7 +232,7 @@ describe("TraceCard — the timeline (ADR 0073)", () => {
   });
 
   it("a chained dispatch after the first's marker restarts the timeline with the new ops", () => {
-    const h = renderWithSession(<TraceCard />);
+    const h = renderCard();
     push(h, user(), op("Running", "npm test"), exit(0), doneMarker);
     push(h, op("Running", "git push"));
     expect(lines()).toEqual(["Edit* Running git push"]);
@@ -220,7 +242,7 @@ describe("TraceCard — the timeline (ADR 0073)", () => {
 describe("TraceCard — the ticker (ADR 0073)", () => {
   it("flows the file's whole lines as the model writes it — before the step's op row exists; a line still being written waits", () => {
     vi.useFakeTimers();
-    const h = renderWithSession(<TraceCard />);
+    const h = renderCard();
     h.startBackend();
     push(h, user(), op("Reading", "src/a.ts"));
     live(
@@ -252,7 +274,7 @@ describe("TraceCard — the ticker (ADR 0073)", () => {
     // line in the same frame the new node arrived, so the card dipped by a
     // line and grew back.
     vi.useFakeTimers();
-    const h = renderWithSession(<TraceCard />);
+    const h = renderCard();
     h.startBackend();
     push(h, user(), op("Running", "npm test"));
     const test = view({
@@ -304,7 +326,7 @@ describe("TraceCard — the ticker (ADR 0073)", () => {
     // draft — here one that makes no op row — and the line used to ease half
     // shut and open again on every step.
     vi.useFakeTimers();
-    const h = renderWithSession(<TraceCard />);
+    const h = renderCard();
     h.startBackend();
     push(h, user(), op("Running", "npm test"));
     const test = view({
@@ -341,7 +363,7 @@ describe("TraceCard — the ticker (ADR 0073)", () => {
     // 修改 node — and when the record caught up with its test row, the node
     // folded into 验证 and the card re-sorted.
     vi.useFakeTimers();
-    const h = renderWithSession(<TraceCard />);
+    const h = renderCard();
     h.startBackend();
     push(h, user(), op("Running", "npm test"), exit(0, 1));
     const header =
@@ -378,7 +400,7 @@ describe("TraceCard — the ticker (ADR 0073)", () => {
 
   it("an edit's lines carry their sign as a tint, not a character", () => {
     vi.useFakeTimers();
-    const h = renderWithSession(<TraceCard />);
+    const h = renderCard();
     h.startBackend();
     push(h, user(), op("Writing", "src/a.ts"));
     live(h, [
@@ -404,7 +426,7 @@ describe("TraceCard — the ticker (ADR 0073)", () => {
 
   it("a command's output flows under its step; before any, the ticker says so", () => {
     vi.useFakeTimers();
-    const h = renderWithSession(<TraceCard />);
+    const h = renderCard();
     h.startBackend();
     push(h, user(), op("Running", "npm test"));
     const running = {
@@ -435,7 +457,7 @@ describe("TraceCard — the ticker (ADR 0073)", () => {
 
   it("a file written in one breath does not end on its last `}`: it plays through, then settles on what it declares (owner 2026-09-30)", () => {
     vi.useFakeTimers();
-    const h = renderWithSession(<TraceCard />);
+    const h = renderCard();
     h.startBackend();
     push(h, user(), op("Reading", "src/a.ts"));
     const file = [
@@ -475,7 +497,7 @@ describe("TraceCard — the ticker (ADR 0073)", () => {
   });
 
   it("a read has no ticker: its node names the step, and that is all", () => {
-    const h = renderWithSession(<TraceCard />);
+    const h = renderCard();
     h.startBackend();
     push(h, user(), op("Reading", "a.ts"));
     live(h, [
@@ -492,7 +514,7 @@ describe("TraceCard — the ticker (ADR 0073)", () => {
   });
 
   it("outlives the backend's end until the record catches up, then goes with the done-marker; a late snapshot does not bring it back", () => {
-    const h = renderWithSession(<TraceCard />);
+    const h = renderCard();
     h.startBackend();
     push(h, user(), op("Running", "npm test"));
     const done = view({
@@ -516,7 +538,7 @@ describe("TraceCard — the ticker (ADR 0073)", () => {
   });
 
   it("steps that ran while the record lagged stay on the timeline, with their own status, until their rows land (lab 2026-09-30)", () => {
-    const h = renderWithSession(<TraceCard />);
+    const h = renderCard();
     h.startBackend();
     push(h, user(), op("Writing", "fib.js"));
     const ran = view({
@@ -564,7 +586,7 @@ describe("TraceCard — the ticker (ADR 0073)", () => {
 
   it("a file written behind a running command waits below it: the command is in flight, its output under it (lab 2026-09-30)", () => {
     vi.useFakeTimers();
-    const h = renderWithSession(<TraceCard />);
+    const h = renderCard();
     h.startBackend();
     push(h, user(), op("Running", "pwd && ls"));
     const drafted = view({
@@ -610,7 +632,7 @@ describe("TraceCard — the ticker (ADR 0073)", () => {
 
   it("a second dispatch chained in the same turn opens on its first call while the record still ends at the previous marker (review 2026-09-30)", () => {
     vi.useFakeTimers();
-    const h = renderWithSession(<TraceCard />);
+    const h = renderCard();
     h.startBackend();
     push(h, user(), op("Reading", "a.ts"));
     const done = { started: true, done: true, ok: true, streams: false };
@@ -631,7 +653,7 @@ describe("TraceCard — the ticker (ADR 0073)", () => {
   });
 
   it("the record catching up with its marker settles the whole run in that very commit — no step long done goes back in flight on the way (lab 2026-09-30)", () => {
-    const h = renderWithSession(<TraceCard />);
+    const h = renderCard();
     h.startBackend();
     push(h, user(), op("Writing", "fib.js"));
     const done = { started: true, done: true, ok: true, streams: false };
@@ -688,7 +710,7 @@ describe("TraceCard — the ticker (ADR 0073)", () => {
   });
 
   it("does not follow the run to another session", () => {
-    const h = renderWithSession(<TraceCard />);
+    const h = renderCard();
     h.startBackend();
     push(h, user(), op("Running", "npm test"));
     live(h, [

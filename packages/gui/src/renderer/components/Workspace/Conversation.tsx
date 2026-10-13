@@ -349,15 +349,15 @@ export const Conversation = memo(function Conversation(): JSX.Element {
             streaming bubble; mutually exclusive with the in-flight rows
             (inFlightSettled excludes supervisorChecking, and a live stream
             excludes the galaxy anyway). */}
-            {showSupervisorHold && <SupervisorHoldRow />}
+            {showSupervisorHold && <SupervisorHoldRow lang={lang} />}
             {/* Both rows ride `inFlightPresent` — which carries the
             render-synchronous hide, the minimum-visible hold, AND the quiet
             exit fade; see the definitions for why those are one expression. */}
             {inFlightPresent && recapCompacting && (
-              <RecapCompactRow exiting={inFlightExitingVisible} />
+              <RecapCompactRow exiting={inFlightExitingVisible} lang={lang} />
             )}
             {inFlightPresent && !recapCompacting && (
-              <GalaxyTravelRow exiting={inFlightExitingVisible} />
+              <GalaxyTravelRow exiting={inFlightExitingVisible} lang={lang} />
             )}
             {/* Non-interrupt turn failure (slice 4): the reply was lost to a
             provider/connection error and nothing committed — say so instead

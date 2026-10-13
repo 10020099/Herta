@@ -173,6 +173,39 @@ describe("AutoReviewer.review", () => {
     expect(sent).toHaveLength(0);
   });
 
+  it("a command that only leaves .herta out is still reviewed; one that reaches into it is the owner's", async () => {
+    const reviewed = [
+      // Live, 2026-10-13: 板砖 listing a sandbox.
+      `python --version; ls -la; find . -maxdepth 2 -not -path './.herta/*' -not -name '.herta' 2>/dev/null`,
+      "grep -rn TODO --exclude-dir=.herta .",
+      "rg TODO -g '!.herta'",
+      "find . -path ./.herta -prune -o -type f -print",
+      "tar --exclude=.herta -czf out.tgz .",
+      "git status -- ':!.herta'",
+      "ls -a | grep -v .herta",
+    ];
+    for (const command of reviewed) {
+      const { model, sent } = scripted();
+      const v = await new AutoReviewer(model).review(input(command), signal());
+      expect(v.kind, command).toBe("allow");
+      expect(sent, command).toHaveLength(1);
+    }
+    const owners = [
+      `python -c "open('.herta/permissions.json','w').write('{}')"`,
+      "node -e \"require('fs').rmSync('.herta', {recursive: true})\"",
+      // An exclusion beside a real reach: the reach still counts.
+      `find . -not -path './.herta/*' -exec sh -c 'echo x > .herta/p.json' \\;`,
+    ];
+    for (const command of owners) {
+      const { model, sent } = scripted();
+      expect(
+        await new AutoReviewer(model).review(input(command), signal()),
+        command,
+      ).toEqual({ kind: "card", why: "owner_only" });
+      expect(sent, command).toHaveLength(0);
+    }
+  });
+
   it("a managed sandbox's own path names .herta, and is still reviewed", async () => {
     const { model, sent } = scripted();
     const sandbox = "C:\\Users\\u\\.herta\\workspaces\\abc";

@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useReducer, useRef } from "react";
+import { useSessionLang } from "../../hooks/useActiveSession.js";
 import { useListTransitions } from "../../hooks/useListTransitions.js";
 import { usePresence } from "../../hooks/usePresence.js";
 import { useReducedMotion } from "../../hooks/useReducedMotion.js";
-import { useT } from "../../i18n/LocaleProvider.js";
+import { makeT, type TFn } from "../../i18n/LocaleProvider.js";
 import type { LiveToolView } from "../../ipc/bridge-types.js";
 import { hoverTipProps } from "../common/hover-tip.js";
 import { VERB_KEY } from "../Workspace/step-display.js";
@@ -28,7 +29,7 @@ import {
 } from "./ticker-pacer.js";
 import { useTraceCard } from "./useTraceCard.js";
 
-type T = ReturnType<typeof useT>;
+type T = TFn;
 
 const PHASE_KEY = {
   explore: "trace.phase.explore",
@@ -55,9 +56,15 @@ const PHASE_KEY = {
  * run. Chrome: the .plan-card family (glass, slide-in, fog). Form, not
  * motion (2026-07-27): the node in flight is a hollow LED ring, dashed while
  * parked on an approval; the only thing that moves is the text itself.
+ *
+ * It reads in the session's language, not the app's: it is the record's
+ * own rows, as the activity line beside the bubbles is (ADR 0019; release
+ * review 2026-10-13 — an English session showed 操作轨迹 · 探索 here while
+ * the activity line read "Coprocessor · Done").
  */
 export function TraceCard(): JSX.Element | null {
-  const t = useT();
+  const lang = useSessionLang();
+  const t = useMemo(() => makeT(lang), [lang]);
   const { trace, live, open, waiting, settled } = useTraceCard();
   const reduced = useReducedMotion();
   const listRef = useRef<HTMLOListElement>(null);
@@ -108,9 +115,17 @@ export function TraceCard(): JSX.Element | null {
   if (trace === null) return null;
 
   // Counts cover the WHOLE dispatch; the timeline is the recent window.
-  const counts = [t("trace.card.steps", { n: String(trace.steps) })];
+  const counts = [
+    trace.steps === 1
+      ? t("trace.card.stepOne")
+      : t("trace.card.steps", { n: String(trace.steps) }),
+  ];
   if (trace.writes > 0) {
-    counts.push(t("trace.card.files", { n: String(trace.writes) }));
+    counts.push(
+      trace.writes === 1
+        ? t("trace.card.fileOne")
+        : t("trace.card.files", { n: String(trace.writes) }),
+    );
   }
   const current = trace.current;
   // A row's segment as THIS trace has it: the transition list hands its

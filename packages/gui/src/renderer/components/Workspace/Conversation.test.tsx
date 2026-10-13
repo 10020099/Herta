@@ -27,6 +27,16 @@ import { HEADROOM_GAP_PX } from "./turn-headroom.js";
 import { RETRACT_HOLD_MS, shrinkDelayMs } from "./useRetractMorph.js";
 import { useWorkspaceRefs, WorkspaceRefsProvider } from "./WorkspaceRefs.js";
 
+// The in-world rows read in the SESSION's language (ADR 0019, amended
+// 2026-10-13); these sessions carry none, so they are Chinese, as the
+// pending activity line here already is — whatever the app's locale.
+const GALAXY = "消息正在穿越银河";
+const RECAP = "终端正在归整历史消息…";
+const STORM = "消息受到伽马风暴干扰…";
+/** The composer, found in whichever language it reads: in the pane it
+ *  follows the session, outside it the app. */
+const PLACEHOLDER = /^(?:Message Herta…|给黑塔发消息…)$/;
+
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
@@ -37,9 +47,7 @@ afterEach(() => {
  *  optimistic echo + bridge.submitText), which is what arms the in-flight
  *  row. Call inside act(). */
 function sendViaComposer(text: string): void {
-  const input = screen.getByPlaceholderText(
-    "Message Herta…",
-  ) as HTMLTextAreaElement;
+  const input = screen.getByPlaceholderText(PLACEHOLDER) as HTMLTextAreaElement;
   fireEvent.change(input, { target: { value: text } });
   fireEvent.submit(input.closest("form") as HTMLFormElement);
 }
@@ -89,9 +97,7 @@ describe("Conversation", () => {
     act(() => {
       vi.advanceTimersByTime(GALAXY_APPEAR_DELAY_MS);
     });
-    expect(
-      screen.getByText("Message is crossing the galaxy…"),
-    ).toBeInTheDocument();
+    expect(screen.getByText(GALAXY)).toBeInTheDocument();
   });
 
   it("hides the galaxy-travel row once the backend (板砖) goes active", () => {
@@ -119,9 +125,7 @@ describe("Conversation", () => {
       vi.advanceTimersByTime(GALAXY_APPEAR_DELAY_MS);
     });
     // Before any backend work, the galaxy is the normal "waiting for Herta" row.
-    expect(
-      screen.getByText("Message is crossing the galaxy…"),
-    ).toBeInTheDocument();
+    expect(screen.getByText(GALAXY)).toBeInTheDocument();
     act(() => {
       // Backend turn.started → backendActive = true (status is still "thinking",
       // no actor delta yet — the real delegation flow, see the pending-activity
@@ -138,9 +142,7 @@ describe("Conversation", () => {
     // It does NOT vanish on the spot: a dispatch that lands this fast used to
     // flash the row for a fraction of a second, which reads as a glitch rather
     // than as a message (user 2026-07-30). It holds its minimum first…
-    expect(
-      screen.getByText("Message is crossing the galaxy…"),
-    ).toBeInTheDocument();
+    expect(screen.getByText(GALAXY)).toBeInTheDocument();
     // …and while it holds, the 处理中… placeholder defers — mounting under the
     // held galaxy shoved it down, then let it slide back up when the hold
     // expired (user 2026-07-31). The two swap in place instead.
@@ -151,7 +153,7 @@ describe("Conversation", () => {
     act(() => {
       vi.advanceTimersByTime(IN_FLIGHT_MIN_VISIBLE_MS);
     });
-    const fading = screen.getByText("Message is crossing the galaxy…");
+    const fading = screen.getByText(GALAXY);
     expect(fading.closest(".status-row")?.className).toContain("is-exiting");
     expect(screen.queryByTestId("pending-activity")).not.toBeInTheDocument();
     // …and only once the fade completes do they hand off in place — without
@@ -159,9 +161,7 @@ describe("Conversation", () => {
     act(() => {
       vi.advanceTimersByTime(IN_FLIGHT_EXIT_MS);
     });
-    expect(
-      screen.queryByText("Message is crossing the galaxy…"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(GALAXY)).not.toBeInTheDocument();
     expect(screen.getByTestId("pending-activity")).toBeInTheDocument();
     vi.useRealTimers();
   });
@@ -198,9 +198,7 @@ describe("Conversation", () => {
     act(() => {
       vi.advanceTimersByTime(GALAXY_APPEAR_DELAY_MS);
     });
-    const before = screen
-      .getByText("Message is crossing the galaxy…")
-      .closest(".status-row");
+    const before = screen.getByText(GALAXY).closest(".status-row");
     expect(before).not.toBeNull();
     act(() => {
       mock.emitAgent({
@@ -212,18 +210,14 @@ describe("Conversation", () => {
         } as never,
       });
     });
-    const after = screen
-      .getByText("Message is crossing the galaxy…")
-      .closest(".status-row");
+    const after = screen.getByText(GALAXY).closest(".status-row");
     expect(after).toBe(before);
     expect(after?.className).not.toContain("is-exiting");
     // The same node then leaves through its fade, in place.
     act(() => {
       vi.advanceTimersByTime(IN_FLIGHT_MIN_VISIBLE_MS);
     });
-    const fading = screen
-      .getByText("Message is crossing the galaxy…")
-      .closest(".status-row");
+    const fading = screen.getByText(GALAXY).closest(".status-row");
     expect(fading).toBe(before);
     expect(fading?.className).toContain("is-exiting");
     vi.useRealTimers();
@@ -259,9 +253,7 @@ describe("Conversation", () => {
     act(() => {
       vi.advanceTimersByTime(GALAXY_APPEAR_DELAY_MS);
     });
-    const row = screen
-      .getByText("Message is crossing the galaxy…")
-      .closest(".status-row");
+    const row = screen.getByText(GALAXY).closest(".status-row");
     // Herta's dispatch line starts streaming well inside the minimum — the
     // row stays (its hold), the bubble waits…
     act(() => {
@@ -274,11 +266,7 @@ describe("Conversation", () => {
         } as never,
       });
     });
-    expect(
-      screen
-        .getByText("Message is crossing the galaxy…")
-        .closest(".status-row"),
-    ).toBe(row);
+    expect(screen.getByText(GALAXY).closest(".status-row")).toBe(row);
     expect(screen.queryByTestId("streaming-bubble")).not.toBeInTheDocument();
     // …the speech commits (the stream clears — the wait-is-on predicate is
     // true again for a moment): still the same row, still up…
@@ -289,11 +277,7 @@ describe("Conversation", () => {
         block: { kind: "herta", surface: "speech", text: "板砖，上。" },
       });
     });
-    expect(
-      screen
-        .getByText("Message is crossing the galaxy…")
-        .closest(".status-row"),
-    ).toBe(row);
+    expect(screen.getByText(GALAXY).closest(".status-row")).toBe(row);
     // …the bridge starts: 处理中 defers behind the row…
     act(() => {
       mock.emitAgent({
@@ -305,11 +289,7 @@ describe("Conversation", () => {
         } as never,
       });
     });
-    expect(
-      screen
-        .getByText("Message is crossing the galaxy…")
-        .closest(".status-row"),
-    ).toBe(row);
+    expect(screen.getByText(GALAXY).closest(".status-row")).toBe(row);
     expect(screen.queryByTestId("pending-activity")).not.toBeInTheDocument();
     // …the minimum runs out → the fade → 处理中 alone. Never a re-show.
     act(() => {
@@ -320,16 +300,12 @@ describe("Conversation", () => {
     act(() => {
       vi.advanceTimersByTime(IN_FLIGHT_EXIT_MS);
     });
-    expect(
-      screen.queryByText("Message is crossing the galaxy…"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(GALAXY)).not.toBeInTheDocument();
     expect(screen.getByTestId("pending-activity")).toBeInTheDocument();
     act(() => {
       vi.advanceTimersByTime(IN_FLIGHT_MIN_VISIBLE_MS);
     });
-    expect(
-      screen.queryByText("Message is crossing the galaxy…"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(GALAXY)).not.toBeInTheDocument();
     vi.useRealTimers();
   });
 
@@ -362,9 +338,7 @@ describe("Conversation", () => {
     act(() => {
       vi.advanceTimersByTime(GALAXY_APPEAR_DELAY_MS);
     });
-    expect(
-      screen.getByText("Message is crossing the galaxy…"),
-    ).toBeInTheDocument();
+    expect(screen.getByText(GALAXY)).toBeInTheDocument();
     // The provider dies well inside the minimum: the row stays, the notice
     // waits.
     act(() => {
@@ -375,24 +349,19 @@ describe("Conversation", () => {
       });
     });
     expect(screen.queryByTestId("turn-failed-row")).not.toBeInTheDocument();
-    expect(
-      screen.getByText("Message is crossing the galaxy…"),
-    ).toBeInTheDocument();
+    expect(screen.getByText(GALAXY)).toBeInTheDocument();
     // Minimum → fade (still no notice) → the notice, alone.
     act(() => {
       vi.advanceTimersByTime(IN_FLIGHT_MIN_VISIBLE_MS);
     });
     expect(
-      screen.getByText("Message is crossing the galaxy…").closest(".status-row")
-        ?.className,
+      screen.getByText(GALAXY).closest(".status-row")?.className,
     ).toContain("is-exiting");
     expect(screen.queryByTestId("turn-failed-row")).not.toBeInTheDocument();
     act(() => {
       vi.advanceTimersByTime(IN_FLIGHT_EXIT_MS);
     });
-    expect(
-      screen.queryByText("Message is crossing the galaxy…"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(GALAXY)).not.toBeInTheDocument();
     expect(screen.getByTestId("turn-failed-row")).toBeInTheDocument();
     vi.useRealTimers();
   });
@@ -441,24 +410,19 @@ describe("Conversation", () => {
       });
     });
     // The row is up anyway; 处理中 defers.
-    expect(
-      screen.getByText("Message is crossing the galaxy…"),
-    ).toBeInTheDocument();
+    expect(screen.getByText(GALAXY)).toBeInTheDocument();
     expect(screen.queryByTestId("pending-activity")).not.toBeInTheDocument();
     // It keeps its minimum, fades, and hands off in place.
     act(() => {
       vi.advanceTimersByTime(IN_FLIGHT_MIN_VISIBLE_MS);
     });
     expect(
-      screen.getByText("Message is crossing the galaxy…").closest(".status-row")
-        ?.className,
+      screen.getByText(GALAXY).closest(".status-row")?.className,
     ).toContain("is-exiting");
     act(() => {
       vi.advanceTimersByTime(IN_FLIGHT_EXIT_MS);
     });
-    expect(
-      screen.queryByText("Message is crossing the galaxy…"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(GALAXY)).not.toBeInTheDocument();
     expect(screen.getByTestId("pending-activity")).toBeInTheDocument();
     vi.useRealTimers();
   });
@@ -496,23 +460,17 @@ describe("Conversation", () => {
     act(() => {
       vi.advanceTimersByTime(GALAXY_APPEAR_DELAY_MS + IN_FLIGHT_MIN_VISIBLE_MS);
     });
-    expect(
-      screen.queryByText("Message is crossing the galaxy…"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(GALAXY)).not.toBeInTheDocument();
     // And the arm does not leak into a LATER non-send turn's row: the next
     // (opening-style) turn still waits out the appearance grace.
     act(() => {
       mock.emitTurn({ kind: "started", turnId: "t2" });
     });
-    expect(
-      screen.queryByText("Message is crossing the galaxy…"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(GALAXY)).not.toBeInTheDocument();
     act(() => {
       vi.advanceTimersByTime(GALAXY_APPEAR_DELAY_MS);
     });
-    expect(
-      screen.getByText("Message is crossing the galaxy…"),
-    ).toBeInTheDocument();
+    expect(screen.getByText(GALAXY)).toBeInTheDocument();
     vi.useRealTimers();
   });
 
@@ -552,9 +510,7 @@ describe("Conversation", () => {
         error: { code: "provider_error", message: "402", status: 402 } as never,
       });
     });
-    expect(
-      screen.getByText("Message is crossing the galaxy…"),
-    ).toBeInTheDocument();
+    expect(screen.getByText(GALAXY)).toBeInTheDocument();
     expect(screen.queryByTestId("turn-failed-row")).not.toBeInTheDocument();
     act(() => {
       vi.advanceTimersByTime(IN_FLIGHT_MIN_VISIBLE_MS);
@@ -563,9 +519,7 @@ describe("Conversation", () => {
     act(() => {
       vi.advanceTimersByTime(IN_FLIGHT_EXIT_MS);
     });
-    expect(
-      screen.queryByText("Message is crossing the galaxy…"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(GALAXY)).not.toBeInTheDocument();
     expect(screen.getByTestId("turn-failed-row")).toBeInTheDocument();
     vi.useRealTimers();
   });
@@ -599,17 +553,13 @@ describe("Conversation", () => {
     act(() => {
       vi.advanceTimersByTime(GALAXY_APPEAR_DELAY_MS);
     });
-    expect(
-      screen.getByText("Message is crossing the galaxy…"),
-    ).toBeInTheDocument();
+    expect(screen.getByText(GALAXY)).toBeInTheDocument();
     // A fast finish arms the hold (quiet hide) — the row is deliberately
     // still up…
     act(() => {
       mock.emitTurn({ kind: "finished", turnId: "t1" });
     });
-    expect(
-      screen.getByText("Message is crossing the galaxy…"),
-    ).toBeInTheDocument();
+    expect(screen.getByText(GALAXY)).toBeInTheDocument();
     // …but a switch inside the remainder takes it down with the session.
     act(() => {
       mock.emitReset({
@@ -621,18 +571,14 @@ describe("Conversation", () => {
         backendWorkspaceIsDefault: true,
       });
     });
-    expect(
-      screen.queryByText("Message is crossing the galaxy…"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(GALAXY)).not.toBeInTheDocument();
     // The armed hold timer still fires in the background — it must not fade
     // a ghost row into the NEW session (the exit phase made a stale fire
     // non-benign; beginExit is guarded by the shown clock, 2026-07-31).
     act(() => {
       vi.advanceTimersByTime(IN_FLIGHT_MIN_VISIBLE_MS + IN_FLIGHT_EXIT_MS);
     });
-    expect(
-      screen.queryByText("Message is crossing the galaxy…"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(GALAXY)).not.toBeInTheDocument();
     vi.useRealTimers();
   });
 
@@ -680,8 +626,7 @@ describe("Conversation", () => {
       vi.advanceTimersByTime(IN_FLIGHT_MIN_VISIBLE_MS);
     });
     expect(
-      screen.getByText("Message is crossing the galaxy…").closest(".status-row")
-        ?.className,
+      screen.getByText(GALAXY).closest(".status-row")?.className,
     ).toContain("is-exiting");
     // A beat's first delta lands mid-fade: the row keeps fading, the bubble
     // waits.
@@ -696,17 +641,14 @@ describe("Conversation", () => {
       });
     });
     expect(
-      screen.getByText("Message is crossing the galaxy…").closest(".status-row")
-        ?.className,
+      screen.getByText(GALAXY).closest(".status-row")?.className,
     ).toContain("is-exiting");
     expect(screen.queryByTestId("streaming-bubble")).not.toBeInTheDocument();
     // The fade ends → the row unmounts and the bubble mounts, same render.
     act(() => {
       vi.advanceTimersByTime(IN_FLIGHT_EXIT_MS);
     });
-    expect(
-      screen.queryByText("Message is crossing the galaxy…"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(GALAXY)).not.toBeInTheDocument();
     expect(screen.getByTestId("streaming-bubble")).toBeInTheDocument();
     vi.useRealTimers();
   });
@@ -740,12 +682,8 @@ describe("Conversation", () => {
     act(() => {
       vi.advanceTimersByTime(GALAXY_APPEAR_DELAY_MS);
     });
-    expect(
-      screen.getByText("Message is crossing the galaxy…"),
-    ).toBeInTheDocument();
-    const row = screen
-      .getByText("Message is crossing the galaxy…")
-      .closest(".status-row");
+    expect(screen.getByText(GALAXY)).toBeInTheDocument();
+    const row = screen.getByText(GALAXY).closest(".status-row");
     // Herta starts speaking well inside the minimum — the SAME row stays,
     // not fading yet, and the bubble is not mounted.
     act(() => {
@@ -758,9 +696,7 @@ describe("Conversation", () => {
         } as never,
       });
     });
-    const still = screen
-      .getByText("Message is crossing the galaxy…")
-      .closest(".status-row");
+    const still = screen.getByText(GALAXY).closest(".status-row");
     expect(still).toBe(row);
     expect(still?.className).not.toContain("is-exiting");
     expect(screen.queryByTestId("streaming-bubble")).not.toBeInTheDocument();
@@ -774,9 +710,7 @@ describe("Conversation", () => {
     act(() => {
       vi.advanceTimersByTime(IN_FLIGHT_EXIT_MS);
     });
-    expect(
-      screen.queryByText("Message is crossing the galaxy…"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(GALAXY)).not.toBeInTheDocument();
     // (Mounted; the paced reveal fills it frame by frame — no frames run
     // under fake timers, so the text itself is not asserted here.)
     expect(screen.getByTestId("streaming-bubble")).toBeInTheDocument();
@@ -806,12 +740,8 @@ describe("Conversation", () => {
     });
     // The shared in-flight indicator is still within its appearance grace —
     // neither row shows yet (it appears only after the send-morph settles).
-    expect(
-      screen.queryByText("Message is crossing the galaxy…"),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByText("Tidying conversation history…"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(GALAXY)).not.toBeInTheDocument();
+    expect(screen.queryByText(RECAP)).not.toBeInTheDocument();
     act(() => {
       mock.emitAgent({
         kind: "agent",
@@ -824,12 +754,8 @@ describe("Conversation", () => {
       vi.advanceTimersByTime(GALAXY_APPEAR_DELAY_MS);
     });
     // Once the grace elapses the recap row leads — the galaxy never showed.
-    expect(
-      screen.getByText("Tidying conversation history…"),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByText("Message is crossing the galaxy…"),
-    ).not.toBeInTheDocument();
+    expect(screen.getByText(RECAP)).toBeInTheDocument();
+    expect(screen.queryByText(GALAXY)).not.toBeInTheDocument();
     act(() => {
       mock.emitAgent({
         kind: "agent",
@@ -842,12 +768,8 @@ describe("Conversation", () => {
     });
     // phase:end → the indicator is already settled, so the galaxy takes over
     // immediately (no second grace).
-    expect(
-      screen.queryByText("Tidying conversation history…"),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.getByText("Message is crossing the galaxy…"),
-    ).toBeInTheDocument();
+    expect(screen.queryByText(RECAP)).not.toBeInTheDocument();
+    expect(screen.getByText(GALAXY)).toBeInTheDocument();
   });
 
   it("shows the galaxy row during the post-板砖 synthesis wait (stale 'speaking' status — bug 3)", () => {
@@ -915,9 +837,7 @@ describe("Conversation", () => {
     act(() => {
       vi.advanceTimersByTime(GALAXY_APPEAR_DELAY_MS);
     });
-    expect(
-      screen.getByText("Message is crossing the galaxy…"),
-    ).toBeInTheDocument();
+    expect(screen.getByText(GALAXY)).toBeInTheDocument();
     // The turn ending hides it — after the minimum-visible hold plus the
     // exit fade, both quiet-hide mechanics like the backend starting
     // (2026-07-30 / 2026-07-31). Two advances: the fade timer is armed by an
@@ -931,9 +851,7 @@ describe("Conversation", () => {
     act(() => {
       vi.advanceTimersByTime(IN_FLIGHT_EXIT_MS);
     });
-    expect(
-      screen.queryByText("Message is crossing the galaxy…"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(GALAXY)).not.toBeInTheDocument();
     vi.useRealTimers();
   });
 
@@ -982,22 +900,16 @@ describe("Conversation", () => {
     act(() => {
       vi.advanceTimersByTime(1000);
     });
-    expect(
-      screen.queryByText("Message caught in a gamma storm…"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(STORM)).not.toBeInTheDocument();
     // The judgment outlasts the stall grace with the reveal fully drained →
     // the hint appears (slack past the boundary: the stall clock counts from
     // the LAST growth frame, not the judgment start).
     act(() => {
       vi.advanceTimersByTime(SUPERVISOR_HINT_DELAY_MS + 1000);
     });
-    expect(
-      screen.getByText("Message caught in a gamma storm…"),
-    ).toBeInTheDocument();
+    expect(screen.getByText(STORM)).toBeInTheDocument();
     // The galaxy row never fights it (a live stream suppresses it anyway).
-    expect(
-      screen.queryByText("Message is crossing the galaxy…"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(GALAXY)).not.toBeInTheDocument();
     // Verdict lands → the hint clears immediately.
     act(() => {
       mock.emitAgent({
@@ -1009,9 +921,7 @@ describe("Conversation", () => {
         } as never,
       });
     });
-    expect(
-      screen.queryByText("Message caught in a gamma storm…"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(STORM)).not.toBeInTheDocument();
   });
 
   it("renders nothing but no galaxy-travel for an idle non-today session", () => {
@@ -1034,9 +944,7 @@ describe("Conversation", () => {
         backendWorkspaceIsDefault: true,
       });
     });
-    expect(
-      screen.queryByText("Message is crossing the galaxy…"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(GALAXY)).not.toBeInTheDocument();
   });
 
   it("swaps to the new session's content on a session switch (entrance effect runs without breaking)", () => {
@@ -1633,9 +1541,7 @@ describe("Conversation", () => {
     act(() => {
       vi.advanceTimersByTime(SUPERVISOR_HINT_DELAY_MS + 1000);
     });
-    expect(
-      screen.getByText("Message caught in a gamma storm…"),
-    ).toBeInTheDocument();
+    expect(screen.getByText(STORM)).toBeInTheDocument();
     expect(geo.top()).toBe(geo.bottom);
     vi.useRealTimers();
   });
@@ -1801,7 +1707,7 @@ describe("Conversation", () => {
       await Promise.resolve();
     });
     const input = screen.getByPlaceholderText(
-      "Message Herta…",
+      PLACEHOLDER,
     ) as HTMLTextAreaElement;
     expect(input.value).toBe("hand @Brick the bug; 板砖 is idle");
     vi.useRealTimers();
@@ -1858,7 +1764,7 @@ describe("Conversation", () => {
     });
     // Text AND picture back in the composer.
     const input = screen.getByPlaceholderText(
-      "Message Herta…",
+      PLACEHOLDER,
     ) as HTMLTextAreaElement;
     expect(input.value).toBe("看看这张图");
     const thumbs = container.querySelectorAll(".composer-staged__thumb");
@@ -1918,7 +1824,7 @@ describe("Conversation", () => {
       });
     });
     const input = screen.getByPlaceholderText(
-      "Message Herta…",
+      PLACEHOLDER,
     ) as HTMLTextAreaElement;
     fireEvent.change(input, { target: { value: "你好呀 黑塔" } });
     act(() => {
@@ -2055,7 +1961,7 @@ describe("Conversation", () => {
       });
     });
     const input = screen.getByPlaceholderText(
-      "Message Herta…",
+      PLACEHOLDER,
     ) as HTMLTextAreaElement;
     fireEvent.change(input, { target: { value: "hi there" } });
     act(() => {
@@ -2086,7 +1992,7 @@ describe("Conversation", () => {
       });
     });
     const input = screen.getByPlaceholderText(
-      "Message Herta…",
+      PLACEHOLDER,
     ) as HTMLTextAreaElement;
     fireEvent.change(input, { target: { value: "flying" } });
     act(() => {
@@ -2118,7 +2024,7 @@ describe("Conversation", () => {
       });
     });
     const input = screen.getByPlaceholderText(
-      "Message Herta…",
+      PLACEHOLDER,
     ) as HTMLTextAreaElement;
     // The user types the EN input form; submit dispatches the wire token
     // (@板砖) — which is what the pendingUser echo and the clone receive.
@@ -2159,7 +2065,7 @@ describe("Conversation", () => {
         });
       });
       const input = screen.getByPlaceholderText(
-        "Message Herta…",
+        PLACEHOLDER,
       ) as HTMLTextAreaElement;
       fireEvent.change(input, { target: { value: "@板砖 查一下" } });
       act(() => {
@@ -2214,7 +2120,7 @@ describe("Conversation", () => {
       });
     });
     const input = screen.getByPlaceholderText(
-      "Message Herta…",
+      PLACEHOLDER,
     ) as HTMLTextAreaElement;
     fireEvent.change(input, { target: { value: "stuck?" } });
     act(() => {
