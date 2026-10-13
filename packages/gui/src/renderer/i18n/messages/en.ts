@@ -349,6 +349,10 @@ export const en = {
   "approval.autoReviewNote":
     "Once on, file writes in this workspace that undo can take back run directly, and a review model allows or denies everything else against what you asked; what it cannot judge still asks you. It can be turned off from the device card's menu.",
   "composer.placeholder": "Message Herta…",
+  "composer.quote.remove": "Remove this quote",
+  "quote.header": "Quote",
+  "quote.truncated": "… ({n} more line(s) not quoted)",
+  "composer.quote.placeholder": "Ask about this…",
   "composer.predictionAria": "Suggested next message — press Tab to fill it in",
   "composer.aria": "Message composer",
   "composer.send": "Send message",
@@ -543,6 +547,11 @@ export const en = {
   "viewer.renderFailed":
     "Could not render this file — open with the default app",
   "viewer.showSource": "View source",
+  "viewer.piece.turnOn": "Turn on piece quoting",
+  "viewer.piece.turnOff": "Turn off piece quoting",
+  "viewer.piece.selected": "{n} selected",
+  "viewer.piece.quote": "Quote",
+  "viewer.piece.clear": "Clear selection",
   "viewer.showRendered": "View rendered",
   "viewer.rendering": "Rendering…",
   "viewer.diagramFailed": "The diagram did not render — its source is below",

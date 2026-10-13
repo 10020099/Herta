@@ -26,6 +26,11 @@ import {
   VIEWER_MIN_PX,
   type ViewerAnchor,
 } from "./file-viewer-context.js";
+import {
+  PieceQuoteIcon,
+  type PieceQuoting,
+  usePieceQuoting,
+} from "./PieceQuote.js";
 import { CodeView } from "./renderers/CodeView.js";
 import { CommitView } from "./renderers/CommitView.js";
 import { DiffView } from "./renderers/DiffView.js";
@@ -124,8 +129,10 @@ function tabName(tab: FileViewerTarget): string {
 export function FileViewerPanel(): JSX.Element | null {
   const t = useT();
   const v = useFileViewerState();
-  const { bridge } = useHertaBridge();
+  const { bridge, sessionStore } = useHertaBridge();
   const sessionId = useSessionSelector((s) => s.sessionId);
+  const sessionLang = useSessionSelector((s) => s.lang);
+  const [pieceOn, togglePiece] = usePieceQuoting();
   const target = v?.target ?? null;
   const path = target?.path ?? null;
   const anchor = target?.anchor;
@@ -329,6 +336,18 @@ export function FileViewerPanel(): JSX.Element | null {
         : load.kind === "diff"
           ? load.reply.diff.path
           : load.reply.relative;
+  // Piece quoting (ADR 0078): the code layout and rendered markdown only.
+  const piece: PieceQuoting | undefined =
+    load.kind === "text" && load.reply.ok && kindInfo.kind !== "csv"
+      ? {
+          enabled: pieceOn,
+          path: relative,
+          lang: sessionLang,
+          onQuote: (quotes) => {
+            for (const q of quotes) sessionStore.addComposerQuote(q);
+          },
+        }
+      : undefined;
   const activeName = tabName(v.tabs[v.active] ?? { path });
   const modeKey = tabKey(target ?? { path });
   const mode: ViewMode =
@@ -407,6 +426,29 @@ export function FileViewerPanel(): JSX.Element | null {
           same OS-beige mismatch the attachment ✕ had), and PORTALED so the
           panel's overflow clip can't cut it. */}
         <span className="file-viewer__actions">
+          {piece !== undefined && (
+            <Tooltip
+              label={t(
+                pieceOn ? "viewer.piece.turnOff" : "viewer.piece.turnOn",
+              )}
+              placement="bottom"
+              align="center"
+              portal
+            >
+              <button
+                type="button"
+                className={`file-viewer__action${pieceOn ? " is-on" : ""}`}
+                data-testid="viewer-piece-switch"
+                aria-pressed={pieceOn}
+                aria-label={t(
+                  pieceOn ? "viewer.piece.turnOff" : "viewer.piece.turnOn",
+                )}
+                onClick={togglePiece}
+              >
+                <PieceQuoteIcon on={pieceOn} />
+              </button>
+            </Tooltip>
+          )}
           {isMarkdown && (
             <Tooltip
               label={
@@ -567,6 +609,7 @@ export function FileViewerPanel(): JSX.Element | null {
         kindInfo={kindInfo}
         mode={mode}
         anchor={anchor}
+        piece={piece}
       />
     </section>
   );
@@ -586,12 +629,14 @@ function FileViewerBody({
   kindInfo,
   mode,
   anchor,
+  piece,
 }: {
   readonly path: string;
   readonly load: LoadState;
   readonly kindInfo: ViewerKindInfo;
   readonly mode: ViewMode;
   readonly anchor?: ViewerAnchor | undefined;
+  readonly piece?: PieceQuoting | undefined;
 }): JSX.Element {
   const t = useT();
   if (kindInfo.kind === "log") {
@@ -679,13 +724,18 @@ function FileViewerBody({
       case "markdown":
         body =
           mode === "rendered" ? (
-            <MarkdownView content={content} truncated={truncated} />
+            <MarkdownView
+              content={content}
+              truncated={truncated}
+              piece={piece}
+            />
           ) : (
             <CodeView
               content={content}
               truncated={truncated}
               language="markdown"
               anchor={anchor}
+              piece={piece}
             />
           );
         break;
@@ -699,6 +749,7 @@ function FileViewerBody({
             truncated={truncated}
             language={kindInfo.language}
             anchor={anchor}
+            piece={piece}
           />
         );
         break;

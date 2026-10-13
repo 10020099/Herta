@@ -25,6 +25,7 @@ import {
   type MentionItem,
   mentionItems,
 } from "../../lib/file-mention.js";
+import { composeQuotedMessage, quoteLabel } from "../../lib/quote-format.js";
 import { recallLastMessage } from "../../lib/recall-last-message.js";
 import { submitMessage } from "../../lib/submit-message.js";
 import { stopAllVoice } from "../../voice/play-voice.js";
@@ -107,6 +108,7 @@ export function Composer(): JSX.Element {
     resumable,
     restagedImages,
     prediction,
+    composerQuotes,
   } = useSessionSelector(
     (s) => ({
       status: s.status,
@@ -121,6 +123,7 @@ export function Composer(): JSX.Element {
       resumable: s.resumable,
       restagedImages: s.restagedImages,
       prediction: s.prediction,
+      composerQuotes: s.composerQuotes,
     }),
     shallowEqualObjects,
   );
@@ -186,8 +189,13 @@ export function Composer(): JSX.Element {
   // line, shown where the placeholder is while the box is empty. Tab takes
   // it (nothing is sent); typing replaces it. In an EN session the trigger
   // is spelled the way this composer spells it, `@brick`.
+  // A staged quote (ADR 0078 §6) is its own subject: no prediction for it.
   const suggestion =
-    prediction !== null && text.length === 0 && !busy && !suppressed
+    prediction !== null &&
+    text.length === 0 &&
+    composerQuotes.length === 0 &&
+    !busy &&
+    !suppressed
       ? lang === "en"
         ? prediction.replaceAll("@板砖", "@brick")
         : prediction
@@ -289,7 +297,8 @@ export function Composer(): JSX.Element {
       return;
     }
     const trimmed = text.trim();
-    if (trimmed.length === 0) {
+    // Quotes alone are a message (ADR 0078 §6): the source is what was said.
+    if (trimmed.length === 0 && composerQuotes.length === 0) {
       // Pictures need words (owner 2026-08-27, reversing the first cut): an
       // empty user block is a degenerate moment in the record — （用户 说）
       // with nothing said, which the narrative actor then completes against.
@@ -311,7 +320,13 @@ export function Composer(): JSX.Element {
     // trigger "@板砖" BEFORE it enters the record/dispatch — code spans exempt
     // (a backticked `@brick` is quotation). See aliasBrickInput, kept in
     // lockstep with the CLI's converter of the same name.
-    const dispatched = aliasBrickInput(trimmed, lang);
+    // The quotes go first, as written (ADR 0078 §5): the alias applies to
+    // what was typed, never to quoted source.
+    const dispatched = composeQuotedMessage(
+      composerQuotes,
+      aliasBrickInput(trimmed, lang),
+      lang,
+    );
     // Take the staged pictures BEFORE dispatching: they ride this message,
     // and the strip must empty on the same frame the text does (ADR 0048 §4).
     const staged = images.take();
@@ -324,6 +339,7 @@ export function Composer(): JSX.Element {
       staged.length > 0 ? staged : undefined,
     );
     setText("");
+    sessionStore.clearComposerQuotes();
     // The rewind file-edit notice persists through editing; clear it once the
     // (re-)send actually goes out (a session switch clears it via onReset).
     if (composerNotice !== null) sessionStore.clearComposerNotice();
@@ -689,7 +705,8 @@ export function Composer(): JSX.Element {
   // pictures also hold it open: the strip is the only sign the pictures are
   // pending, and shrinking would clip it (ADR 0048 §4).
   const hasStaged = images.staged.length > 0;
-  const shrunk = !focusWithin && !dragOver && !hasStaged;
+  const hasQuotes = composerQuotes.length > 0;
+  const shrunk = !focusWithin && !dragOver && !hasStaged && !hasQuotes;
 
   /**
    * A picked or dropped batch splits by KIND (ADR 0048 §4): pictures stage in
@@ -948,7 +965,7 @@ export function Composer(): JSX.Element {
       )}
       <form
         ref={composerRef}
-        className={`composer${shrunk ? " is-shrunk" : ""}${hasStaged ? " has-staged" : ""}${suppressed ? " is-suppressed" : ""}${dragOver ? " is-dragover" : ""}`}
+        className={`composer${shrunk ? " is-shrunk" : ""}${hasStaged ? " has-staged" : ""}${hasQuotes ? " has-quotes" : ""}${suppressed ? " is-suppressed" : ""}${dragOver ? " is-dragover" : ""}`}
         onSubmit={(e) => {
           e.preventDefault();
           doSubmit();
@@ -1075,6 +1092,51 @@ export function Composer(): JSX.Element {
             ))}
           </ul>
         )}
+        {/* Quotes from the viewer's page (ADR 0078 §6): the source rides
+          the message when it is sent; × takes one back. */}
+        {composerQuotes.length > 0 && (
+          <ul className="composer-quotes">
+            {composerQuotes.map((q) => (
+              <li className="composer-quote" key={q.id}>
+                <svg
+                  className="composer-quote__icon"
+                  viewBox="0 0 13 13"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M3 9.5c-.3-1.8.3-3.4 2-4.2M7.5 9.5c-.3-1.8.3-3.4 2-4.2" />
+                </svg>
+                <span className="composer-quote__label">{quoteLabel(q)}</span>
+                <span className="composer-quote__preview">
+                  {q.title ??
+                    q.text.split("\n").find((l) => l.trim().length > 0) ??
+                    ""}
+                </span>
+                <button
+                  type="button"
+                  className="composer-quote__remove"
+                  aria-label={`${t("composer.quote.remove")} ${quoteLabel(q)}`}
+                  onClick={() => sessionStore.removeComposerQuote(q.id)}
+                >
+                  <svg
+                    viewBox="0 0 10 10"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                    strokeLinecap="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M2.5 2.5l5 5M7.5 2.5l-5 5" />
+                  </svg>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
         {mentionOpen && (
           <div
             id="composer-mentions"
@@ -1160,7 +1222,14 @@ export function Composer(): JSX.Element {
           <textarea
             ref={taRef}
             className="composer-input"
-            placeholder={suggestion ?? t("composer.placeholder")}
+            placeholder={
+              suggestion ??
+              t(
+                composerQuotes.length > 0
+                  ? "composer.quote.placeholder"
+                  : "composer.placeholder",
+              )
+            }
             // The mention list is the textarea's: assistive technology hears
             // it open and follows the highlighted option (review 2026-09-30).
             aria-autocomplete="list"
@@ -1367,7 +1436,11 @@ export function Composer(): JSX.Element {
           type={busy ? "button" : "submit"}
           className={`composer-send${busy ? " is-stop" : ""}`}
           aria-label={busy ? t("composer.stop") : t("composer.send")}
-          disabled={!busy && (text.trim().length === 0 || readingDoc)}
+          disabled={
+            !busy &&
+            ((text.trim().length === 0 && composerQuotes.length === 0) ||
+              readingDoc)
+          }
           onClick={
             busy
               ? () => {

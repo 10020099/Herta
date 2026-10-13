@@ -28,6 +28,7 @@ import type {
   StagedImageInfo,
 } from "../ipc/bridge-types.js";
 import { journeyMark, journeyMarkAfterPaint } from "../lib/journey.js";
+import type { ComposerQuote } from "../lib/quote-format.js";
 
 export type SessionStatus = "idle" | "thinking" | "speaking";
 
@@ -170,6 +171,10 @@ export interface SessionSnapshotView {
    *  GC'd, so there is nothing left to restage. Rides `composerDraft`'s
    *  lifecycle via the emit guard. */
   readonly composerDraftImages: readonly StagedImageInfo[] | null;
+  /** Quotes picked from the viewer's page (ADR 0078 §4), staged as chips in
+   *  the composer until they are sent or removed. They belong to the
+   *  session: a new activation starts with none. */
+  readonly composerQuotes: readonly ComposerQuote[];
   /** One-shot: pictures main still holds staged for this session, carried
    *  by a reset (a window that reloaded with pictures in its strip, UX
    *  review 2026-09-22, item 7). The composer adopts them into its strip,
@@ -268,6 +273,7 @@ const INITIAL: SessionSnapshotView = {
   repo: null,
   composerDraft: null,
   composerDraftImages: null,
+  composerQuotes: [],
   restagedImages: null,
   held: null,
   resumable: false,
@@ -553,6 +559,28 @@ export class SessionStore {
     });
   }
 
+  /** A quote picked from the viewer's page joins the composer's chips
+   *  (ADR 0078 §4). */
+  addComposerQuote(quote: ComposerQuote): void {
+    this.emit({
+      ...this.snapshot,
+      composerQuotes: [...this.snapshot.composerQuotes, quote],
+    });
+  }
+
+  /** The chip's ×. */
+  removeComposerQuote(id: string): void {
+    const kept = this.snapshot.composerQuotes.filter((q) => q.id !== id);
+    if (kept.length === this.snapshot.composerQuotes.length) return;
+    this.emit({ ...this.snapshot, composerQuotes: kept });
+  }
+
+  /** The composer sent them with the message. */
+  clearComposerQuotes(): void {
+    if (this.snapshot.composerQuotes.length === 0) return;
+    this.emit({ ...this.snapshot, composerQuotes: [] });
+  }
+
   /** The composer consumed the staged draft — null it so it isn't re-applied.
    *  (The emit guard drops `composerDraftImages` with it.) */
   clearComposerDraft(): void {
@@ -836,6 +864,7 @@ export class SessionStore {
       // no message held for a turn that belonged to another session).
       composerDraft: null,
       composerDraftImages: null,
+      composerQuotes: [],
       restagedImages:
         e.stagedImages !== undefined && e.stagedImages.length > 0
           ? e.stagedImages

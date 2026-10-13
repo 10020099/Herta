@@ -1,6 +1,13 @@
 import { Marked } from "marked";
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useT } from "../../../i18n/LocaleProvider.js";
+import {
+  type MaskPiece,
+  PieceMask,
+  type PieceQuoting,
+  quotesFromRuns,
+} from "../PieceQuote.js";
+import { markdownSections } from "../piece-segments.js";
 import { sanitizedFragment, setSanitizedHtml } from "./dom-html.js";
 
 /**
@@ -26,13 +33,65 @@ function fenceLanguage(code: HTMLElement): string | null {
 export function MarkdownView({
   content,
   truncated,
+  piece,
 }: {
   readonly content: string;
   readonly truncated: boolean;
+  /** Piece quoting (ADR 0078); absent where the panel offers none. */
+  readonly piece?: PieceQuoting | undefined;
 }): JSX.Element {
   const t = useT();
   const bodyRef = useRef<HTMLDivElement | null>(null);
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const scrollerRef = useRef<HTMLDivElement | null>(null);
   const diagramFailedLabel = t("viewer.diagramFailed");
+  const lines = useMemo(() => content.split("\n"), [content]);
+
+  // The pieces (ADR 0078 §2): the source's sections, laid over the page's
+  // top-level blocks — a section starts at its heading, and its seam sits
+  // halfway through the gap before it. A page whose headings do not match
+  // the source's one for one is one piece.
+  const measurePieces = useCallback((): readonly MaskPiece[] => {
+    const host = hostRef.current;
+    const doc = bodyRef.current;
+    if (host === null || doc === null) return [];
+    const sections = markdownSections(content);
+    const blocks = Array.from(doc.children) as HTMLElement[];
+    const headings = blocks.filter((b) => /^H[1-6]$/.test(b.tagName));
+    const titled = sections.filter((s) => s.title !== undefined);
+    const total = host.offsetHeight;
+    if (sections.length === 0) return [];
+    if (headings.length !== titled.length) {
+      return [{ top: 0, height: total, from: 1, to: lines.length }];
+    }
+    const preamble = sections.length > titled.length;
+    const starts = [...(preamble ? [blocks[0]] : []), ...headings];
+    const tops = starts.map((el, i) => {
+      if (i === 0 || el === undefined) return 0;
+      const prev = el.previousElementSibling as HTMLElement | null;
+      const gapTop =
+        prev === null ? el.offsetTop : prev.offsetTop + prev.offsetHeight;
+      return (gapTop + el.offsetTop) / 2;
+    });
+    return sections.map((s, i) => {
+      const top = tops[i] ?? 0;
+      const bottom = tops[i + 1] ?? total;
+      return {
+        top,
+        height: bottom - top,
+        from: s.from,
+        to: s.to,
+        ...(s.title !== undefined ? { title: s.title } : {}),
+      };
+    });
+  }, [content, lines]);
+  const quotePieces = useCallback(
+    (runs: readonly (readonly MaskPiece[])[]): void => {
+      if (piece === undefined) return;
+      piece.onQuote(quotesFromRuns(runs, lines, piece.path, piece.lang, "md"));
+    },
+    [piece, lines],
+  );
 
   useEffect(() => {
     const root = bodyRef.current;
@@ -103,8 +162,20 @@ export function MarkdownView({
 
   return (
     <div className="file-viewer__body">
-      <div className="file-viewer__scroll">
-        <div ref={bodyRef} className="file-viewer__doc" />
+      <div ref={scrollerRef} className="file-viewer__scroll">
+        <div ref={hostRef} className="file-viewer__doc-host">
+          <div ref={bodyRef} className="file-viewer__doc" />
+          {piece !== undefined && (
+            <PieceMask
+              enabled={piece.enabled}
+              hostRef={hostRef}
+              scrollerRef={scrollerRef}
+              measure={measurePieces}
+              onQuote={quotePieces}
+              resetKey={content}
+            />
+          )}
+        </div>
       </div>
       {truncated && (
         <p className="file-viewer__notice">{t("viewer.truncatedNote")}</p>

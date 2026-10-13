@@ -8519,3 +8519,200 @@ button.commit-view__path:hover {
     animation: none;
   }
 }
+/* ── Piece quoting (ADR 0078) ────────────────────────────────────────────
+   A mask over the page, cut into the document's pieces; the page never
+   moves. Values locked by the owner's tuner, 2026-10-13: 1200 ms rest,
+   14 % ink veil, straight 2 px seams, 280 ms fade, the selected piece
+   tinted accent at 16 %, the hovered piece lightened to 8 %. */
+.file-viewer__doc-host {
+  position: relative;
+}
+.piece-mask {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 280ms ease;
+}
+.piece-mask.is-shown {
+  opacity: 1;
+  pointer-events: auto;
+}
+.piece-mask__piece {
+  position: absolute;
+  left: 0;
+  right: 0;
+  background: color-mix(in srgb, var(--ink-3) 14%, transparent);
+  cursor: pointer;
+  transition: background-color 160ms ease;
+}
+.piece-mask__piece:hover {
+  background: color-mix(in srgb, var(--ink-3) 8%, transparent);
+}
+.piece-mask__piece.is-selected {
+  background: color-mix(in srgb, var(--accent-blue) 16%, transparent);
+}
+/* The selection pill: under the last picked piece, at the visible right
+   edge of the scroller (its left is that edge; it hangs back from it). */
+.piece-mask__pill {
+  position: absolute;
+  transform: translateX(-100%);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 4px 3px 10px;
+  border-radius: 999px;
+  background: var(--surface-pop);
+  border: 1px solid var(--hairline);
+  box-shadow: 0 6px 18px var(--shadow-pop);
+  font-size: 12px;
+  color: var(--ink-3);
+  white-space: nowrap;
+  z-index: 3;
+}
+.piece-mask__count {
+  color: var(--muted-slate);
+  margin-right: 2px;
+}
+.piece-mask__quote,
+.piece-mask__clear {
+  border: 0;
+  background: transparent;
+  color: var(--ink-3);
+  font: inherit;
+  border-radius: 999px;
+  padding: 2px 8px;
+  cursor: pointer;
+  transition: background-color 140ms ease;
+}
+.piece-mask__quote:hover,
+.piece-mask__clear:hover {
+  background: var(--ink-a13);
+}
+.piece-mask__clear {
+  display: grid;
+  place-items: center;
+  padding: 4px;
+  color: var(--muted-slate);
+}
+/* The switch's icon (icon B, 抽出一块): the middle band pulled out 2 px
+   while on, slid back into line while off — 220 ms with a little overshoot. */
+.piece-quote-icon__mid {
+  transition: transform 220ms cubic-bezier(.34, 1.56, .64, 1);
+}
+.piece-quote-icon.is-off .piece-quote-icon__mid {
+  transform: translateX(-2px);
+}
+@media (prefers-reduced-motion: reduce) {
+  .piece-mask,
+  .piece-mask__piece,
+  .piece-quote-icon__mid { transition: none; }
+}
+
+/* ── Quotes in the composer (ADR 0078 §6) ────────────────────────────────
+   Pieces quoted from the viewer's page wait here as chips, above the input
+   like the staged pictures, and grow the composer by one row the same way.
+   × takes one back; the source rides the message when it is sent. */
+.composer.has-quotes { height: 112px; }
+.composer.has-staged.has-quotes { height: 178px; }
+@media (max-width: 1200px) {
+  .composer.has-quotes { height: 138px; }
+  .composer.has-staged.has-quotes { height: 204px; }
+}
+.composer-quotes {
+  order: -1;
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  max-width: 100%;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+  position: relative;
+  animation: staged-strip-in 0.28s ease 0.14s both;
+}
+.composer-quote {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  max-width: 340px;
+  height: 24px;
+  padding: 0 3px 0 8px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent-blue) 9%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-blue) 22%, transparent);
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.composer-quote__icon {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  color: var(--accent-blue);
+}
+.composer-quote__label {
+  flex: none;
+  font-family: ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, monospace;
+  font-size: 11.5px;
+  color: var(--accent-deep);
+  white-space: nowrap;
+}
+.composer-quote__preview {
+  min-width: 0;
+  color: var(--muted-slate);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.composer-quote__remove {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted-slate);
+  cursor: pointer;
+}
+.composer-quote__remove svg { width: 9px; height: 9px; }
+.composer-quote__remove:hover { background: var(--ink-a13); color: var(--slate-deep); }
+
+/* A quote in the sent bubble (ADR 0078 §7): its label opens the file at
+   those lines; the first lines of the source under it. */
+.message-quote {
+  margin: 0 0 8px;
+  padding: 6px 10px 7px;
+  border-radius: 10px;
+  background: var(--ink-a05);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+}
+.message-quote__label {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-family: ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  color: var(--accent-blue);
+  text-align: left;
+}
+button.message-quote__label { cursor: pointer; }
+button.message-quote__label:hover { text-decoration: underline; text-underline-offset: 2px; }
+.message-quote__text {
+  margin: 4px 0 0;
+  font-family: ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted-slate);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 4.5em;
+  overflow: hidden;
+}
