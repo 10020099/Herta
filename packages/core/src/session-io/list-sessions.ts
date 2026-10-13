@@ -1,5 +1,5 @@
 import { closeSync, openSync, readdirSync, readSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { readSessionTitle } from "./session-title-sidecar.js";
 
 export interface SessionListEntry {
@@ -202,6 +202,11 @@ function parseSessionHeader(firstLine: string): ValidatedSessionHeader | null {
  * and only as many are READ as the limit needs — the sidebar's refresh on
  * every session switch no longer opens every transcript on disk.
  *
+ * **Read once while unchanged (2026-10-13):** what a transcript gives is
+ * kept by path and checked against its size and mtime (`TranscriptRead`),
+ * so a refresh reads only the files that changed since the last one —
+ * usually the active session's alone.
+ *
  * **Unlimited results:** pass `limit: Number.POSITIVE_INFINITY` to return
  * every matching session. Used by Task 4's `/resume <prefix>` to collect all
  * candidates before client-side prefix-matching.
@@ -242,80 +247,30 @@ export function listSessions(opts: ListSessionsOpts): SessionListEntry[] {
   // post-read sort produced before.
   stats.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
 
+  const listed = (h: ValidatedSessionHeader | null): boolean =>
+    h !== null &&
+    (opts.allWorkspaces === true ||
+      h.workspaceRoot === opts.currentWorkspaceRoot);
   const entries: SessionListEntry[] = [];
   for (const { sessionFile, mtime, size } of stats) {
     if (entries.length >= limit) break;
-    let headLines: string[];
-    let header: ValidatedSessionHeader | null;
-    // The last user message found backward from EOF; undefined when the head
-    // covers the whole file (small transcript) or none was found in budget.
-    let lastFromEnd: string | undefined;
-    try {
-      const fd = openSync(sessionFile, "r");
-      try {
-        headLines = readWindow(fd, 0, Math.min(size, HEAD_SCAN_BYTES)).split(
-          "\n",
-        );
-        header = parseSessionHeader(headLines[0] ?? "");
-        // Only a file this workspace lists reads past its head: a foreign
-        // one costs its head alone, as before.
-        const listed =
-          header !== null &&
-          (opts.allWorkspaces === true ||
-            header.workspaceRoot === opts.currentWorkspaceRoot);
-        if (listed && size > HEAD_SCAN_BYTES) {
-          lastFromEnd = lastUserBackward(fd, size, LAST_USER_SCAN_BYTES);
-        }
-      } finally {
-        closeSync(fd);
-      }
-    } catch {
-      continue;
+    // An unchanged file gives what it gave last time; one whose tail was
+    // never scanned (a foreign workspace's) is read again once it is listed.
+    const kept = readCache.get(sessionFile);
+    let read: TranscriptRead | null =
+      kept !== undefined &&
+      kept.size === size &&
+      kept.mtimeMs === mtime.getTime() &&
+      (kept.tailScanned || !listed(kept.header))
+        ? kept
+        : null;
+    if (read === null) {
+      read = readTranscript(sessionFile, size, mtime.getTime(), listed);
+      if (read === null) continue;
+      readCache.set(sessionFile, read);
     }
-    const lines = headLines.slice(0, PREVIEW_SCAN_LINES + 1);
-    if (header === null) continue;
-    if (
-      opts.allWorkspaces !== true &&
-      header.workspaceRoot !== opts.currentWorkspaceRoot
-    ) {
-      continue;
-    }
-
-    // Find first user block in the scanned lines.
-    let preview = "(no user message)";
-    for (let i = 1; i < lines.length; i++) {
-      // biome-ignore lint/style/noNonNullAssertion: i is bounded by lines.length
-      const line = lines[i]!;
-      if (line === "") continue;
-      try {
-        const block = JSON.parse(line) as { kind?: string; text?: string };
-        if (block.kind === "user" && typeof block.text === "string") {
-          preview =
-            block.text.length > PREVIEW_MAX
-              ? `${block.text.slice(0, PREVIEW_MAX)}...`
-              : block.text;
-          break;
-        }
-      } catch {
-        // ignore individual line parse errors
-      }
-    }
-
-    // The LAST user block — the message the user most recently sent (where
-    // they left off): found backward from EOF for a large file; otherwise —
-    // and as the fallback past that scan's budget — the last one in the
-    // head (minus the header; a head cut mid-line leaves a partial last
-    // line, which fails its parse).
-    let found = lastFromEnd;
-    for (let i = headLines.length - 1; found === undefined && i >= 1; i--) {
-      found = userText(headLines[i] ?? "");
-    }
-    const lastUserText =
-      found === undefined
-        ? undefined
-        : found.length > LAST_USER_MAX
-          ? `${found.slice(0, LAST_USER_MAX)}…`
-          : found;
+    const { header, preview, lastUserText } = read;
+    if (header === null || !listed(header)) continue;
 
     const title = readSessionTitle(opts.transcriptDir, header.sessionId);
     entries.push({
@@ -334,9 +289,113 @@ export function listSessions(opts: ListSessionsOpts): SessionListEntry[] {
     });
   }
 
+  // A transcript gone from the directory takes its kept read with it.
+  const present = new Set(stats.map((st) => st.sessionFile));
+  const dir = dirname(join(opts.transcriptDir, "_"));
+  for (const key of readCache.keys()) {
+    if (dirname(key) === dir && !present.has(key)) {
+      readCache.delete(key);
+    }
+  }
+
   // Already newest-first and bounded: the read loop walked the sorted stats
   // and stopped at the limit.
   return entries;
+}
+
+/**
+ * What a transcript's own bytes give the list, kept while the file is
+ * unchanged (release review 2026-10-13). The list runs on the desktop app's
+ * main thread at every session switch, and read up to 64KB of head and 1MB
+ * of tail per listed session each time — from files that had not changed
+ * since the last switch. Keyed by path, checked by size and mtime; the title
+ * is a sidecar of its own, read every time.
+ */
+interface TranscriptRead {
+  readonly size: number;
+  readonly mtimeMs: number;
+  readonly header: ValidatedSessionHeader | null;
+  readonly preview: string;
+  readonly lastUserText: string | undefined;
+  /** The last user message was looked for backward from EOF, or the head
+   *  covers the whole file. False for a foreign workspace's transcript,
+   *  which costs its head alone. */
+  readonly tailScanned: boolean;
+}
+
+const readCache = new Map<string, TranscriptRead>();
+
+/** Read one transcript's head (header, first-message preview) and, when it
+ *  is listed, its last user message. Null when it cannot be read. */
+function readTranscript(
+  sessionFile: string,
+  size: number,
+  mtimeMs: number,
+  listed: (header: ValidatedSessionHeader | null) => boolean,
+): TranscriptRead | null {
+  let headLines: string[];
+  let header: ValidatedSessionHeader | null;
+  // The last user message found backward from EOF; undefined when the head
+  // covers the whole file (small transcript) or none was found in budget.
+  let lastFromEnd: string | undefined;
+  let tailScanned = size <= HEAD_SCAN_BYTES;
+  try {
+    const fd = openSync(sessionFile, "r");
+    try {
+      headLines = readWindow(fd, 0, Math.min(size, HEAD_SCAN_BYTES)).split(
+        "\n",
+      );
+      header = parseSessionHeader(headLines[0] ?? "");
+      // Only a file this workspace lists reads past its head: a foreign
+      // one costs its head alone, as before.
+      if (listed(header) && size > HEAD_SCAN_BYTES) {
+        lastFromEnd = lastUserBackward(fd, size, LAST_USER_SCAN_BYTES);
+        tailScanned = true;
+      }
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return null;
+  }
+
+  // Find first user block in the scanned lines.
+  const lines = headLines.slice(0, PREVIEW_SCAN_LINES + 1);
+  let preview = "(no user message)";
+  for (let i = 1; i < lines.length; i++) {
+    // biome-ignore lint/style/noNonNullAssertion: i is bounded by lines.length
+    const line = lines[i]!;
+    if (line === "") continue;
+    try {
+      const block = JSON.parse(line) as { kind?: string; text?: string };
+      if (block.kind === "user" && typeof block.text === "string") {
+        preview =
+          block.text.length > PREVIEW_MAX
+            ? `${block.text.slice(0, PREVIEW_MAX)}...`
+            : block.text;
+        break;
+      }
+    } catch {
+      // ignore individual line parse errors
+    }
+  }
+
+  // The LAST user block — the message the user most recently sent (where
+  // they left off): found backward from EOF for a large file; otherwise —
+  // and as the fallback past that scan's budget — the last one in the
+  // head (minus the header; a head cut mid-line leaves a partial last
+  // line, which fails its parse).
+  let found = lastFromEnd;
+  for (let i = headLines.length - 1; found === undefined && i >= 1; i--) {
+    found = userText(headLines[i] ?? "");
+  }
+  const lastUserText =
+    found === undefined
+      ? undefined
+      : found.length > LAST_USER_MAX
+        ? `${found.slice(0, LAST_USER_MAX)}…`
+        : found;
+  return { size, mtimeMs, header, preview, lastUserText, tailScanned };
 }
 
 /** A session reduced to just its header fields + mtime — everything the

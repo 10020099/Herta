@@ -135,6 +135,28 @@ describe("acceptPrediction", () => {
     );
   });
 
+  it("English is counted in words, as its prompt asks (release review 2026-10-13)", async () => {
+    // A compliant 35-word step: some 200 characters, past the Chinese cap.
+    const step =
+      "@板砖 rerun primes_fast.py up to one hundred million, time it and record peak memory, try a segmented sieve or a bytearray that packs eight odd numbers per byte, and confirm the count still matches the ten million run.";
+    expect(step.split(/\s+/).length).toBeLessThanOrEqual(40);
+    expect([...step].length).toBeGreaterThan(120);
+    expect(acceptPrediction(step, RECORD, "work", "en")).toBe(step);
+    expect(acceptPrediction(step, RECORD, "work", "zh")).toBeNull();
+    // The session's language reaches the check.
+    const p = provider(step);
+    expect(
+      await predictNextUserMessage({ ...deps(p), lang: "en" }, signal()),
+    ).toBe(step);
+    // Past the caps: 75 words for a step, 30 for talk.
+    const words = (n: number) =>
+      Array.from({ length: n }, () => "word").join(" ");
+    expect(acceptPrediction(words(75), RECORD, "work", "en")).toBe(words(75));
+    expect(acceptPrediction(words(76), RECORD, "work", "en")).toBeNull();
+    expect(acceptPrediction(words(30), CHAT, "chat", "en")).toBe(words(30));
+    expect(acceptPrediction(words(31), CHAT, "chat", "en")).toBeNull();
+  });
+
   it("a line the token cap cut off is dropped, not shown half-written", async () => {
     const p = provider(
       "@板砖 把 primes_fast.py 再往上压一档：数到一亿，测",

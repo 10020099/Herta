@@ -385,6 +385,65 @@ describe("listSessions — bounded head/tail reads (2026-07-12)", () => {
     expect(result[0]?.preview).toBe("only message");
     expect(result[0]?.lastUserText).toBe("only message");
   });
+
+  it("an unchanged transcript is not read again; a changed one is (release review 2026-10-13)", () => {
+    // Every session switch listed again, re-reading up to 64KB of head and
+    // 1MB of tail per session from files that had not changed.
+    const at = new Date("2026-10-01T00:00:00Z");
+    const path = join(tmp, "s1.jsonl");
+    const write = (text: string, extra: string[] = []): void => {
+      const lines = [
+        HEADER({ sessionId: "s1" }),
+        `{"kind":"user","text":"${text}"}`,
+        ...extra,
+        "",
+      ];
+      writeFileSync(path, lines.join("\n"), "utf8");
+      utimesSync(path, at, at);
+    };
+    const last = () =>
+      listSessions({ transcriptDir: tmp, currentWorkspaceRoot: "/p" })[0]
+        ?.lastUserText;
+    // Past the head window, so the tail is scanned.
+    write(
+      "first one",
+      Array.from({ length: 80 }, () => filler),
+    );
+    expect(last()).toBe("first one");
+    // Same size and mtime: the kept read stands — the file is not opened
+    // again (its new bytes, same length, go unseen).
+    write(
+      "other one",
+      Array.from({ length: 80 }, () => filler),
+    );
+    expect(last()).toBe("first one");
+    // A change the stat shows is read.
+    write(
+      "a longer message",
+      Array.from({ length: 80 }, () => filler),
+    );
+    expect(last()).toBe("a longer message");
+  });
+
+  it("a foreign workspace's transcript, read for its head only, is read in full once it is listed", () => {
+    const lines = [
+      HEADER({ sessionId: "far", workspaceRoot: "/elsewhere" }),
+      '{"kind":"user","text":"the first message"}',
+      ...Array.from({ length: 80 }, () => filler),
+      '{"kind":"user","text":"the last message"}',
+      "",
+    ];
+    writeFileSync(join(tmp, "far.jsonl"), lines.join("\n"), "utf8");
+    expect(
+      listSessions({ transcriptDir: tmp, currentWorkspaceRoot: "/p" }),
+    ).toEqual([]);
+    const all = listSessions({
+      transcriptDir: tmp,
+      currentWorkspaceRoot: "/p",
+      allWorkspaces: true,
+    });
+    expect(all[0]?.lastUserText).toBe("the last message");
+  });
 });
 
 describe("listSessionHeaders — header-only listing for search", () => {

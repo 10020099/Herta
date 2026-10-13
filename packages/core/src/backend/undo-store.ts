@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
-import { type FileHandle, mkdir, open, readFile, rm } from "node:fs/promises";
+import {
+  type FileHandle,
+  mkdir,
+  open,
+  readFile,
+  rm,
+  stat,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { writeFileAtomic } from "../atomic-write.js";
 import type { ToolCallUndo } from "../types/tool.js";
@@ -457,11 +464,14 @@ export class UndoStore {
         live.blobs.clear();
       }
     }
+    // A blob's size is its file's: stat it, never read it — a store near
+    // its bound read 64 MiB here at every brief start (release review
+    // 2026-10-13).
     for (const live of this.segments.values()) {
       for (const sha of live.blobs) {
         if (this.blobSize.has(sha)) continue;
-        const size = await readFile(undoBlobPath(this.dir, sha)).then(
-          (b) => b.length,
+        const size = await stat(undoBlobPath(this.dir, sha)).then(
+          (st) => st.size,
           () => null,
         );
         if (size === null) live.blobs.delete(sha);

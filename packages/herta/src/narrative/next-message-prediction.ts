@@ -140,11 +140,31 @@ export const MAX_RUN_LINES = 12;
 /** A typed line is short: anything longer is the model writing a speech.
  *  A step for 板砖 says what to do, so it runs longer: in the desktop app
  *  (2026-10-12) every next step after a real run was 100–130 characters,
- *  and a cap of 60 for both dropped them all. */
-const MAX_PREDICTION_CHARS: Record<PredictionMode, number> = {
-  chat: 60,
-  work: 120,
+ *  and a cap of 60 for both dropped them all. Each language is counted in
+ *  what its prompt asks in — Chinese in characters (八十字以内), English in
+ *  words ("fifty words at most"): one cap in characters for both dropped a
+ *  compliant 35-word English step, some 200 characters (release review
+ *  2026-10-13). English keeps the headroom Chinese has over its ask: half
+ *  again for a step, double for talk. */
+const MAX_PREDICTION: Record<
+  PredictionMode,
+  { readonly zhChars: number; readonly enWords: number }
+> = {
+  chat: { zhChars: 60, enWords: 30 },
+  work: { zhChars: 120, enWords: 75 },
 };
+
+/** Whether the line is longer than its mode allows in its language. */
+function tooLong(
+  text: string,
+  mode: PredictionMode,
+  lang: PromptLang,
+): boolean {
+  const cap = MAX_PREDICTION[mode];
+  return lang === "en"
+    ? text.split(/\s+/).length > cap.enWords
+    : [...text].length > cap.zhChars;
+}
 /** A cap on the completion, past the longest line kept; a line it cuts off
  *  is dropped, not shown half-written. */
 const PREDICTION_MAX_TOKENS = 160;
@@ -299,7 +319,7 @@ export async function predictNextUserMessage(
     return null;
   }
   if (signal.aborted || cutOff) return null;
-  return acceptPrediction(text, deps.record, prompt.mode);
+  return acceptPrediction(text, deps.record, prompt.mode, deps.lang);
 }
 
 /**
@@ -314,6 +334,7 @@ export function acceptPrediction(
   raw: string,
   record: TerminalRecord,
   mode: PredictionMode,
+  lang: PromptLang = "zh",
 ): string | null {
   let text = raw.replace(ZERO_WIDTH, "");
   // A stop the provider streamed past: keep what came before any tag.
@@ -322,7 +343,7 @@ export function acceptPrediction(
   text = text.trim();
   if (text.length === 0) return null;
   if (/[\r\n]/.test(text)) return null;
-  if ([...text].length > MAX_PREDICTION_CHARS[mode]) return null;
+  if (tooLong(text, mode, lang)) return null;
   if (/[〔〕]/.test(text)) return null;
   if (/^[（(［[【].*[）)］\]】]$/.test(text)) return null;
   // A placeholder, not a line: no word at all, or one letter run (「xxx」,

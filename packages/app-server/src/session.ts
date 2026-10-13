@@ -485,6 +485,11 @@ export class SessionImpl implements Session {
   private _undoable = false;
   /** An undo is running: a second one waits its turn by refusing. */
   private undoing = false;
+  /** Settles when the running undo has landed. A send or a 继续 that
+   *  arrives meanwhile waits for it, so the undo's `→ 系统` line goes in
+   *  before the message, never inside its turn (release review 2026-10-13:
+   *  only the undo checked for a turn, not a turn for the undo). */
+  private undoSettled: Promise<void> = Promise.resolve();
 
   /** The session title and its topic history — generation after a user
    *  turn, the rewind fence, the sidecar (session-titler.ts). */
@@ -987,6 +992,10 @@ export class SessionImpl implements Session {
       return { ok: false, reason: "turn_in_progress" };
     }
     this.undoing = true;
+    let landed: () => void = () => {};
+    this.undoSettled = new Promise((resolve) => {
+      landed = resolve;
+    });
     try {
       const views = await this.undoViews();
       const segs =
@@ -1023,9 +1032,20 @@ export class SessionImpl implements Session {
       }
       return { ok: true, ...result };
     } finally {
-      this.undoing = false;
-      await this.refreshUndoable();
+      try {
+        await this.refreshUndoable();
+      } finally {
+        this.undoing = false;
+        landed();
+      }
     }
+  }
+
+  /** Wait for an undo in flight to land (see `undoSettled`). Callers check
+   *  `undoing` first: with none running, a turn still takes its slot in the
+   *  call's own tick. */
+  private async undoLanded(): Promise<void> {
+    while (this.undoing) await this.undoSettled;
   }
 
   /**
@@ -1037,6 +1057,7 @@ export class SessionImpl implements Session {
    */
   async continueInterrupted(): Promise<ContinueInterruptedResult> {
     if (this.deepSeekKey().trim() === "") return { needsKey: true };
+    if (this.undoing) await this.undoLanded();
     if (this.currentTurn !== null) return { unavailable: true };
     // Checked against the journal now, not trusted from the last answer.
     await this.refreshResumable();
@@ -1086,6 +1107,7 @@ export class SessionImpl implements Session {
     // gate, so a duplicate IPC / renderer-reload race could otherwise run two
     // turns concurrently on the single-threaded driver and corrupt the shared
     // record + persist cursor.
+    if (this.undoing) await this.undoLanded();
     if (this.currentTurn !== null) {
       throw new Error("a turn is already in progress");
     }

@@ -536,6 +536,39 @@ describe("@herta/app-server — taking the latest turn's edits back (ADR 0074 §
   );
 
   it(
+    "a send while the undo runs waits for it: the undo's line goes in before the message, not inside its turn (release review 2026-10-13)",
+    async () => {
+      const cfg = mkConfig();
+      const { session, cleanup } = await mkE2eSession(cfg);
+      try {
+        await runScriptedTurn(session);
+        // Same tick: the undo has passed its guard and is restoring when the
+        // send arrives.
+        const undo = session.undoLastTurnEdits("latest");
+        // The script has nothing more to say; the turn may fail — the send
+        // happened all the same.
+        const send = session.submitText("下一句").catch(() => undefined);
+        expect(await undo).toMatchObject({ ok: true });
+        await send;
+        const record = session.record;
+        const undoAt = record.findIndex(
+          (b) =>
+            b.kind === "system" &&
+            (b as { digest?: { kind?: string } }).digest?.kind === "undo",
+        );
+        const sentAt = record.findIndex(
+          (b) => b.kind === "user" && b.text === "下一句",
+        );
+        expect(undoAt).toBeGreaterThan(-1);
+        expect(sentAt).toBeGreaterThan(undoAt);
+      } finally {
+        await cleanup();
+      }
+    },
+    SESSION_TEST_TIMEOUT_MS,
+  );
+
+  it(
     "⟲ keeps the withdrawn turn's edits undoable from its notice, writing no line; the card offer is for the record's own latest turn",
     async () => {
       const cfg = mkConfig();
