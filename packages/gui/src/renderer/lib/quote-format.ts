@@ -151,11 +151,19 @@ export function parseLeadingQuotes(message: string): {
 }
 
 /** A one-line stand-in for a quoted message (the sidebar card's preview):
- *  each quote's label in brackets, then what was said — never the fence. */
+ *  each quote's label in brackets, then what was said — never the fence.
+ *  The stored preview is cut at a fixed length, often inside a fence: a
+ *  header whose fence never closes still names its quote, and the cut
+ *  source stays out. */
 export function quotedMessagePreview(message: string): string {
   const { quotes, rest } = parseLeadingQuotes(message);
-  if (quotes.length === 0) return message;
-  const labels = quotes.map((q) => `${OPEN}${q.label}${CLOSE}`).join("");
-  const said = rest.trim();
-  return said.length > 0 ? `${labels} ${said}` : labels;
+  const cut = HEADER.exec(rest.split("\n", 1)[0] ?? "");
+  const labels = [
+    ...quotes.map((q) => q.label),
+    ...(cut !== null ? [cut[1] as string] : []),
+  ];
+  if (labels.length === 0) return message;
+  const head = labels.map((l) => `${OPEN}${l}${CLOSE}`).join("");
+  const said = cut === null ? rest.trim() : "";
+  return said.length > 0 ? `${head} ${said}` : head;
 }

@@ -92,5 +92,8 @@ describe("quote-format (ADR 0078 §4–§7)", () => {
       "〔src/calc.js:9–14〕",
     );
     expect(quotedMessagePreview("hello")).toBe("hello");
+    // The stored preview, cut inside the fence: the label, not the source.
+    const stored = `${composeQuotedMessage([DIV], "为什么不判零？", "zh").slice(0, 40)}…`;
+    expect(quotedMessagePreview(stored)).toBe("〔src/calc.js:9–14〕");
   });
 });

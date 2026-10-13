@@ -88,8 +88,10 @@ type LoadState =
   /** A diff tab (ADR 0059 §5): the path's working-tree change. */
   | { readonly kind: "diff"; readonly reply: ReadWorkspaceDiffReply };
 
-/** Markdown shows the page by default; a cite anchor forces the source
- *  (lines are a source concept). The header toggle overrides per tab. */
+/** Markdown shows the page by default, a cited open too: the band lands on
+ *  the blocks those lines render to (ADR 0054, amended 2026-10-13). Only a
+ *  page whose blocks cannot be matched to its lines shows that cite at the
+ *  source. The header toggle overrides per tab. */
 type ViewMode = "rendered" | "source";
 
 /** A tab's identity — the path AND the kind, the same rule the opener
@@ -152,6 +154,11 @@ export function FileViewerPanel(): JSX.Element | null {
   const [load, setLoad] = useState<LoadState>({ kind: "loading" });
   const [copied, setCopied] = useState<"idle" | "copied" | "failed">("idle");
   const [modes, setModes] = useState<Readonly<Record<string, ViewMode>>>({});
+  // Per tab, the cited target whose lines the rendered page could not place;
+  // a new cite tries the page again.
+  const [unplaced, setUnplaced] = useState<
+    Readonly<Record<string, FileViewerTarget>>
+  >({});
   const panelRef = useRef<HTMLElement | null>(null);
   // What the body currently shows, so a re-read of the same tab keeps it on
   // screen until the new read answers.
@@ -351,7 +358,17 @@ export function FileViewerPanel(): JSX.Element | null {
   const activeName = tabName(v.tabs[v.active] ?? { path });
   const modeKey = tabKey(target ?? { path });
   const mode: ViewMode =
-    modes[modeKey] ?? (anchor !== undefined ? "source" : "rendered");
+    modes[modeKey] ??
+    (anchor !== undefined && target !== null && unplaced[modeKey] === target
+      ? "source"
+      : "rendered");
+  const onAnchorUnmapped =
+    target === null
+      ? undefined
+      : (): void =>
+          setUnplaced((u) =>
+            u[modeKey] === target ? u : { ...u, [modeKey]: target },
+          );
   const isMarkdown = kindInfo.kind === "markdown";
 
   return (
@@ -609,6 +626,7 @@ export function FileViewerPanel(): JSX.Element | null {
         kindInfo={kindInfo}
         mode={mode}
         anchor={anchor}
+        onAnchorUnmapped={onAnchorUnmapped}
         piece={piece}
       />
     </section>
@@ -629,6 +647,7 @@ function FileViewerBody({
   kindInfo,
   mode,
   anchor,
+  onAnchorUnmapped,
   piece,
 }: {
   readonly path: string;
@@ -636,6 +655,7 @@ function FileViewerBody({
   readonly kindInfo: ViewerKindInfo;
   readonly mode: ViewMode;
   readonly anchor?: ViewerAnchor | undefined;
+  readonly onAnchorUnmapped?: (() => void) | undefined;
   readonly piece?: PieceQuoting | undefined;
 }): JSX.Element {
   const t = useT();
@@ -728,6 +748,8 @@ function FileViewerBody({
               content={content}
               truncated={truncated}
               piece={piece}
+              anchor={anchor}
+              onAnchorUnmapped={onAnchorUnmapped}
             />
           ) : (
             <CodeView

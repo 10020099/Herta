@@ -84,6 +84,52 @@ export function markdownSections(source: string): MarkdownSection[] {
   return sections;
 }
 
+/** A top-level block of the rendered page and the source lines it comes
+ *  from. A list carries its items' lines; raw HTML carries its source,
+ *  since how many elements it makes is the sanitizer's call, not the
+ *  lexer's. */
+export interface MarkdownBlock extends LineRange {
+  readonly items?: readonly LineRange[];
+  readonly html?: string;
+}
+
+/**
+ * The page's top-level blocks in order, each with its source lines — what
+ * a cite anchor lands on in the rendered view (ADR 0054, amended
+ * 2026-10-13). Blank runs and link definitions render nothing and are
+ * skipped.
+ */
+export function markdownBlocks(source: string): MarkdownBlock[] {
+  const blocks: MarkdownBlock[] = [];
+  let line = 1;
+  for (const tok of new Lexer({ gfm: true }).lex(source)) {
+    const from = line;
+    line += countNewlines(tok.raw);
+    if (tok.type === "space" || tok.type === "def") continue;
+    const to = from + countNewlines(tok.raw.replace(/\n+$/, ""));
+    if (tok.type === "list") {
+      const raws = ((tok as { items?: { raw: string }[] }).items ?? []).map(
+        (item) => item.raw,
+      );
+      let at = from;
+      const items = raws.map((raw) => {
+        const range = {
+          from: at,
+          to: at + countNewlines(raw.replace(/\n+$/, "")),
+        };
+        at += countNewlines(raw);
+        return range;
+      });
+      blocks.push({ from, to, items });
+    } else if (tok.type === "html") {
+      blocks.push({ from, to, html: tok.raw });
+    } else {
+      blocks.push({ from, to });
+    }
+  }
+  return blocks;
+}
+
 function countNewlines(s: string): number {
   let n = 0;
   for (let i = s.indexOf("\n"); i !== -1; i = s.indexOf("\n", i + 1)) n += 1;
