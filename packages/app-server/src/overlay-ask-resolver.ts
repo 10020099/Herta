@@ -104,7 +104,12 @@ export class OverlayAskResolver implements AskResolver {
       ...(deps.defaultAutoReview !== undefined
         ? { defaultAutoReview: deps.defaultAutoReview }
         : {}),
-      ...(deps.review !== undefined ? { reviewable: reviewTakes } : {}),
+      ...(deps.review !== undefined
+        ? {
+            reviewable: (request: PermissionRequest) =>
+              reviewTakes(request, deps.review?.workspace() ?? ""),
+          }
+        : {}),
     });
   }
 

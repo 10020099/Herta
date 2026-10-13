@@ -232,6 +232,46 @@ describe("classifyShellCommand — the harness's own state (.herta) is not comma
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  // Release review 2026-10-13: a variable path cannot be placed, so it asked
+  // as leaving the workspace — a class the automatic reviewer takes, which
+  // could then allow a write to the file that switches it on.
+  it.each([
+    `echo ${planted} > "$PWD/.herta/permissions.json"`,
+    `printf x >> "$PWD"/.herta/memory/project.jsonl`,
+    `tee "$PWD/.herta/permissions.json" < p.json`,
+    "cp p.json $HOME/.herta/workspaces/other/.herta/permissions.json",
+    "echo x > ~/.herta/workspaces/other/.herta/permissions.json",
+    'echo x > "`pwd`/.herta/permissions.json"',
+  ])("blocks a variable that leads to .herta: %s", (cmd) => {
+    expect(kind(cmd)).toBe("block");
+  });
+
+  it("a managed sandbox's own path names .herta, and is not refused for it", async () => {
+    const { homedir } = await import("node:os");
+    const { join } = await import("node:path");
+    const id = "09a0c616-c3fa-4fee-8c7e-e129941ccf9e";
+    const sandbox = {
+      workspaceRoot: join(homedir(), ".herta", "workspaces", id),
+      paths,
+    };
+    const v = (cmd: string) => classifyShellCommand(cmd, sandbox);
+    expect(v(`echo x > "$HOME/.herta/workspaces/${id}/out.txt"`).kind).toBe(
+      "ask",
+    );
+    expect(v(`echo x > ~/.herta/workspaces/${id}/out.txt`).kind).toBe("ask");
+    expect(
+      v(`echo x > "$HOME/.herta/workspaces/${id}/.herta/permissions.json"`)
+        .kind,
+    ).toBe("block");
+    // A body handed to another shell, with the sandbox's root spelled out.
+    const root = sandbox.workspaceRoot.replace(/\\/g, "/");
+    const msys = root.replace(/^([A-Za-z]):/, (_m, d: string) => `/${d}`);
+    expect(v(`bash -c "cd ${msys} && make"`).kind).toBe("ask");
+    expect(v(`bash -c "cd ${msys} && echo x > .herta/p.json"`).kind).toBe(
+      "block",
+    );
+  });
 });
 
 describe("classifyShellCommand — block tier (no override)", () => {

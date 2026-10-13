@@ -1,5 +1,6 @@
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { realpath } from "node:fs/promises";
+import { homedir } from "node:os";
 import {
   basename,
   dirname,
@@ -387,7 +388,7 @@ export function hertaStateWriteDenial(
     relativeTouchesHerta(workspaceRoot, resolved) ||
     relativeTouchesHerta(rootResolved, resolved)
   ) {
-    return `writes into .herta — the harness's own state (its permission rules and trust choice, memory, logs); no command may change it`;
+    return `writes into .herta — the harness's own state (its automatic-review choice, memory, logs); no command may change it`;
   }
   return null;
 }
@@ -447,6 +448,56 @@ export function globSegmentMatches(pattern: string, name: string): boolean {
  *  text, and the fail-closed direction is the right one for it. */
 export function mentionsHertaState(text: string): boolean {
   return /(^|[\s'"=:/\\>|;&(`])\.herta(?=$|[\s'"/\\;&|)`])/i.test(text);
+}
+
+/**
+ * `mentionsHertaState`, with the workspace root's own spellings taken out
+ * first. A session's managed sandbox lives at `~/.herta/workspaces/<id>`,
+ * so `cd <workspace> && npm test` names `.herta` without reaching any
+ * harness state, while `<workspace>/.herta/…` still does. The root is
+ * matched as Windows, a POSIX shell on Windows (`/c/…`) and the home
+ * shorthands (`~`, `$HOME`) would spell it, case-folded.
+ */
+export function namesHertaState(
+  text: string,
+  workspaceRoot: string,
+  home: string = homedir(),
+): boolean {
+  return mentionsHertaState(withoutWorkspaceRoot(text, workspaceRoot, home));
+}
+
+function withoutWorkspaceRoot(
+  text: string,
+  workspaceRoot: string,
+  home: string,
+): string {
+  const fwd = workspaceRoot.replace(/\\/g, "/").replace(/\/+$/, "");
+  if (fwd.length === 0) return text;
+  const spellings = new Set([fwd, fwd.replace(/\//g, "\\")]);
+  const drive = /^([A-Za-z]):\/(.*)$/.exec(fwd);
+  if (drive !== null) spellings.add(`/${drive[1]}/${drive[2]}`);
+  const homeFwd = home.replace(/\\/g, "/").replace(/\/+$/, "");
+  if (
+    homeFwd.length > 0 &&
+    fwd.toLowerCase().startsWith(`${homeFwd.toLowerCase()}/`)
+  ) {
+    const rest = fwd.slice(homeFwd.length);
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: bash's own ${HOME}
+    for (const h of ["~", "$HOME", "${HOME}"]) spellings.add(`${h}${rest}`);
+  }
+  let out = text;
+  // Longest first, so a spelling never leaves half of a longer one behind;
+  // and only where the root ends — `…/abc` is not the start of `…/abcd`.
+  for (const s of [...spellings].sort((a, b) => b.length - a.length)) {
+    out = out.replace(
+      new RegExp(
+        `${s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=$|[\\s'"/\\\\;&|)\`<>])`,
+        "gi",
+      ),
+      "<workspace>",
+    );
+  }
+  return out;
 }
 
 export interface ResolveSafePathOpts {

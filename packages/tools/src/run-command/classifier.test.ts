@@ -1787,6 +1787,39 @@ describe("classifyCommand — what hid in `command_ask_unknown` is named (ADR 00
     expect(classifyShellBody('cmd //c "rd /s /q C:\\"').hit).toBe(true);
   });
 
+  it("cmd's other spellings of `/c`, and Windows PowerShell's default -Command, re-enter too (release review 2026-10-13)", () => {
+    // Each was "unrecognised" — a class the automatic reviewer takes — so a
+    // review's allow would have run a body the block tier never read.
+    for (const argv of [
+      ["cmd", "/r", "rd /s /q C:\\"],
+      ["cmd", "//R", "rd", "/s", "/q", "C:\\"],
+      ["cmd", "/crd", "/s", "/q", "C:\\"],
+      ["cmd", '/c"rd /s /q C:\\"'],
+      ["powershell", "rd /s /q C:\\"],
+      ["powershell.exe", "-NoProfile", "Remove-Item -Recurse -Force C:\\"],
+      ["powershell", "-ExecutionPolicy", "Bypass", "rd /s /q C:\\"],
+      ["powershell", "-w", "hidden", "-NoLogo", "format C: /q"],
+    ]) {
+      expect(code(argv), argv.join(" ")).toBe("block");
+    }
+    // A script file is not a command text; pwsh's default is -File.
+    expect(code(["powershell", "-File", "build.ps1"])).toBe(
+      "command_ask_unknown",
+    );
+    expect(code(["pwsh", "build.ps1"])).toBe("command_ask_unknown");
+    // A value that looks like a parameter is not swallowed as one.
+    expect(code(["powershell", "-ex", "-Command", "rd /s /q C:\\"])).toBe(
+      "block",
+    );
+    // pwsh still finds a -Command after its positionals, as before.
+    expect(
+      code(["pwsh", "-WorkingDirectory", "C:\\w", "-c", "rd /s /q C:\\"]),
+    ).toBe("block");
+    // A harmless body leaves the wrapper's own verdict.
+    expect(code(["powershell", "Get-ChildItem"])).toBe("command_ask_unknown");
+    expect(code(["cmd", "/r", "dir /b"])).toBe("command_ask_unknown");
+  });
+
   it("a command that fetches and runs a package is `download_exec`", () => {
     for (const argv of [
       ["npx", "-y", "create-react-app", "web"],

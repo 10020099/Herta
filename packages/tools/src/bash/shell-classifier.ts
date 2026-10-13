@@ -7,7 +7,7 @@ import {
   gitInternalsWrite,
   globReachesHertaState,
   hertaStateWriteDenial,
-  mentionsHertaState,
+  namesHertaState,
 } from "../path-safety.js";
 import {
   classifyCommand,
@@ -1295,8 +1295,10 @@ function classifySegment(
         hertaTargetDenial(spelled(operand), opts, live.has(operand)),
       // A body handed to another shell: its text naming `.herta`, or run from
       // a cwd inside it, where every relative path lands there.
+      // The workspace's own root does not count (a managed sandbox lives
+      // under `~/.herta/workspaces`).
       body: (body) =>
-        mentionsHertaState(body)
+        namesHertaState(body, opts.workspaceRoot)
           ? "hands another shell a command that names .herta — the harness's own state; no command may change it"
           : hertaStateWriteDenial(
               opts.workspaceRoot,
@@ -1676,12 +1678,25 @@ function hertaTargetDenial(
   opts: ShellClassifyOpts,
   glob = false,
 ): string | null {
+  // A variable or `~` that leads to `.herta` (`"$PWD/.herta/permissions.json"`,
+  // `~/.herta/workspaces/<id>/.herta/…`) cannot be placed, and asked as
+  // leaving the workspace — a class the automatic reviewer takes (release
+  // review 2026-10-13). Naming `.herta` is enough, as it is for a body handed
+  // to another shell; the workspace's own root (a managed sandbox lives
+  // under `~/.herta/workspaces`) does not count.
+  const bare = token.replace(/^["']|["']$/g, "");
+  if (
+    (bare.startsWith("~") || /[$`]/.test(bare)) &&
+    namesHertaState(bare, opts.workspaceRoot)
+  ) {
+    return "names .herta through a variable — the harness's own state (its automatic-review choice, memory, logs); no command may change it. Write to a path inside the workspace that names no .herta";
+  }
   const at = resolveWorkspacePath(token, opts);
   if (at === null) return null;
   const literal = hertaStateWriteDenial(opts.workspaceRoot, at.native);
   if (literal !== null) return literal;
   return glob && globReachesHertaState(at.relative)
-    ? "names .herta by a pattern — the harness's own state (its permission rules and trust choice, memory, logs); no command may change it"
+    ? "names .herta by a pattern — the harness's own state (its automatic-review choice, memory, logs); no command may change it"
     : null;
 }
 

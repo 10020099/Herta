@@ -5,12 +5,15 @@ import {
   type PendingPermissionApproval,
   type PermissionRequest,
   type SessionApprovalCache,
+  setUsageNoteSink,
+  type UsageNote,
   WorkspacePermissions,
 } from "@herta/core";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   AUTO_REVIEW_SYSTEM,
   AutoReviewer,
+  MAX_REVIEW_CHARS,
   parseReview,
   type ReviewModel,
   reviewMessage,
@@ -157,7 +160,32 @@ describe("AutoReviewer.review", () => {
     expect(
       await r.review({ ...input("x"), command: undefined }, signal()),
     ).toEqual({ kind: "card", why: "not_a_command" });
+    // A variable that leads to .herta asked as leaving the workspace: its
+    // text names .herta, so the owner answers it (release review 2026-10-13).
+    expect(
+      await r.review(
+        input(`echo '{"autoReview":true}' > "$PWD/.herta/permissions.json"`, {
+          code: "command_ask_outside",
+        }),
+        signal(),
+      ),
+    ).toEqual({ kind: "card", why: "owner_only" });
     expect(sent).toHaveLength(0);
+  });
+
+  it("a managed sandbox's own path names .herta, and is still reviewed", async () => {
+    const { model, sent } = scripted();
+    const sandbox = "C:\\Users\\u\\.herta\\workspaces\\abc";
+    const r = new AutoReviewer(model);
+    const v = await r.review(
+      {
+        ...input("cd C:/Users/u/.herta/workspaces/abc && make test"),
+        workspace: sandbox,
+      },
+      signal(),
+    );
+    expect(v.kind).toBe("allow");
+    expect(sent).toHaveLength(1);
   });
 
   it("an error, a timeout, a malformed or disagreeing reply, or too much context is the card", async () => {
@@ -189,11 +217,68 @@ describe("AutoReviewer.review", () => {
       kind: "card",
       why: "disagrees",
     });
+    // A command that leaves no room for the request it answers.
     expect(
       await cards(scripted().model, {
-        userMessages: Array.from({ length: 20 }, () => "长".repeat(1990)),
+        command: `cat > big.txt <<'EOF'\n${"x".repeat(MAX_REVIEW_CHARS)}\nEOF`,
       }),
     ).toEqual({ kind: "card", why: "too_long" });
+  });
+
+  it("long messages are fitted, newest kept: the reviewer is not switched off by them (release review 2026-10-13)", async () => {
+    // Twenty messages at their cut were 40 000 characters, and every later
+    // request went to the card with nothing said.
+    const { model, sent } = scripted();
+    const r = new AutoReviewer(model);
+    const long = Array.from(
+      { length: 24 },
+      (_, i) => `${i}${"长".repeat(1990)}`,
+    );
+    const v = await r.review(
+      { ...input("make test"), userMessages: [...long, "@板砖 跑一下测试。"] },
+      signal(),
+    );
+    expect(v.kind).toBe("allow");
+    const user = sent[0]?.user ?? "";
+    expect(user.length).toBeLessThanOrEqual(MAX_REVIEW_CHARS);
+    expect(user).toContain("@板砖 跑一下测试。");
+    expect(user).toContain("make test");
+    expect(user).toMatch(/（更早的 \d+ 条消息从略）/);
+    // The newest alone too long: cut, not dropped.
+    const alone = scripted();
+    const newest = `@板砖 ${"长".repeat(30_000)}`;
+    expect(
+      (
+        await new AutoReviewer(alone.model).review(
+          { ...input("make test"), userMessages: [newest] },
+          signal(),
+        )
+      ).kind,
+    ).toBe("allow");
+    expect(alone.sent[0]?.user).toContain("1. @板砖 长长");
+  });
+
+  it("each outcome goes to the usage log, a card's reason with it", async () => {
+    const notes: UsageNote[] = [];
+    setUsageNoteSink((n) => notes.push(n));
+    try {
+      const r = new AutoReviewer(
+        scripted(reply("low", "high", "allow"), new Error("401")).model,
+      );
+      await r.review(input("make test"), signal());
+      await r.review(input("make lint"), signal());
+      await r.review(
+        input("find . -delete", { code: "command_ask_harness_state" }),
+        signal(),
+      );
+    } finally {
+      setUsageNoteSink(undefined);
+    }
+    expect(notes).toEqual([
+      { kind: "review", outcome: "allow", ms: expect.any(Number) },
+      { kind: "review", outcome: "card", why: "error", ms: expect.any(Number) },
+      { kind: "review", outcome: "card", why: "owner_only" },
+    ]);
   });
 
   it("the caller's abort rejects, never a verdict", async () => {

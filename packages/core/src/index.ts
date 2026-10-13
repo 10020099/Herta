@@ -277,6 +277,7 @@ export { UNDOABLE_WRITE_CODES, undoableWrite } from "./undoable-write.js";
 export {
   type ActorTurnNote,
   type BackendRunNote,
+  type ReviewNote,
   reportUsageNote,
   setUsageNoteSink,
   type UsageNote,

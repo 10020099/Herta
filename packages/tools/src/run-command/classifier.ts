@@ -648,12 +648,19 @@ function extractShellReentry(argv: readonly string[]): Reentry | null {
       // `//c` is how a bash on Windows passes `/c` past its path conversion
       // — and how 板砖 spells it. Matching `/c` alone left the body unread,
       // so `cmd //c "rd /s /q C:\"` asked where `cmd /c` blocked (ADR 0075
-      // step 1, 2026-10-09).
-      if (/^(?:\/\/?|-)[ckCK]$/.test(a)) {
+      // step 1, 2026-10-09). `/r` is cmd's other spelling of `/c`, and cmd
+      // takes the command glued to the switch too (`/crd …`, `/c"rd …"`):
+      // both left the body unread, and an unread body went to the reviewer
+      // as "unrecognised" (release review 2026-10-13).
+      const m = /^(?:\/\/?|-)[ckrCKR](.*)$/.exec(a);
+      if (m !== null) {
+        const glued = m[1] as string;
         return {
           kind: "body",
           via: "cmd /c",
-          body: argv.slice(i + 1).join(" "),
+          body: [...(glued.length > 0 ? [glued] : []), ...argv.slice(i + 1)]
+            .join(" ")
+            .replace(/^"(.*)"$/, "$1"),
         };
       }
     }
@@ -665,7 +672,22 @@ function extractShellReentry(argv: readonly string[]): Reentry | null {
       const raw = argv[i] as string;
       // `-Command`, `/Command`, and the MSYS spelling `//Command`.
       const m = /^(?:-|\/\/?)([A-Za-z]+)$/.exec(raw);
-      if (m === null) continue;
+      if (m === null) {
+        // Windows PowerShell's default parameter is -Command: the first
+        // argument that is not a parameter starts the command, and the rest
+        // is the command too — `powershell "rd /s /q C:\"` runs it (release
+        // review 2026-10-13: it went to the reviewer as "unrecognised").
+        // pwsh's default is -File, a script the argv does not carry: its
+        // positionals are passed over, as before.
+        if (name === "powershell") {
+          return {
+            kind: "body",
+            via: "powershell -Command",
+            body: argv.slice(i).join(" "),
+          };
+        }
+        continue;
+      }
       const flag = (m[1] as string).toLowerCase();
       // PowerShell accepts any unambiguous parameter PREFIX (`-c`, `-com`,
       // `-enc`, …) — match by prefix, not by exact spelling.
@@ -708,12 +730,39 @@ function extractShellReentry(argv: readonly string[]): Reentry | null {
           body: argv.slice(i + 1).join(" "),
         };
       }
+      // A script file and its arguments: no command text follows.
+      if ("file".startsWith(flag)) return null;
+      // Windows PowerShell's parameters that take a value: the value is not
+      // where the command starts. One that looks like a parameter itself is
+      // not taken as a value, so a misread prefix never swallows `-Command`.
+      const next = argv[i + 1];
+      if (
+        name === "powershell" &&
+        (flag === "ep" ||
+          WINDOWS_POWERSHELL_VALUE_PARAMS.some((p) => p.startsWith(flag))) &&
+        next !== undefined &&
+        !/^(?:-|\/\/?)[A-Za-z]+$/.test(next)
+      ) {
+        i += 1;
+      }
     }
     return null;
   }
 
   return null;
 }
+
+/** Windows PowerShell's (powershell.exe) parameters that take a value,
+ *  matched by prefix as it matches them (`-ex`, `-w`, …). */
+const WINDOWS_POWERSHELL_VALUE_PARAMS: readonly string[] = [
+  "executionpolicy",
+  "windowstyle",
+  "version",
+  "psconsolefile",
+  "inputformat",
+  "outputformat",
+  "configurationname",
+];
 
 /**
  * The command's IDENTITY for the block / destructive tiers: basename,

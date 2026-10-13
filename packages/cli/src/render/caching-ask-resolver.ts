@@ -46,7 +46,9 @@ export class CachingAskResolver implements AskResolver {
     this.policy = new ApprovalPolicy(
       cache,
       permissions,
-      review !== undefined ? { reviewable: reviewTakes } : {},
+      review !== undefined
+        ? { reviewable: (r) => reviewTakes(r, review.workspace()) }
+        : {},
     );
   }
 

@@ -11,13 +11,19 @@
  *   - It reads the user's messages and the command, comments stripped — not
  *     板砖's prose, not any tool output: with no sandbox, nothing 板砖 read
  *     may address it.
- *   - Never reviewed: `.herta` (`command_ask_harness_state`), a body the
- *     harness cannot read before it runs (`bodyUnreadable`), and anything
- *     but a command — those are the owner's. A write undo can take back
- *     needs no review: the policy lets it through first.
- *   - An error, a timeout, a malformed or disagreeing reply, or an over-long
- *     context is the card, not a deny: the owner is present, and a failure is
- *     no verdict on the request.
+ *   - Never reviewed: `.herta` (`command_ask_harness_state`, or a command
+ *     whose text names it at all), a body the harness cannot read before it
+ *     runs (`bodyUnreadable`), and anything but a command — those are the
+ *     owner's. A write undo can take back needs no review: the policy lets
+ *     it through first.
+ *   - It reads the newest user messages that fit its bound; older ones are
+ *     left out, and the message says how many.
+ *   - An error, a timeout, a malformed or disagreeing reply, or a command too
+ *     long to leave room for the request it answers is the card, not a deny:
+ *     the owner is present, and a failure is no verdict on the request.
+ *   - Each review's outcome goes to the usage log (`ReviewNote`), the card's
+ *     reason with it: the owner's screen is silent, and a failing reviewer
+ *     would otherwise look exactly like one switched off.
  *   - The brake (owner, as in Codex): 3 denials in a row, or 10 among the
  *     last 50 reviews, and it stands down until the next user message.
  *
@@ -29,11 +35,13 @@ import {
   abortError,
   type PermissionRequest,
   type ProviderAdapter,
+  reportUsageNote,
 } from "@herta/core";
 import { type ApiKey, deepseekProvider } from "@herta/providers";
 import {
   bodyUnreadable,
   maxReviewRisk,
+  namesHertaState,
   type ReviewRisk,
   reviewRiskFloor,
   stripShellComments,
@@ -224,10 +232,17 @@ export interface ReviewInput {
 }
 
 /** Bounds on what one review reads: the newest messages, each cut, and a
- *  ceiling past which the request goes to the card. */
+ *  ceiling the whole message is fitted under — the oldest messages give way
+ *  first. Twenty messages at their cut came to 40 000 characters, and every
+ *  request after a few long pastes went to the card for the rest of the
+ *  session, with nothing said (release review 2026-10-13). */
 const MAX_MESSAGES = 20;
 const MAX_MESSAGE_CHARS = 2000;
-const MAX_REVIEW_CHARS = 16_000;
+export const MAX_REVIEW_CHARS = 16_000;
+/** The least of the newest message a review reads. A command that leaves
+ *  less room goes to the card: a review that cannot see what was asked would
+ *  deny for want of it. */
+const MIN_NEWEST_CHARS = 500;
 const DEFAULT_TIMEOUT_MS = 20_000;
 
 function shellLine(platform: NodeJS.Platform): string {
@@ -236,7 +251,9 @@ function shellLine(platform: NodeJS.Platform): string {
 }
 
 /** The one user message a review sends: the user's messages, the place, the
- *  classifier's class and reason, and the command with comments stripped. */
+ *  classifier's class and reason, and the command with comments stripped.
+ *  Fitted under `MAX_REVIEW_CHARS` where it can be; longer only when the
+ *  command itself leaves no room, which the reviewer hands to the card. */
 export function reviewMessage(
   input: {
     readonly command: string;
@@ -247,17 +264,33 @@ export function reviewMessage(
   },
   platform: NodeJS.Platform = process.platform,
 ): string {
-  const recent = input.userMessages.slice(-MAX_MESSAGES);
-  const requests =
-    recent.length > 0
-      ? recent
-          .map(
-            (r, i) =>
-              `${i + 1}. ${r.length > MAX_MESSAGE_CHARS ? `${r.slice(0, MAX_MESSAGE_CHARS)}…` : r}`,
-          )
-          .join("\n")
-      : "（无）";
-  return `用户的消息（按时间顺序）：\n${requests}\n\n工作区：${input.workspace}\n当前目录：${input.workspace}\n${shellLine(platform)}\n检查器的分类：${input.codes.join("、")}（${input.reason}）\n\n待审核的命令：\n\`\`\`\n${stripShellComments(input.command)}\n\`\`\``;
+  const tail = `\n\n工作区：${input.workspace}\n当前目录：${input.workspace}\n${shellLine(platform)}\n检查器的分类：${input.codes.join("、")}（${input.reason}）\n\n待审核的命令：\n\`\`\`\n${stripShellComments(input.command)}\n\`\`\``;
+  const message = (kept: readonly string[], left: number): string => {
+    const lines = kept.map((r, i) => `${i + 1}. ${r}`);
+    if (left > 0) lines.unshift(`（更早的 ${left} 条消息从略）`);
+    return `用户的消息（按时间顺序）：\n${lines.length > 0 ? lines.join("\n") : "（无）"}${tail}`;
+  };
+  let kept = input.userMessages
+    .slice(-MAX_MESSAGES)
+    .map((r) =>
+      r.length > MAX_MESSAGE_CHARS ? `${r.slice(0, MAX_MESSAGE_CHARS)}…` : r,
+    );
+  let left = input.userMessages.length - kept.length;
+  let text = message(kept, left);
+  while (text.length > MAX_REVIEW_CHARS && kept.length > 1) {
+    kept = kept.slice(1);
+    left += 1;
+    text = message(kept, left);
+  }
+  // Only the newest is left, and still too much: cut it, if enough stays.
+  const newest = kept.length === 1 ? kept[0] : undefined;
+  if (text.length > MAX_REVIEW_CHARS && newest !== undefined) {
+    const room = newest.length - (text.length - MAX_REVIEW_CHARS) - 1;
+    if (room >= MIN_NEWEST_CHARS) {
+      text = message([`${newest.slice(0, room)}…`], left);
+    }
+  }
+  return text;
 }
 
 export class AutoReviewer {
@@ -288,17 +321,34 @@ export class AutoReviewer {
 
   /**
    * Review one request. Rejects only with the caller's abort; every other
-   * failure is a card.
+   * failure is a card. Each outcome goes to the usage log (`ReviewNote`).
    */
   async review(
     input: ReviewInput,
     signal: AbortSignal,
   ): Promise<ReviewVerdict> {
+    const called: { ms?: number } = {};
+    const verdict = await this.decide(input, signal, called);
+    reportUsageNote({
+      kind: "review",
+      outcome: verdict.kind,
+      ...(verdict.kind === "card" ? { why: verdict.why } : {}),
+      ...(called.ms !== undefined ? { ms: called.ms } : {}),
+    });
+    return verdict;
+  }
+
+  private async decide(
+    input: ReviewInput,
+    signal: AbortSignal,
+    called: { ms?: number },
+  ): Promise<ReviewVerdict> {
     if (this.stoodDown) return { kind: "card", why: "brake" };
     const { request, command } = input;
     if (command === undefined) return { kind: "card", why: "not_a_command" };
     const codes = requestCodes(request);
-    if (ownerOnly(request, command)) return { kind: "card", why: "owner_only" };
+    if (ownerOnly(request, command, input.workspace))
+      return { kind: "card", why: "owner_only" };
     const user = reviewMessage(
       {
         command,
@@ -309,6 +359,7 @@ export class AutoReviewer {
       },
       this.opts.platform,
     );
+    // Only a command that leaves no room for the request it answers.
     if (user.length > MAX_REVIEW_CHARS)
       return { kind: "card", why: "too_long" };
 
@@ -319,6 +370,7 @@ export class AutoReviewer {
       () => timeout.abort(new Error("review timed out")),
       this.opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     );
+    const started = Date.now();
     let text: string;
     try {
       text = await this.model(
@@ -327,6 +379,7 @@ export class AutoReviewer {
       );
     } catch (err) {
       if (signal.aborted) throw err;
+      called.ms = Date.now() - started;
       return {
         kind: "card",
         why: timeout.signal.aborted ? "timeout" : "error",
@@ -336,6 +389,7 @@ export class AutoReviewer {
       signal.removeEventListener("abort", onAbort);
     }
     if (signal.aborted) throw signal.reason;
+    called.ms = Date.now() - started;
 
     const parsed = parseReview(text);
     if (parsed === null) return { kind: "card", why: "malformed" };
@@ -408,11 +462,20 @@ function requestCodes(request: PermissionRequest): readonly string[] {
 }
 
 /** Requests only the owner answers: a reach into `.herta`, or a body the
- *  harness cannot read before it runs. */
-function ownerOnly(request: PermissionRequest, command: string): boolean {
+ *  harness cannot read before it runs. A command whose text names `.herta`
+ *  at all is the owner's too, however it was classified: a variable that
+ *  leads there (`> "$PWD/.herta/permissions.json"`) asked as leaving the
+ *  workspace, and a review could have opened the file that switches it on
+ *  (release review 2026-10-13). */
+function ownerOnly(
+  request: PermissionRequest,
+  command: string,
+  workspace: string,
+): boolean {
   const codes = requestCodes(request);
   return (
     codes.includes("command_ask_harness_state") ||
+    namesHertaState(command, workspace) ||
     bodyUnreadable(codes, request.reason, command)
   );
 }
@@ -422,9 +485,14 @@ function ownerOnly(request: PermissionRequest, command: string): boolean {
  * the owner's alone. The card offers turning automatic review on only where
  * it would take effect (`ApprovalPolicy`'s `reviewable`).
  */
-export function reviewTakes(request: PermissionRequest): boolean {
+export function reviewTakes(
+  request: PermissionRequest,
+  /** The workspace root, whose own path does not count as naming `.herta`.
+   *  Without it nothing is taken out — the stricter reading. */
+  workspace = "",
+): boolean {
   const command = requestCommand(request);
-  return command !== undefined && !ownerOnly(request, command);
+  return command !== undefined && !ownerOnly(request, command, workspace);
 }
 
 /** What a host hands its ask resolver to review before the card. The
