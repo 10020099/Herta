@@ -1294,6 +1294,10 @@ export function createDemoBridge(
 
     maybePlayEasterEgg: async () => {},
 
+    // The device card shows its scene — a picture of it on the site
+    // (src/demo-device-scene.tsx), not the flat device alone.
+    getDeviceScene: async () => true,
+
     listSessions: async () => {
       const list: SessionMetadata[] = [];
       if (liveCreated) {
