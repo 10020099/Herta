@@ -29,6 +29,8 @@
  * Voice cues are never emitted (herta-voice:// protocol is Electron-only).
  */
 
+import { codePieces } from "@gui/components/FileViewer/piece-segments";
+import { viewerKindFor } from "@gui/components/FileViewer/viewer-kind";
 import type {
   HertaBridge,
   SessionError,
@@ -36,6 +38,7 @@ import type {
   SessionSnapshot,
   SpeechControlEvent,
 } from "@gui/ipc/bridge-types";
+import { boundQuoteText, composeQuotedMessage } from "@gui/lib/quote-format";
 import type {
   AgentEvent,
   OverlayEvent,
@@ -51,7 +54,6 @@ import type {
   VoiceCueEvent,
   WorkspaceEvent,
 } from "@herta/app-server";
-
 // Opus, not the 411 KB wav master: the same clip the desktop app ships
 // (data/voice/openings/015-archive-cleanup.opus, byte-identical source) at
 // 51 KB. Ogg Opus needs Safari 17.4+; older Safari rejects `play()` with
@@ -59,7 +61,7 @@ import type {
 // the opening still reveals at voice pace, silently. Duration is unchanged,
 // so `openingVoiceMs` below still describes it.
 import openingVoiceUrl from "./assets/opening-voice.opus";
-import { demoWorkspaceFiles } from "./demo-workspace.js";
+import { demoWorkspaceFiles, eventBusAfterPatch } from "./demo-workspace.js";
 
 export type DemoLang = "zh" | "en";
 
@@ -506,6 +508,39 @@ const EVENT_BUS_NOTE = {
 const EVENT_BUS_DIFF_ZH = EVENT_BUS_DIFF(EVENT_BUS_NOTE.zh);
 const EVENT_BUS_DIFF_EN = EVENT_BUS_DIFF(EVENT_BUS_NOTE.en);
 
+/**
+ * A message quoting the patched bus's `addListener` shell (0.1.8, ADR 0078),
+ * built exactly as the viewer would stage it: the code piece that holds
+ * `addListener(`, its trailing blank lines dropped, the file's own language
+ * as the fence, the session language's header — so the bubble's quote card
+ * is the one a visitor's own pick would make, and its label opens the viewer
+ * on the same lines. What she answers may cite only these lines.
+ */
+function quoteAddListener(lang: "zh" | "en", typed: string): string {
+  const path = "packages/core/src/event-bus.ts";
+  const lines = eventBusAfterPatch(EVENT_BUS_NOTE[lang]).split("\n");
+  const at = lines.findIndex((l) => l.includes("addListener(")) + 1;
+  const piece = codePieces(lines).find((p) => p.from <= at && at <= p.to);
+  if (piece === undefined) throw new Error("no addListener piece to quote");
+  let to = piece.to;
+  while (to > piece.from && (lines[to - 1] ?? "").trim().length === 0) to -= 1;
+  const fence = viewerKindFor(path).language;
+  return composeQuotedMessage(
+    [
+      {
+        id: "demo-quote",
+        path,
+        from: piece.from,
+        to,
+        text: boundQuoteText(lines.slice(piece.from - 1, to).join("\n"), lang),
+        ...(fence !== undefined ? { fence } : {}),
+      },
+    ],
+    typed,
+    lang,
+  );
+}
+
 /** show_excerpt's STARTED row carries the path and range as one arg —
  *  the shape ADR 0050 parses into an anchored open, so the click lands on
  *  the cited lines (was a bare `logs/alerts`, which no tool call spells). */
@@ -733,6 +768,20 @@ const ZH: DemoContent = {
           say(
             "测试只跑了 @herta/core 这一包，exit 0。不是全量。你要全量，自己再开一条委托。",
           ),
+          // He quotes the shell from the viewer (0.1.8). The four lines ride
+          // his message, so they are hers to read; nothing past them is.
+          ask(
+            quoteAddListener(
+              "zh",
+              "这层壳每调一次就开一个 drain？挂上去的还摘得下来吗？",
+            ),
+          ),
+          say(
+            "对。`void this.drain`——每调一次就起一个，结果当场扔掉，方法本身也返回 void。你手里什么都没拿到，所以摘不下来。",
+          ),
+          say(
+            "drain 自己什么时候停，你圈的这四行里没有。要能退的订阅，用 subscribe；这层壳就让它烂在那儿，别再往上挂新东西。",
+          ),
           ask("好！谢谢黑塔女士。"),
           say("嗯。"),
         ],
@@ -920,6 +969,18 @@ const EN: DemoContent = {
           ),
           say(
             "Tests were @herta/core only, exit 0. Not the full suite. You want the full suite, open your own commission for it.",
+          ),
+          ask(
+            quoteAddListener(
+              "en",
+              "So every call to this shell starts its own drain? Can anything hung on it ever come off?",
+            ),
+          ),
+          say(
+            "Yes. `void this.drain` — each call starts one and throws it away on the spot, and the method itself returns void. You're handed nothing, so there's nothing to take off.",
+          ),
+          say(
+            "When drain itself stops isn't in the four lines you circled. If you need to unsubscribe, use subscribe; leave the shell to rot and hang nothing new on it.",
           ),
           ask("Got it — thank you, Madam Herta."),
           say("Mm."),
