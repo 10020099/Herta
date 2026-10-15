@@ -75,6 +75,8 @@ export {
 } from "./mcp/mcp-config.js";
 export type { RecordTail } from "./record-window.js";
 export { RECORD_TAIL_BLOCKS, recordTail } from "./record-window.js";
+// The quit hold's floor (ADR 0071 §1.7).
+export { CLOSE_SETTLE_CAP_MS } from "./session.js";
 export { createSessionHost } from "./session-host.js";
 export type { SessionSearchHit } from "./session-search.js";
 export type * from "./types.js";

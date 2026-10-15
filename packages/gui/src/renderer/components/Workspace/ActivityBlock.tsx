@@ -1,5 +1,7 @@
+import type { UndoFileResult } from "@herta/core";
 import {
   memo,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -7,7 +9,9 @@ import {
   useState,
 } from "react";
 import { useReducedMotion } from "../../hooks/useReducedMotion.js";
+import type { MessageKey } from "../../i18n/keys.js";
 import { makeT } from "../../i18n/LocaleProvider.js";
+import { hoverTipProps } from "../common/hover-tip.js";
 import {
   useFileViewerOpen,
   type ViewerAnchor,
@@ -18,6 +22,7 @@ import {
   type FileLinkTarget,
   textWithLinks,
 } from "./ActivityStep.js";
+import type { AttachProgressFrame } from "./attach-progress.js";
 import { useUnpinConversation } from "./ConversationPin.js";
 import { DiffStat, type DiffStatValue } from "./DiffStat.js";
 import { type DiffSummary, summarizeDiff } from "./diff-summary.js";
@@ -31,11 +36,10 @@ import {
   type SystemBlock,
 } from "./group-record.js";
 import { composeMarkerSummary } from "./marker-summary.js";
-import type { PlanContext } from "./plan-context.js";
+import { isAttachHandoff, pendingAttachIndex } from "./pending-attach.js";
 import { SwapText } from "./SwapText.js";
 import {
   latestOpStep,
-  latestTodoProgressStep,
   middleTruncateName,
   stepDisplayBody,
   stepDisplayDetail,
@@ -56,6 +60,10 @@ interface RowView {
   readonly removeLabel: string | undefined;
   readonly file: ActivityStepProps["file"];
   readonly links: ActivityStepProps["links"];
+  /** A placeholder of the attach in flight (2026-10-01). */
+  readonly progress: ActivityStepProps["progress"];
+  /** A real row that just replaced a placeholder. */
+  readonly progressFinishing: boolean;
 }
 
 export interface ActivityBlockProps {
@@ -76,21 +84,10 @@ export interface ActivityBlockProps {
    *  the last N op rows shimmer together instead of only the last-started
    *  one. Optional: omitted/1 keeps the classic single-row shimmer. */
   readonly inFlightCount?: number;
-  /**
-   * The CURRENT dispatch's 任务清单 (ADR 0025 todo list), or null when there
-   * is none. A PROP, deliberately: the plan is a property of the dispatch,
-   * not of the group that happens to render it — an in-turn beat splits one
-   * backend run into several activity groups, and this component only ever
-   * sees its OWN blocks, so a continuation group would forget the plan
-   * entirely. `Conversation` scans the whole record with `planContext()` and
-   * passes the result ONLY to the group it renders as active (mirroring
-   * `inFlightCount`), so a historical group can never show a live plan.
-   *
-   * Rendered as a quiet checklist strip UNDER the status line: the strip
-   * answers "where are we in the plan", the header keeps answering "what is
-   * it doing this second". They are deliberately not merged.
-   */
-  readonly plan?: PlanContext | null;
+  /** 板砖 has been quiet between steps for a while — its model thinking
+   *  (`useBackendThinking`): the live line says so instead of the last
+   *  step, which would read as still running. Live group only. */
+  readonly thinking?: boolean;
   /**
    * Factory for an attachment row's take-back handler, or undefined when
    * removal is unavailable (no session, or a turn in flight). A FACTORY keyed
@@ -99,16 +96,55 @@ export interface ActivityBlockProps {
    *
    * A prop, not a hook call here: this component is `memo`'d over a stable
    * `blocks` identity, and reaching for the bridge inside it would make every
-   * historical group re-render on unrelated store churn — the same reasoning
-   * that keeps `plan` a prop.
+   * historical group re-render on unrelated store churn.
    */
   readonly onRemoveAttachment?: (path: string) => () => void;
+  /**
+   * The 撤销 chip (ADR 0074 §4) — only on the latest turn's last finished
+   * 板砖 card, and only the user's: nothing of it is in the record. `offer`
+   * takes the turn's edits back on a click; `busy` while that runs; `done`
+   * once the turn holds its undo line.
+   */
+  readonly undo?:
+    | { readonly state: "offer" | "busy"; readonly onUndo: () => void }
+    | { readonly state: "done" };
 }
 
-/** Visible plan rows before the "+n more" tail. A bound, not a layout: real
- *  lists are 3-8 items, and an unbounded strip could push the conversation
- *  off-screen on a pathological plan. */
-const PLAN_MAX_ROWS = 8;
+/** An undo line's per-file results (ADR 0074 §3), in the session language. */
+const UNDO_RESULT_KEY = {
+  restored: "activity.undo.result.restored",
+  deleted: "activity.undo.result.deleted",
+  unchanged: "activity.undo.result.unchanged",
+  changed_since: "activity.undo.result.changed_since",
+  not_kept: "activity.undo.result.not_kept",
+  outside_workspace: "activity.undo.result.outside_workspace",
+  failed: "activity.undo.result.failed",
+} as const satisfies Record<UndoFileResult, MessageKey>;
+
+type UndoDigest = Extract<
+  NonNullable<SystemBlock["digest"]>,
+  { readonly kind: "undo" }
+>;
+
+/** The undo line's header: what came back, and how much was left alone —
+ *  a skipped file and a command's edit alike are still changed. */
+function undoSummary(d: UndoDigest, t: ReturnType<typeof makeT>): string {
+  const count = (pred: (r: UndoFileResult) => boolean): number =>
+    d.files.filter((f) => pred(f.result)).length;
+  const restored = count((r) => r === "restored");
+  const deleted = count((r) => r === "deleted");
+  const left =
+    count((r) => r !== "restored" && r !== "deleted" && r !== "unchanged") +
+    d.commands.length;
+  return [
+    t("activity.undo.summary"),
+    ...(restored > 0
+      ? [t("activity.undo.count.restored", { n: restored })]
+      : []),
+    ...(deleted > 0 ? [t("activity.undo.count.deleted", { n: deleted })] : []),
+    ...(left > 0 ? [t("activity.undo.count.left", { n: left })] : []),
+  ].join(" · ");
+}
 
 /** The row views of a history nobody has opened yet — one shared empty array,
  *  so the memo below hands every such group the same identity. */
@@ -163,17 +199,39 @@ function formatDuration(ms: number): string {
  * memo: `blocks` identity is stable per record snapshot (groupRecord is
  * memoized on the record), so historical groups bail out of Conversation's
  * per-delta re-renders; the live group still updates via its own 1 Hz tick
- * and its changing props. `plan` does not weaken that: a historical group
- * receives the literal `null`, which never changes identity.
+ * and its changing props.
  */
 export const ActivityBlock = memo(function ActivityBlock(
   props: ActivityBlockProps,
 ): JSX.Element {
   const { blocks, active, turnStartedAt, backendStartedAt, lang } = props;
   const inFlightCount = props.inFlightCount ?? 1;
-  const plan = props.plan ?? null;
   const onRemoveAttachment = props.onRemoveAttachment;
   const t = useMemo(() => makeT(lang), [lang]);
+  // A placeholder row's count (2026-10-01), in the session's language like
+  // every string in the row. One function per language, so the rows' views
+  // stay identity-stable across frames.
+  const progressLabel = useCallback(
+    (f: AttachProgressFrame | undefined): string => {
+      if (f === undefined || f.stage === "done") return "";
+      if (f.stage === "waiting")
+        return t("activity.attachment.progress.waiting");
+      if (f.stage === "transcripts") {
+        return t("activity.attachment.progress.pictures", {
+          done: f.done,
+          total: f.total,
+        });
+      }
+      return f.total > 0
+        ? t("activity.attachment.progress.page", {
+            // The page being read, not the pages finished.
+            done: Math.min(f.done + 1, f.total),
+            total: f.total,
+          })
+        : t("activity.attachment.progress.reading");
+    },
+    [t],
+  );
   // Everything derived from the blocks, once per `blocks` identity
   // (2026-09-03): the live group re-renders at 1 Hz for its duration and on
   // every in-flight tool call, and every group re-renders at a turn
@@ -187,8 +245,18 @@ export const ActivityBlock = memo(function ActivityBlock(
     // Localized header summary composed from the structured marker (or the
     // canonical body verbatim for pre-structured records). D7: the record
     // body is untouched; this is display-only.
+    // An undo line (ADR 0074 §4) is its own group: a header saying what came
+    // back, and a row per file.
+    const undoDigest: UndoDigest | null =
+      blocks.length === 1 && blocks[0]?.digest?.kind === "undo"
+        ? blocks[0].digest
+        : null;
     const headline =
-      done && summary !== null ? composeMarkerSummary(summary, t) : null;
+      undoDigest !== null
+        ? undoSummary(undoDigest, t)
+        : done && summary !== null
+          ? composeMarkerSummary(summary, t)
+          : null;
     // The commit the run landed (ADR 0049 §4) — the headline's `提交 sha`
     // segment becomes the commit tab's opener (ADR 0059).
     const commitSha =
@@ -199,8 +267,8 @@ export const ActivityBlock = memo(function ActivityBlock(
     // Rendered rows, not raw blocks: a patch preview folds into the write it
     // previews (the permission rule emits it BEFORE the tool runs, so the
     // record holds diff-then-action and the history read backwards). The
-    // live-line lookups below stay on `steps` — a patch block is neither an
-    // op nor a todo, so folding cannot change what they find.
+    // live-line lookup below stays on `steps` — a patch block is not an op,
+    // so folding cannot change what it finds.
     const rows = activityRows(blocks);
     // The terminal marker's evidenceDetail (改动文件 / 风险 / 待办 / output
     // roll-up — what Herta's prompt reads) surfaces as one expandable row at
@@ -214,19 +282,9 @@ export const ActivityBlock = memo(function ActivityBlock(
     // a result row ("↳ exit 1 · 0 lines") as the "current activity" reads
     // wrong while the backend works, and the projected verbs are canonical
     // English regardless of locale. Result rows still appear in the history.
-    // With a 任务清单 in play (2026-07-23, user request) the line leads with
-    // the step-level context — "步骤 2/4 · <item> · 写入 x" — so the current
-    // task is visible throughout, not only at the flip. Dispatches without a
-    // todo list keep the op-only line.
     const latestOp = latestOpStep(steps);
-    const latestTodo = latestTodoProgressStep(steps);
-    const opText = latestOp !== undefined ? stepDisplayBody(latestOp, t) : "";
     const latestStep =
-      latestTodo === undefined || latestTodo === latestOp
-        ? opText
-        : opText === ""
-          ? stepDisplayBody(latestTodo, t)
-          : `${stepDisplayBody(latestTodo, t)} · ${opText}`;
+      latestOp !== undefined ? stepDisplayBody(latestOp, t) : "";
     return {
       chip,
       summary,
@@ -237,6 +295,7 @@ export const ActivityBlock = memo(function ActivityBlock(
       markerBlock,
       markerDetail,
       latestStep,
+      undoDigest,
     };
   }, [blocks, t]);
   const {
@@ -248,6 +307,7 @@ export const ActivityBlock = memo(function ActivityBlock(
     rows,
     markerBlock,
     markerDetail,
+    undoDigest,
   } = derived;
   const latestStep = derived.latestStep;
   // Expandable only when there are operational rows to reveal. A group that
@@ -273,7 +333,9 @@ export const ActivityBlock = memo(function ActivityBlock(
   const isAttachmentGroup =
     blocks.length > 0 && blocks.every((b) => b.digest?.kind === "attachment");
   // Default-collapsed even while running — the line IS the rendering (F4).
-  const expanded = expandable ? (userToggled ?? isAttachmentGroup) : false;
+  const expanded = expandable
+    ? (userToggled ?? (isAttachmentGroup || undoDigest !== null))
+    : false;
   // The history's rows mount on the FIRST expand and stay mounted — the same
   // lifecycle as a row's own diff and detail panes (ActivityStep), one level
   // up (ADR 0068 §11, 2026-09-22). A session carries every dispatch it ever
@@ -361,6 +423,55 @@ export const ActivityBlock = memo(function ActivityBlock(
       : active && anchor !== null
         ? Date.now() - anchor
         : null);
+  // An undo line's rows (ADR 0074 §4): one per file, saying what happened to
+  // it, then what commands changed — never restored. A file still on disk
+  // opens in the viewer; a deleted or out-of-workspace one has nothing to open.
+  const undoRows =
+    undoDigest === null ? null : (
+      <>
+        {undoDigest.files.map((f) => (
+          <ActivityStep
+            key={`undo:${f.path}`}
+            body={`${f.path} · ${t(UNDO_RESULT_KEY[f.result])}`}
+            t={t}
+            icon={
+              f.result === "restored" || f.result === "deleted"
+                ? "write"
+                : "dot"
+            }
+            active={false}
+            {...(openFile !== null &&
+            f.result !== "deleted" &&
+            f.result !== "outside_workspace"
+              ? {
+                  file: {
+                    path: f.path,
+                    onOpen: () => openFile(f.path, {}),
+                    ariaLabel: `${t("activity.file.openAria")} ${f.path}`,
+                  },
+                }
+              : {})}
+          />
+        ))}
+        {undoDigest.commands.map((path) => (
+          <ActivityStep
+            key={`undo-cmd:${path}`}
+            body={`${path} · ${t("activity.undo.commands")}`}
+            t={t}
+            icon="run"
+            active={false}
+          />
+        ))}
+        {undoDigest.commandsUnknown && undoDigest.commands.length === 0 && (
+          <ActivityStep
+            body={t("activity.undo.commandsUnknown")}
+            t={t}
+            icon="run"
+            active={false}
+          />
+        )}
+      </>
+    );
   const durationText = elapsedMs === null ? null : formatDuration(elapsedMs);
   // One duration per 板砖 run, not per split part. When a beat bubble lands
   // between backend blocks it splits the run into separate activity groups;
@@ -505,18 +616,32 @@ export const ActivityBlock = memo(function ActivityBlock(
                       : (b.digest.source as string),
                   )
                 : undefined;
+            // A placeholder of the attach in flight (2026-10-01) says only
+            // which file it is — its counts ride the hairline; the record
+            // block that replaces it states the rest.
+            const pendingIndex = pendingAttachIndex(b);
+            const pendingName =
+              pendingIndex !== undefined && b.digest?.kind === "attachment"
+                ? b.digest.name
+                : undefined;
             return {
-              body: stepDisplayBody(b, t),
+              body:
+                pendingName !== undefined
+                  ? `${t("activity.attachment.label")} ${middleTruncateName(pendingName)}`
+                  : stepDisplayBody(b, t),
+              progress:
+                pendingIndex !== undefined
+                  ? { index: pendingIndex, label: progressLabel }
+                  : undefined,
+              progressFinishing: isAttachHandoff(b),
               // Icon parses the CANONICAL body — the display body may be a
-              // localized verb stepIcon can't recognize. Failure and todo rows
-              // key off the structured digest instead.
+              // localized verb stepIcon can't recognize. Failure and
+              // attachment rows key off the structured digest instead.
               icon: failed
                 ? "fail"
-                : b.digest?.kind === "todo"
-                  ? "todo"
-                  : b.digest?.kind === "attachment"
-                    ? "attach"
-                    : stepIcon(b.body),
+                : b.digest?.kind === "attachment"
+                  ? "attach"
+                  : stepIcon(b.body),
               failed,
               isOp: b.digest?.kind === "op",
               detail: stepDisplayDetail(b, t),
@@ -543,27 +668,8 @@ export const ActivityBlock = memo(function ActivityBlock(
               links,
             };
           }),
-    [rows, t, openFile, onRemoveAttachment, rowsMounted],
+    [rows, t, openFile, onRemoveAttachment, rowsMounted, progressLabel],
   );
-
-  // ── Live plan strip (2026-07-26) ────────────────────────────────────────
-  // Derived from props every render — NO state. Anything remembered here
-  // (a frozen row set, a "seen it" latch) would outlive the turn and the
-  // session that produced it, which is the exact hazard class the
-  // 2026-07-24 transient-state audit catalogued.
-  //
-  // Only while the run is LIVE: `plan` is already null for a historical
-  // group (Conversation passes it to the active one only) and `planContext`
-  // stops at a terminal marker, so this guard is the third, local, one —
-  // the strip is live status and must vanish the moment the run ends,
-  // leaving the collapsed done-marker rendering exactly as it was.
-  //
-  // `itemsKnown` false = a record persisted before the digest carried its
-  // items: the list is UNKNOWN, not empty, so there is nothing honest to
-  // draw as rows. The header's 步骤 k/n keeps working from the counts.
-  const planItems = active && plan?.itemsKnown ? plan.items : undefined;
-  const planRows = planItems?.slice(0, PLAN_MAX_ROWS) ?? [];
-  const planHidden = (planItems?.length ?? 0) - planRows.length;
 
   // Animated reveal of the history (bug 2). The panel is always mounted (when
   // expandable) and grows/shrinks via a measured max-height transition, so the
@@ -676,7 +782,13 @@ export const ActivityBlock = memo(function ActivityBlock(
             )}
           </span>
           {active ? (
-            <SwapText text={latestStep} reduced={reduced} shimmer />
+            <SwapText
+              text={
+                props.thinking === true ? t("activity.thinking") : latestStep
+              }
+              reduced={reduced}
+              shimmer
+            />
           ) : (
             headline !== null && (
               <span className="activity-line__summary">
@@ -736,66 +848,31 @@ export const ActivityBlock = memo(function ActivityBlock(
         {/* Outside the button: the duration is a fact about the run, not part
           of the toggle's label, and it is what pinned the button to the full
           row width. */}
+        {/* 撤销 (ADR 0074 §4): outside the toggle like the duration — a
+          button cannot sit in a button, and taking edits back is not
+          opening the history. */}
+        {props.undo !== undefined &&
+          !active &&
+          (props.undo.state === "done" ? (
+            <span className="activity-undo is-done">
+              {t("activity.undo.chipDone")}
+            </span>
+          ) : (
+            <button
+              type="button"
+              className="activity-undo"
+              // The app's tip, not the OS's (owner 2026-10-08).
+              {...hoverTipProps(t("activity.undo.chipTitle"))}
+              disabled={props.undo.state === "busy"}
+              onClick={props.undo.onUndo}
+            >
+              {t("activity.undo.chip")}
+            </button>
+          ))}
         {durationLabel !== null && (
           <span className="activity-line__duration">{durationLabel}</span>
         )}
       </div>
-      {/* The plan strip is a SIBLING of the collapsible history, never a
-          child of it: the history's reveal animates a MEASURED max-height,
-          so anything growing inside it while the backend works would either
-          be clipped by a stale ceiling or fight the transition. Here it
-          simply pushes the (collapsed or open) panel down. */}
-      {planRows.length > 0 && (
-        <ul className="activity-plan" aria-label={t("activity.todo.list")}>
-          {planRows.map((item, i) => (
-            <li
-              // biome-ignore lint/suspicious/noArrayIndexKey: todo_write is full-list replacement, so item text is neither unique nor stable (板砖 rewords rows mid-run) — position is the only usable identity, and the rows carry no per-row state to mis-associate.
-              key={i}
-              className={`activity-plan__row is-${item.status.replace("_", "-")}`}
-              // The full text, for a row the single-line ellipsis truncates.
-              title={item.content}
-            >
-              {/* ✓ / ▸ / ○ — the CLI plan strip's mark triad (plan-strip.ts
-                  MARK), form instead of motion: the 2026-07-27 dot redesign
-                  leaves the activity LED as the one pulsing element. */}
-              <span className="activity-plan__mark" aria-hidden="true">
-                {item.status === "completed" && (
-                  <svg
-                    className="activity-plan__check"
-                    viewBox="0 0 10 10"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.5"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    aria-hidden="true"
-                  >
-                    <path d="M1.5 5.2l2.4 2.4L8.5 2.6" />
-                  </svg>
-                )}
-                {item.status === "in_progress" && (
-                  <svg
-                    className="activity-plan__caret"
-                    viewBox="0 0 8 10"
-                    aria-hidden="true"
-                  >
-                    <path d="M1.4 1.6l5.2 3.4-5.2 3.4z" />
-                  </svg>
-                )}
-              </span>
-              {/* Backend-authored task text, rendered VERBATIM (D7): this is
-                  the same string the record shows Herta. Only the chrome
-                  around it localizes. */}
-              <span className="activity-plan__text">{item.content}</span>
-            </li>
-          ))}
-          {planHidden > 0 && (
-            <li className="activity-plan__row activity-plan__more">
-              {t("activity.plan.more", { n: planHidden })}
-            </li>
-          )}
-        </ul>
-      )}
       {expandable && (
         <div
           ref={historyRef}
@@ -807,7 +884,9 @@ export const ActivityBlock = memo(function ActivityBlock(
           }}
         >
           <div className="activity-line__history-inner">
+            {rowsMounted && undoDigest !== null && undoRows}
             {rowsMounted &&
+              undoDigest === null &&
               rowViews.map((rv, i) => {
                 // A parallel batch (ADR 0025 slice 5) has several ops in
                 // flight at once — shimmer the last `inFlightCount` op rows
@@ -835,6 +914,12 @@ export const ActivityBlock = memo(function ActivityBlock(
                     removeLabel={rv.removeLabel}
                     file={rv.file}
                     links={rv.links}
+                    {...(rv.progress !== undefined
+                      ? { progress: rv.progress }
+                      : {})}
+                    {...(rv.progressFinishing
+                      ? { progressFinishing: true }
+                      : {})}
                   />
                 );
               })}

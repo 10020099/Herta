@@ -10,6 +10,13 @@ export interface RunOptions {
    *  `childProcessEnv()` (process.env minus the AppImage launcher's entries).
    *  Callers must have vetted model-supplied keys through the env guard. */
   env?: NodeJS.ProcessEnv;
+  /** The started process's pid, once it has one — the run's journal records
+   *  it, so a relaunch can end a command the app died during (ADR 0071
+   *  §1.6). */
+  onSpawn?: (pid: number) => void;
+  /** Each chunk as it arrives, from either stream, beyond the capture cap
+   *  too — the live view (ADR 0073). Raw bytes; the caller decodes. */
+  onOutput?: (chunk: Buffer, stream: "stdout" | "stderr") => void;
 }
 
 /**
@@ -209,6 +216,8 @@ export async function runCommand(
       return;
     }
 
+    if (child.pid !== undefined) options.onSpawn?.(child.pid);
+
     // Both platforms now route abort through killProcessTree — the `signal`
     // spawn option is gone, so this is the only path that stops a run.
     {
@@ -246,6 +255,7 @@ export async function runCommand(
     });
 
     child.stdout?.on("data", (chunk: Buffer) => {
+      options.onOutput?.(chunk, "stdout");
       stdoutBytes += chunk.length;
       const remaining = options.maxBytesPerStream - stdoutBuffered;
       if (remaining <= 0) return;
@@ -259,6 +269,7 @@ export async function runCommand(
     });
 
     child.stderr?.on("data", (chunk: Buffer) => {
+      options.onOutput?.(chunk, "stderr");
       stderrBytes += chunk.length;
       const remaining = options.maxBytesPerStream - stderrBuffered;
       if (remaining <= 0) return;

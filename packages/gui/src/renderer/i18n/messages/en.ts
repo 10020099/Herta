@@ -64,8 +64,7 @@ export const en = {
   "update.betaNotice":
     "still under test — releases may include breaking changes, and past sessions or settings may not fully survive an update.",
   "update.auto": "Automatic updates",
-  "update.autoDesc":
-    "When off, updates are neither checked nor downloaded automatically — only on a manual check.",
+  "update.autoDesc": "When off, updates happen only on a manual check.",
   "update.currentVersion": "Current version",
   "update.checkNow": "Check for updates",
   "update.restartNow": "Restart & update",
@@ -83,21 +82,29 @@ export const en = {
   "nav.group.general": "General",
   "nav.group.herta": "Herta",
   "nav.group.engine": "Engine",
-  "window.intro": "How the window looks, opens, and closes.",
+  "window.intro": "How the window looks and behaves.",
   "window.theme": "Appearance",
-  "window.themeDesc":
-    "Light or dark interface; System follows the OS setting automatically.",
+  "window.themeDesc": "Light or dark; System follows the operating system.",
   "theme.light": "Light",
   "theme.dark": "Dark",
   "theme.system": "System",
   "window.closeToTray": "Close to tray",
   "window.closeToTrayDesc":
-    "Closing the window hides Herta to the system tray and keeps her running; turn this off to quit on close.",
+    "Closing the window keeps Herta running in the system tray; when this is off, closing quits.",
   // macOS (2026-09-23): the icon sits in the menu bar, and a Mac app does not
   // quit when its window closes — it stays in the Dock until ⌘Q.
   "window.closeToTrayMac": "Close to menu bar",
   "window.closeToTrayDescMac":
-    "Closing the window hides Herta to the menu bar and keeps her session running; turn this off to close the window instead. Herta stays in the Dock until you quit with ⌘Q.",
+    "Closing the window keeps Herta running in the menu bar; when this is off, it only closes the window, and Herta stays in the Dock until you quit with ⌘Q.",
+  // Attention (ADR 0072 §1): what notifies, and the keep-awake hold.
+  "window.notifications": "Notifications",
+  "window.notificationsDesc":
+    "When the window is in the background, a notification appears if something needs you or a longer reply finishes.",
+  "window.keepAwake": "Keep awake during runs",
+  "window.keepAwakeDesc":
+    "Keeps the computer from sleeping while Brick runs; the display may still turn off.",
+  "window.predictions": "Composer predictions",
+  "window.predictionsDesc": "The message box suggests what you might say next.",
   "window.minimize": "Minimize",
   "window.maximize": "Maximize",
   "window.restore": "Restore",
@@ -109,10 +116,11 @@ export const en = {
   "settings.loadFailed":
     "Could not load this setting — reopen Settings to retry",
   "language.rowLabel": "Display language",
-  "language.intro": "Herta's own voice is unaffected.",
+  "language.intro":
+    "The interface and the conversation each have their own language.",
   "language.interactionRowLabel": "Interaction language",
   "language.interactionDesc":
-    "The language Herta talks with you in. Applies to new sessions; English sessions have no voice in this release.",
+    "The language Herta speaks in. Applies to new sessions; English sessions have no voice yet.",
   "language.follow": "Follow UI language",
   "topbar.toggleSidebar": "Toggle sidebar",
   "topbar.search": "Search sessions",
@@ -131,6 +139,17 @@ export const en = {
   "session.openFailed": "Archive damaged",
   "session.switchInterrupts":
     "This interrupts the current reply — click again to confirm",
+  "session.menuAria": "Session actions",
+  "session.rename": "Rename",
+  "session.renameAria": "Session name",
+  "session.renameFailed": "Rename failed",
+  "session.export": "Export as Markdown…",
+  "session.exported": "Exported",
+  "session.exportFailed": "Export failed",
+  "export.user": "Trailblazer",
+  "export.herta": "Herta",
+  "export.startedAt": "Started {time}",
+  "export.exportedAt": "Exported {time}",
   "session.group.today": "Today",
   "session.group.yesterday": "Yesterday",
   "session.group.previous7Days": "Previous 7 Days",
@@ -216,8 +235,7 @@ export const en = {
   "voice.volume": "Volume",
   "voice.volumeDesc": "Adjust the loudness of Herta's voice.",
   "dream.enable": "Enable Dream",
-  "dream.enableDesc":
-    "Let Herta dream while you are away. Dreaming uses your DeepSeek API quota.",
+  "dream.enableDesc": "Dreaming uses your DeepSeek API quota.",
   "dream.intro":
     "Dream is Herta's downtime. While you are away, she looks back over your sessions and writes down the memorable moments — coming to know you a little better the longer you work together.",
   // Punctuation rule (owner 2026-08-27): a single-clause LABEL or status
@@ -279,35 +297,36 @@ export const en = {
   "device.state.awaitingApproval": "Awaiting approval",
   "device.state.done": "Done",
   "device.state.error": "Error",
-  "banzhuan.legend.idle": "resting — nothing delegated",
-  "banzhuan.legend.delegated": "Brick is working on your task",
-  "banzhuan.legend.waitingApproval": "it needs your approval to continue",
-  "banzhuan.legend.succeeded": "finished cleanly — a green beat",
-  "banzhuan.legend.failed": "the task errored",
-  // Herta's own first-person voice (zh: 板砖替我处理代码的活), so the UI
-  // formal-register rule — no contractions — does not apply to it.
+  "banzhuan.legend.idle": "nothing delegated; it waits",
+  "banzhuan.legend.delegated": "on the task you gave it",
+  "banzhuan.legend.waitingApproval": "held on your approval",
+  "banzhuan.legend.succeeded": "finished clean — a green light",
+  "banzhuan.legend.failed": "it failed; the record says why",
+  // The Coprocessor pane is written in Herta's own hand (owner 2026-09-29:
+  // "the banzhuan section copy should be like The Herta's writing") — her
+  // written register, not UI chrome: the intro, the row descriptions and the
+  // legend. The formal-register rule for UI copy does not govern them.
   "banzhuan.intro":
-    "The Brick handles the coding for me. To delegate, write the full @板砖 — that @ is the real trigger. The ring on its face shows what it's doing right now:",
+    "The Differential Coprocessor. I call it the Brick: the grunt work of code is its job. Delegate with the full @板砖; without the @, it does not move. The ring on its face is its state:",
   "banzhuan.thinking": "Thinking effort",
   "banzhuan.thinkingDesc":
-    "How hard Brick thinks while working. Applies on the next launch.",
+    "How long it thinks before acting: higher is more thorough, and slower and costlier. Applies on the next launch.",
   "banzhuan.thinking.low": "Low",
   "banzhuan.thinking.high": "High",
   "banzhuan.thinking.max": "Max",
   "banzhuan.contract": "Tool contract",
   "banzhuan.contractDesc":
-    "The toolset Brick works with. Standard: a full set of dedicated tools; Minimal: a lean toolset that cuts running cost sharply and needs bash installed on this machine. Applies on the next launch.",
+    "Its tools. Standard: a full set of dedicated ones. Minimal: bash and an editor, at about half the cost; needs bash on this machine. Applies on the next launch.",
   "banzhuan.contract.noBash":
-    "No bash was found on this machine; Minimal will run as Standard. Install Git for Windows and restart to enable it.",
+    "No bash on this machine: pick Minimal and it still runs Standard. Install Git for Windows, then restart.",
   "banzhuan.contract.standard": "Standard",
   "banzhuan.contract.minimal": "Minimal",
-  "banzhuan.scene": "3D device",
-  "banzhuan.sceneDesc": "A lit 3D object; off shows the flat renders.",
+  "banzhuan.pdfPictures": "Transcribe PDF pictures",
+  "banzhuan.pdfPicturesDesc":
+    "When a PDF is attached, a model transcribes its pictures into text, at most 40 calls per document. When off, the pictures are still stored, and it can still look at them. Applies immediately.",
   "approval.title": "Permission request",
   "approval.allow": "Allow",
   "approval.alwaysAllow": "Allow for this task",
-  "approval.allowProject": "Allow in project",
-  "approval.projectRuleNote": "“Allow in project” remembers: {rule}",
   "approval.deny": "Deny",
   "approval.risk.read": "Read workspace",
   "approval.risk.write": "Write workspace",
@@ -337,6 +356,23 @@ export const en = {
   "approval.reason.commandUnresolved": "This command has unresolved parts",
   "approval.reason.commandSystem":
     "Changes system settings or drives other apps — asked every time",
+  "approval.reason.commandHarnessState":
+    "May reach .herta, the application's own state, in a way the line does not show — asked every time",
+  "approval.reason.commandDownloadExec":
+    "Downloads a package and runs it — asked every time",
+  "approval.reason.commandOpaque":
+    "What this runs cannot be read from the command (encoded, computed, or fed on input) — asked every time",
+  "approval.reason.commandGitInternals":
+    "Changes .git internals (hooks or config) that git later runs as commands — asked every time",
+  "approval.reason.commandOutside":
+    "Touches a path outside the workspace — check the path",
+  "approval.reason.commandLocalExec":
+    "Runs a program from the workspace — review it and its arguments",
+  "approval.reason.commandInterpreterInline":
+    "Interpreter runs inline code the record never showed — review it",
+  "approval.reason.commandScript": "Runs a project script — review the script",
+  "approval.reason.commandEnv":
+    "Changes the environment or command paths later commands use — review it",
   "approval.alsoClasses": "Also: {list}",
   "approval.consequence.discardsUncommitted":
     "Note: discards uncommitted changes — they cannot be recovered.",
@@ -359,10 +395,15 @@ export const en = {
   "approval.reason.editFile": "Edits an existing file",
   "approval.reason.strReplaceEditor": "Writes a file",
   "approval.heredocFolded": "    ⋯ {n} lines folded — see the diff below ⋯",
-  "approval.trustWorkspace": "Trust this workspace",
-  "approval.trustNote":
-    "Once this workspace is trusted, file edits, directory creation, non-destructive git operations and workspace scripts within it no longer request confirmation; network access, destructive operations and anything outside the workspace still do. This can be revoked from the device card's menu.",
+  "approval.autoReviewEnable": "Turn on auto-review",
+  "approval.autoReviewNote":
+    "Once on, file writes in this workspace that undo can take back run directly, and a review model allows or denies everything else against what you asked; what it cannot judge still asks you. It can be turned off from the device card's menu.",
   "composer.placeholder": "Message Herta…",
+  "composer.quote.remove": "Remove this quote",
+  "quote.header": "Quote",
+  "quote.truncated": "… ({n} more line(s) not quoted)",
+  "composer.quote.placeholder": "Ask about this…",
+  "composer.predictionAria": "Suggested next message — press Tab to fill it in",
   "composer.aria": "Message composer",
   "composer.send": "Send message",
   "composer.stop": "Interrupt the current turn",
@@ -385,6 +426,10 @@ export const en = {
   "composer.context.queued": "Compaction is queued for your next message.",
   "composer.context.unavailable":
     "Context status is unavailable for this session.",
+  // While a document is read (2026-09-30): the read itself shows as the
+  // file's row with a hairline (2026-10-01); these answer the user's acts.
+  "composer.attach.stillReading": "Still reading the previous file",
+  "composer.attach.waitToSend": "Sending waits until the file is read",
   "composer.attach.denied": "Credential-shaped — refused",
   // The staged strip (ADR 0048): pictures waiting to be sent WITH a message.
   "composer.staged": "Images to send",
@@ -403,6 +448,16 @@ export const en = {
   "composer.hold.steer": "Interject now",
   "composer.hold.edit": "Edit",
   "composer.hold.discard": "Withdraw",
+  // 继续 (ADR 0071 §1.4): Brick's last run was interrupted — the app exited
+  // under it, or the user pressed Stop — and can be continued where it stood.
+  // @ mentions (ADR 0072 §2): @brick first while the query can still become
+  // it, then the matching workspace files.
+  "composer.mentions.aria": "Mentions",
+  "composer.mentions.brick": "Delegate to the coprocessor",
+  "composer.mentions.files": "Workspace files",
+  "composer.resume.text": "Brick's last run was interrupted.",
+  "composer.resume.action": "Continue",
+  "composer.resume.aria": "Continue the interrupted run",
   // Click-to-enlarge lightbox (ADR 0048 §4a). `lightbox.open` prefixes the
   // thumb button's aria-label, followed by the filename.
   "lightbox.open": "View picture",
@@ -417,8 +472,36 @@ export const en = {
   "connect.button": "Connect to Herta",
   "connect.failed": "Session start failed — try again",
   "workspace.rewind": "Rewind to here",
+  // Copy a reply (ADR 0072 §3): her prose, without the code.
+  "workspace.copyReply": "Copy reply",
+  "workspace.copied": "Copied",
+  "workspace.copyFailed": "Copy failed",
   "workspace.editsNotReverted": "Edited files were not reverted",
   "workspace.rewindFailed": "Rewind failed",
+  "workspace.undoEdits": "Undo changes",
+  "workspace.editsUndone": "Changes undone",
+  "workspace.editsUndoneLeftAlone": "Changes undone; not restored: {files}",
+  "workspace.undoFailed": "Undo failed",
+  "workspace.listJoin": ", ",
+  "activity.thinking": "Thinking…",
+  "activity.undo.chip": "Undo",
+  "activity.undo.chipTitle": "Undo Brick's file changes from this turn",
+  "activity.undo.chipDone": "Undone",
+  "activity.undo.summary": "Changes from this turn undone",
+  "activity.undo.count.restored": "{n} restored",
+  "activity.undo.count.deleted": "{n} deleted",
+  "activity.undo.count.left": "{n} not restored",
+  "activity.undo.result.restored": "restored",
+  "activity.undo.result.deleted": "deleted (created this turn)",
+  "activity.undo.result.unchanged": "no restore needed",
+  "activity.undo.result.changed_since": "modified since; not restored",
+  "activity.undo.result.not_kept": "no backup kept; not restored",
+  "activity.undo.result.outside_workspace":
+    "outside the workspace; not restored",
+  "activity.undo.result.failed": "write failed; not restored",
+  "activity.undo.commands": "modified by a command; not restored",
+  "activity.undo.commandsUnknown":
+    "Commands ran this turn; any changes they made were not restored",
   "workspace.processing": "Working…",
   "workspace.took": "Took",
   "workspace.recapping": "Tidying conversation history…",
@@ -445,7 +528,6 @@ export const en = {
   "activity.verb.reading": "Reading",
   "activity.verb.writing": "Writing",
   "activity.verb.running": "Running",
-  "activity.verb.planning": "Planning",
   "activity.verb.inspecting": "Inspecting",
   "activity.verb.searching": "Searching",
   "activity.verb.stopping": "Stopping",
@@ -468,8 +550,6 @@ export const en = {
   "activity.bg.stopped": "stopped",
   "activity.bg.exited": "exited",
   "activity.bg.signal": "signal",
-  "activity.todo.list": "todo list",
-  "activity.todo.step": "Step",
   "activity.attachment.label": "attachment",
   "activity.attachment.chars": "chars",
   "activity.attachment.unreadable.binary": "not a text file",
@@ -496,6 +576,12 @@ export const en = {
   "activity.attachment.pages": "pages",
   "activity.attachment.extracted": "text extracted",
   "activity.attachment.outline": "outline · {n} entries",
+  // The pending row of an attach in flight (2026-10-01).
+  "activity.attachment.progress.waiting": "waiting",
+  "activity.attachment.progress.reading": "reading",
+  "activity.attachment.progress.page": "page {done} of {total}",
+  "activity.attachment.progress.pictures":
+    "transcribing pictures {done} of {total}",
   "activity.attachment.remove": "Remove this attachment",
   "activity.attachment.removeFailed": "Removing the attachment failed",
   "activity.attachment.removeInUse":
@@ -508,6 +594,7 @@ export const en = {
   "viewer.copyPath": "Copy path",
   "viewer.copySha": "Copy commit id",
   "viewer.copied": "Copied",
+  "viewer.copyFailed": "Copy failed",
   "viewer.openExternal": "Open in default app",
   "viewer.notFound": "File no longer exists or was moved",
   "viewer.binary": "Binary file — open with the default app",
@@ -519,6 +606,11 @@ export const en = {
   "viewer.renderFailed":
     "Could not render this file — open with the default app",
   "viewer.showSource": "View source",
+  "viewer.piece.turnOn": "Turn on piece quoting",
+  "viewer.piece.turnOff": "Turn off piece quoting",
+  "viewer.piece.selected": "{n} selected",
+  "viewer.piece.quote": "Quote",
+  "viewer.piece.clear": "Clear selection",
   "viewer.showRendered": "View rendered",
   "viewer.rendering": "Rendering…",
   "viewer.diagramFailed": "The diagram did not render — its source is below",
@@ -553,12 +645,34 @@ export const en = {
   "viewer.log.branch": "Branch",
   "viewer.log.search": "Search commit messages",
   "viewer.log.noMatch": "No matching commits",
-  "activity.plan.more": "+{n} more",
-  "plan.card.title": "Todo list",
-  "plan.card.itemsUnavailable": "No item detail in this record",
   "trace.card.title": "Operation trace",
+  "trace.card.stepOne": "1 step",
   "trace.card.steps": "{n} steps",
+  "trace.card.fileOne": "1 file",
   "trace.card.files": "{n} files",
+  "trace.phase.explore": "Explore",
+  "trace.phase.modify": "Edit",
+  "trace.phase.verify": "Verify",
+  "trace.sum.readOne": "Read {name}",
+  "trace.sum.readMany": "Read {n} files, {name} first",
+  "trace.sum.searchOne": "Searched once",
+  "trace.sum.searchMany": "Searched {n} times",
+  "trace.sum.inspect": "Checked the repository",
+  "trace.sum.writeOne": "Edited {name}",
+  "trace.sum.writeMany": "Edited {n} files, {name} first",
+  "trace.sum.runOne": "Ran {cmd}",
+  "trace.sum.runMany": "Ran {n} commands",
+  "trace.sum.digestOne": "Digested a document",
+  "trace.sum.digestMany": "Digested {n} documents",
+  "trace.sum.memoryOne": "Saved a memory",
+  "trace.sum.memoryMany": "Saved {n} memories",
+  "trace.sum.stopOne": "Stopped a background command",
+  "trace.sum.stopMany": "Stopped {n} background commands",
+  "trace.sum.sep": " · ",
+  "trace.sum.failed": "{n} failed",
+  "trace.live.lineOne": "1 line",
+  "trace.live.lines": "{n} lines",
+  "trace.live.noOutput": "No output yet",
   "repo.card.title": "Repository",
   "repo.card.clean": "Working tree clean",
   "repo.card.dirty": "{n} changes",
@@ -605,6 +719,16 @@ export const en = {
   "evidence.todos": "to do",
   "evidence.evidence": "findings",
   "evidence.error": "error",
+  // The crash marker's open steps (ADR 0071 §1.2), each with the outcome the
+  // harness decided for it when the session next opened.
+  "evidence.cutoff": "when the app exited",
+  "evidence.cutoff.notStarted": "not started",
+  "evidence.cutoff.readInterrupted": "read cut off",
+  "evidence.cutoff.writeApplied": "written",
+  "evidence.cutoff.writeNotApplied": "not written",
+  "evidence.cutoff.writeChangedSince": "changed since",
+  "evidence.cutoff.stateNotApplied": "not applied",
+  "evidence.cutoff.outcomeUnknown": "outcome unknown",
   "activity.detail.show": "show detail",
   "activity.detail.hide": "hide detail",
   "workspace.codeChip": "code",
@@ -630,6 +754,8 @@ export const en = {
   "record.marker.risk": "{n} risk",
   "record.marker.risks": "{n} risks",
   "record.marker.aborted": "run aborted",
+  "record.marker.crashed": "the app exited unexpectedly",
+  "record.marker.stepLimit": "step limit reached",
   "record.marker.commit": "committed {sha}",
   "record.marker.pushed": "pushed {ref}",
   "record.marker.noop": "No output",
@@ -638,16 +764,16 @@ export const en = {
   "card.setWorkspace": "Set workspace…",
   "card.resetDefault": "Reset to default",
   "card.workspaceSetError": "could not set workspace",
-  "card.rules": "Remembered commands",
-  "card.rulesEmpty": "No commands remembered",
-  "card.rulesRemove": "Remove rule {rule}",
-  "card.trust": "Workspace trust",
-  "card.trustOn":
-    "Trusted: writes, git operations and scripts within it no longer request confirmation",
-  "card.trustOnDefault": "Sandbox workspace, trusted by default",
-  "card.trustOff": "Confirms each operation",
-  "card.trustEnable": "Trust this workspace",
-  "card.trustDisable": "Confirm each operation instead",
+  "card.openFolder": "Open the workspace folder",
+  "card.openFolderError": "could not open the workspace folder",
+  "card.copyPath": "Copy path",
+  "card.pathCopied": "Copied",
+  "card.copyFailed": "Copy failed",
+  "card.autoReview": "Auto-review",
+  "card.autoReviewOn": "On",
+  "card.autoReviewOff": "Off",
+  "card.autoReviewEnable": "Turn on auto-review",
+  "card.autoReviewDisable": "Turn off auto-review",
   "card.deviceInfoAria": "device card info",
   "card.deviceInfo":
     "The device card represents Brick (the differential coprocessor) — " +

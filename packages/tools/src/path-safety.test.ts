@@ -2,8 +2,46 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { resolveSafePath } from "./path-safety.js";
+import {
+  globReachesHertaState,
+  hertaStateWriteDenial,
+  mentionsHertaState,
+  namesHertaState,
+  resolveSafePath,
+} from "./path-safety.js";
 import { mkTmpWorkspace, type TmpWorkspace } from "./testing/tmp-workspace.js";
+
+describe("globReachesHertaState — a pattern bash would expand (review 2026-09-30)", () => {
+  it("matches under bash's default rule: a leading dot must be spelled", () => {
+    for (const p of [
+      ".her?a/permissions.json",
+      ".[h]erta",
+      ".h*",
+      ".*",
+      ".HER?A",
+      "stash/.her*/x",
+      ".[!x]erta",
+      ".[[:alpha:]]erta",
+      ".herta*",
+    ]) {
+      expect(globReachesHertaState(p), p).toBe(true);
+    }
+    for (const p of [
+      "*",
+      "?herta",
+      "[.]herta",
+      "build/*",
+      "*.json",
+      ".herta?",
+      ".hert",
+      ".herta",
+      "src/x.ts",
+      ".her[",
+    ]) {
+      expect(globReachesHertaState(p), p).toBe(false);
+    }
+  });
+});
 
 async function canCreateFileSymlinks(): Promise<boolean> {
   const probe = await mkdtemp(join(tmpdir(), "herta-symlink-probe-"));
@@ -21,6 +59,100 @@ async function canCreateFileSymlinks(): Promise<boolean> {
 let ws: TmpWorkspace;
 afterEach(async () => {
   if (ws) await ws.cleanup();
+});
+
+describe("hertaStateWriteDenial — the harness's own state is not command-writable (2026-09-30)", () => {
+  it("denies a path through .herta, judged relative to the workspace", async () => {
+    const root = await mkdtemp(join(tmpdir(), "herta-state-guard-"));
+    try {
+      expect(
+        hertaStateWriteDenial(root, join(root, ".herta", "permissions.json")),
+      ).not.toBeNull();
+      expect(hertaStateWriteDenial(root, join(root, ".herta"))).not.toBeNull();
+      expect(
+        hertaStateWriteDenial(root, join(root, "src", ".herta", "x")),
+      ).not.toBeNull();
+      expect(hertaStateWriteDenial(root, join(root, "src", "a.ts"))).toBeNull();
+      expect(hertaStateWriteDenial(root, root)).toBeNull();
+      // Outside the workspace is not this guard's: it asks as leaving it.
+      expect(
+        hertaStateWriteDenial(root, join(tmpdir(), ".herta", "x")),
+      ).toBeNull();
+      // A managed workspace lives UNDER a `.herta`: its own files stay
+      // writable; only a `.herta` inside it is state.
+      const managed = join(root, ".herta", "workspaces", "abc");
+      await mkdir(managed, { recursive: true });
+      expect(
+        hertaStateWriteDenial(managed, join(managed, "out.txt")),
+      ).toBeNull();
+      expect(
+        hertaStateWriteDenial(managed, join(managed, ".herta", "p.json")),
+      ).not.toBeNull();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("follows a link planted outside .herta that points into it", async () => {
+    const root = await mkdtemp(join(tmpdir(), "herta-state-link-"));
+    try {
+      await mkdir(join(root, ".herta"));
+      await symlink(
+        join(root, ".herta"),
+        join(root, "lnk"),
+        process.platform === "win32" ? "junction" : "dir",
+      );
+      expect(
+        hertaStateWriteDenial(root, join(root, "lnk", "permissions.json")),
+      ).not.toBeNull();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("names .herta in shell text as a path component only", () => {
+    for (const body of [
+      "echo x > .herta/p.json",
+      "cp a .HERTA/p.json",
+      'cat > ".herta/x"',
+      "cd .herta && ls",
+      "del .herta\\p.json",
+    ]) {
+      expect(mentionsHertaState(body), body).toBe(true);
+    }
+    for (const body of ["echo hertaland", "cat my.herta.txt", "x.herta2/y"]) {
+      expect(mentionsHertaState(body), body).toBe(false);
+    }
+  });
+
+  it("a managed sandbox's own root names .herta without reaching its state (release review 2026-10-13)", () => {
+    const home = "C:\\Users\\u";
+    const ws = "C:\\Users\\u\\.herta\\workspaces\\abc";
+    const names = (text: string) => namesHertaState(text, ws, home);
+    for (const text of [
+      "cd C:\\Users\\u\\.herta\\workspaces\\abc && npm test",
+      "cd C:/Users/u/.herta/workspaces/abc && npm test",
+      "cd /c/users/u/.herta/workspaces/abc && npm test",
+      "node ~/.herta/workspaces/abc/x.js",
+      'cat "$HOME/.herta/workspaces/abc/out.txt"',
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: bash's own ${HOME}
+      "cat ${HOME}/.herta/workspaces/abc/out.txt",
+    ]) {
+      expect(names(text), text).toBe(false);
+    }
+    for (const text of [
+      "cd /c/Users/u/.herta/workspaces/abc && cat x > .herta/p.json",
+      "echo x > C:/Users/u/.herta/workspaces/abc/.herta/p.json",
+      "echo x > ~/.herta/workspaces/other/.herta/p.json",
+      'echo x > "$PWD/.herta/p.json"',
+      // Another sandbox is not this workspace.
+      "cd ~/.herta/workspaces/abcd && ls",
+    ]) {
+      expect(names(text), text).toBe(true);
+    }
+    // An ordinary project: nothing to take out.
+    expect(namesHertaState("cd /e/repo && make", "E:\\repo", home)).toBe(false);
+  });
 });
 
 describe("resolveSafePath", () => {

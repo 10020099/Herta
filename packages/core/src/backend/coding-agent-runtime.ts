@@ -9,10 +9,10 @@ import type {
 import type { EventBus } from "../event-bus.js";
 import { FindingsLedger } from "../findings-ledger.js";
 import type { MemoryManager } from "../memory-manager.js";
+import { CALL_ERROR_DENY_CODES } from "../permission-deny-codes.js";
 import type { PermissionEngine, RiskLevel } from "../permission-engine.js";
 import { ReadLedger } from "../read-ledger.js";
 import { countDiffLines } from "../text/diff-lines.js";
-import { TodoStore } from "../todo-store.js";
 import type { ToolRegistry } from "../tool-registry.js";
 import { TranscriptStore } from "../transcript-store.js";
 import type { AgentEvent } from "../types/events.js";
@@ -24,12 +24,22 @@ import type {
 import { runBackendTurnLoop } from "./backend-turn-loop.js";
 import { BackgroundHost } from "./background-host.js";
 import type { BackendPromptBudget } from "./context-budget.js";
+import {
+  currentJournalHost,
+  DISPATCH_JOURNAL_VERSION,
+  DispatchJournal,
+  hashFile,
+  markJournalOpen,
+  readDispatchJournal,
+} from "./dispatch-journal.js";
+import { planResume, type ResumePlan } from "./journal-seal.js";
 import { renderScopedMemory } from "./scoped-memory.js";
+import { type UndoSegment, UndoStore } from "./undo-store.js";
 
 /**
  * Tools whose SUCCESS argues that the task advanced (audit 2026-07-24, 1.2).
  * Read-only and bookkeeping tools — read_file, search_text, glob,
- * git_status, git_diff, todo_write, command_output — execute successfully
+ * git_status, git_diff, command_output — execute successfully
  * while changing nothing, so counting them as completion evidence let a
  * backend that merely investigated report 完成.
  */
@@ -38,7 +48,10 @@ const MUTATING_TOOLS: ReadonlySet<string> = new Set([
   "write_new_file",
   "run_command",
   "command_stop",
-  "memory_save",
+  // Not `memory_save` (ADR 0077): a saved fact changes the harness's own
+  // store, not the user's task, and on the default contract a run that
+  // read, failed and saved a fact would have reported 完成 — the trap the
+  // reads were taken out of (audit 2026-07-24, 1.2).
   // Minimal contract (ADR 0040): `bash` counts like run_command (exit 0
   // only, see below); the editor counts only for its writing commands —
   // a `view` is a read and proves nothing (the result data says which).
@@ -112,6 +125,22 @@ export interface CodingAgentRuntimeDeps {
    * reaches the loop — the CLI and tests.
    */
   pendingUserInput?: () => readonly string[];
+  /**
+   * Where this session keeps its run journal (ADR 0071 §1.1; see
+   * `dispatchJournalPath`). Each dispatch replaces it. Absent (the CLI,
+   * tests): no journal is kept.
+   */
+  journalPath?: string;
+  /**
+   * Where this session keeps what 板砖's editors replace (ADR 0074; see
+   * `undoStoreDir`). Each dispatch and each continuation is a segment, keyed
+   * by the record length it began at — so a run given none keeps nothing.
+   * Absent (the CLI, tests): no undo store.
+   */
+  undoDir?: string;
+  /** The execution contract this stack runs (ADR 0040), recorded in the
+   *  journal so a resumed run can tell whether it still applies. */
+  contract?: string;
 }
 
 /** What the workspace's VCS looked like at one instant. */
@@ -131,7 +160,6 @@ export interface RepoRangeFile {
 
 export interface RunBriefOptions {
   signal?: AbortSignal;
-  scopedRepoInstructions?: string;
   /**
    * The frame's project-memory text. UNDEFINED (the production dispatch)
    * means the runtime recalls the store itself at brief start and renders
@@ -157,6 +185,17 @@ export interface RunBriefOptions {
   /** The session's interaction language (ADR 0016). Threaded to the backend
    *  builder so an EN session gets an English backend prompt; absent → "zh". */
   lang?: "zh" | "en";
+  /** The session record's length when this run was dispatched, recorded in
+   *  the journal: the seal's second gate (ADR 0071 §1.2). */
+  recordLength?: number;
+}
+
+export interface ResumeBriefOptions {
+  signal?: AbortSignal;
+  /** The session record's length when the run was continued, recorded on
+   *  the journal's `resume` entry: the seal's record gate for this segment
+   *  (ADR 0071 §1.2). */
+  recordLength?: number;
 }
 
 interface PendingPermission {
@@ -167,8 +206,8 @@ interface PendingPermission {
 /**
  * Silent coding-agent runtime per ADR 0007 / D6. Long-lived infrastructure
  * (provider, tools, permissions, backend builder, bus, memory) is owned by
- * the instance; per-brief state (transcript, plan, research, read ledger)
- * is reset on every `runBrief` call. The runtime never speaks to the user
+ * the instance; per-brief state (transcript, read ledger, journal,
+ * background host) is reset on every `runBrief` call. The runtime never speaks to the user
  * and never role-plays Herta — it returns a structured `AgentExecutionReport`.
  */
 export class CodingAgentRuntime {
@@ -236,9 +275,57 @@ export class CodingAgentRuntime {
     }
   }
 
-  async runBrief(
+  runBrief(
     brief: HertaToAgentBrief,
     opts: RunBriefOptions = {},
+  ): Promise<AgentExecutionReport> {
+    return this.run(brief, opts, null);
+  }
+
+  /**
+   * Continue a run the app exited during, or the user stopped (ADR 0071
+   * §1.5), from its journal: the same base frame, the conversation with every
+   * open step closed and the harness's note after it, the findings that
+   * took effect, the files already changed. It appends to the
+   * same journal under a `resume` entry. Nothing is re-run.
+   *
+   * Rejects with `kind: "resume_unavailable"` when the journal holds no run
+   * that can be continued, or one started under another contract (its calls
+   * name that contract's tools).
+   */
+  async resumeBrief(opts: ResumeBriefOptions): Promise<AgentExecutionReport> {
+    const unavailable = (why: string): Error =>
+      Object.assign(new Error(`cannot continue this run: ${why}`), {
+        kind: "resume_unavailable" as const,
+      });
+    if (this.deps.journalPath === undefined) throw unavailable("no journal");
+    const entries = await readDispatchJournal(this.deps.journalPath);
+    const plan =
+      entries === null
+        ? null
+        : await planResume(entries, hashFile, this.deps.clock());
+    if (plan === null) throw unavailable("no interrupted run in the journal");
+    if (plan.start.contract !== this.deps.contract) {
+      throw unavailable(
+        `it ran under the ${plan.start.contract ?? "unknown"} contract`,
+      );
+    }
+    return this.run(
+      plan.start.brief,
+      {
+        ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+        ...(opts.recordLength !== undefined
+          ? { recordLength: opts.recordLength }
+          : {}),
+      },
+      plan,
+    );
+  }
+
+  private async run(
+    brief: HertaToAgentBrief,
+    opts: RunBriefOptions,
+    resume: ResumePlan | null,
   ): Promise<AgentExecutionReport> {
     if (this.briefInFlight) {
       // A real Error, not an AgentError literal (audit 2026-07-10, finding
@@ -251,6 +338,12 @@ export class CodingAgentRuntime {
       });
     }
     this.briefInFlight = true;
+    // The run's journal (ADR 0071 §1.1), opened once the frame's inputs are
+    // known. Every transcript append reaches it through `onAppend`.
+    let journal: DispatchJournal | undefined;
+    // The undo store (ADR 0074 §1), opened beside it.
+    let undo: UndoStore | undefined;
+    let undoSegment: UndoSegment | undefined;
     try {
       // Ensure the managed sandbox exists before any tool runs. A fresh
       // session whose first @板砖 action is read-only (e.g. `git status`)
@@ -258,13 +351,40 @@ export class CodingAgentRuntime {
       // get ENOENT. Idempotent.
       mkdirSync(this.deps.workspaceRoot, { recursive: true });
 
-      const transcript = new TranscriptStore();
-      const todos = new TodoStore();
+      // What the user said while this run worked (ADR 0063 steers), for the
+      // working state: a steer sits in a transcript group the budget trim can
+      // drop (working-state.ts).
+      const steers: string[] = [];
+      const transcript = new TranscriptStore({
+        onAppend: (message) => {
+          void journal?.append({ kind: "message", message });
+          if (message.role === "user") steers.push(message.text);
+        },
+      });
       const reads = new ReadLedger();
       const bg = new BackgroundHost();
       const findings = new FindingsLedger();
 
       const builder = new ExecutionReportBuilder(brief.taskId);
+      // A continued run starts where its journal left off (ADR 0071 §1.5).
+      // The read ledger stays empty: the model reads a file again before it
+      // edits it, and the freshness rule does the rest.
+      if (resume !== null) {
+        transcript.seed(resume.messages);
+        // The earlier segments' steers; the last seeded message is the
+        // harness's resume note, not the user's.
+        for (const m of resume.messages.slice(0, -1)) {
+          if (m.role === "user") steers.push(m.text);
+        }
+        for (const f of resume.findings) {
+          findings.add(f);
+          builder.addEvidence({
+            kind: "finding",
+            summary: f.claim,
+            source: f.cites.join(", "),
+          });
+        }
+      }
       const pendingPermissions = new Map<string, PendingPermission>();
       let failed = false;
       /** The KIND of the last turn.failed — `"interrupted"` distinguishes a
@@ -293,8 +413,25 @@ export class CodingAgentRuntime {
           diffSummary: string;
         }
       >();
+      // For undo (ADR 0074 §2): whether a command ran, and the paths the
+      // attribution below credits to commands rather than an editor. Undo
+      // restores only what the editors wrote; these are what it names as
+      // left alone.
+      let commandRan = false;
+      let commandsAttributed = false;
+      const commandPaths = new Set<string>();
       let okEvidence = 0;
       let deniedPermissions = 0;
+      // A continued run's report speaks for the whole task: the files
+      // changed before the interruption count (ADR 0071 §1.5). Their diff is
+      // not kept, so no line totals are claimed for them.
+      for (const f of resume?.changedFiles ?? []) {
+        changedByPath.set(f.path, {
+          path: f.path,
+          kind: f.kind,
+          diffSummary: "changed before the interruption",
+        });
+      }
 
       // The dispatch BASELINE. `changedByPath` above only ever learns about a
       // path from one of the three editors, and `bash` is not one of them — so
@@ -312,13 +449,21 @@ export class CodingAgentRuntime {
       // gathered in parallel; every wrapper swallows its own failures. The
       // project-memory recall (ADR 0060) joins them: one small file read
       // per dispatch, skipped when the caller already decided the text.
-      const lang = opts.lang ?? "zh";
+      // A continued run rebuilds its base frame from the journal: the same
+      // inputs, so the same prompt (ADR 0071 §1.5). Only the baseline is
+      // taken afresh — it is what this segment is credited against.
+      const frameIn = resume?.start.frame;
+      const lang = frameIn?.lang ?? opts.lang ?? "zh";
       const [baseline, repoContext, recalledMemory] = await Promise.all([
         this.probeRepo(opts.signal),
-        this.describeRepo(opts.signal),
-        opts.scopedMemory === undefined
-          ? this.recallScopedMemory(lang)
-          : Promise.resolve(opts.scopedMemory),
+        frameIn !== undefined
+          ? Promise.resolve(frameIn.repoContext ?? null)
+          : this.describeRepo(opts.signal),
+        frameIn !== undefined
+          ? Promise.resolve(frameIn.scopedMemory)
+          : opts.scopedMemory === undefined
+            ? this.recallScopedMemory(lang)
+            : Promise.resolve(opts.scopedMemory),
       ]);
 
       const absorb = (event: AgentEvent): void => {
@@ -364,7 +509,7 @@ export class CodingAgentRuntime {
             // Only tools that CHANGE something count toward a completion
             // claim (audit 2026-07-24, 1.2). `ToolResult.ok` means the tool
             // EXECUTED, not that the task advanced — so read_file, glob,
-            // search_text, git_status, todo_write and friends all argued for
+            // search_text, git_status and friends all argued for
             // "completed", and a backend that read three files and said "that
             // function doesn't exist here, I can't do this" reported 完成.
             // That marker is durable, Herta reads it as ground truth
@@ -389,6 +534,33 @@ export class CodingAgentRuntime {
                     : undefined
                   : 0;
               if (exit === 0) okEvidence += 1;
+            }
+            // A command that ran and could write — not a read, a test, a
+            // version query (ADR 0074 §2; `git status` in a folder with no
+            // repository was reported as an unknown change, live 2026-10-07),
+            // nor one whose only writes went to files undo holds.
+            const commandData = COMMAND_TOOLS.has(event.tool)
+              ? (event.result.data as unknown as RunCommandData | undefined)
+              : undefined;
+            if (
+              COMMAND_TOOLS.has(event.tool) &&
+              event.result.ok &&
+              commandData?.readOnly !== true &&
+              commandData?.writesAccounted !== true
+            ) {
+              commandRan = true;
+            }
+            // The files its redirections wrote are written files, as an
+            // editor's are (ADR 0074 amendment, 2026-10-08): the report lists
+            // them, and the git attribution below no longer credits them to
+            // commands — undo restores them. Whatever the command's exit:
+            // they are on disk either way.
+            for (const w of commandData?.redirectWrites ?? []) {
+              changedByPath.set(w.relPath, {
+                path: w.relPath,
+                kind: w.created ? "created" : "modified",
+                diffSummary: `+${w.added} -${w.removed}`,
+              });
             }
             if (COMMAND_TOOLS.has(event.tool) && event.result.ok) {
               const data = event.result.data as unknown as
@@ -450,18 +622,23 @@ export class CodingAgentRuntime {
             // must not report 完成. The intent has always named MUTATIONS
             // (git-dev lab 2026-08-26): a withheld READ (the reader guard
             // refusing a `.git`/`.herta` probe the model then routed around)
-            // and a malformed call (`invalid_input` — bad argument shape,
-            // retried, not a refusal of anything) capped fully completed
-            // briefs at 部分完成. A user deny carries its risk on the
-            // request; a rule-deny now carries it on the event; anything
-            // without a stated risk still counts, conservatively.
+            // and a call error capped fully completed briefs at 部分完成. A
+            // call error is a rule-deny whose same change, asked correctly,
+            // would be allowed — a malformed argument, an edit anchor that
+            // does not match, a file not read first (the one set that says
+            // which codes: permission-deny-codes.ts, ADR 0047 amendment
+            // 2026-09-29). A user deny carries its risk on the request; a
+            // rule-deny carries it on the event; anything without a stated
+            // risk or a decided code still counts, conservatively.
             if (event.decision === "deny" || event.decision === "blocked") {
               const refusedRisk =
                 event.decision === "deny" ? pending?.risk : event.risk;
               const withheldRead = refusedRisk === "workspace_read";
-              const malformed =
-                event.decision === "blocked" && event.code === "invalid_input";
-              if (!withheldRead && !malformed) deniedPermissions += 1;
+              const callError =
+                event.decision === "blocked" &&
+                event.code !== undefined &&
+                CALL_ERROR_DENY_CODES.has(event.code);
+              if (!withheldRead && !callError) deniedPermissions += 1;
             }
             pendingPermissions.delete(event.id);
             break;
@@ -485,7 +662,6 @@ export class CodingAgentRuntime {
         permissions: this.deps.permissions,
         backendBuilder: this.deps.backendBuilder,
         transcript,
-        todos,
         bg,
         findings,
         bus: this.deps.bus,
@@ -494,15 +670,25 @@ export class CodingAgentRuntime {
         reads,
         memory: this.deps.memory,
         ...(this.deps.budget !== undefined ? { budget: this.deps.budget } : {}),
+        // Read only once old iterations have been dropped (working-state.ts).
+        workingState: () => ({
+          changedFiles: [...changedByPath.values()],
+          background: bg
+            .list()
+            .filter((p) => p.isRunning())
+            .map((p) => ({ id: p.id, command: p.argv.join(" ") })),
+          findings: findings.all(),
+          steers,
+        }),
       };
       const handle = {
         signal: opts.signal ?? new AbortController().signal,
-        userMessages: opts.userMessages ?? [],
-        omittedUserMessages: opts.omittedUserMessages ?? 0,
-        scopedRepoInstructions: opts.scopedRepoInstructions ?? "",
+        userMessages: frameIn?.userMessages ?? opts.userMessages ?? [],
+        omittedUserMessages:
+          frameIn?.omittedUserMessages ?? opts.omittedUserMessages ?? 0,
         scopedMemory: recalledMemory,
-        recentDialogue: opts.recentDialogue ?? "",
-        workingHistory: opts.workingHistory ?? "",
+        recentDialogue: frameIn?.recentDialogue ?? opts.recentDialogue ?? "",
+        workingHistory: frameIn?.workingHistory ?? opts.workingHistory ?? "",
         lang,
         ...(repoContext !== null ? { repoContext } : {}),
         ...(this.deps.pendingUserInput !== undefined
@@ -510,9 +696,78 @@ export class CodingAgentRuntime {
           : {}),
       };
 
+      if (this.deps.journalPath !== undefined && resume !== null) {
+        // The same journal, continued: the closers a stopped run still owed,
+        // then the `resume` entry that opens this segment — both durable
+        // before any step runs.
+        journal = await DispatchJournal.reopen(this.deps.journalPath, {
+          live: true,
+        });
+        for (const c of resume.newClosers) {
+          await journal.append({ kind: "closer", ...c });
+        }
+        try {
+          await journal.appendDurable({
+            kind: "resume",
+            at: this.deps.clock().toISOString(),
+            ...(opts.recordLength !== undefined
+              ? { recordLength: opts.recordLength }
+              : {}),
+          });
+          await markJournalOpen(this.deps.journalPath, true);
+        } catch {
+          // A failed journal refuses every step with a side effect (the
+          // loop's fail-closed rule); the run itself goes on.
+        }
+      } else if (this.deps.journalPath !== undefined) {
+        journal = await DispatchJournal.begin(this.deps.journalPath, {
+          kind: "start",
+          v: DISPATCH_JOURNAL_VERSION,
+          taskId: brief.taskId,
+          at: this.deps.clock().toISOString(),
+          ...(this.deps.contract !== undefined
+            ? { contract: this.deps.contract }
+            : {}),
+          ...(opts.recordLength !== undefined
+            ? { recordLength: opts.recordLength }
+            : {}),
+          workspaceRoot: this.deps.workspaceRoot,
+          host: currentJournalHost(),
+          brief,
+          frame: {
+            userMessages: handle.userMessages,
+            omittedUserMessages: handle.omittedUserMessages,
+            scopedMemory: handle.scopedMemory,
+            recentDialogue: handle.recentDialogue,
+            workingHistory: handle.workingHistory,
+            lang,
+            ...(repoContext !== null ? { repoContext } : {}),
+          },
+        });
+        if (!journal.failed) {
+          await markJournalOpen(this.deps.journalPath, true);
+        }
+      }
+      // This run is a segment of the undo store: its writers leave what they
+      // replace there, under the record length it began at. Best effort:
+      // the store never fails the run.
+      if (this.deps.undoDir !== undefined && opts.recordLength !== undefined) {
+        undo = await UndoStore.open(this.deps.undoDir);
+        undoSegment = undo.openSegment(opts.recordLength, brief.taskId);
+      }
+      const turnDepsWithJournal = {
+        ...turnDeps,
+        ...(journal !== undefined ? { journal } : {}),
+        ...(undoSegment !== undefined ? { undo: undoSegment.undo } : {}),
+      };
+
       let stoppedBackground = 0;
       try {
-        for await (const event of runBackendTurnLoop(turnDeps, brief, handle)) {
+        for await (const event of runBackendTurnLoop(
+          turnDepsWithJournal,
+          brief,
+          handle,
+        )) {
           if (event.type === "turn.failed") {
             failed = true;
             // Keep the KIND, not just the fact (audit 2026-07-24, 1.4). The
@@ -520,10 +775,15 @@ export class CodingAgentRuntime {
             // collapsing both into `failed` is what made a user's Stop read
             // as "板砖 broke".
             lastErrorKind = event.error.kind;
+            // Why the run ended leads the risks, so the done-marker's first
+            // five keep it (2026-09-29 long-run study, proposal 1).
             builder.addResidualRisk(
               event.error.kind === "interrupted"
                 ? `Turn interrupted: ${event.error.message}`
-                : `Turn failed: ${event.error.message}`,
+                : event.error.kind === "step_limit"
+                  ? `Turn stopped: ${event.error.message}`
+                  : `Turn failed: ${event.error.message}`,
+              { leading: true },
             );
           }
         }
@@ -537,6 +797,7 @@ export class CodingAgentRuntime {
       if (stoppedBackground > 0) {
         builder.addResidualRisk(
           `${stoppedBackground} background command(s) still running at brief end were stopped`,
+          { leading: true },
         );
       }
 
@@ -560,6 +821,7 @@ export class CodingAgentRuntime {
           after !== null &&
           (after.head === baseline.head || range !== null)
         ) {
+          commandsAttributed = true;
           const wasDirty = new Set(baseline.dirty);
           for (const f of range ?? []) {
             // Already dirty before the brief: partly the user's edit, even
@@ -572,6 +834,7 @@ export class CodingAgentRuntime {
               kind: f.kind,
               diffSummary: "changed and committed during this dispatch",
             });
+            commandPaths.add(f.path);
           }
           for (const path of after.dirty) {
             // Already dirty before the brief: outside this mechanism's reach.
@@ -583,11 +846,13 @@ export class CodingAgentRuntime {
               kind: "modified",
               diffSummary: "changed via a command (no per-file diff)",
             });
+            commandPaths.add(path);
           }
           const carried = baseline.dirty.filter((p) => !changedByPath.has(p));
           if (carried.length > 0) {
             builder.addResidualRisk(
               `${carried.length} file(s) were already modified before this dispatch and are not attributed to it: ${carried.slice(0, 5).join(", ")}${carried.length > 5 ? ", …" : ""}`,
+              { leading: true },
             );
           }
         } else if (after !== null && after.head !== baseline.head) {
@@ -597,7 +862,20 @@ export class CodingAgentRuntime {
           // that instead of computing a difference that means nothing.
           builder.addResidualRisk(
             "HEAD moved during this dispatch, so file changes could not be attributed by comparing against the starting commit",
+            { leading: true },
           );
+        }
+      }
+
+      // What the commands changed, for undo (ADR 0074 §2): the attribution's
+      // paths when there was one; otherwise only that commands ran.
+      if (undoSegment !== undefined) {
+        if (commandsAttributed) {
+          if (commandPaths.size > 0) {
+            await undoSegment.noteCommands([...commandPaths]);
+          }
+        } else if (commandRan) {
+          await undoSegment.noteCommands(null);
         }
       }
 
@@ -606,19 +884,16 @@ export class CodingAgentRuntime {
         builder.addChangedFile(file);
       }
 
-      // Fold unfinished todos into nextActions (ADR 0025 §2) — for every
-      // outcome, including failed: an honest unfinished list is exactly
-      // what the next dispatch (via the done-marker → workingHistory) and
-      // Herta's commentary need to see.
-      for (const todo of todos.unfinished()) {
-        builder.addNextAction(todo.content);
-      }
-
       if (failed) {
-        // An interrupt is a distinct ending, not a failure (1.4).
+        // An interrupt is a distinct ending, not a failure (1.4). So is the
+        // step limit: the run stopped where it stood, and it can be
+        // continued like an interrupted one (2026-09-29, proposal 3).
         builder.setStatus(
-          lastErrorKind === "interrupted" ? "interrupted" : "failed",
+          lastErrorKind === "interrupted" || lastErrorKind === "step_limit"
+            ? "interrupted"
+            : "failed",
         );
+        if (lastErrorKind === "step_limit") builder.setEndedBy("step_limit");
       } else {
         const partialReport = this.peekReport(builder);
         // tests[] carries failing runs too (that is its job — the report
@@ -641,9 +916,9 @@ export class CodingAgentRuntime {
           // as a residual-risk line. A refusal now CAPS the status.
           //
           // "Landed" is mutations/verification — deliberately NOT
-          // `hasOkEvidence`, which counts read_file/todo_write/git_status
-          // and would call a run that only READ things "partial" instead of
-          // 受阻 (and see 1.2 on that counting generally).
+          // `hasOkEvidence`, which would call a run that only READ things
+          // "partial" instead of 受阻 (and see 1.2 on that counting
+          // generally).
           const landed =
             partialReport.changedFiles.length > 0 ||
             partialReport.tests.length > 0;
@@ -656,8 +931,28 @@ export class CodingAgentRuntime {
         }
       }
 
-      return builder.build();
+      const report = builder.build();
+      // The run ended, whatever its status: the journal says so, so a later
+      // open does not take it for a run the app died in (ADR 0071 §1.2).
+      if (journal !== undefined) {
+        await journal.append({
+          kind: "end",
+          status: report.status,
+          // A continued run is told why this one stopped (journal-seal.ts).
+          ...(report.endedBy === "step_limit"
+            ? { cause: "step-limit" as const }
+            : {}),
+        });
+        // Its processes were stopped above (`bg.stopAll`): nothing for a
+        // relaunch to reap (ADR 0071 §1.6).
+        if (this.deps.journalPath !== undefined) {
+          await markJournalOpen(this.deps.journalPath, false);
+        }
+      }
+      return report;
     } finally {
+      await journal?.close();
+      await undo?.close();
       this.briefInFlight = false;
     }
   }

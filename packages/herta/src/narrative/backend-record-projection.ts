@@ -10,6 +10,8 @@
 import type {
   AgentEvent,
   AgentExecutionReport,
+  CutoffOutcome,
+  CutoffStep,
   DigestDocumentData,
   DoneMarkerSummary,
   EvidenceSection,
@@ -18,9 +20,6 @@ import type {
   ShowExcerptData,
   SystemBlock,
   SystemBlockDigest,
-  TodoDigestItem,
-  TodoItem,
-  TodoStatus,
 } from "@herta/core";
 import {
   composeMarkerSummary,
@@ -81,24 +80,13 @@ export function sanitizeDigest(digest: SystemBlockDigest): SystemBlockDigest {
         cites: digest.cites.map(cleanBody),
       };
     case "todo":
-      // Every string here is backend-authored item text: `current` (the
-      // in-flight step) and each `items[].content` (the full list both todo
-      // block kinds carry). Sanitize all of them — a renderer prints the
-      // items, and compaction may yet learn to. Counts and the `status`
-      // literals (a harness-owned enum) pass through.
+      // Legacy (ADR 0073): nothing writes a todo digest now; the case keeps
+      // the switch total, and still cleans the one string it carried.
       return {
         ...digest,
         ...(digest.current === undefined
           ? {}
           : { current: cleanBody(digest.current) }),
-        ...(digest.items === undefined
-          ? {}
-          : {
-              items: digest.items.map((item) => ({
-                ...item,
-                content: cleanBody(item.content),
-              })),
-            }),
       };
     case "attachment":
       // The filename and path come from OUTSIDE the workspace — the user
@@ -123,6 +111,14 @@ export function sanitizeDigest(digest: SystemBlockDigest): SystemBlockDigest {
         ...digest,
         source: cleanBody(digest.source),
         path: cleanBody(digest.path),
+      };
+    case "undo":
+      // Paths 板砖 wrote, or its commands touched (ADR 0074): backend-derived
+      // like every path here. The results and flags are harness-made.
+      return {
+        ...digest,
+        files: digest.files.map((f) => ({ ...f, path: cleanBody(f.path) })),
+        commands: digest.commands.map(cleanBody),
       };
     case "skip":
       return digest;
@@ -184,6 +180,13 @@ export function sanitizeSection(s: EvidenceSection): EvidenceSection {
         source: cleanBody(s.source),
         path: cleanBody(s.path),
         text: cleanBody(s.text),
+      };
+    case "cutoff":
+      // A step names a model-written command or path; the outcome is a
+      // harness literal.
+      return {
+        ...s,
+        steps: s.steps.map((c) => ({ ...c, step: cleanBody(c.step) })),
       };
     case "error":
       return { ...s, message: cleanBody(s.message) };
@@ -317,13 +320,6 @@ export function projectBackendEventUnsanitized(
 
   switch (event.type) {
     case "tool.call.started": {
-      // todo_write projects from `plan.updated` instead (2026-07-23): the
-      // event carries the full structured list, so the drain emits the first
-      // layout block + compact "todo k/n: <current>" progress rows. A
-      // started-row here would double-project every update ("Planning 2/3"
-      // AND the progress row); a FAILED todo_write still surfaces via the
-      // tool.call.finished failure row below.
-      if (event.tool === "todo_write") return null;
       const label = workflowLabel(event.tool, event.inputSummary);
       if (label === null) return null;
       // The editor's summary leads with its command word so the verb can be
@@ -340,8 +336,15 @@ export function projectBackendEventUnsanitized(
         label: "差分协处理器",
         body,
         // Structured digest (M-projection-3): compaction digests from THIS,
-        // not by regex-parsing the rendered body back apart.
-        digest: { kind: "op", verb: label, arg },
+        // not by regex-parsing the rendered body back apart. `runsTests`
+        // rides along when the tool recognised a test run at dispatch (ADR
+        // 0073 amendment 2026-10-08) — the body is unchanged.
+        digest: {
+          kind: "op",
+          verb: label,
+          arg,
+          ...(event.runsTests === true ? { runsTests: true as const } : {}),
+        },
       };
     }
 
@@ -396,6 +399,21 @@ export function projectBackendEventUnsanitized(
             label: "差分协处理器",
             body: `↳ finding: ${data.claim}${cites.length > 0 ? ` — ${cites.join(", ")}` : ""}`,
             digest: { kind: "finding", claim: data.claim, cites },
+          };
+        }
+        // A saved fact, as the store holds it — redacted (ADR 0077). The op
+        // row names only its kind; this says what 板砖 will remember, so the
+        // user and Herta can see it (PHILOSOPHY §9). Bounded: a fact is one
+        // sentence by schema.
+        if (event.tool === "memory_save") {
+          const data = event.result.data as { text?: unknown } | undefined;
+          if (typeof data?.text !== "string") return null;
+          const fact =
+            data.text.length > 200 ? `${data.text.slice(0, 200)}…` : data.text;
+          return {
+            kind: "system",
+            label: "差分协处理器",
+            body: `↳ remembered: ${fact.replace(/\s+/g, " ").trim()}`,
           };
         }
         // search_text surfaces its hits (2026-08-17). Same reasoning as
@@ -709,8 +727,6 @@ export function workflowLabel(
       // Not a run. Herta reads these rows, and `Running bg-1` on the stop
       // call read as a second launch (real session 2026-08-16).
       return "Stopping";
-    case "todo_write":
-      return "Planning";
     case "git_status":
     case "git_diff":
       return "Inspecting";
@@ -740,6 +756,8 @@ const CN_MARKER_LABELS = (stateWord: string): MarkerSummaryLabels => ({
   commit: (sha) => `提交 ${sha}`,
   pushed: (ref) => `推送 ${ref}`,
   aborted: "运行异常中止",
+  crashed: "应用意外退出",
+  stepLimit: "步数已达上限",
 });
 
 const STATUS_WORD: Record<string, string> = {
@@ -840,6 +858,9 @@ export function buildDoneMarker(
     ...(testCounts !== undefined ? { tests: testCounts } : {}),
     ...(git !== undefined ? { git } : {}),
     riskCount,
+    // Stopped at the step limit (2026-09-29): said in the body, so the
+    // user, Herta and the next dispatch read why the run ended there.
+    ...(report.endedBy === "step_limit" ? { stepLimit: true as const } : {}),
   };
 
   // Canonical CN body, composed from the SAME structured summary through the
@@ -867,14 +888,6 @@ export function buildDoneMarker(
     const items = report.residualRisks.slice(0, 5);
     detailParts.push(`↳ 风险: ${items.join("; ")}`);
     sections.push({ kind: "risks", items });
-  }
-  // Unfinished todos (ADR 0025 §2): folded from the report's nextActions so
-  // the next dispatch inherits them through workingHistory (which reads the
-  // marker body + evidenceDetail), and Herta can name what's still open.
-  if (report.nextActions.length > 0) {
-    const items = report.nextActions.slice(0, 5);
-    detailParts.push(`↳ 待办: ${items.join("; ")}`);
-    sections.push({ kind: "todos", items });
   }
   // The backend's own findings (R-1, persona re-test 2026-08-11). Everything
   // above is a BY-PRODUCT of the run — files touched, risks left, work
@@ -928,103 +941,6 @@ export function buildDoneMarker(
     ...(evidenceDetail !== undefined ? { evidenceDetail } : {}),
     ...(sections.length > 0 ? { evidence: sections } : {}),
   };
-}
-
-/** The digest's structured copy of the list. A fresh array of fresh objects,
- *  never the caller's — a record block is durable and must not alias the
- *  backend's live todo state. */
-export function todoDigestItems(
-  todos: readonly TodoItem[],
-): readonly TodoDigestItem[] {
-  return todos.map((t) => ({ content: t.content, status: t.status }));
-}
-
-/**
- * The dispatch's first todo layout as one record block (ADR 0025 §2
- * rendering). English chrome header (matching every other projected row's
- * chrome — renderers localize from the digest), item text verbatim as the
- * backend wrote it. Status marks mirror the todo states:
- * `[ ]` pending · `[~]` in_progress · `[x]` completed.
- */
-export function buildTodoLayoutBlock(todos: readonly TodoItem[]): SystemBlock {
-  const mark = (status: TodoStatus): string =>
-    status === "completed" ? "[x]" : status === "in_progress" ? "[~]" : "[ ]";
-  const completed = todos.filter((t) => t.status === "completed").length;
-  const lines = todos.map((t) => `${mark(t.status)} ${t.content}`);
-  return {
-    kind: "system",
-    label: "差分协处理器",
-    body: [`todo list (${todos.length}):`, ...lines].join("\n"),
-    // No `current` here — the layout's [~] mark already shows it; `current`
-    // is the progress rows' field (buildTodoProgressBlock below). `items`,
-    // by contrast, rides BOTH kinds: a renderer reading "the newest todo
-    // digest" must find a list there whether or not an update has landed
-    // yet, and one code path beats a layout-parse plus a counts-only path.
-    digest: {
-      kind: "todo",
-      total: todos.length,
-      completed,
-      items: todoDigestItems(todos),
-    },
-  };
-}
-
-/**
- * A LATER todo_write update as one compact progress row (2026-07-23, user
- * request: with a 任务清单 in play, the record should show which step 板砖
- * is on). English chrome like every projected row; the in_progress item's
- * text rides both the body and the digest (`current`) so the GUI can render
- * a localized "步骤 k/n · <item>" line. Replaces the old "Planning k/n" op
- * row (suppressed at tool.call.started). Compaction and the dream digest
- * skip kind "todo" — working state, not an outcome — exactly as they did
- * for the Planning rows.
- *
- * The one-line body is deliberately lossy (counts + the in-flight step); the
- * digest's `items` carries the full list behind it, because under full-list
- * replacement the plan a renderer should show is the plan on THIS update,
- * not the one the layout block froze.
- */
-export function buildTodoProgressBlock(
-  todos: readonly TodoItem[],
-): SystemBlock {
-  const completed = todos.filter((t) => t.status === "completed").length;
-  const current = todos.find((t) => t.status === "in_progress")?.content;
-  return {
-    kind: "system",
-    label: "差分协处理器",
-    body: `todo ${completed}/${todos.length}${current === undefined ? "" : `: ${current}`}`,
-    digest: {
-      kind: "todo",
-      total: todos.length,
-      completed,
-      ...(current === undefined ? {} : { current }),
-      items: todoDigestItems(todos),
-    },
-  };
-}
-
-/** Dedup signature for todo progress: a rewrite that changes none of the
- *  list length, the completed count, or the in-flight item projects nothing.
- *
- *  `total` joined the signature on 2026-07-26. Full-list replacement lets
- *  板砖 legitimately grow or prune the plan mid-run, and with a
- *  `completed|current` signature an ADDED (or dropped) step while the same
- *  item stayed in flight projected NOTHING — so the record's last
- *  `todo k/n` row, and every renderer reading it, went on quoting a stale n
- *  for the rest of the dispatch.
- *
- *  Deliberately NOT in the signature: item text and ordering. A pending
- *  tail gets reworded constantly, and a row per reword would spam the
- *  record — which IS Herta's prompt, not just a screen. The trade is
- *  explicit: the newest projected digest's `items` can lag a pure reword of
- *  a non-in-flight item until the next update that does move a count or the
- *  in-flight step. The numbers and the step being worked — what a reader
- *  acts on — stay honest; item text is eventually consistent. */
-export function todoProgressSignature(todos: readonly TodoItem[]): string {
-  const completed = todos.filter((t) => t.status === "completed").length;
-  const current = todos.find((t) => t.status === "in_progress")?.content ?? "";
-  // Free text last: an item containing "|" then cannot collide across fields.
-  return `${completed}|${todos.length}|${current}`;
 }
 
 /**
@@ -1086,4 +1002,67 @@ export function buildBridgeFailureMarker(err: unknown): SystemBlock {
     evidenceDetail: `↳ 错误: ${message}`,
     evidence: [{ kind: "error", message }],
   };
+}
+
+/** The CN word for each cut-off step's outcome (the GUI zh catalog pins the
+ *  same words as `evidence.cutoff.*`). */
+const CUTOFF_WORD: Record<CutoffOutcome, string> = {
+  not_started: "未开始",
+  read_interrupted: "读取中断",
+  write_applied: "已写入",
+  write_not_applied: "未写入",
+  write_changed_since: "之后被改动",
+  state_not_applied: "未生效",
+  outcome_unknown: "结果未知",
+};
+
+/** What the crash marker is built from — the seal's plan, reduced to what
+ *  the record shows. */
+export interface CrashMarkerInput {
+  readonly steps: readonly CutoffStep[];
+  readonly changedFiles: readonly string[];
+}
+
+/**
+ * The done-marker the harness writes when a session opens on a run the app
+ * exited during (ADR 0071 §1.2): state 中断, `crashed`, and in its detail
+ * each step that had no result with the outcome the seal decided, the files
+ * the run changed — so the next dispatch's
+ * `workingHistory` and Herta read what happened, and rewind's changed-file
+ * warning still fires. Sanitized here: it is built outside the bridge.
+ */
+export function buildCrashMarker(input: CrashMarkerInput): SystemBlock {
+  const markerSummary: DoneMarkerSummary = {
+    kind: "done",
+    state: "interrupted",
+    fileCount: input.changedFiles.length,
+    riskCount: 0,
+    crashed: true,
+  };
+  const body = composeMarkerSummary(markerSummary, CN_MARKER_LABELS("中断"));
+  const detailParts: string[] = [];
+  const sections: EvidenceSection[] = [];
+  if (input.steps.length > 0) {
+    const steps = input.steps.slice(0, 8);
+    detailParts.push(
+      `↳ 中断时: ${steps.map((s) => `${s.step} — ${CUTOFF_WORD[s.outcome]}`).join("; ")}`,
+    );
+    sections.push({ kind: "cutoff", steps });
+  }
+  if (input.changedFiles.length > 0) {
+    const paths = input.changedFiles.slice(0, 20);
+    detailParts.push(`↳ 改动文件: ${paths.join(", ")}`);
+    sections.push({ kind: "files", paths });
+  }
+  return sanitizeSystemBlock({
+    kind: "system",
+    label: "差分协处理器",
+    body,
+    role: "done-marker",
+    markerSummary,
+    ...(detailParts.length > 0
+      ? { evidenceDetail: detailParts.join("\n") }
+      : {}),
+    ...(sections.length > 0 ? { evidence: sections } : {}),
+  });
 }

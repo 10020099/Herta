@@ -1,21 +1,27 @@
 import type {
   ApprovalOverlayState,
   ApprovalResult,
+  AttachProgress,
+  AutoReviewState,
   BranchList,
   CommitDescription,
   ContextCompactionRequestResult,
   ContextUsage,
+  ContinueInterruptedResult,
   CreateSessionOpts,
   LogPage,
   LogQuery,
   OverlayEvent,
   RecordEvent,
+  RenameSessionResult,
   RepoContextSnapshot,
   RepoEvent,
   ResolveApprovalOpts,
+  ResumeEvent,
   RewindResult,
   SessionAgentEvent,
   SessionDeletedEvent,
+  SessionExportSource,
   SessionMetadata,
   SessionSearchHit,
   SessionTopic,
@@ -24,12 +30,24 @@ import type {
   TerminalRecord,
   TitleEvent,
   TurnLifecycleEvent,
+  UndoEvent,
+  UndoTarget,
+  UndoTurnEditsResult,
   VoiceCueEvent,
   WorkingDiff,
   WorkspaceEvent,
-  WorkspaceTrustState,
 } from "@herta/app-server";
-import type { WorkspaceTrust } from "@herta/core";
+import type { LiveToolSnapshot } from "../../shared/live-tool-feed.js";
+
+/** One file's progress in an attach in flight, from main (2026-10-01). */
+export interface AttachProgressEvent extends AttachProgress {
+  readonly sessionId: string;
+}
+
+export type {
+  LiveToolSnapshot,
+  LiveToolView,
+} from "../../shared/live-tool-feed.js";
 
 /** A point-in-time snapshot of a session, returned by open/create and
  *  carried by the reset event. Mirrors the app-server Session's
@@ -69,6 +87,12 @@ export interface SessionSnapshot {
    *  learns it is busy — Stop, the hold window — instead of coming back idle
    *  over a running turn (UX review 2026-09-22, item 7). Absent = idle. */
   readonly turn?: { readonly backendActive: boolean };
+  /** A 继续 is on offer (ADR 0071 §1.4): a reloaded window's strip comes
+   *  back. Optional on the wire; absent = no offer. */
+  readonly resumable?: boolean;
+  /** The latest turn's edits can be taken back (ADR 0074 §4): a reloaded
+   *  window's card keeps its 撤销 chip. Optional on the wire; absent = no. */
+  readonly undoable?: boolean;
   /** Pictures staged in the composer and not yet sent (ADR 0048 §4): a
    *  reloaded window's strip comes back instead of vanishing while main
    *  still counts them. Optional on the wire; absent = none. */
@@ -349,6 +373,21 @@ export type Locale = "zh" | "en";
  *  into new sessions. */
 export type InteractionLanguageChoice = "zh" | "en" | "follow";
 
+/** The composer's @-mention list (ADR 0072 §2): workspace-relative paths
+ *  with `/`, and whether a cap cut the list short. */
+export interface WorkspaceFileList {
+  readonly files: readonly string[];
+  readonly truncated: boolean;
+}
+
+/** Settings → Window's attention rows (ADR 0072 §1). */
+export interface AttentionSettings {
+  /** OS notifications while the window is not attended. */
+  readonly notifications: boolean;
+  /** Keep the machine awake while 板砖 runs. */
+  readonly keepAwake: boolean;
+}
+
 /**
  * Renderer-facing auto-update state (2026-07-10), streamed over
  * `update:state` and snapshotted via getUpdateState. `version` is the
@@ -586,6 +625,12 @@ export interface HertaBridge {
    *  the next turn. OPTIONAL — fakes and the website demo omit it, and the
    *  held strip then offers no steer. */
   steerText?(text: string): Promise<SteerTextResult>;
+  /** 继续 (ADR 0071 §1.4): continue the interrupted 板砖 run. Resolves when
+   *  the turn has ended, like `submitText`; never rejects. OPTIONAL with
+   *  `onResume` — fakes and the website demo omit them, and no strip shows. */
+  continueInterrupted?(): Promise<ContinueInterruptedResult>;
+  /** Whether a 继续 is on offer changed. */
+  onResume?(cb: (e: ResumeEvent) => void): () => void;
   /** Withdraw the latest 开拓者 turn (record-only, idle-only). Resolves with the
    *  withdrawn user text to restore into the composer, or a failure reason.
    *  `sessionId` binds the destructive call to the session the user clicked in:
@@ -593,6 +638,16 @@ export interface HertaBridge {
    *  withdraw animation races a session switch — an unbound rewind then
    *  truncated the WRONG session's latest turn). */
   rewindLastTurn(sessionId: string): Promise<RewindResult>;
+  /** Take a turn's edits back (ADR 0074): `latest` from its card's 撤销,
+   *  `withdrawn` from the rewind notice's 撤销改动. Bound to `sessionId` like
+   *  the rewind. OPTIONAL with `onUndo` — fakes and the website demo omit
+   *  them, and no chip shows. */
+  undoLastTurnEdits?(
+    sessionId: string,
+    target: UndoTarget,
+  ): Promise<UndoTurnEditsResult>;
+  /** Whether the latest turn can be undone changed. */
+  onUndo?(cb: (e: UndoEvent) => void): () => void;
   /** Fire-and-forget: a successful 板砖-card lift may play the easter-egg voice.
    *  The active session owns the 50% roll + per-session hourly throttle. */
   maybePlayEasterEgg(): Promise<void>;
@@ -625,22 +680,31 @@ export interface HertaBridge {
   deleteSession(
     sessionId: string,
   ): Promise<{ readonly ok: boolean; readonly wasActive: boolean }>;
+  /** Name a session by hand, open or not (ADR 0072 §3). Resolves the title
+   *  as kept (cleaned: one line, capped), or `ok: false`. OPTIONAL — the
+   *  sidebar's menu offers no rename without it. */
+  renameSession?(
+    sessionId: string,
+    title: string,
+  ): Promise<RenameSessionResult>;
+  /** What an export is built from (ADR 0072 §3): the record as the window
+   *  shows it, the title and the session's language. Null when the session
+   *  cannot be read. OPTIONAL with `saveSessionExport`. */
+  readSessionForExport?(sessionId: string): Promise<SessionExportSource | null>;
+  /** Show the save dialog and write the export. `saved: false` when the
+   *  user cancelled or the write failed (`failed` says which). */
+  saveSessionExport?(
+    fileName: string,
+    markdown: string,
+  ): Promise<{ readonly saved: boolean; readonly failed?: boolean }>;
   resolveApproval(opts: ResolveApprovalOpts): Promise<ApprovalResult>;
-  /** Project command allow rules (ADR 0030) for the ACTIVE session's
-   *  workspace, as display strings (`node src/index.mjs:*`). OPTIONAL —
-   *  fakes and the website demo omit the pair; the Settings management
-   *  list hides with it (same contract as getBackendConfig). */
-  listCommandRules?(): Promise<readonly string[]>;
-  /** Remove one rule by its display form; false when nothing matched. */
-  removeCommandRule?(display: string): Promise<boolean>;
-  /** Workspace trust (ADR 0064) for the ACTIVE session's workspace. OPTIONAL
-   *  like the rule pair; the device card's menu hides the row without it. */
-  getWorkspaceTrust?(): Promise<WorkspaceTrustState>;
+  /** Automatic review (ADR 0075, which replaced workspace trust) for the
+   *  ACTIVE session's workspace. OPTIONAL like the rule pair; the device
+   *  card's menu hides the row without it. */
+  getAutoReview?(): Promise<AutoReviewState>;
   /** Record the owner's choice for this workspace (null → back to the
    *  default); resolves with the state after the change. */
-  setWorkspaceTrust?(
-    value: WorkspaceTrust | null,
-  ): Promise<WorkspaceTrustState>;
+  setAutoReview?(on: boolean | null): Promise<AutoReviewState>;
   /** Fire-and-forget record heal: ask main to re-emit the active session's
    *  full record as a `reset` through the record stream. Called by the store
    *  when a record-channel `dropped` overflow sentinel arrives (a block was
@@ -719,6 +783,10 @@ export interface HertaBridge {
     sessionId: string,
     path: string,
   ): Promise<ReadWorkspaceFileReply>;
+  /** The composer's @-mention list (ADR 0072 §2): the files of the session's
+   *  effective workspace, bounded; null when the session is not the active
+   *  one. OPTIONAL — without it `@` completes only `@板砖`. */
+  listWorkspaceFiles?(sessionId: string): Promise<WorkspaceFileList | null>;
   /** The rich kinds' read (ADR 0054 §2): bytes for pictures, PDFs and
    *  Office files, same jail, 64 MB ceiling. Optional like its sibling. */
   readWorkspaceBytes?(
@@ -820,6 +888,13 @@ export interface HertaBridge {
   /** Persist + LIVE-apply the close-to-tray behavior (main updates its
    *  window close handler immediately — no restart). */
   setCloseToTray(enabled: boolean): Promise<void>;
+  /** Read the attention settings (Settings → Window, ADR 0072 §1): OS
+   *  notifications while the window is not attended, and keeping the
+   *  machine awake while 板砖 runs. Both default on. OPTIONAL — fakes and
+   *  the website demo omit it, and the rows hide with it. */
+  getAttention?(): Promise<AttentionSettings>;
+  /** Persist + LIVE-apply either or both attention settings. */
+  setAttention?(prefs: Partial<AttentionSettings>): Promise<void>;
   /** Read whether AUTOMATIC update checks/downloads are enabled (Settings →
    *  Update; default true). OPTIONAL — fakes and the website demo omit it,
    *  and the toggle then hides with the rest of the update surface. */
@@ -833,12 +908,23 @@ export interface HertaBridge {
   /** Persist the appearance preference; the renderer's theme controller
    *  applies it live (no restart). */
   setTheme?(theme: ThemePref): Promise<void>;
-  /** Read whether the 3D device card is on (ADR 0057; Settings →
-   *  差分协处理器). OPTIONAL — fakes and the website demo omit it, and the
-   *  card then stays on its flat renders with the row hidden. */
+  /** Whether this host draws the 3D device card (ADR 0057) — the desktop
+   *  answers true; the GPU probe decides the rest. No setting since
+   *  2026-10-01 (§2.7 amended). OPTIONAL — fakes and the website demo omit
+   *  it, and the card then stays on its flat renders. */
   getDeviceScene?(): Promise<boolean>;
-  /** Persist the 3D device card toggle; the card applies it live. */
-  setDeviceScene?(enabled: boolean): Promise<void>;
+  /** Read whether an attached PDF's pictures are transcribed (2026-10-01;
+   *  Settings → 差分协处理器). Default on. OPTIONAL — fakes and the website
+   *  demo omit it, and the row hides. */
+  getPdfPictureTranscripts?(): Promise<boolean>;
+  /** Persist the switch; main applies it to the next attach, no restart. */
+  setPdfPictureTranscripts?(enabled: boolean): Promise<void>;
+  /** Read whether the composer offers a predicted next message (2026-10-10;
+   *  Settings → 窗口). Default on. OPTIONAL — fakes and the website demo
+   *  omit it, and the row hides. */
+  getComposerPredictions?(): Promise<boolean>;
+  /** Persist the switch; main applies it from the next finished turn. */
+  setComposerPredictions?(enabled: boolean): Promise<void>;
   /** Read Herta's real-time-voice state (ADR 0042): whether the user has it
    *  ON, and whether it can run here at all — `available` folds in the model
    *  bundle, the native runtime, and a worker that has failed for good, so
@@ -975,6 +1061,15 @@ export interface HertaBridge {
    *  card. OPTIONAL: fakes and the website demo omit the pair, and the card
    *  then never mounts. */
   onRepo?(cb: (e: RepoEvent) => void): () => void;
+  /** The live views of 板砖's call in flight (ADR 0073) — the file it is
+   *  writing, the command's output — folded and throttled in main. OPTIONAL:
+   *  fakes and the website demo omit it, and the trace card then shows the
+   *  record's rows alone. */
+  onLive?(cb: (e: LiveToolSnapshot) => void): () => void;
+  /** How far an attach in flight has got, per file (2026-10-01) — the
+   *  pending row's hairline. OPTIONAL: fakes and the website demo omit it,
+   *  and a pending row then shows its files without counts. */
+  onAttachProgress?(cb: (e: AttachProgressEvent) => void): () => void;
   /** Ask the active session to probe its repository again; the answer
    *  arrives through `onRepo`. The card asks on window focus. */
   refreshRepo?(): Promise<void>;

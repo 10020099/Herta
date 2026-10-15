@@ -14,6 +14,7 @@ import { type ApiKey, deepseekProvider } from "@herta/providers";
 import {
   appendTopic,
   pruneTopics,
+  renameCurrentTopic,
   synthesizeInitialTopic,
   topicAnchorText,
 } from "./session-topics.js";
@@ -144,6 +145,21 @@ export function loadSessionTitleState(
   return { title, topics };
 }
 
+/** Longest title a rename keeps, in characters (a generated one is a short
+ *  phrase; the sidebar masks anything past its width anyway). */
+export const MAX_USER_TITLE_CHARS = 80;
+
+/** A typed title made fit to keep: one line, spaces collapsed, trimmed,
+ *  capped by code point. Null when nothing is left. */
+export function cleanUserTitle(raw: string): string | null {
+  const one = raw.replace(/\s+/g, " ").trim();
+  if (one === "") return null;
+  const chars = [...one];
+  return chars.length <= MAX_USER_TITLE_CHARS
+    ? one
+    : chars.slice(0, MAX_USER_TITLE_CHARS).join("").trimEnd();
+}
+
 export interface SessionTitlerDeps {
   readonly sessionId: string;
   readonly transcriptDir: string;
@@ -196,6 +212,39 @@ export class SessionTitler {
 
   get topics(): readonly SessionTopic[] {
     return this._topics;
+  }
+
+  /**
+   * The user renamed the session (ADR 0072 §3): the CURRENT topic gets the
+   * name — the title, and the last entry of the topic rail (the first one, if
+   * the session has none yet). Nothing else changes (owner 2026-09-30): the
+   * retitle rules go on as before, and a retitle shows the model this name as
+   * the incumbent (ADR 0034), so it stays while the conversation stays on
+   * its topic and gives way, as a new topic, when it moves on.
+   *
+   * The rename counts as a fresh title (the periodic count restarts, no
+   * re-entry retitle is owed), and a generation already in flight is fenced
+   * out like a rewind's — it would land a title over the one just typed.
+   * `title` is already cleaned (`cleanUserTitle`). Throws when the sidecar
+   * cannot be written, so the caller can say the rename failed; nothing
+   * changes then. Returns the topics as they now stand.
+   */
+  renameCurrentTopic(title: string): readonly SessionTopic[] {
+    const topics = renameCurrentTopic(
+      this._topics,
+      title,
+      this.deps.getRecord(),
+    );
+    writeSessionTitle(this.deps.transcriptDir, this.deps.sessionId, title, [
+      ...topics,
+    ]);
+    this.epoch += 1;
+    this._title = title;
+    this._topics = topics;
+    this.reEntryRetitlePending = false;
+    this.turnsSinceTitle = 0;
+    this.attempts = 0;
+    return topics;
   }
 
   /**

@@ -22,9 +22,9 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -142,6 +142,36 @@ jobs:
             console.log('sherpa-onnx runtime loaded from', p);
           "
 
+      # The opening (ADR 0068 §15–§19) draws on a worker from a glyph sheet the
+      # app keeps in IndexedDB — verified on Windows only until this ran. It
+      # runs BEFORE any other launch so the first finds a fresh profile. Three
+      # launches: the first draws the sheet, the second must reuse it, the
+      # third at a device scale of 2 draws one of its own. Each must finish the
+      # opening, drawn on the worker from the sheet, with glyphs on screen.
+      # The scale-2 screen is 2048x1536 — 1024x768 at scale 2, the window the
+      # Mac runner's display clamps to. Its frames are REPORTED, not judged:
+      # this software-rendered surface composites about one frame per
+      # opening (2026-09-28), too few to tell a flash from a slow compositor.
+      # Its marks — the worker, a dpr-2 sheet, the opening to its end, no
+      # exception — still fail the job. The Mac judges scale 2's frames.
+      - name: the opening — worker, glyph sheet, the kept sheet, scale 2
+        timeout-minutes: 8
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb fuse3
+          mkdir -p /tmp/shots
+          IMG=$(ls packages/gui/release/*.AppImage | head -1)
+          chmod +x "$IMG"
+          FAIL=0
+          node packages/gui/scripts/opening-probe.mjs /tmp/shots first drawn -- \
+            xvfb-run -a -s "-screen 0 1440x900x24" "$IMG" || FAIL=1
+          node packages/gui/scripts/opening-probe.mjs /tmp/shots second kept -- \
+            xvfb-run -a -s "-screen 0 1440x900x24" "$IMG" || FAIL=1
+          node packages/gui/scripts/opening-probe.mjs /tmp/shots scale2 drawn --frames=report -- \
+            xvfb-run -a -s "-screen 0 2048x1536x24" "$IMG" --force-device-scale-factor=2 || FAIL=1
+          pkill -f "/tmp/.mount_" 2>/dev/null || true
+          if [ "$FAIL" -ne 0 ]; then echo "::error::the opening probe failed inside the AppImage (see above)"; exit 1; fi
+
       # The question this whole job exists for: does the AppImage START on a
       # stock desktop? fuse3 yes (every Ubuntu desktop has it), libfuse2 no.
       # Under Xvfb, with the Chromium sandbox as the AppRun decides it
@@ -187,18 +217,21 @@ jobs:
 
       - name: upload screenshots + boot log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: linux-first-look
           path: /tmp/shots
           if-no-files-found: warn
 
+      # Kept 7 days, not the 90-day default — the same storage reason as
+      # mac-build.yml's installer upload (2026-10-07).
       - name: upload the AppImage + update feed
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: linux-dist
           path: |
             packages/gui/release/*.AppImage
             packages/gui/release/latest-linux.yml
           if-no-files-found: warn
+          retention-days: 7

@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { DEVICE_SCENE_DEFAULT } from "../../../shared/device-scene.js";
 import { useHertaBridge } from "../../context/HertaBridgeContext.js";
 import { useDemoDeviceCycle } from "../../hooks/useDemoDeviceCycle.js";
 import type { BanzhuanDeviceState } from "../../hooks/useDeviceState.js";
@@ -10,11 +9,6 @@ import type {
   BackendThinking,
 } from "../../ipc/bridge-types.js";
 import { BanzhuanDemoCard } from "../UtilityRail/BanzhuanDemoCard.js";
-import {
-  loadDeviceScenePref,
-  setDeviceScenePrefLocal,
-  useDeviceScenePref,
-} from "../UtilityRail/device-scene/device-scene-prefs.js";
 import { Select } from "./Select.js";
 import { SettingRow } from "./SettingRow.js";
 import { useRememberedSetting } from "./settings-snapshot.js";
@@ -82,10 +76,10 @@ function metaFor(state: BanzhuanDeviceState): StateMeta {
  * restart-to-apply), then a read-only device card that auto-cycles through
  * its lifecycle (pause on hover) with a synced caption, plus a static
  * 5-state legend. The visual reuses the live rail card; only the meaning
- * text lives here. The ADR 0030 command-rule list deliberately does NOT
- * live in this pane: rules are session-workspace-scoped, so they're managed
- * in the device card's ⋯ menu next to the workspace they bind to (owner
- * 2026-08-04 — a first cut here was moved out same day).
+ * text lives here. Per-workspace permission choices (automatic review) do
+ * NOT live in this pane: they're managed in the device card's ⋯ menu next to
+ * the workspace they bind to (owner 2026-08-04, for the command rules that
+ * were removed on 2026-10-10).
  *
  * Layout rules (owner feedback 2026-08-03, "re-design — it changed the
  * panel height"): the pane must stay inside `.settings-content`'s stable
@@ -191,28 +185,47 @@ export function BanzhuanSettings(): JSX.Element {
     });
   };
 
-  // 3D device row (ADR 0057). Shares the live pref module with the rail
-  // card, so a flip here re-renders the card at once; hides when the bridge
-  // has no surface (fakes / the website demo). Optimistic + latest-wins like
-  // the rows above. The demo card below stays on the flat renders on
-  // purpose — one GPU scene per app, in the rail.
-  const scenePref = useDeviceScenePref();
-  const sceneSupported = bridge.setDeviceScene !== undefined;
-  const [sceneFailed, setSceneFailed] = useState(false);
-  const sceneSeqRef = useRef(0);
+  // There is no 3D device row (owner 2026-10-01, ADR 0057 §2.7 amended):
+  // the rail card draws the lit device wherever the GPU allows and the flat
+  // art everywhere else, with nothing to choose. The demo card below stays
+  // on the flat renders on purpose — one GPU scene per app, in the rail.
+
+  // PDF picture transcription (2026-10-01). Live (main applies it to the next
+  // attach), per user, default on; the first frame shows the last-known value
+  // (settings-snapshot.ts). Optimistic + latest-wins like the rows above;
+  // hides when the bridge has no surface (fakes / the website demo).
+  const pdfSupported = bridge.setPdfPictureTranscripts !== undefined;
+  const [pdfPictures, setPdfPictures] = useRememberedSetting(
+    bridge,
+    "banzhuan.pdfPictureTranscripts",
+    true,
+  );
+  const [pdfFailed, setPdfFailed] = useState(false);
+  const pdfTouchedRef = useRef(false);
+  const pdfSeqRef = useRef(0);
   useEffect(() => {
-    void loadDeviceScenePref(bridge);
-  }, [bridge]);
-  const onScene = (next: boolean): void => {
-    const prev = scenePref ?? DEVICE_SCENE_DEFAULT;
-    sceneSeqRef.current += 1;
-    const seq = sceneSeqRef.current;
-    setDeviceScenePrefLocal(next);
-    setSceneFailed(false);
-    void bridge.setDeviceScene?.(next).catch(() => {
-      if (seq !== sceneSeqRef.current) return;
-      setDeviceScenePrefLocal(prev);
-      setSceneFailed(true);
+    let alive = true;
+    bridge.getPdfPictureTranscripts?.().then(
+      (v) => {
+        if (alive && !pdfTouchedRef.current) setPdfPictures(v);
+      },
+      () => undefined,
+    );
+    return () => {
+      alive = false;
+    };
+  }, [bridge, setPdfPictures]);
+  const onPdfPictures = (next: boolean): void => {
+    const prev = pdfPictures;
+    pdfSeqRef.current += 1;
+    const seq = pdfSeqRef.current;
+    pdfTouchedRef.current = true;
+    setPdfPictures(next);
+    setPdfFailed(false);
+    void bridge.setPdfPictureTranscripts?.(next).catch(() => {
+      if (seq !== pdfSeqRef.current) return;
+      setPdfPictures(prev);
+      setPdfFailed(true);
     });
   };
 
@@ -299,27 +312,27 @@ export function BanzhuanSettings(): JSX.Element {
             }
           />
         )}
-        {sceneSupported && (
+        {pdfSupported && (
           <SettingRow
-            title={t("banzhuan.scene")}
-            description={t("banzhuan.sceneDesc")}
+            title={t("banzhuan.pdfPictures")}
+            description={t("banzhuan.pdfPicturesDesc")}
             control={
               <Toggle
-                checked={scenePref ?? DEVICE_SCENE_DEFAULT}
-                ariaLabel={t("banzhuan.scene")}
-                onChange={onScene}
+                checked={pdfPictures}
+                ariaLabel={t("banzhuan.pdfPictures")}
+                onChange={onPdfPictures}
               />
             }
           />
         )}
       </div>
-      {((thinkingSupported && (failed || contractFailed)) || sceneFailed) && (
+      {((thinkingSupported && (failed || contractFailed)) || pdfFailed) && (
         <p className="settings-note">{t("common.couldntSave")}</p>
       )}
       {thinkingSupported &&
         !failed &&
         !contractFailed &&
-        !sceneFailed &&
+        !pdfFailed &&
         loadFailed && (
           <p className="settings-note">{t("settings.loadFailed")}</p>
         )}

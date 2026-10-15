@@ -19,7 +19,6 @@ import {
   shareRunIdentity,
 } from "./group-record.js";
 import { HertaBubble } from "./HertaBubble.js";
-import { planContext } from "./plan-context.js";
 import { imageViewsFromBlocks, UserBubble } from "./UserBubble.js";
 import type { RemoveAttachmentFactory } from "./useRemoveAttachment.js";
 
@@ -89,8 +88,15 @@ export function useConversationRows(opts: {
   readonly backendStartedAt: number | null;
   readonly backendInFlight: number;
   readonly backendActive: boolean;
+  /** 板砖 has been thinking for a while (`useBackendThinking`). */
+  readonly backendThinking: boolean;
   readonly handleRewind: () => Promise<void>;
   readonly removeAttachmentFactory: RemoveAttachmentFactory | undefined;
+  /** Main says the latest turn's edits can be taken back (ADR 0074 §4). */
+  readonly undoable: boolean;
+  /** An undo is on its way. */
+  readonly undoBusy: boolean;
+  readonly handleUndo: () => Promise<void>;
 }) {
   const {
     record,
@@ -101,8 +107,12 @@ export function useConversationRows(opts: {
     backendStartedAt,
     backendInFlight,
     backendActive,
+    backendThinking,
     handleRewind,
     removeAttachmentFactory,
+    undoable,
+    undoBusy,
+    handleUndo,
   } = opts;
 
   // Memoized on record identity: the store mutates `record` only per BLOCK
@@ -119,13 +129,6 @@ export function useConversationRows(opts: {
     () => shareRunIdentity(liftUserImages(groupRecord(record))),
     [record],
   );
-  // The CURRENT dispatch's 任务清单, scanned across the WHOLE record — an
-  // in-turn beat splits one backend run into several activity groups, and
-  // each ActivityBlock sees only its own blocks, so the continuation group
-  // has no todo projection of its own to read. Computed once here (O(n)
-  // backward from the end, memoized on the record like `items`) and handed
-  // ONLY to the group rendered as active, below.
-  const plan = useMemo(() => planContext(record), [record]);
   // The rewind control shows only on the LATEST user turn, and only when idle
   // (no in-flight turn to race the truncation). Find the last `user` block
   // that starts a turn — a steer is words inside 板砖's run, not a turn, and
@@ -147,7 +150,7 @@ export function useConversationRows(opts: {
   // Split out from the activity rows (2026-07-30) so that "their real inputs"
   // is actually true. Sharing one memo with the activity groups meant sharing
   // their dependencies — status, turnStartedAt, backendStartedAt,
-  // backendInFlight, backendActive, plan, canRewind — every one of which flips
+  // backendInFlight, backendActive, canRewind — every one of which flips
   // at the moment of a send, so pressing send re-rendered every bubble in the
   // session, and again when the turn ended. None of them can change what a
   // bubble looks like. Now they cannot reach one: this memo survives a send,
@@ -156,6 +159,19 @@ export function useConversationRows(opts: {
   //
   // Aligned with `items` (activity slots hold null) so the assembly below can
   // index straight into it.
+  // The 撤销 chip's card (ADR 0074 §4): the latest turn's LAST finished 板砖
+  // card — a turn can hold several dispatches, and the undo takes them all.
+  // A turn that already holds its undo line says so on that card instead.
+  const undoCard = useMemo(() => {
+    let card = -1;
+    let undone = false;
+    items.forEach((item, idx) => {
+      if (item.kind !== "activity" || item.startIndex <= lastUserIndex) return;
+      if (item.blocks.some((b) => b.digest?.kind === "undo")) undone = true;
+      else if (item.blocks.some((b) => b.role === "done-marker")) card = idx;
+    });
+    return { card, undone };
+  }, [items, lastUserIndex]);
   const blockRows = useMemo(
     () =>
       items.map((item) =>
@@ -241,12 +257,22 @@ export function useConversationRows(opts: {
               }
               lang={lang}
               inFlightCount={isActive ? backendInFlight : 1}
-              // Same discipline as inFlightCount: a historical group must
-              // never receive live state. `plan` describes the dispatch in
-              // flight, so a past group showing it would claim 板砖 is
-              // working through a plan it finished turns ago.
-              plan={isActive ? plan : null}
+              thinking={isActive && backendThinking}
               onRemoveAttachment={removeAttachmentFactory}
+              {...(idx !== undoCard.card
+                ? {}
+                : undoCard.undone
+                  ? { undo: { state: "done" as const } }
+                  : undoable && status === "idle"
+                    ? {
+                        undo: {
+                          state: undoBusy
+                            ? ("busy" as const)
+                            : ("offer" as const),
+                          onUndo: () => void handleUndo(),
+                        },
+                      }
+                    : {})}
             />
           </ErrorBoundary>
         );
@@ -260,15 +286,21 @@ export function useConversationRows(opts: {
       turnStartedAt,
       backendStartedAt,
       backendInFlight,
-      plan,
       removeAttachmentFactory,
       // Read by the activity group's `isActive` (L1) — without it the rows
       // memo would keep rendering the last group as live after the backend
       // stopped.
       backendActive,
+      backendThinking,
       // The live-turn gate above. Changes only with the record, which
       // already invalidates via `items` — listed for the lint contract.
       lastUserIndex,
+      // The 撤销 chip (ADR 0074 §4): its card moves with the record; its
+      // offer changes at turn end and after an undo — rarely.
+      undoCard,
+      undoable,
+      undoBusy,
+      handleUndo,
     ],
   );
 

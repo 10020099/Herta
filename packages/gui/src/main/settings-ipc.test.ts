@@ -95,3 +95,88 @@ describe("settings IPC — Dream says what the running app has (dream review 202
     expect(await get?.(null)).toEqual({ enabled: true, running: false });
   });
 });
+
+describe("settings IPC — PDF picture transcription (2026-10-01)", () => {
+  it("defaults on; a write persists, reaches the running host at once, and ignores anything but a boolean", async () => {
+    userData.dir = mkdtempSync(join(tmpdir(), "herta-settings-"));
+    const handlers = new Map<string, Handler>();
+    const setPdfPictureTranscription = vi.fn();
+    registerSettingsHandlers({
+      handle: ((channel: string, fn: Handler) => {
+        handlers.set(channel, fn);
+      }) as never,
+      hooks: {},
+      host: () => ({ setPdfPictureTranscription }) as never,
+      workspaceRoot: () => userData.dir,
+      voice: {
+        synthesizer: null,
+        voiceModel: null,
+        minimaxVoice: null,
+        engine: "local",
+        realtimeEnabled: false,
+        minimaxFetch: (async () => new Response("")) as never,
+        anyMiniMaxKey: () => false,
+        minimaxRefusal: () => null,
+        stopSpeech: () => {},
+      },
+    });
+    const get = handlers.get(CMD.getPdfPictureTranscripts);
+    const set = handlers.get(CMD.setPdfPictureTranscripts);
+    expect(await get?.(null)).toBe(true);
+
+    await set?.(null, false);
+    expect(await get?.(null)).toBe(false);
+    expect(setPdfPictureTranscription).toHaveBeenLastCalledWith(false);
+
+    await set?.(null, "yes");
+    expect(setPdfPictureTranscription).toHaveBeenCalledTimes(1);
+    expect(await get?.(null)).toBe(false);
+  });
+});
+
+describe("settings IPC — attention (ADR 0072 §1)", () => {
+  it("both default on; a write carries either one, ignores anything but a boolean, and tells main both values", async () => {
+    userData.dir = mkdtempSync(join(tmpdir(), "herta-settings-"));
+    const handlers = new Map<string, Handler>();
+    const changed = vi.fn();
+    registerSettingsHandlers({
+      handle: ((channel: string, fn: Handler) => {
+        handlers.set(channel, fn);
+      }) as never,
+      hooks: { onAttentionChanged: changed },
+      host: () => null,
+      workspaceRoot: () => userData.dir,
+      voice: {
+        synthesizer: null,
+        voiceModel: null,
+        minimaxVoice: null,
+        engine: "local",
+        realtimeEnabled: false,
+        minimaxFetch: (async () => new Response("")) as never,
+        anyMiniMaxKey: () => false,
+        minimaxRefusal: () => null,
+        stopSpeech: () => {},
+      },
+    });
+    const get = handlers.get(CMD.getAttention);
+    const set = handlers.get(CMD.setAttention);
+    expect(await get?.(null)).toEqual({ notifications: true, keepAwake: true });
+
+    await set?.(null, { keepAwake: false });
+    expect(await get?.(null)).toEqual({
+      notifications: true,
+      keepAwake: false,
+    });
+    expect(changed).toHaveBeenLastCalledWith({
+      notifications: true,
+      keepAwake: false,
+    });
+
+    await set?.(null, { notifications: "no", keepAwake: 1 });
+    expect(changed).toHaveBeenCalledTimes(1);
+    expect(await get?.(null)).toEqual({
+      notifications: true,
+      keepAwake: false,
+    });
+  });
+});

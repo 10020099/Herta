@@ -19,7 +19,6 @@ async function fakeFetchFromFixture(name: string): Promise<typeof fetch> {
 
 const userOnly: PromptFrame = {
   stableSystem: "",
-  repoInstructions: "",
   memoryContext: "",
   retrievedLore: "",
   messages: [{ role: "user", text: "hi", ts: "t" }],
@@ -61,7 +60,7 @@ describe("OpenAICompatibleProvider", () => {
     const events = (await collect(
       provider.streamChat(userOnly, new AbortController().signal),
     )) as ProviderEvent[];
-    expect(events[0]).toEqual({
+    expect(events.find((e) => e.type === "tool-call-request")).toEqual({
       type: "tool-call-request",
       call: { id: "call_1", tool: "read_file", input: { path: "foo.ts" } },
     });

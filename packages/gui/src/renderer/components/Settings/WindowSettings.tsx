@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useHertaBridge } from "../../context/HertaBridgeContext.js";
 import { useT } from "../../i18n/LocaleProvider.js";
-import type { ThemePref } from "../../ipc/bridge-types.js";
+import type { AttentionSettings, ThemePref } from "../../ipc/bridge-types.js";
 import { applyThemePref, themePref } from "../../lib/theme.js";
 import { Select } from "./Select.js";
 import { SettingRow } from "./SettingRow.js";
@@ -11,7 +11,8 @@ import { Toggle } from "./Toggle.js";
 /**
  * Settings → Window: appearance (night-mode slice 2) + the close-to-tray
  * toggle (user request 2026-07-06 — the always-on tray behavior becomes a
- * choice). LIVE apply on both: the theme stamps <html data-theme> before
+ * choice) + the attention rows (ADR 0072 §1: notifications while the window
+ * is not attended, keep the machine awake while 板砖 runs). LIVE apply on both: the theme stamps <html data-theme> before
  * the persist settles; main updates its close handler the moment the write
  * lands. Mirrors DreamSettings' optimistic-flip/snap-back shape.
  */
@@ -34,6 +35,75 @@ export function WindowSettings(): JSX.Element {
   const [loadFailed, setLoadFailed] = useState(false);
   // Seed from the controller (already booted by App) — no async flash.
   const [theme, setTheme] = useState<ThemePref>(() => themePref());
+  // Attention (ADR 0072 §1): the rows exist when the bridge can read them
+  // (the website demo's cannot); both default on, like main's reading.
+  const hasAttention = bridge.getAttention !== undefined;
+  const [attention, setAttention] = useRememberedSetting(
+    bridge,
+    "window.attention",
+    { notifications: true, keepAwake: true },
+  );
+  // Composer predictions (2026-10-10): on unless turned off, like main's
+  // reading; the row exists when the bridge can read it.
+  const hasPredictions = bridge.getComposerPredictions !== undefined;
+  const [predictions, setPredictions] = useRememberedSetting(
+    bridge,
+    "window.predictions",
+    true,
+  );
+
+  useEffect(() => {
+    if (bridge.getComposerPredictions === undefined) return;
+    let alive = true;
+    bridge.getComposerPredictions().then(
+      (v) => {
+        if (alive) setPredictions(v);
+      },
+      () => {
+        if (alive) setLoadFailed(true);
+      },
+    );
+    return () => {
+      alive = false;
+    };
+  }, [bridge, setPredictions]);
+
+  const onPredictions = (next: boolean): void => {
+    // Optimistic, like the rows above: flip now, snap back on a failed write.
+    setPredictions(next);
+    setFailed(false);
+    void bridge.setComposerPredictions?.(next).catch(() => {
+      setPredictions(!next);
+      setFailed(true);
+    });
+  };
+
+  useEffect(() => {
+    if (bridge.getAttention === undefined) return;
+    let alive = true;
+    bridge.getAttention().then(
+      (v) => {
+        if (alive) setAttention(v);
+      },
+      () => {
+        if (alive) setLoadFailed(true);
+      },
+    );
+    return () => {
+      alive = false;
+    };
+  }, [bridge, setAttention]);
+
+  const onAttention = (change: Partial<AttentionSettings>): void => {
+    // Optimistic, like close-to-tray: flip now, snap back on a failed write.
+    const before = attention;
+    setAttention({ ...attention, ...change });
+    setFailed(false);
+    void bridge.setAttention?.(change).catch(() => {
+      setAttention(before);
+      setFailed(true);
+    });
+  };
 
   const onTheme = (next: ThemePref): void => {
     // Apply LIVE first (the whole point), then persist. A failed write
@@ -105,6 +175,45 @@ export function WindowSettings(): JSX.Element {
           />
         }
       />
+      {hasAttention && (
+        <>
+          <SettingRow
+            title={t("window.notifications")}
+            description={t("window.notificationsDesc")}
+            control={
+              <Toggle
+                checked={attention.notifications}
+                ariaLabel={t("window.notifications")}
+                onChange={(next) => onAttention({ notifications: next })}
+              />
+            }
+          />
+          <SettingRow
+            title={t("window.keepAwake")}
+            description={t("window.keepAwakeDesc")}
+            control={
+              <Toggle
+                checked={attention.keepAwake}
+                ariaLabel={t("window.keepAwake")}
+                onChange={(next) => onAttention({ keepAwake: next })}
+              />
+            }
+          />
+        </>
+      )}
+      {hasPredictions && (
+        <SettingRow
+          title={t("window.predictions")}
+          description={t("window.predictionsDesc")}
+          control={
+            <Toggle
+              checked={predictions}
+              ariaLabel={t("window.predictions")}
+              onChange={onPredictions}
+            />
+          }
+        />
+      )}
       {failed ? (
         <p className="settings-note">{t("common.couldntSave")}</p>
       ) : (

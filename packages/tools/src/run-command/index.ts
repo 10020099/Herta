@@ -1,5 +1,8 @@
+import { StringDecoder } from "node:string_decoder";
 import type {
   HertaTool,
+  OutputFn,
+  ProgressFn,
   RunCommandData,
   ToolCallRequest,
   ToolContext,
@@ -13,13 +16,15 @@ import { resolveSafePath } from "../path-safety.js";
 import { SpawnedBackgroundProcess } from "./background-process.js";
 import { classifyCommand } from "./classifier.js";
 import { allowedEnvKeys, findDisallowedEnvKey } from "./env-guard.js";
+import { LiveOutput } from "./live-output.js";
 import { writeRunLog } from "./logger.js";
 import { checkReaderArgvPaths } from "./reader-guard.js";
 import { redactSecrets } from "./redactor.js";
+import { runCommandWriteGuard } from "./rule.js";
 import { runCommand } from "./runner.js";
 import { runCommandInputSchema, runCommandJsonSchema } from "./schema.js";
 import { resolveWindowsShim } from "./shim-wrapper.js";
-import { detectTestRun } from "./test-detector.js";
+import { detectTestRun, isTestCommand } from "./test-detector.js";
 
 export { commandOutputTool, commandStopTool } from "./background-tools.js";
 export { makeRunCommandRule, registerRunCommandRule } from "./rule.js";
@@ -64,9 +69,24 @@ export function runCommandTool(): HertaTool {
         inputSchema: runCommandJsonSchema,
       };
     },
+    // The argv the result's test row is detected on (the model's own, only
+    // redacted), read at dispatch (ADR 0073 amendment 2026-10-08).
+    runsTests(input: unknown): boolean {
+      const argv =
+        typeof input === "object" && input !== null
+          ? (input as { argv?: unknown }).argv
+          : undefined;
+      return (
+        Array.isArray(argv) &&
+        argv.every((a): a is string => typeof a === "string") &&
+        isTestCommand(argv)
+      );
+    },
     async run(
       call: ToolCallRequest,
       ctx: ToolContext,
+      _progress: ProgressFn,
+      output?: OutputFn,
     ): Promise<ToolResult<RunCommandData>> {
       const parsed = runCommandInputSchema.safeParse(call.input);
       if (!parsed.success) {
@@ -86,7 +106,9 @@ export function runCommandTool(): HertaTool {
       // Classify the model's ORIGINAL argv — the permission tier is decided
       // before any harness-side shim wrapping (audit 2026-07-10 finding 3:
       // the model never gets to escalate by phrasing its own cmd wrapper).
-      const verdict = classifyCommand(argv);
+      const verdict = classifyCommand(argv, {
+        writeGuard: runCommandWriteGuard(ctx.workspaceRoot, safe.resolved),
+      });
       if (verdict.kind === "block") {
         return errResult("command_blocked", verdict.reason);
       }
@@ -161,6 +183,17 @@ export function runCommandTool(): HertaTool {
         }
         ctx.bg.register(proc);
         const redactedBgArgv = argv.map((a) => redactSecrets(a));
+        // In the run's journal until it ends (ADR 0071 §1.6).
+        const bgPid = proc.pid;
+        if (bgPid !== undefined && ctx.journal !== undefined) {
+          const journal = ctx.journal;
+          journal.recordSpawn({
+            pid: bgPid,
+            command: redactedBgArgv.join(" "),
+            role: "background",
+          });
+          void proc.closed().then(() => journal.recordExit(bgPid));
+        }
         return {
           ok: true,
           data: {
@@ -185,13 +218,55 @@ export function runCommandTool(): HertaTool {
       }
 
       const effectiveTimeoutMs = timeoutMs ?? DEFAULT_TIMEOUT_MS;
+      // The live view (ADR 0073): each stream decoded on its own (a chunk
+      // can split a character) and cut into lines on its own (so a stdout
+      // line and a stderr line never splice), redacted as the result is.
+      const live =
+        output !== undefined
+          ? {
+              stdout: {
+                decoder: new StringDecoder("utf8"),
+                lines: new LiveOutput(output),
+              },
+              stderr: {
+                decoder: new StringDecoder("utf8"),
+                lines: new LiveOutput(output),
+              },
+            }
+          : null;
+      // The run's journal learns the pid (ADR 0071 §1.6): a relaunch after a
+      // crash ends a command still running.
+      let spawnedPid: number | undefined;
       const raw = await runCommand(execArgv, {
         cwd: safe.resolved,
         timeoutMs: effectiveTimeoutMs,
         signal: ctx.signal,
         maxBytesPerStream: MAX_BYTES_PER_STREAM,
         env: childEnv,
+        onSpawn: (pid) => {
+          spawnedPid = pid;
+          ctx.journal?.recordSpawn({
+            pid,
+            command: argv.map((a) => redactSecrets(a)).join(" "),
+            role: "foreground",
+          });
+        },
+        ...(live !== null
+          ? {
+              onOutput: (chunk: Buffer, stream: "stdout" | "stderr") => {
+                const s = live[stream];
+                s.lines.push(s.decoder.write(chunk));
+              },
+            }
+          : {}),
       });
+      if (live !== null) {
+        for (const s of [live.stdout, live.stderr]) {
+          s.lines.push(s.decoder.end());
+          s.lines.flush();
+        }
+      }
+      if (spawnedPid !== undefined) ctx.journal?.recordExit(spawnedPid);
 
       if (raw.cause === "not_found") {
         // Do NOT steer toward shell wrappers here: the old text said "wrap
@@ -321,6 +396,7 @@ export function runCommandTool(): HertaTool {
         stderrBytes: raw.stderrBytes,
         logPath,
         timedOut: raw.timedOut,
+        readOnly: verdict.kind === "allow",
       };
 
       const testRun = detectTestRun(data);

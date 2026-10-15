@@ -59,7 +59,7 @@ export const zh = {
   "update.betaNotice":
     "目前仍处于测试阶段，版本之间可能出现破坏性改动，更新后历史会话或设置未必能完整保留。",
   "update.auto": "自动更新",
-  "update.autoDesc": "关闭后将不再自动检查与下载更新，仅在手动检查时进行。",
+  "update.autoDesc": "关闭后，仅在手动检查时更新。",
   "update.currentVersion": "当前版本",
   "update.checkNow": "检查更新",
   "update.restartNow": "重启并更新",
@@ -77,20 +77,28 @@ export const zh = {
   "nav.group.general": "通用",
   "nav.group.herta": "黑塔",
   "nav.group.engine": "引擎",
-  "window.intro": "窗口的外观与开合行为。",
+  "window.intro": "窗口的外观与行为。",
   "window.theme": "外观",
-  "window.themeDesc": "界面的明暗主题；跟随系统时随操作系统自动切换。",
+  "window.themeDesc": "界面的明暗主题；「跟随系统」随操作系统切换。",
   "theme.light": "浅色",
   "theme.dark": "深色",
   "theme.system": "跟随系统",
   "window.closeToTray": "关闭时收进托盘",
   "window.closeToTrayDesc":
-    "关闭窗口时收进系统托盘继续运行；关掉此项后，关闭即退出。",
+    "关闭窗口后，黑塔在系统托盘中继续运行；关闭此项则直接退出。",
   // macOS (2026-09-23): the icon sits in the menu bar, and a Mac app does not
   // quit when its window closes — it stays in the Dock until ⌘Q.
   "window.closeToTrayMac": "关闭时收进菜单栏",
   "window.closeToTrayDescMac":
-    "关闭窗口时收进菜单栏，会话继续运行；关掉此项后，关闭即关窗，黑塔仍留在程序坞，按 ⌘Q 退出。",
+    "关闭窗口后，黑塔在菜单栏中继续运行；关闭此项则只关闭窗口，黑塔仍留在程序坞，按 ⌘Q 退出。",
+  // Attention (ADR 0072 §1): what notifies, and the keep-awake hold.
+  "window.notifications": "系统通知",
+  "window.notificationsDesc":
+    "窗口不在前台时，有事项需要处理或较长的回复完成，会发出通知。",
+  "window.keepAwake": "运行时保持唤醒",
+  "window.keepAwakeDesc": "板砖运行期间阻止电脑睡眠；显示器仍可关闭。",
+  "window.predictions": "输入预测",
+  "window.predictionsDesc": "输入框里会给出你可能想说的下一句。",
   "window.minimize": "最小化",
   "window.maximize": "最大化",
   "window.restore": "还原",
@@ -101,10 +109,10 @@ export const zh = {
   "settings.dialogAria": "设置",
   "settings.loadFailed": "设置读取失败——重新打开设置以重试",
   "language.rowLabel": "界面语言",
-  "language.intro": "黑塔本人的说话方式不受影响。",
+  "language.intro": "界面与对话的语言分别设置。",
   "language.interactionRowLabel": "对话语言",
   "language.interactionDesc":
-    "黑塔与你交谈所用的语言。仅对新会话生效；本版本中，英文会话没有语音。",
+    "黑塔交谈所用的语言，仅对新会话生效；英文会话暂无语音。",
   "language.follow": "跟随界面语言",
   "topbar.toggleSidebar": "切换侧栏",
   "topbar.search": "搜索会话",
@@ -122,6 +130,17 @@ export const zh = {
   "session.deleteAria": "删除会话",
   "session.openFailed": "存档损坏",
   "session.switchInterrupts": "将中断当前回复，再次点击确认",
+  "session.menuAria": "会话操作",
+  "session.rename": "重命名",
+  "session.renameAria": "会话名称",
+  "session.renameFailed": "重命名失败",
+  "session.export": "导出为 Markdown…",
+  "session.exported": "已导出",
+  "session.exportFailed": "导出失败",
+  "export.user": "开拓者",
+  "export.herta": "黑塔",
+  "export.startedAt": "开始于 {time}",
+  "export.exportedAt": "导出于 {time}",
   "session.group.today": "今天",
   "session.group.yesterday": "昨天",
   "session.group.previous7Days": "前 7 天",
@@ -195,7 +214,7 @@ export const zh = {
   "dream.enable": "开启入梦",
   // Opt-in since 2026-09-21: the pass runs while the user is away, on their
   // key — the row says so, since that is the whole reason it is a choice.
-  "dream.enableDesc": "你离开时让黑塔入梦。入梦会消耗 DeepSeek API 额度。",
+  "dream.enableDesc": "入梦会消耗 DeepSeek API 额度。",
   "dream.intro":
     "入梦是黑塔的休息时间。你离开时，她会回顾过往的会话，把那些值得记住的片刻写下来——相处越久，就越了解你。",
   // Punctuation rule (owner 2026-08-27): a single-clause LABEL or status
@@ -249,15 +268,20 @@ export const zh = {
   "device.state.awaitingApproval": "等待批准",
   "device.state.done": "完成",
   "device.state.error": "出错",
-  "banzhuan.legend.idle": "空闲——没有派活",
-  "banzhuan.legend.delegated": "板砖正在处理你的任务",
-  "banzhuan.legend.waitingApproval": "它需要你批准才能继续",
-  "banzhuan.legend.succeeded": "干净收工——亮起绿灯",
-  "banzhuan.legend.failed": "任务出错了",
+  // The Coprocessor pane is written in Herta's own hand (owner 2026-09-29) —
+  // her written register, not UI chrome: the legend below, the intro and the
+  // row descriptions. The formal-register rule for UI copy does not govern
+  // them.
+  "banzhuan.legend.idle": "没有委派，它在等。",
+  "banzhuan.legend.delegated": "在办你交代的事。",
+  "banzhuan.legend.waitingApproval": "卡在你的批准上。",
+  "banzhuan.legend.succeeded": "干净收工，亮绿灯。",
+  "banzhuan.legend.failed": "出了错；原因在记录里。",
   "banzhuan.intro":
-    "板砖替我处理代码的活。派活要写全 @板砖，那个 @ 才是真正的触发符。正面那圈光标着它此刻在干什么：",
+    "差分协处理器，我叫它板砖：代码上的粗活，归它。委派须写全 @板砖，少了 @，它不会动。正面那圈光，是它此刻的状态：",
   "banzhuan.thinking": "思考强度",
-  "banzhuan.thinkingDesc": "板砖干活时的思考强度，下次启动生效。",
+  "banzhuan.thinkingDesc":
+    "动手前想多久：越高越周全，也越慢、越贵。下次启动生效。",
   "banzhuan.thinking.low": "低",
   "banzhuan.thinking.high": "高",
   "banzhuan.thinking.max": "最高",
@@ -265,20 +289,19 @@ export const zh = {
   // one trade-off, apply semantics; the no-bash sentence only when detected.
   "banzhuan.contract": "工具契约",
   "banzhuan.contractDesc":
-    "板砖使用的工具组合。标准：一套专用工具集；极简：精简工具组，大幅降低执行成本，需要本机已安装 bash。下次启动生效。",
+    "它的工具。标准：整套专用工具；极简：bash 加一把编辑器，开销约为一半，须本机装有 bash。下次启动生效。",
   "banzhuan.contract.noBash":
-    "本机未检测到 bash，选极简也会按标准运行；装上 Git for Windows 后重启即可用。",
+    "本机没有 bash：选极简，它也照标准干。装好 Git for Windows 后重启。",
   "banzhuan.contract.standard": "标准",
   "banzhuan.contract.minimal": "极简",
   // 3D device card (ADR 0057). Same register as the rows above: what it is,
   // the one trade-off, apply semantics.
-  "banzhuan.scene": "立体板砖",
-  "banzhuan.sceneDesc": "立体实物渲染，关闭则显示平面图。",
+  "banzhuan.pdfPictures": "转写 PDF 图片",
+  "banzhuan.pdfPicturesDesc":
+    "附加 PDF 时，调用模型将图片信息转写为文本，每份文档至多 40 次。关闭后图片照常保存，它仍能查看原图。立即生效。",
   "approval.title": "请求权限",
   "approval.allow": "同意",
   "approval.alwaysAllow": "任务内同意",
-  "approval.allowProject": "本项目允许",
-  "approval.projectRuleNote": "「本项目允许」会记住：{rule}",
   "approval.deny": "拒绝",
   "approval.risk.read": "读取工作区",
   "approval.risk.write": "写入工作区",
@@ -299,6 +322,21 @@ export const zh = {
     "该命令会切到工作区之外，之后的相对路径不受工作区保护",
   "approval.reason.commandUnresolved": "这条命令有未解析部分",
   "approval.reason.commandSystem": "会改动系统设置或操控其他应用，每次都需确认",
+  "approval.reason.commandHarnessState":
+    "该命令可能触及 .herta（本程序自身的状态），且无法从命令本身判定，每次都需确认",
+  "approval.reason.commandDownloadExec":
+    "该命令会下载软件包并运行，每次都需确认",
+  "approval.reason.commandOpaque":
+    "命令实际执行的内容无法从文本判定（经编码、运行时生成或由输入提供），每次都需确认",
+  "approval.reason.commandGitInternals":
+    "该命令会改动 .git 内部（钩子或配置），git 之后会据此运行命令，每次都需确认",
+  "approval.reason.commandOutside": "该命令会访问工作区之外的路径，请核对路径",
+  "approval.reason.commandLocalExec": "运行工作区内的程序，请核对程序与参数",
+  "approval.reason.commandInterpreterInline":
+    "解释器执行未在记录中出现的内联代码，请仔细核对",
+  "approval.reason.commandScript": "运行项目脚本，请核对脚本内容",
+  "approval.reason.commandEnv":
+    "该命令会改变后续命令所用的环境变量或命令路径，请核对",
   // A chained line with more than one ask class: the other classes, named.
   "approval.alsoClasses": "另含：{list}",
   // Consequence notes (ADR 0049 §5) — one sentence on what the command will
@@ -323,11 +361,17 @@ export const zh = {
   // A heredoc body folded out of the command well (the content is in the
   // diff below) — 2026-08-17.
   "approval.heredocFolded": "    ⋯ 已折叠 {n} 行，内容见下方差异 ⋯",
-  // Workspace trust (ADR 0064): the button, and the one-line scope above it.
-  "approval.trustWorkspace": "信任此工作区",
-  "approval.trustNote":
-    "选择「信任此工作区」后，工作区内的文件修改、目录创建、非破坏性 git 操作与工作区脚本的执行将不再请求确认；网络访问、破坏性操作及工作区之外的操作仍会请求确认。可在设备卡片菜单中撤销。",
+  // Automatic review (ADR 0075, which replaced workspace trust): the button,
+  // and the one-line scope above it.
+  "approval.autoReviewEnable": "开启自动审核",
+  "approval.autoReviewNote":
+    "开启后，此工作区里撤销能还原的文件写入直接执行，其余操作先由审核模型对照你的要求放行或拒绝；它判断不了的仍会请你确认。可在设备卡片菜单中关闭。",
   "composer.placeholder": "给黑塔发消息…",
+  "composer.predictionAria": "建议的下一句，按 Tab 填入",
+  "composer.quote.remove": "移除这条引用",
+  "quote.header": "引用",
+  "quote.truncated": "……（另有 {n} 行未引用）",
+  "composer.quote.placeholder": "讲讲这段…",
   "composer.aria": "消息输入框",
   "composer.send": "发送消息",
   "composer.stop": "打断当前回合",
@@ -358,6 +402,10 @@ export const zh = {
   "composer.attach.busy": "当前回合尚未结束，无法添加文件",
   "composer.attach.tooMany": "最多十个文件",
   "composer.attach.failed": "文件加载失败",
+  // While a document is read (2026-09-30): the read itself shows as the
+  // file's row with a hairline (2026-10-01); these answer the user's acts.
+  "composer.attach.stillReading": "上一个文件还在读取",
+  "composer.attach.waitToSend": "文件读完才能发送",
   "composer.attach.denied": "涉及密钥或凭据，上传失败",
   // The staged strip (ADR 0048): pictures waiting to be sent WITH a message.
   "composer.staged": "待发送的图片",
@@ -377,6 +425,16 @@ export const zh = {
   "composer.hold.steer": "立即插话",
   "composer.hold.edit": "修改",
   "composer.hold.discard": "撤回",
+  // 继续 (ADR 0071 §1.4): 板砖's last run was interrupted — the app exited
+  // under it, or the user pressed Stop — and can be continued where it stood.
+  // @ mentions (ADR 0072 §2): @板砖 first while the query can still become
+  // it, then the matching workspace files.
+  "composer.mentions.aria": "提及",
+  "composer.mentions.brick": "委派给差分协处理器",
+  "composer.mentions.files": "工作区文件",
+  "composer.resume.text": "板砖的上一次运行已中断。",
+  "composer.resume.action": "继续",
+  "composer.resume.aria": "继续被中断的运行",
   // Click-to-enlarge lightbox (ADR 0048 §4a). `lightbox.open` prefixes the
   // thumb button's aria-label, followed by the filename.
   "lightbox.open": "查看图片",
@@ -391,8 +449,34 @@ export const zh = {
   "connect.button": "接入黑塔空间站",
   "connect.failed": "会话建立失败——请重试",
   "workspace.rewind": "回到此处",
+  // Copy a reply (ADR 0072 §3): her prose, without the code.
+  "workspace.copyReply": "复制回复",
+  "workspace.copied": "已复制",
+  "workspace.copyFailed": "复制失败",
   "workspace.editsNotReverted": "改动的文件未撤销",
   "workspace.rewindFailed": "撤回失败",
+  "workspace.undoEdits": "撤销改动",
+  "workspace.editsUndone": "改动已撤销",
+  "workspace.editsUndoneLeftAlone": "改动已撤销；以下文件未还原：{files}",
+  "workspace.undoFailed": "撤销失败",
+  "workspace.listJoin": "、",
+  "activity.thinking": "思考中…",
+  "activity.undo.chip": "撤销",
+  "activity.undo.chipTitle": "撤销本轮板砖的文件改动",
+  "activity.undo.chipDone": "已撤销",
+  "activity.undo.summary": "本轮改动已撤销",
+  "activity.undo.count.restored": "还原 {n} 个文件",
+  "activity.undo.count.deleted": "删除 {n} 个文件",
+  "activity.undo.count.left": "{n} 个文件未还原",
+  "activity.undo.result.restored": "已还原",
+  "activity.undo.result.deleted": "已删除（本轮新建）",
+  "activity.undo.result.unchanged": "无需还原",
+  "activity.undo.result.changed_since": "此后已修改，未还原",
+  "activity.undo.result.not_kept": "无原内容备份，未还原",
+  "activity.undo.result.outside_workspace": "不在工作区内，未还原",
+  "activity.undo.result.failed": "写回失败，未还原",
+  "activity.undo.commands": "由命令修改，未还原",
+  "activity.undo.commandsUnknown": "本轮执行过命令，其改动（如有）未还原",
   "workspace.processing": "处理中…",
   "workspace.took": "用时",
   "workspace.recapping": "终端正在归整历史消息…",
@@ -413,7 +497,6 @@ export const zh = {
   "activity.verb.reading": "读取",
   "activity.verb.writing": "写入",
   "activity.verb.running": "运行",
-  "activity.verb.planning": "规划",
   "activity.verb.inspecting": "检查",
   "activity.verb.savingMemory": "保存记忆",
   "activity.verb.searching": "检索",
@@ -439,8 +522,6 @@ export const zh = {
   "activity.bg.stopped": "已停止",
   "activity.bg.exited": "已退出",
   "activity.bg.signal": "信号中止",
-  "activity.todo.list": "任务清单",
-  "activity.todo.step": "步骤",
   // Attachments (ADR 0033). The unreadable reasons are deliberately four
   // distinct strings rather than one "读取失败": the user needs to know
   // whether to convert the file, split it, or that we simply cannot read it.
@@ -471,6 +552,11 @@ export const zh = {
   "activity.attachment.extracted": "已提取文本",
   /** The document's own outline, stored beside the text (2026-08-23). */
   "activity.attachment.outline": "目录 {n} 条",
+  // The pending row of an attach in flight (2026-10-01).
+  "activity.attachment.progress.waiting": "等待中",
+  "activity.attachment.progress.reading": "读取中",
+  "activity.attachment.progress.page": "读取第 {done}/{total} 页",
+  "activity.attachment.progress.pictures": "转写图片 {done}/{total}",
   "activity.attachment.remove": "移除这个附件",
   "activity.attachment.removeFailed": "移除附件失败",
   "activity.attachment.removeInUse": "附件正被其他程序占用，关闭后再移除",
@@ -485,6 +571,7 @@ export const zh = {
   "viewer.copyPath": "复制路径",
   "viewer.copySha": "复制提交号",
   "viewer.copied": "已复制",
+  "viewer.copyFailed": "复制失败",
   "viewer.openExternal": "用系统应用打开",
   "viewer.notFound": "文件不存在或已被移动",
   "viewer.binary": "二进制文件——用系统应用打开查看",
@@ -496,6 +583,11 @@ export const zh = {
   "viewer.renderFailed": "无法渲染该文件——用系统应用打开查看",
   "viewer.showSource": "查看源码",
   "viewer.showRendered": "查看渲染",
+  "viewer.piece.turnOn": "开启切块引用",
+  "viewer.piece.turnOff": "关闭切块引用",
+  "viewer.piece.selected": "已选 {n} 块",
+  "viewer.piece.quote": "引用",
+  "viewer.piece.clear": "取消选择",
   "viewer.rendering": "正在渲染…",
   "viewer.diagramFailed": "图表未能渲染，下面是它的源码",
   "viewer.imageFit": "适应面板",
@@ -529,14 +621,36 @@ export const zh = {
   "viewer.log.branch": "分支",
   "viewer.log.search": "搜索提交信息",
   "viewer.log.noMatch": "没有匹配的提交",
-  "activity.plan.more": "还有 {n} 项",
-  "plan.card.title": "任务清单",
-  "plan.card.itemsUnavailable": "本次记录无清单明细",
-  // 操作轨迹 rail card (2026-08-17) — the plan card's fallback for
-  // dispatches with no 任务清单 (every 极简 run).
+  // 操作轨迹 rail card (2026-08-17; phases and the live pane, ADR 0073).
   "trace.card.title": "操作轨迹",
+  "trace.card.stepOne": "1 步",
   "trace.card.steps": "{n} 步",
+  "trace.card.fileOne": "1 文件",
   "trace.card.files": "{n} 文件",
+  "trace.phase.explore": "探索",
+  "trace.phase.modify": "修改",
+  "trace.phase.verify": "验证",
+  // A finished segment's one-line summary, composed from these parts.
+  "trace.sum.readOne": "读取 {name}",
+  "trace.sum.readMany": "读取 {name} 等 {n} 个文件",
+  "trace.sum.searchOne": "检索 1 次",
+  "trace.sum.searchMany": "检索 {n} 次",
+  "trace.sum.inspect": "检查仓库状态",
+  "trace.sum.writeOne": "修改 {name}",
+  "trace.sum.writeMany": "修改 {name} 等 {n} 个文件",
+  "trace.sum.runOne": "运行 {cmd}",
+  "trace.sum.runMany": "运行 {n} 条命令",
+  "trace.sum.digestOne": "摘要 1 份文档",
+  "trace.sum.digestMany": "摘要 {n} 份文档",
+  "trace.sum.memoryOne": "保存 1 条记忆",
+  "trace.sum.memoryMany": "保存 {n} 条记忆",
+  "trace.sum.stopOne": "停止 1 个后台命令",
+  "trace.sum.stopMany": "停止 {n} 个后台命令",
+  "trace.sum.sep": "，",
+  "trace.sum.failed": "{n} 次失败",
+  "trace.live.lineOne": "1 行",
+  "trace.live.lines": "{n} 行",
+  "trace.live.noOutput": "尚无输出",
   // 仓库 rail card (ADR 0058): the workspace's repository, under the device.
   "repo.card.title": "仓库",
   "repo.card.clean": "工作区干净",
@@ -592,6 +706,16 @@ export const zh = {
   "evidence.todos": "待办",
   "evidence.evidence": "依据",
   "evidence.error": "错误",
+  // Pinned to the canonical words the crash marker's body detail uses
+  // (CUTOFF_WORD in backend-record-projection.ts).
+  "evidence.cutoff": "中断时",
+  "evidence.cutoff.notStarted": "未开始",
+  "evidence.cutoff.readInterrupted": "读取中断",
+  "evidence.cutoff.writeApplied": "已写入",
+  "evidence.cutoff.writeNotApplied": "未写入",
+  "evidence.cutoff.writeChangedSince": "之后被改动",
+  "evidence.cutoff.stateNotApplied": "未生效",
+  "evidence.cutoff.outcomeUnknown": "结果未知",
   "activity.detail.show": "展开明细",
   "activity.detail.hide": "收起明细",
   "workspace.codeChip": "代码",
@@ -617,6 +741,8 @@ export const zh = {
   "record.marker.risk": "{n} 风险",
   "record.marker.risks": "{n} 风险",
   "record.marker.aborted": "运行异常中止",
+  "record.marker.crashed": "应用意外退出",
+  "record.marker.stepLimit": "步数已达上限",
   "record.marker.commit": "提交 {sha}",
   "record.marker.pushed": "推送 {ref}",
   "record.marker.noop": "无产出",
@@ -625,16 +751,20 @@ export const zh = {
   "card.setWorkspace": "设置工作区…",
   "card.resetDefault": "恢复默认",
   "card.workspaceSetError": "无法设置工作区",
-  "card.rules": "已记住的命令",
-  "card.rulesEmpty": "暂无已记住的命令",
-  "card.rulesRemove": "删除规则 {rule}",
-  // Workspace trust (ADR 0064) — the row in the device card's menu.
-  "card.trust": "工作区信任",
-  "card.trustOn": "已信任：工作区内的写入、git 操作与脚本执行不再请求确认",
-  "card.trustOnDefault": "沙盒工作区，默认信任",
-  "card.trustOff": "逐项确认",
-  "card.trustEnable": "信任此工作区",
-  "card.trustDisable": "改为逐项确认",
+  // The menu's path (owner 2026-10-08): it opens the folder, and the icon
+  // beside it copies the path.
+  "card.openFolder": "打开工作区文件夹",
+  "card.openFolderError": "无法打开工作区文件夹",
+  "card.copyPath": "复制路径",
+  "card.pathCopied": "已复制",
+  "card.copyFailed": "复制失败",
+  // ADR 0075: the automatic review of approval requests — the row in the
+  // device card's menu (it replaced workspace trust, 2026-10-10).
+  "card.autoReview": "自动审核",
+  "card.autoReviewOn": "开启",
+  "card.autoReviewOff": "关闭",
+  "card.autoReviewEnable": "开启自动审核",
+  "card.autoReviewDisable": "关闭自动审核",
   "card.deviceInfoAria": "设备卡片信息",
   "card.deviceInfo":
     "设备卡片代表板砖（差分协处理器）——黑塔的编码执行后端。光环颜色与呼吸节奏反映后端当前状态（空闲、读取、写入、运行、等待批准等）。",

@@ -79,7 +79,6 @@ import type { EventBus } from "../event-bus.js";
 import type { FindingsLedger } from "../findings-ledger.js";
 import type { MemoryManager } from "../memory-manager.js";
 import type { ReadLedger } from "../read-ledger.js";
-import type { TodoStore } from "../todo-store.js";
 import type { AgentEvent } from "./events.js";
 
 export interface ToolContext {
@@ -87,7 +86,6 @@ export interface ToolContext {
   signal: AbortSignal;
   workspaceRoot: string;
   reads: ReadLedger;
-  todos: TodoStore;
   /** Per-brief managed background commands (ADR 0025 slice 4). */
   bg: BackgroundHost;
   bus: EventBus<AgentEvent>;
@@ -96,9 +94,64 @@ export interface ToolContext {
    *  Optional so the many hand-built test contexts need not carry one; the
    *  turn loop always supplies it. */
   findings?: FindingsLedger;
+  /** This call's view of the run's journal (ADR 0071 §1.1). Absent when the
+   *  run keeps none (the CLI, tests). */
+  journal?: ToolCallJournal;
+  /** Where a writer leaves what it replaces, so the user can take the turn's
+   *  edits back (ADR 0074). Absent when the run keeps no undo store. */
+  undo?: ToolCallUndo;
+}
+
+/**
+ * What a writer hands the undo store (ADR 0074 §1) right before a file is
+ * replaced: its absolute path, its bytes now (null for a file being
+ * created) and the sha256 it will have.
+ */
+export interface ToolCallUndo {
+  /** Best effort: NEVER rejects. A capture that fails marks the turn
+   *  incomplete and the write goes ahead — undo is a convenience, and 板砖's
+   *  work does not wait on it. */
+  captureWrite(w: {
+    path: string;
+    before: Buffer | null;
+    after: string;
+  }): Promise<void>;
+}
+
+/**
+ * What a tool records in the run's journal (ADR 0071 §1.1), so a run the
+ * app died in can be sealed: a file write is decided by its hashes, and a
+ * process left running is ended at relaunch.
+ */
+export interface ToolCallJournal {
+  /** Before a file is replaced: the absolute path, its sha256 before (null
+   *  for a new file) and the sha256 it will have after. Durable before it
+   *  resolves; REJECTS when it could not be recorded — the tool must then
+   *  not write (answer `journalUnavailableResult`). */
+  recordWrite(w: {
+    path: string;
+    before: string | null;
+    after: string;
+  }): Promise<void>;
+  /** After a process started (best effort). */
+  recordSpawn(s: {
+    pid: number;
+    command: string;
+    role: "foreground" | "background" | "shell";
+    /** An MSYS shell's process group and the `ps` that lists it — how a
+     *  relaunch reaches what the shell started (ADR 0071 §1.6). */
+    msys?: { pgid: number; ps: string };
+  }): void;
+  /** When a recorded process ended (best effort). */
+  recordExit(pid: number): void;
 }
 
 export type ProgressFn = (event: { id: string; message: string }) => void;
+
+/** A running command's output, a chunk at a time as it arrives (ADR 0073):
+ *  the live view only — the result still carries what the model and the
+ *  record get. */
+export type OutputFn = (chunk: string) => void;
 
 export interface HertaTool {
   name: string;
@@ -125,9 +178,21 @@ export interface HertaTool {
     input: unknown,
     ctx: { workspaceRoot: string },
   ): string | undefined;
+  /**
+   * Whether the call runs tests, read from its input at dispatch by the same
+   * detector that later turns its result into a test row (ADR 0073
+   * amendment 2026-10-08). The trace card reads a recognised test run as 验证
+   * whatever its command looks like, and must know it from the op row on: the
+   * result row lands seconds later behind Herta's beats, and the card used to
+   * re-sort its nodes when it did. A fact about the command, not a claim
+   * about the run: nothing is decided by it (D4). Optional; a throw is false.
+   */
+  runsTests?(input: unknown): boolean;
   run(
     call: ToolCallRequest,
     ctx: ToolContext,
     progress: ProgressFn,
+    /** Absent where nothing watches (tests, direct calls). */
+    output?: OutputFn,
   ): Promise<ToolResult>;
 }

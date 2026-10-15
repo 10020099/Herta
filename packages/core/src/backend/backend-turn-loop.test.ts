@@ -13,15 +13,16 @@ import {
 import { ReadLedger } from "../read-ledger.js";
 import { FakeAskResolver } from "../testing/fake-ask-resolver.js";
 import { FakeProvider } from "../testing/fake-provider.js";
-import { TodoStore } from "../todo-store.js";
 import { InMemoryToolRegistry } from "../tool-registry.js";
 import { TranscriptStore } from "../transcript-store.js";
 import type { AgentEvent } from "../types/events.js";
 import type {
   ProviderAdapter,
+  ProviderEvent,
   ProviderPromptFrame,
 } from "../types/provider.js";
 import type { HertaTool } from "../types/tool.js";
+import { setUsageNoteSink, type UsageNote } from "../usage-note.js";
 import { BackendContextBuilder } from "./backend-context-builder.js";
 import {
   partitionToolCalls,
@@ -44,7 +45,6 @@ function buildDeps(provider: FakeProvider) {
     permissions: new NoopPermissionEngine(),
     backendBuilder: new BackendContextBuilder({ tools }),
     transcript: new TranscriptStore(),
-    todos: new TodoStore(),
     bg: new BackgroundHost(),
     bus: new InMemoryEventBus<AgentEvent>(),
     clock: () => new Date("2026-05-07T00:00:00.000Z"),
@@ -299,7 +299,6 @@ describe("runBackendTurnLoop", () => {
       permissions: new NoopPermissionEngine(),
       backendBuilder: new BackendContextBuilder({ tools }),
       transcript: new TranscriptStore(),
-      todos: new TodoStore(),
       bg: new BackgroundHost(),
       bus: new InMemoryEventBus<AgentEvent>(),
       clock: () => new Date("2026-05-07T00:00:00.000Z"),
@@ -391,7 +390,6 @@ describe("runBackendTurnLoop", () => {
       permissions: new NoopPermissionEngine(),
       backendBuilder: new BackendContextBuilder({ tools }),
       transcript: new TranscriptStore(),
-      todos: new TodoStore(),
       bg: new BackgroundHost(),
       bus: new InMemoryEventBus<AgentEvent>(),
       clock: () => new Date("2026-05-07T00:00:00.000Z"),
@@ -409,6 +407,97 @@ describe("runBackendTurnLoop", () => {
     expect(headers.get("own")).toBe("own:hdr second line @ /repo");
     expect(headers.get("read_file")).toBe("a.ts");
     expect(headers.get("glob")).toBe('"src/**"');
+  });
+
+  it("a tool's `runsTests` hook marks its started event — on the serial path and in a read-only batch; a no, a throw or no hook leaves it unmarked (ADR 0073 amendment 2026-10-08)", async () => {
+    const tools = new InMemoryToolRegistry();
+    const schemaFor = (name: string) => () => ({
+      name,
+      description: name,
+      inputSchema: { type: "object", properties: {} },
+    });
+    const ok = { ok: true, data: {}, summary: "ok" };
+    tools.register({
+      name: "suite",
+      schema: schemaFor("suite"),
+      runsTests: (input) => (input as { t?: boolean }).t === true,
+      run: async () => ok,
+    });
+    tools.register({
+      name: "broken",
+      schema: schemaFor("broken"),
+      runsTests: () => {
+        throw new Error("boom");
+      },
+      run: async () => ok,
+    });
+    tools.register({
+      name: "plain",
+      schema: schemaFor("plain"),
+      run: async () => ok,
+    });
+    tools.register({
+      name: "ro_suite",
+      readOnly: true,
+      schema: schemaFor("ro_suite"),
+      runsTests: () => true,
+      run: async () => ok,
+    });
+    tools.register({
+      name: "ro_plain",
+      readOnly: true,
+      schema: schemaFor("ro_plain"),
+      run: async () => ok,
+    });
+    const call = (id: string, tool: string, input: unknown) => ({
+      type: "tool-call-request" as const,
+      call: { id, tool, input },
+    });
+    const provider = new FakeProvider({
+      turns: [
+        [
+          call("c1", "suite", { t: true }),
+          call("c2", "suite", { t: false }),
+          call("c3", "broken", {}),
+          call("c4", "plain", {}),
+          call("c5", "ro_suite", {}),
+          call("c6", "ro_plain", {}),
+          { type: "finish", reason: "tool_calls" },
+        ],
+        [{ type: "finish", reason: "stop" }],
+      ],
+    });
+    const deps = {
+      sessionId: "s-1",
+      provider,
+      tools,
+      permissions: new NoopPermissionEngine(),
+      backendBuilder: new BackendContextBuilder({ tools }),
+      transcript: new TranscriptStore(),
+      bg: new BackgroundHost(),
+      bus: new InMemoryEventBus<AgentEvent>(),
+      clock: () => new Date("2026-05-07T00:00:00.000Z"),
+      workspaceRoot: "/repo",
+      reads: new ReadLedger(),
+      memory: new NoopMemoryManager(),
+    };
+    const marked = new Map<string, boolean>();
+    for await (const e of runBackendTurnLoop(deps, sampleBrief, {
+      signal: new AbortController().signal,
+      userMessages: sampleUserMessages,
+    })) {
+      if (e.type === "tool.call.started") {
+        marked.set(e.id, "runsTests" in e && e.runsTests === true);
+      }
+    }
+    expect(Object.fromEntries(marked)).toEqual({
+      c1: true,
+      c2: false,
+      c3: false,
+      c4: false,
+      c5: true,
+      c6: false,
+    });
   });
 
   it("builds the base frame ONCE per turn; iterations only refresh messages (audit L2)", async () => {
@@ -459,7 +548,6 @@ describe("runBackendTurnLoop", () => {
       permissions: new NoopPermissionEngine(),
       backendBuilder: countingBuilder,
       transcript: new TranscriptStore(),
-      todos: new TodoStore(),
       bg: new BackgroundHost(),
       bus: new InMemoryEventBus<AgentEvent>(),
       clock: () => new Date("2026-05-07T00:00:00.000Z"),
@@ -533,7 +621,6 @@ describe("runBackendTurnLoop", () => {
       permissions: new NoopPermissionEngine(),
       backendBuilder: new BackendContextBuilder({ tools }),
       transcript: new TranscriptStore(),
-      todos: new TodoStore(),
       bg: new BackgroundHost(),
       bus: new InMemoryEventBus<AgentEvent>(),
       clock: () => new Date("2026-05-07T00:00:00.000Z"),
@@ -557,7 +644,7 @@ describe("runBackendTurnLoop", () => {
     }
   });
 
-  it("threads scopedRepoInstructions and scopedMemory into the frame", async () => {
+  it("threads scopedMemory into the frame", async () => {
     let capturedFrame: ProviderPromptFrame | undefined;
     const provider = new FakeProvider({
       turns: [
@@ -572,7 +659,6 @@ describe("runBackendTurnLoop", () => {
     for await (const _ of runBackendTurnLoop(deps, sampleBrief, {
       signal: new AbortController().signal,
       userMessages: sampleUserMessages,
-      scopedRepoInstructions: "Prefer edit_file over write_new_file.",
       scopedMemory: "User dislikes long replies.",
     })) {
       // drain
@@ -580,9 +666,6 @@ describe("runBackendTurnLoop", () => {
 
     expect(capturedFrame).toBeDefined();
     if (capturedFrame !== undefined && "backendSystem" in capturedFrame) {
-      expect(capturedFrame.scopedRepoInstructions).toBe(
-        "Prefer edit_file over write_new_file.",
-      );
       expect(capturedFrame.scopedMemory).toBe("User dislikes long replies.");
     }
   });
@@ -705,6 +788,15 @@ describe("context budget + oversized-result persistence (ADR 0025 slice 2)", () 
       ...buildDeps(provider),
       // base (~3K) + one fat group (~15K) fits; two fat groups (~33K) don't.
       budget: { budgetTokens: 20_000, keepRecentToolPayloads: 1 },
+      // What the harness keeps once iterations are dropped (2026-09-29).
+      workingState: () => ({
+        changedFiles: [
+          { path: "src/a.ts", kind: "modified" as const, diffSummary: "+3 -1" },
+        ],
+        background: [{ id: "bg-1", command: "npm run dev" }],
+        findings: [{ claim: "the cache is stale", cites: ["src/a.ts:3"] }],
+        steers: ["先别动测试"],
+      }),
     };
     deps.tools.register(blobTool(10));
 
@@ -742,6 +834,49 @@ describe("context budget + oversized-result persistence (ADR 0025 slice 2)", () 
       .map((m) => (m.role === "assistant" ? m.text : ""))
       .join("").length;
     expect(frameChars).toBeLessThan(70_000);
+
+    // Iterations were dropped, so the state trailer carries the working state
+    // the harness keeps — and the marker names where it is.
+    const trailer = "trailingState" in seen ? (seen.trailingState ?? "") : "";
+    expect(trailer).toContain("## 当前工作状态");
+    expect(trailer).toContain("- src/a.ts (修改, +3 -1)");
+    expect(trailer).toContain("- bg-1: npm run dev");
+    expect(trailer).toContain("1. the cache is stale (src/a.ts:3)");
+    expect(trailer).toContain("「先别动测试」");
+    if (first?.role === "assistant") {
+      expect(first.text).toContain("末尾的工作状态");
+    }
+  });
+
+  it("an untrimmed frame carries no working state", async () => {
+    let seen: { trailingState?: string } | undefined;
+    const provider = new FakeProvider({
+      turns: [
+        (frame) => {
+          seen = frame as { trailingState?: string };
+          return [
+            { type: "text-delta", text: "done" },
+            { type: "finish", reason: "stop" },
+          ];
+        },
+      ],
+    });
+    const deps = {
+      ...buildDeps(provider),
+      workingState: () => ({
+        changedFiles: [],
+        background: [],
+        findings: [],
+        steers: ["x"],
+      }),
+    };
+    for await (const _ of runBackendTurnLoop(deps, sampleBrief, {
+      signal: new AbortController().signal,
+      userMessages: sampleUserMessages,
+    })) {
+      // drain
+    }
+    expect(seen?.trailingState ?? "").not.toContain("工作状态");
   });
 
   it("fails honestly (no provider call) when even the trimmed tail exceeds the budget", async () => {
@@ -1551,23 +1686,6 @@ describe("summarizeInput (tool-aware working-state argument)", () => {
     expect(summarizeInput("git_diff", { staged: true })).toBe("");
   });
 
-  it("returns the done/total ratio for todo_write", () => {
-    expect(
-      summarizeInput("todo_write", {
-        todos: [
-          { content: "a", status: "completed" },
-          { content: "b", status: "in_progress" },
-          { content: "c", status: "pending" },
-        ],
-      }),
-    ).toBe("1/3");
-  });
-
-  it("returns empty for todo_write with an empty or malformed list", () => {
-    expect(summarizeInput("todo_write", { todos: [] })).toBe("");
-    expect(summarizeInput("todo_write", { foo: 1 })).toBe("");
-  });
-
   it("truncates a long path to the ~80-char cap with an ellipsis", () => {
     const longPath = `src/${"a".repeat(120)}.ts`;
     const out = summarizeInput("read_file", { path: longPath });
@@ -1686,11 +1804,15 @@ describe("runBackendTurnLoop — provider error resilience", () => {
     expect(events.map((e) => e.type)).not.toContain("turn.finished");
   });
 
-  it("bounds a runaway tool-loop at MAX_TURN_ITERATIONS and surfaces turn.failed", async () => {
+  it("bounds a runaway tool-loop at the step limit: warned in its last steps, stopped as `step_limit` (2026-09-29)", async () => {
     // A provider that requests a tool call forever — without the iteration cap
-    // this loops indefinitely.
+    // this loops indefinitely. It keeps each frame's state trailer.
+    const trailers: Array<string | undefined> = [];
     const loopingProvider: ProviderAdapter = {
-      async *streamChat() {
+      async *streamChat(frame) {
+        trailers.push(
+          "trailingState" in frame ? frame.trailingState : undefined,
+        );
         yield {
           type: "tool-call-request",
           call: { id: "c", tool: "noop", input: {} },
@@ -1715,7 +1837,6 @@ describe("runBackendTurnLoop — provider error resilience", () => {
       permissions: new NoopPermissionEngine(),
       backendBuilder: new BackendContextBuilder({ tools }),
       transcript: new TranscriptStore(),
-      todos: new TodoStore(),
       bg: new BackgroundHost(),
       bus: new InMemoryEventBus<AgentEvent>(),
       clock: () => new Date("2026-05-07T00:00:00.000Z"),
@@ -1732,11 +1853,21 @@ describe("runBackendTurnLoop — provider error resilience", () => {
       events.push(e);
     }
 
+    // The run stops at the limit — not as a failure: a step_limit the
+    // runtime ends as an interruption, continuable.
     const failed = events.find((e) => e.type === "turn.failed");
-    expect(failed).toBeDefined();
-    if (failed?.type === "turn.failed") {
-      expect(failed.error.message).toContain("iterations");
-    }
+    expect(failed).toMatchObject({
+      type: "turn.failed",
+      error: {
+        kind: "step_limit",
+        message: "reached the step limit (100 steps)",
+      },
+    });
+    // Told in its last ten steps, not before.
+    expect(trailers).toHaveLength(100);
+    expect(trailers.slice(0, 90).every((t) => t === undefined)).toBe(true);
+    expect(trailers[90]).toContain("这是第 91 步，之后还剩 9 步");
+    expect(trailers[99]).toContain("这是 100 步里的最后一步");
   });
 
   it("an interrupt during a pending gate produces NO permission.resolved and NO tool result (audit finding 4)", async () => {
@@ -1801,6 +1932,64 @@ describe("runBackendTurnLoop — provider error resilience", () => {
     }
     // No fabricated "User denied" tool result in the model-facing transcript.
     expect(deps.transcript.all().some((m) => m.role === "tool")).toBe(false);
+  });
+
+  it("a reviewer's denial reaches the model with its reason, not as the user's (ADR 0075)", async () => {
+    const tools = new InMemoryToolRegistry();
+    tools.register({
+      name: "run_command",
+      schema: () => ({
+        name: "run_command",
+        description: "runs a command",
+        inputSchema: { type: "object", properties: {} },
+      }),
+      run: async () => ({ ok: true, summary: "should never run" }),
+    });
+    const permissions = new RulePermissionEngine({
+      ask: {
+        present: async () => ({
+          decision: "deny" as const,
+          by: "reviewer" as const,
+          reason: "该命令把 .env 发送到用户未指定的地址。",
+        }),
+      },
+    });
+    permissions.registerRule("run_command", () => ({
+      kind: "ask",
+      reason: "network",
+      risk: "network",
+    }));
+    const provider = new FakeProvider({
+      turns: [
+        [
+          {
+            type: "tool-call-request",
+            call: { id: "call-1", tool: "run_command", input: {} },
+          },
+          { type: "finish", reason: "tool_calls" },
+        ],
+        [{ type: "finish", reason: "stop" }],
+      ],
+    });
+    const deps = { ...buildDeps(provider), tools, permissions };
+    const events: AgentEvent[] = [];
+    for await (const e of runBackendTurnLoop(deps, sampleBrief, {
+      signal: new AbortController().signal,
+      userMessages: sampleUserMessages,
+    })) {
+      events.push(e);
+    }
+    const resolved = events.find((e) => e.type === "permission.resolved");
+    expect(
+      resolved?.type === "permission.resolved" ? resolved.decision : null,
+    ).toBe("deny");
+    const fin = events.find((e) => e.type === "tool.call.finished");
+    if (fin?.type !== "tool.call.finished") throw new Error("no finish");
+    expect(fin.result.error?.code).toBe("permission_denied");
+    expect(fin.result.error?.message).toContain("automatic review");
+    expect(fin.result.error?.message).toContain(".env");
+    expect(fin.result.error?.message).not.toContain("User denied");
+    expect(fin.result.suggestion).toContain("same outcome another way");
   });
 
   it("finishReason 'length' surfaces turn.failed — truncated output never reads as a clean turn end", async () => {
@@ -2085,5 +2274,200 @@ describe("one permission gate for the serial and the parallel path (2026-09-03)"
     );
     expect(parallel.results[0]).toEqual(serial.results[0]);
     expect(serial.results[0]?.suggestion).toBeUndefined();
+  });
+});
+
+describe("long runs and live views: the run's note, the stop, the live argument and output events (2026-09-29, ADR 0073)", () => {
+  const noop: HertaTool = {
+    name: "noop",
+    schema: () => ({ name: "noop", description: "", inputSchema: {} }),
+    run: async () => ({ ok: true, summary: "noop" }),
+  };
+  const stop = (text: string): ProviderEvent[] => [
+    { type: "text-delta", text },
+    { type: "finish", reason: "stop" },
+  ];
+
+  async function drain(
+    deps: Parameters<typeof runBackendTurnLoop>[0],
+  ): Promise<AgentEvent[]> {
+    const events: AgentEvent[] = [];
+    for await (const e of runBackendTurnLoop(deps, sampleBrief, {
+      signal: new AbortController().signal,
+      userMessages: sampleUserMessages,
+    })) {
+      events.push(e);
+    }
+    return events;
+  }
+
+  it("a run ends at the model's first stop — no end-of-run check asks for another step (ADR 0073)", async () => {
+    const provider = new FakeProvider({
+      turns: [
+        [
+          {
+            type: "tool-call-request",
+            call: { id: "c1", tool: "noop", input: {} },
+          },
+          { type: "finish", reason: "tool_calls" },
+        ],
+        stop("done"),
+        // A third call would exhaust the script and fail the turn.
+      ],
+    });
+    const deps = buildDeps(provider);
+    deps.tools.register(noop);
+    const events = await drain(deps);
+    expect(events.map((e) => e.type)).toContain("turn.finished");
+    expect(events.map((e) => e.type)).not.toContain("turn.failed");
+  });
+
+  it("a call's arguments reach the bus as they stream, under the id its tool.call.started carries; a command's output reaches it a chunk at a time", async () => {
+    const shell: HertaTool = {
+      name: "shell",
+      schema: () => ({ name: "shell", description: "", inputSchema: {} }),
+      run: async (_call, _ctx, _progress, output) => {
+        output?.("line 1\n");
+        output?.("");
+        output?.("line 2\n");
+        return { ok: true, summary: "exit 0" };
+      },
+    };
+    const provider = new FakeProvider({
+      turns: [
+        [
+          {
+            type: "tool-call-delta",
+            id: "c1",
+            tool: "shell",
+            argsDelta: '{"cmd":',
+          },
+          {
+            type: "tool-call-delta",
+            id: "c1",
+            tool: "shell",
+            argsDelta: '"ls"}',
+          },
+          {
+            type: "tool-call-request",
+            call: { id: "c1", tool: "shell", input: { cmd: "ls" } },
+          },
+          { type: "finish", reason: "tool_calls" },
+        ],
+        stop("done"),
+      ],
+    });
+    const deps = buildDeps(provider);
+    deps.tools.register(shell);
+    const seen: AgentEvent[] = [];
+    deps.bus.onAny((e) => seen.push(e));
+    await drain(deps);
+
+    const deltas = seen.filter((e) => e.type === "tool.call.delta");
+    expect(deltas).toEqual([
+      {
+        type: "tool.call.delta",
+        layer: "backend",
+        id: "c1",
+        tool: "shell",
+        argsDelta: '{"cmd":',
+      },
+      {
+        type: "tool.call.delta",
+        layer: "backend",
+        id: "c1",
+        tool: "shell",
+        argsDelta: '"ls"}',
+      },
+    ]);
+    const started = seen.find((e) => e.type === "tool.call.started");
+    expect(started?.type === "tool.call.started" && started.id).toBe("c1");
+    // Empty chunks are dropped; the rest arrive in order, stamped with the call.
+    expect(seen.filter((e) => e.type === "tool.call.output")).toEqual([
+      {
+        type: "tool.call.output",
+        layer: "backend",
+        id: "c1",
+        chunk: "line 1\n",
+      },
+      {
+        type: "tool.call.output",
+        layer: "backend",
+        id: "c1",
+        chunk: "line 2\n",
+      },
+    ]);
+    // Bus only: the generator surface replays no argument or output text.
+    const yielded = await drain({
+      ...buildDeps(
+        new FakeProvider({
+          turns: [
+            [
+              {
+                type: "tool-call-delta",
+                id: "c2",
+                tool: "noop",
+                argsDelta: "{}",
+              },
+              {
+                type: "tool-call-request",
+                call: { id: "c2", tool: "noop", input: {} },
+              },
+              { type: "finish", reason: "tool_calls" },
+            ],
+            stop("done"),
+          ],
+        }),
+      ),
+    });
+    expect(yielded.some((e) => e.type === "tool.call.delta")).toBe(false);
+  });
+
+  it("reports the run's trims once, however it ends — how many frames were cleared or dropped, and how far past the budget it grew", async () => {
+    const notes: UsageNote[] = [];
+    setUsageNoteSink((n) => notes.push(n));
+    try {
+      const fat = "A".repeat(60_000);
+      const fatCall = (id: string): ProviderEvent[] => [
+        { type: "text-delta", text: fat },
+        { type: "tool-call-request", call: { id, tool: "noop", input: {} } },
+        { type: "finish", reason: "tool_calls" },
+      ];
+      const provider = new FakeProvider({
+        turns: [fatCall("c1"), fatCall("c2"), stop("done")],
+      });
+      const deps = {
+        ...buildDeps(provider),
+        budget: { budgetTokens: 20_000, keepRecentToolPayloads: 1 },
+      };
+      deps.tools.register(noop);
+      await drain(deps);
+
+      expect(notes).toHaveLength(1);
+      const note = notes[0];
+      if (note?.kind !== "backend-run") throw new Error("no run note");
+      expect(note.steps).toBe(3);
+      expect(note.budget).toBe(20_000);
+      // The third frame had to drop an old iteration to fit.
+      expect(note.droppedSteps).toBe(1);
+      expect(note.maxDropped).toBeGreaterThanOrEqual(1);
+      expect(note.peakSent).toBeLessThanOrEqual(20_000);
+      expect(note.peakUntrimmed).toBeGreaterThan(20_000);
+
+      // A run that fails reports too: the provider refuses its first call.
+      notes.length = 0;
+      const failing = await drain(buildDeps(new FakeProvider({ turns: [] })));
+      expect(failing.map((e) => e.type)).toContain("turn.failed");
+      expect(notes).toEqual([
+        expect.objectContaining({
+          kind: "backend-run",
+          steps: 1,
+          clearedSteps: 0,
+          droppedSteps: 0,
+        }),
+      ]);
+    } finally {
+      setUsageNoteSink(undefined);
+    }
   });
 });

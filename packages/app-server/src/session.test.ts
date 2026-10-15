@@ -12,7 +12,12 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import type { RepoContextSnapshot, TerminalRecord } from "@herta/core";
+import type {
+  RepoContextSnapshot,
+  TerminalRecord,
+  TerminalRecordBlock,
+  UndoFileResult,
+} from "@herta/core";
 import type { OpeningChoice } from "@herta/herta";
 import type { RepoContextOutcome } from "@herta/tools";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -20,6 +25,7 @@ import {
   SessionImpl,
   type SessionInternalDeps,
   spanEditedFiles,
+  spanEditsLeft,
 } from "./session.js";
 import { createSessionHost } from "./session-host.js";
 import type { BackendStack } from "./session-wiring.js";
@@ -1319,7 +1325,12 @@ describe("Session — rewindLastTurn", () => {
     await session.submitText("在吗");
     expect(session.record).toHaveLength(3); // user + thought + speech
     const result = await session.rewindLastTurn();
-    expect(result).toEqual({ ok: true, userText: "在吗", editedFiles: false });
+    expect(result).toEqual({
+      ok: true,
+      userText: "在吗",
+      editedFiles: false,
+      undoable: false,
+    });
     expect(session.record).toEqual([]);
     await cleanup();
   });
@@ -1381,7 +1392,12 @@ describe("Session — rewindLastTurn", () => {
       { kind: "herta", surface: "speech", text: "h2" },
     ]);
     const result = await session.rewindLastTurn();
-    expect(result).toEqual({ ok: true, userText: "u2", editedFiles: false });
+    expect(result).toEqual({
+      ok: true,
+      userText: "u2",
+      editedFiles: false,
+      undoable: false,
+    });
     expect(session.record).toEqual([
       { kind: "user", text: "u1" },
       { kind: "herta", surface: "speech", text: "h1" },
@@ -1482,6 +1498,64 @@ describe("spanEditedFiles", () => {
         { kind: "herta", surface: "speech", text: "在。" },
       ]),
     ).toBe(false);
+  });
+});
+
+describe("spanEditsLeft", () => {
+  const done: TerminalRecordBlock = {
+    kind: "system",
+    label: "差分协处理器",
+    body: "完成 · 1 file · tests 1/1",
+    role: "done-marker",
+    evidenceDetail: "↳ 改动文件: a.ts",
+  };
+  const undo = (
+    files: Array<{ path: string; result: UndoFileResult }>,
+    commands: string[] = [],
+  ): TerminalRecordBlock => ({
+    kind: "system",
+    label: "系统",
+    body: "Undid 板砖's file changes from this turn.",
+    digest: {
+      kind: "undo",
+      files,
+      commands,
+      commandsUnknown: false,
+      incomplete: false,
+    },
+  });
+
+  it("a turn whose edits its own undo took back leaves nothing to name (release review 2026-10-13)", () => {
+    expect(
+      spanEditsLeft([
+        { kind: "user", text: "x" },
+        done,
+        undo([
+          { path: "a.ts", result: "restored" },
+          { path: "b.ts", result: "deleted" },
+        ]),
+      ]),
+    ).toBe(false);
+  });
+
+  it("what the undo left alone, what commands changed, and edits after it still count", () => {
+    expect(
+      spanEditsLeft([done, undo([{ path: "a.ts", result: "changed_since" }])]),
+    ).toBe(true);
+    expect(
+      spanEditsLeft([
+        done,
+        undo([{ path: "a.ts", result: "restored" }], ["gen/out.js"]),
+      ]),
+    ).toBe(true);
+    expect(
+      spanEditsLeft([done, undo([{ path: "a.ts", result: "restored" }]), done]),
+    ).toBe(true);
+  });
+
+  it("without an undo line it is spanEditedFiles", () => {
+    expect(spanEditsLeft([{ kind: "user", text: "x" }, done])).toBe(true);
+    expect(spanEditsLeft([{ kind: "user", text: "x" }])).toBe(false);
   });
 });
 
@@ -1878,6 +1952,11 @@ describe("Session — attachFiles (ADR 0033)", () => {
     expect(existsSync(join(backendWs, ...sidecar.split("/")))).toBe(true);
     const digestRel = rel.replace(/\.txt$/, ".digest.txt");
     writeFileSync(join(backendWs, ...digestRel.split("/")), "# 文档摘要\n");
+    // The original's copy (ADR 0038 amendment) is part of the same set: the
+    // ✕ takes it, so the rewind must too (2026-10-01 — it was left behind).
+    const source = digest?.kind === "attachment" ? (digest.source ?? "") : "";
+    expect(source).toMatch(/\.pdf$/);
+    expect(existsSync(join(backendWs, ...source.split("/")))).toBe(true);
 
     const r = await session.rewindLastTurn();
     expect(r.ok).toBe(true);
@@ -1891,6 +1970,151 @@ describe("Session — attachFiles (ADR 0033)", () => {
     expect(existsSync(join(backendWs, ...rel.split("/")))).toBe(false);
     expect(existsSync(join(backendWs, ...sidecar.split("/")))).toBe(false);
     expect(existsSync(join(backendWs, ...digestRel.split("/")))).toBe(false);
+    expect(existsSync(join(backendWs, ...source.split("/")))).toBe(false);
+    await cleanup();
+  });
+
+  /** A one-page PDF drawing two pictures between its lines (2026-09-30). */
+  async function pictureHandout(fill: number): Promise<Buffer> {
+    const { makePdf } = await import("./testing/document-fixtures.js");
+    const picture = (y: number, shade: number) => ({
+      at: [72, y, 120, 40] as const,
+      width: 12,
+      height: 10,
+      kind: "rgb" as const,
+      data: new Uint8Array(12 * 10 * 3).fill(shade),
+    });
+    return makePdf([["Question 1.", "(a)", "(b)"]], {
+      lineGap: 60,
+      pictures: [[picture(670, fill), picture(610, fill + 1)]],
+    });
+  }
+  const pngsBeside = (backendWs: string, rel: string): string[] =>
+    readdirSync(join(backendWs, ...rel.split("/").slice(0, -1))).filter((f) =>
+      f.endsWith(".png"),
+    );
+
+  it("removeAttachment takes a PDF's pictures with its text — nothing view_image could still open (2026-09-30)", async () => {
+    const { session, backendWs, srcDir, cleanup } = await mkAttachSession();
+    writeFileSync(join(srcDir, "handout.pdf"), await pictureHandout(10));
+    const a = await session.attachFiles([join(srcDir, "handout.pdf")]);
+    expect(a.ok).toBe(true);
+    if (!a.ok) return;
+    const rel = a.files[0]?.path ?? "";
+    expect(pngsBeside(backendWs, rel)).toHaveLength(2);
+
+    expect(await session.removeAttachment(rel)).toEqual({
+      ok: true,
+      removed: 1,
+    });
+    // Text, original and both pictures: the directory is empty again.
+    expect(
+      readdirSync(join(backendWs, ...rel.split("/").slice(0, -1))),
+    ).toEqual([]);
+    await cleanup();
+  });
+
+  it("rewind takes a withdrawn PDF's pictures with its text (2026-09-30)", async () => {
+    const { session, backendWs, srcDir, cleanup } = await mkAttachSession();
+    await session.submitText("hi");
+    writeFileSync(join(srcDir, "handout.pdf"), await pictureHandout(20));
+    const a = await session.attachFiles([join(srcDir, "handout.pdf")]);
+    expect(a.ok).toBe(true);
+    if (!a.ok) return;
+    const rel = a.files[0]?.path ?? "";
+    expect(pngsBeside(backendWs, rel)).toHaveLength(2);
+
+    const r = await session.rewindLastTurn();
+    expect(r.ok).toBe(true);
+    expect(existsSync(join(backendWs, ...rel.split("/")))).toBe(false);
+    expect(pngsBeside(backendWs, rel)).toEqual([]);
+    await cleanup();
+  });
+
+  it("rewind keeps a PDF's pictures while a surviving block still cites its text (2026-09-30)", async () => {
+    // The same document attached before the send and again after the reply:
+    // content-hashed names make both rows cite one text, and the rewind
+    // withdraws only the second. Pictures follow the text's fate, so they stay.
+    const { session, backendWs, srcDir, cleanup } = await mkAttachSession();
+    writeFileSync(join(srcDir, "handout.pdf"), await pictureHandout(30));
+    const first = await session.attachFiles([join(srcDir, "handout.pdf")]);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    await session.submitText("看看这份讲义");
+    const again = await session.attachFiles([join(srcDir, "handout.pdf")]);
+    expect(again.ok).toBe(true);
+    const rel = first.files[0]?.path ?? "";
+
+    const r = await session.rewindLastTurn();
+    expect(r.ok).toBe(true);
+    expect(existsSync(join(backendWs, ...rel.split("/")))).toBe(true);
+    expect(pngsBeside(backendWs, rel)).toHaveLength(2);
+    await cleanup();
+  });
+
+  it("rewind removes a scanned PDF's original — a block whose ONLY stored file is the source (2026-10-01)", async () => {
+    // A scan keeps no text (ADR 0038 §4) but keeps its original for the
+    // viewer, so its digest path is empty and the source is the one file on
+    // disk. The GC used to skip any block without a text path, leaving that
+    // copy with no row and no ✕ to take it back.
+    const { makePdf } = await import("./testing/document-fixtures.js");
+    const { session, backendWs, srcDir, cleanup } = await mkAttachSession();
+    await session.submitText("hi");
+    writeFileSync(join(srcDir, "scan.pdf"), makePdf([[], []]));
+    const a = await session.attachFiles([join(srcDir, "scan.pdf")]);
+    expect(a.ok).toBe(true);
+    if (!a.ok) return;
+    const block = session.record.find(
+      (b) => b.kind === "system" && b.digest?.kind === "attachment",
+    );
+    const digest = block?.kind === "system" ? block.digest : undefined;
+    expect(digest).toMatchObject({ path: "", unreadable: "empty" });
+    const source = digest?.kind === "attachment" ? (digest.source ?? "") : "";
+    expect(source).toMatch(/\.pdf$/);
+    expect(existsSync(join(backendWs, ...source.split("/")))).toBe(true);
+
+    const r = await session.rewindLastTurn();
+    expect(r.ok).toBe(true);
+    expect(
+      session.record.some(
+        (b) => b.kind === "system" && b.digest?.kind === "attachment",
+      ),
+    ).toBe(false);
+    expect(existsSync(join(backendWs, ...source.split("/")))).toBe(false);
+    await cleanup();
+  });
+
+  it("rewind keeps an ORIGINAL a surviving block still cites — for a text PDF and a scan alike (2026-10-01)", async () => {
+    // Re-attaching the same document writes the same content-hashed names,
+    // the original's copy included. Withdrawing the later blocks must leave
+    // the earlier rows' originals in place, or their viewer opens nothing.
+    const { makePdf } = await import("./testing/document-fixtures.js");
+    const { session, backendWs, srcDir, cleanup } = await mkAttachSession();
+    writeFileSync(join(srcDir, "book.pdf"), makePdf([["one"], ["two"]]));
+    writeFileSync(join(srcDir, "scan.pdf"), makePdf([[], []]));
+    const docs = [join(srcDir, "book.pdf"), join(srcDir, "scan.pdf")];
+    const first = await session.attachFiles(docs);
+    expect(first.ok).toBe(true);
+    await session.submitText("看看这两个文件");
+    const again = await session.attachFiles(docs);
+    expect(again.ok).toBe(true);
+    const stored = (): string[] =>
+      session.record.flatMap((b) =>
+        b.kind === "system" && b.digest?.kind === "attachment"
+          ? [b.digest.path, b.digest.source ?? ""].filter((p) => p !== "")
+          : [],
+      );
+    const before = [...new Set(stored())];
+    // book: text + original; scan: original only.
+    expect(before).toHaveLength(3);
+
+    const r = await session.rewindLastTurn();
+    expect(r.ok).toBe(true);
+    // The pre-send blocks survive, so every file they cite must too.
+    expect([...new Set(stored())].sort()).toEqual([...before].sort());
+    for (const rel of before) {
+      expect(existsSync(join(backendWs, ...rel.split("/")))).toBe(true);
+    }
     await cleanup();
   });
 

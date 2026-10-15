@@ -3,7 +3,11 @@ import type {
   TerminalRecord,
   TerminalRecordBlock,
 } from "@herta/core";
-import { errorMessage } from "@herta/core";
+import {
+  errorMessage,
+  estimatePromptTokens,
+  reportUsageNote,
+} from "@herta/core";
 import { makeFireBeat } from "./actor-turn-beat.js";
 import {
   ActorTurnAbortedError,
@@ -38,6 +42,7 @@ import {
   parseHertaBlock,
   stripBanzhuanTrigger,
 } from "./parse.js";
+import { compactThreshold } from "./session-recap.js";
 import {
   type PreparedRecap,
   prepareTurnRecap,
@@ -539,7 +544,42 @@ export function userTextPreemptsDispatch(userText: string): boolean {
   );
 }
 
+/**
+ * One actor turn, measured for the usage log (long-run study item 6): every
+ * completion prompt the turn sends is sized, and the turn reports how many
+ * there were, the first and the largest — however it ends. The recap check
+ * sizes the prompt once, at turn start; this is what the turn grew to after.
+ */
 export async function runActorCompletionTurn(
+  state: ActorTurnState,
+  userText: string,
+  deps: ActorTurnDeps,
+): Promise<ActorTurnState> {
+  const sizes: number[] = [];
+  const ownHook = deps.onCompletionPrompt;
+  try {
+    return await runTurn(state, userText, {
+      ...deps,
+      onCompletionPrompt: (prompt) => {
+        sizes.push(estimatePromptTokens(prompt));
+        ownHook?.(prompt);
+      },
+    });
+  } finally {
+    if (sizes.length > 0) {
+      const cfg = deps.recap?.config;
+      reportUsageNote({
+        kind: "actor-turn",
+        calls: sizes.length,
+        firstPrompt: sizes[0] ?? 0,
+        peakPrompt: Math.max(...sizes),
+        ...(cfg?.enabled === true ? { highWater: compactThreshold(cfg) } : {}),
+      });
+    }
+  }
+}
+
+async function runTurn(
   state: ActorTurnState,
   userText: string,
   deps: ActorTurnDeps,
@@ -558,9 +598,15 @@ export async function runActorCompletionTurn(
   // user block (ADR 0048 §4). Inside the turn's span, so the picture and the
   // words it came with are one episode: Herta reads them together, and a
   // rewind withdraws them together. Empty for every turn without attachments.
+  // A 继续 turn (ADR 0071 §1.4) marks its user block: rewind treats it as a
+  // user turn, and a regenerate after a crash re-runs it as a resume.
   let record: TerminalRecord = [
     ...state.record,
-    { kind: "user", text: userText },
+    {
+      kind: "user",
+      text: userText,
+      ...(deps.resume === true ? { resume: true as const } : {}),
+    },
     ...(deps.userAttachments ?? []),
   ];
 
@@ -608,7 +654,9 @@ export async function runActorCompletionTurn(
   // normal turn; she can still delegate herself if it's actually a
   // task. stripBanzhuanTrigger below matches: it removes only bare
   // triggers, so a quoted span stays part of the brief text.
-  if (userTextPreemptsDispatch(userText)) {
+  // A 继续 turn takes the same harness-first path: the run continues before
+  // Herta says anything, and she comments after it as after any dispatch.
+  if (deps.resume === true || userTextPreemptsDispatch(userText)) {
     deps.sink?.flushBlocks(record);
     const policy = new BeatPolicy();
     const fireBeat = makeFireBeat(
@@ -625,6 +673,7 @@ export async function runActorCompletionTurn(
       beatPolicy: policy,
       fireBeat,
       sink: deps.sink,
+      ...(deps.resume === true ? { resume: true as const } : {}),
     });
     dispatchCount += 1;
   }

@@ -1,6 +1,7 @@
 import {
   readCachedSheet,
   sheetCacheKey,
+  validCachedSheet,
   writeCachedSheet,
 } from "./glyph-sheet-cache.js";
 import {
@@ -53,12 +54,19 @@ async function makeSheet(request: GlyphSheetRequest): Promise<void> {
   const { sizes, fontFamily, glyphs, dpr, ink } = request;
   const key = sheetCacheKey(request, navigator.userAgent);
   const cached = await readCachedSheet(key);
-  if (cached !== null) {
+  if (cached !== null && validCachedSheet(cached, glyphs.length)) {
     try {
       const bitmap = await createImageBitmap(cached.png, {
         premultiplyAlpha: "premultiply",
       });
-      const sheet = { bitmap, dpr, ink, glyphs, entries: cached.entries };
+      const sheet: OpeningSheet = {
+        bitmap,
+        dpr,
+        ink,
+        glyphs,
+        entries: cached.entries,
+        origin: "kept",
+      };
       reply({ type: "sheet", sheet }, [bitmap]);
       return;
     } catch {
@@ -97,7 +105,14 @@ async function makeSheet(request: GlyphSheetRequest): Promise<void> {
   reply(
     {
       type: "sheet",
-      sheet: { bitmap, dpr, ink, glyphs, entries: layout.entries },
+      sheet: {
+        bitmap,
+        dpr,
+        ink,
+        glyphs,
+        entries: layout.entries,
+        origin: "drawn",
+      },
     },
     [bitmap],
   );

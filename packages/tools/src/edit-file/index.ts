@@ -13,6 +13,7 @@ import {
 } from "@herta/core";
 import { errResult } from "../errors.js";
 import { formatInputIssues } from "../input-issues.js";
+import { journalWrite } from "../journal-write.js";
 import { resolveSafePath } from "../path-safety.js";
 import { decodeUtf8, reattachBom } from "../text-sniff.js";
 import {
@@ -194,6 +195,16 @@ export function editFileTool(): HertaTool {
       const afterBuf = Buffer.from(reattachBom(after, decoded.bom), "utf-8");
       const diff = computeUnifiedDiff(before, after, safe.relative);
 
+      // In the run's journal first (ADR 0071): a crash from here on is
+      // decided by the file's hash. The bytes it replaces go to the undo
+      // store (ADR 0074) — exactly as read, BOM and all.
+      const refused = await journalWrite<EditFileData>(
+        ctx,
+        safe.resolved,
+        buf,
+        afterBuf,
+      );
+      if (refused !== null) return refused;
       // Atomic replace (core's helper: unique temp beside the target, rename
       // over it, the temp removed on failure). A busy file is retryable.
       try {

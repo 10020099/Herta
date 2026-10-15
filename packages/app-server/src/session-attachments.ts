@@ -8,6 +8,7 @@ import {
   type ImageCaptioner,
   ingestAttachment,
   MAX_ATTACHMENTS_PER_ACTION,
+  storedPicturesOf,
 } from "./attachments.js";
 import {
   MAX_STAGED_IMAGES,
@@ -16,6 +17,7 @@ import {
 } from "./staged-images.js";
 import type {
   AttachedFile,
+  AttachProgress,
   AttachResult,
   RemoveAttachmentResult,
   StageImagesResult,
@@ -47,6 +49,10 @@ export interface SessionAttachmentsDeps {
   /** The image-captioning instrument (ADR 0048); null = images are stored
    *  but not read (no key, tests, a failed call). */
   readonly captionImage: ImageCaptioner | null;
+  /** Whether an attached PDF's pictures are transcribed (the user's switch,
+   *  2026-10-01), read at each attach so a change applies to the next one.
+   *  Absent = on. */
+  readonly transcribePdfPictures?: () => boolean;
   readonly turnInFlight: () => boolean;
   readonly driver: Pick<
     V2ActorDriver,
@@ -162,7 +168,10 @@ export class SessionAttachments {
    * Idle-only, same guard and rationale as setWorkspace (audit 2026-07-10,
    * finding 13): `appendSystemBlock` is only safe between turns.
    */
-  async attachFiles(paths: readonly string[]): Promise<AttachResult> {
+  async attachFiles(
+    paths: readonly string[],
+    onProgress?: (progress: AttachProgress) => void,
+  ): Promise<AttachResult> {
     if (this.deps.turnInFlight()) {
       return { ok: false, reason: "turn_in_progress" };
     }
@@ -184,7 +193,20 @@ export class SessionAttachments {
     // guard-to-append path contains no await; with ingest I/O in between,
     // the guard must be re-checked on the far side.
     const ingested = [];
-    for (const sourcePath of paths) {
+    // Read once per attach: one batch, one answer.
+    const transcribePdfPictures = this.deps.transcribePdfPictures?.() ?? true;
+    // The pending row's progress (2026-10-01). A listener is display only:
+    // whatever it throws must never cost the ingest.
+    const report = (progress: AttachProgress): void => {
+      try {
+        onProgress?.(progress);
+      } catch {
+        // A display hook failing is not an attach failing.
+      }
+    };
+    for (const [index, sourcePath] of paths.entries()) {
+      // This file is being read now (the files after it are still waiting).
+      report({ index, stage: "pages", done: 0, total: 0 });
       ingested.push({
         sourcePath,
         result: await ingestAttachment({
@@ -193,8 +215,11 @@ export class SessionAttachments {
           sessionId: this.deps.sessionId,
           lang: this.deps.lang,
           captionImage: this.deps.captionImage,
+          transcribePdfPictures,
+          onProgress: (p) => report({ index, ...p }),
         }),
       });
+      report({ index, stage: "done", done: 0, total: 0 });
     }
 
     if (this.deps.turnInFlight()) {
@@ -275,9 +300,17 @@ export class SessionAttachments {
     // withdrawn document must not leave its chapter titles behind.
     const sidecar = under(stored.outline?.path);
     // …and the digest sidecar (ADR 0043), if 板砖 ever built one: same
-    // directory, same prefix, derived from the text's own path.
+    // directory, same prefix, derived from the text's own path. A PDF's
+    // pictures (2026-09-30) are sidecars of the text the same way — left
+    // behind, `view_image` could still open them after the take-back.
     const toRemove = [
-      ...(relPath === null ? [] : [relPath, digestSidecarFor(relPath)]),
+      ...(relPath === null
+        ? []
+        : [
+            relPath,
+            digestSidecarFor(relPath),
+            ...(await storedPicturesOf(this.deps.wsHolder.current, relPath)),
+          ]),
       ...(source === null ? [] : [source]),
       ...(sidecar === null ? [] : [sidecar]),
     ];
@@ -352,8 +385,12 @@ export class SessionAttachments {
    * attachment prefix — nothing renderer-supplied reaches unlink. A path a
    * SURVIVING block still cites is kept: content-hashed names make
    * re-attaching the same document idempotent, so two blocks can share one
-   * stored file. Sidecars (outline, ADR 0043 digest) go with their text,
-   * exactly as the ✕ takes them.
+   * stored file. Sidecars (outline, ADR 0043 digest, a PDF's pictures) go
+   * with their text, and the original's copy (ADR 0038 amendment, `source`)
+   * goes too — the same set the ✕ takes (2026-10-01: the GC used to leave the
+   * original behind, and skipped a scanned PDF's block outright because its
+   * only stored file IS the source). The original is kept by the same rule as
+   * the text: while a surviving block cites it.
    *
    * PICTURES are the exception (owner 2026-08-27): a withdrawn image block
    * RESTAGES into the composer strip instead of being deleted — the copy is
@@ -373,7 +410,13 @@ export class SessionAttachments {
     for (const b of surviving) {
       if (b.kind !== "system" || b.digest?.kind !== "attachment") continue;
       if (b.digest.path.length > 0) kept.add(b.digest.path);
+      const source = b.digest.source;
+      if (source !== undefined && source.length > 0) kept.add(source);
     }
+    // Only a harness-written path under this session's attachment directory
+    // that no surviving block cites; null otherwise.
+    const orphan = (p: string | undefined): string | null =>
+      p?.startsWith(prefix) === true && !kept.has(p) ? p : null;
     const toRemove: string[] = [];
     const restaged: StagedImage[] = [];
     const restagedPaths = new Set<string>();
@@ -381,21 +424,32 @@ export class SessionAttachments {
       if (b.kind !== "system" || b.digest?.kind !== "attachment") continue;
       const d = b.digest;
       if (d.unreadable === "removed") continue; // the ✕ already took the files
-      if (!d.path.startsWith(prefix)) continue; // harness-written, or nothing stored
-      if (kept.has(d.path)) continue;
+      // The original's copy stands on its own: a scanned PDF (or a document
+      // we store but do not decode) has no text path at all, and the source
+      // is the one file it left on disk.
+      const source = orphan(d.source);
+      if (source !== null) toRemove.push(source);
+      const text = orphan(d.path); // nothing stored, or a surviving citation
+      if (text === null) continue;
       if (d.image !== undefined) {
-        if (restagedPaths.has(d.path)) continue; // one owner per file
+        if (restagedPaths.has(text)) continue; // one owner per file
         if (this.staged.size < MAX_STAGED_IMAGES) {
           const img = this.staged.restage(b);
           if (img !== null) {
             restaged.push(img);
-            restagedPaths.add(d.path);
+            restagedPaths.add(text);
             continue;
           }
         }
         // Strip full, or not restageable after all — the GC takes it.
       }
-      toRemove.push(d.path, digestSidecarFor(d.path));
+      // A PDF's pictures go with its text and only with it, so a re-attached
+      // document a surviving block still cites keeps them too (2026-09-30).
+      toRemove.push(
+        text,
+        digestSidecarFor(text),
+        ...(await storedPicturesOf(this.deps.wsHolder.current, text)),
+      );
       const outline = d.outline?.path;
       if (outline?.startsWith(prefix) === true) {
         toRemove.push(outline);

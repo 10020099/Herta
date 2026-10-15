@@ -83,6 +83,33 @@ describe("composeMarkerSummary", () => {
     expect(composeMarkerSummary(s, tzh)).toBe("失败 · 运行异常中止");
   });
 
+  it("a run the app exited during composes the app-exit word (ADR 0071 §1.2)", () => {
+    // The seal's marker: its zh twin is the canonical body exactly.
+    const s = done({
+      state: "interrupted",
+      fileCount: 1,
+      riskCount: 0,
+      crashed: true,
+    });
+    expect(composeMarkerSummary(s, ten)).toBe(
+      "Stopped · 1 file · the app exited unexpectedly",
+    );
+    expect(composeMarkerSummary(s, tzh)).toBe("中断 · 1 个文件 · 应用意外退出");
+  });
+
+  it("a run stopped at the step limit composes the step-limit word (2026-09-29)", () => {
+    const s = done({
+      state: "interrupted",
+      fileCount: 0,
+      riskCount: 1,
+      stepLimit: true,
+    });
+    expect(composeMarkerSummary(s, ten)).toBe(
+      "Stopped · 1 risk · step limit reached",
+    );
+    expect(composeMarkerSummary(s, tzh)).toBe("中断 · 1 风险 · 步数已达上限");
+  });
+
   it("noop localizes to the no-output word", () => {
     const s: ActivitySummary = { kind: "noop" };
     expect(composeMarkerSummary(s, ten)).toBe("No output");

@@ -22,6 +22,8 @@ export {
   invokeBanzhuanBridge,
 } from "./narrative/backend-bridge.js";
 export {
+  buildCrashMarker,
+  type CrashMarkerInput,
   projectBackendEvent,
   sanitizeSystemBlock,
 } from "./narrative/backend-record-projection.js";
@@ -69,6 +71,19 @@ export {
   type MoodState,
   resolveMetaThink,
 } from "./narrative/meta-think.js";
+export {
+  acceptPrediction,
+  MAX_REPLY_CHARS,
+  PREDICTION_FRAME,
+  PREDICTION_HINT,
+  type PredictionDeps,
+  type PredictionMode,
+  type PredictionPrompt,
+  predictionPrompt,
+  predictNextUserMessage,
+  RECENT_TURNS,
+  trailblazerNotesOf,
+} from "./narrative/next-message-prediction.js";
 export {
   extractBand,
   type OpeningChoice,

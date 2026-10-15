@@ -112,6 +112,7 @@ function mkEmptyCorpusForHelper(): MetaThinkCorpus {
 function mkDriver(
   provider: CompletionProviderAdapter,
   persister?: V2RecordPersister,
+  fewShots: readonly string[] = [],
 ): V2ActorDriver {
   const noopRuntime: CodingAgentRuntime = {
     runBrief: async (brief: HertaToAgentBrief) => ({
@@ -122,13 +123,12 @@ function mkDriver(
       tests: [],
       permissions: [],
       residualRisks: [],
-      nextActions: [],
     }),
   } as unknown as CodingAgentRuntime;
   return new V2ActorDriver({
     provider,
     model: "test-model",
-    staticPrefix: { bio: "[prefix]", env: "", fewShots: [] },
+    staticPrefix: { bio: "[prefix]", env: "", fewShots },
     bus: new InMemoryEventBus<AgentEvent>(),
     runtimeFactory: () => noopRuntime,
     routerProvider: mkNoopRouter(),
@@ -196,7 +196,6 @@ describe("V2ActorDriver", () => {
         tests: [],
         permissions: [],
         residualRisks: [],
-        nextActions: [],
       }),
     } as unknown as CodingAgentRuntime;
     const driver = new V2ActorDriver({
@@ -271,7 +270,6 @@ describe("V2ActorDriver", () => {
         tests: [],
         permissions: [],
         residualRisks: [],
-        nextActions: [],
       }),
     } as unknown as CodingAgentRuntime;
     const mkDriverWithCb = (
@@ -376,7 +374,6 @@ describe("V2ActorDriver", () => {
         tests: [],
         permissions: [],
         residualRisks: [],
-        nextActions: [],
       }),
     } as unknown as CodingAgentRuntime;
     const driver = new V2ActorDriver({
@@ -436,7 +433,6 @@ describe("V2ActorDriver", () => {
         tests: [],
         permissions: [],
         residualRisks: [],
-        nextActions: [],
       }),
     } as unknown as CodingAgentRuntime;
     const driver = new V2ActorDriver({
@@ -510,7 +506,6 @@ describe("V2ActorDriver", () => {
         tests: [],
         permissions: [],
         residualRisks: [],
-        nextActions: [],
       }),
     } as unknown as CodingAgentRuntime;
     const driver = new V2ActorDriver({
@@ -580,7 +575,6 @@ describe("V2ActorDriver", () => {
         tests: [],
         permissions: [],
         residualRisks: [],
-        nextActions: [],
       }),
     } as unknown as CodingAgentRuntime;
     const driver = new V2ActorDriver({
@@ -634,7 +628,6 @@ describe("V2ActorDriver", () => {
         tests: [],
         permissions: [],
         residualRisks: [],
-        nextActions: [],
       }),
     } as unknown as CodingAgentRuntime;
     const driver = new V2ActorDriver({
@@ -811,7 +804,6 @@ describe("V2ActorDriver", () => {
           tests: [],
           permissions: [],
           residualRisks: [],
-          nextActions: [],
         }),
       } as unknown as CodingAgentRuntime;
       const driver = new V2ActorDriver({
@@ -858,7 +850,6 @@ describe("V2ActorDriver", () => {
           tests: [],
           permissions: [],
           residualRisks: [],
-          nextActions: [],
         }),
       } as unknown as CodingAgentRuntime;
       const driver = new V2ActorDriver({
@@ -925,7 +916,6 @@ describe("V2ActorDriver", () => {
           tests: [],
           permissions: [],
           residualRisks: [],
-          nextActions: [],
         }),
       } as unknown as CodingAgentRuntime;
       const driver = new V2ActorDriver({
@@ -1003,7 +993,6 @@ describe("V2ActorDriver", () => {
           tests: [],
           permissions: [],
           residualRisks: [],
-          nextActions: [],
         }),
       } as unknown as CodingAgentRuntime;
       const driver = new V2ActorDriver({
@@ -1193,7 +1182,6 @@ describe("V2ActorDriver", () => {
           tests: [],
           permissions: [],
           residualRisks: [],
-          nextActions: [],
         }),
       } as unknown as CodingAgentRuntime;
       const driver = new V2ActorDriver({
@@ -1286,7 +1274,6 @@ describe("V2ActorDriver", () => {
           tests: [],
           permissions: [],
           residualRisks: [],
-          nextActions: [],
         }),
       } as unknown as CodingAgentRuntime;
       const driver = new V2ActorDriver({
@@ -1354,7 +1341,6 @@ describe("V2ActorDriver — mood routing (Slice 13)", () => {
         tests: [],
         permissions: [],
         residualRisks: [],
-        nextActions: [],
       }),
     } as unknown as CodingAgentRuntime;
     return new V2ActorDriver({
@@ -1790,7 +1776,6 @@ describe("V2ActorDriver — appendSystemNote (out-of-turn)", () => {
         tests: [],
         permissions: [],
         residualRisks: [],
-        nextActions: [],
       }),
     } as unknown as CodingAgentRuntime;
     const driver = new V2ActorDriver({
@@ -1873,7 +1858,6 @@ describe("V2ActorDriver — state-out dump label", () => {
         tests: [],
         permissions: [],
         residualRisks: [],
-        nextActions: [],
       }),
     } as unknown as CodingAgentRuntime;
 
@@ -1931,7 +1915,6 @@ describe("V2ActorDriver — state-out dump label", () => {
         tests: [],
         permissions: [],
         residualRisks: [],
-        nextActions: [],
       }),
     } as unknown as CodingAgentRuntime;
 
@@ -1982,7 +1965,6 @@ describe("V2ActorDriver — forceCompactNextTurn (one-shot)", () => {
         tests: [],
         permissions: [],
         residualRisks: [],
-        nextActions: [],
       }),
     } as unknown as CodingAgentRuntime;
     return new V2ActorDriver({
@@ -2073,7 +2055,6 @@ describe("V2ActorDriver — recap dependency", () => {
         tests: [],
         permissions: [],
         residualRisks: [],
-        nextActions: [],
       }),
     } as unknown as CodingAgentRuntime;
     return new V2ActorDriver({
@@ -2166,7 +2147,6 @@ describe("V2ActorDriver — recap dependency", () => {
         tests: [],
         permissions: [],
         residualRisks: [],
-        nextActions: [],
       }),
     } as unknown as CodingAgentRuntime;
     const driver = new V2ActorDriver({
@@ -2213,7 +2193,6 @@ describe("V2ActorDriver — recap dependency", () => {
         tests: [],
         permissions: [],
         residualRisks: [],
-        nextActions: [],
       }),
     } as unknown as CodingAgentRuntime;
     const driver = new V2ActorDriver({
@@ -2308,7 +2287,6 @@ describe("V2ActorDriver — interaction language (slice 4)", () => {
         tests: [],
         permissions: [],
         residualRisks: [],
-        nextActions: [],
       }),
     } as unknown as CodingAgentRuntime;
     return new V2ActorDriver({
@@ -2484,5 +2462,138 @@ describe("V2ActorDriver — the prefix follows step events, never turns (ADR 006
     await driver.runTurn("二", new AbortController().signal);
     expect(recaps).toEqual([recapA, recapB]);
     expect(prefixes).toEqual([PREFIX, prefixB]);
+  });
+});
+
+describe("V2ActorDriver.predictNextUserMessage (composer predictions, owner 2026-10-10)", () => {
+  it("reads the last turns only — not Herta's prefix, not her thought (owner 2026-10-10)", async () => {
+    const prompts: string[] = [];
+    const base = mkProvider([
+      [
+        { type: "text-delta", text: "说吧。（/我 说）" },
+        { type: "finish", reason: "stop" },
+      ],
+      [
+        { type: "text-delta", text: "写好了。（/我 说）" },
+        { type: "finish", reason: "stop" },
+      ],
+      [
+        { type: "text-delta", text: "这么快？给我看看。（/开拓者 说）" },
+        { type: "finish", reason: "stop" },
+      ],
+    ]);
+    const provider: CompletionProviderAdapter = {
+      streamCompletion(req, signal) {
+        prompts.push(req.prompt);
+        return base.streamCompletion(req, signal);
+      },
+    };
+    const driver = mkDriver(provider);
+    // Nothing to predict before a turn has run.
+    expect(
+      await driver.predictNextUserMessage(new AbortController().signal),
+    ).toBeNull();
+    await driver.runTurn("在吗", new AbortController().signal);
+    // One plain exchange: nothing to continue from, and no call.
+    const before = prompts.length;
+    expect(
+      await driver.predictNextUserMessage(new AbortController().signal),
+    ).toBeNull();
+    expect(prompts).toHaveLength(before);
+    await driver.runTurn("帮我写个小工具", new AbortController().signal);
+    const predicted = await driver.predictNextUserMessage(
+      new AbortController().signal,
+    );
+    expect(predicted).toBe("这么快？给我看看。");
+    const prediction = prompts.at(-1) ?? "";
+    expect(prediction.endsWith("（开拓者 说）\n")).toBe(true);
+    expect(prediction).toContain(
+      "（开拓者 说）\n帮我写个小工具\n（/开拓者 说）",
+    );
+    expect(prediction).toContain("（我 说）\n写好了。\n（/我 说）");
+    // The turn's prompt began with Herta's static prefix and carried her
+    // thought; the prediction carries neither.
+    expect(prompts[0]?.startsWith("[prefix]")).toBe(true);
+    expect(prediction).not.toContain("[prefix]");
+    expect(prediction).not.toContain("想想看");
+    // The record is untouched.
+    expect(driver.getRecord().at(-1)).toMatchObject({
+      kind: "herta",
+      surface: "speech",
+    });
+  });
+
+  it("carries her page on the Trailblazer from the prefix she reads (owner 2026-10-11)", async () => {
+    const prompts: string[] = [];
+    const base = mkProvider([
+      [
+        { type: "text-delta", text: "说吧。（/我 说）" },
+        { type: "finish", reason: "stop" },
+      ],
+      [
+        { type: "text-delta", text: "写好了。（/我 说）" },
+        { type: "finish", reason: "stop" },
+      ],
+      [
+        { type: "text-delta", text: "这么快？给我看看。（/开拓者 说）" },
+        { type: "finish", reason: "stop" },
+      ],
+    ]);
+    const provider: CompletionProviderAdapter = {
+      streamCompletion(req, signal) {
+        prompts.push(req.prompt);
+        return base.streamCompletion(req, signal);
+      },
+    };
+    const driver = mkDriver(provider, undefined, [
+      "### 记录：关于开拓者\n\n这小鬼总在深夜来，开口先问在吗。",
+    ]);
+    await driver.runTurn("在吗", new AbortController().signal);
+    await driver.runTurn("帮我写个小工具", new AbortController().signal);
+    await driver.predictNextUserMessage(new AbortController().signal);
+    expect(prompts.at(-1)).toContain(
+      "〔大黑塔在自己的记录里写过：\n这小鬼总在深夜来，开口先问在吗。〕",
+    );
+  });
+
+  it("offers nothing once the record has moved on or been replaced", async () => {
+    const driver = mkDriver(
+      mkProvider([
+        [
+          { type: "text-delta", text: "好。（/我 说）" },
+          { type: "finish", reason: "stop" },
+        ],
+      ]),
+    );
+    await driver.runTurn("在吗", new AbortController().signal);
+    driver.appendSystemNote("系统", "工作区已切换");
+    expect(
+      await driver.predictNextUserMessage(new AbortController().signal),
+    ).toBeNull();
+    driver.loadRecord([]);
+    expect(
+      await driver.predictNextUserMessage(new AbortController().signal),
+    ).toBeNull();
+  });
+});
+
+describe("V2ActorDriver.predictNextUserMessage — not after the opening (owner 2026-10-10)", () => {
+  it("a new session's opening line alone offers no prediction, and makes no call", async () => {
+    let calls = 0;
+    const driver = mkDriver({
+      streamCompletion() {
+        calls += 1;
+        return streamOf<CompletionEvent>([{ type: "finish", reason: "stop" }]);
+      },
+    });
+    await driver.playOpening(
+      { kind: "herta", surface: "speech", text: "你来了。" },
+      0,
+    );
+    expect(driver.getRecord().at(-1)).toMatchObject({ text: "你来了。" });
+    expect(
+      await driver.predictNextUserMessage(new AbortController().signal),
+    ).toBeNull();
+    expect(calls).toBe(0);
   });
 });

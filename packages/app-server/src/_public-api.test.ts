@@ -6,6 +6,9 @@ describe("@herta/app-server — public API surface", () => {
     const runtimeKeys = Object.keys(appServer).sort();
     expect(runtimeKeys).toEqual(
       [
+        // A host's quit hold must outlast close()'s settle wait (ADR 0071
+        // §1.7), so the desktop main process reads the one number.
+        "CLOSE_SETTLE_CAP_MS",
         "createSessionHost",
         "defaultDirsFor",
         // Workspace project-rule loading is shared by the session runtime and

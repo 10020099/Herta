@@ -9,7 +9,11 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  dispatchJournalDir,
+  dispatchJournalPath,
   readSessionFile,
+  readSessionTitle,
+  readSessionTopics,
   V2RecordPersister,
   writeSessionTitle,
 } from "@herta/core";
@@ -158,6 +162,85 @@ describe("openSession — load pre-existing JSONL", () => {
       at: "2026-06-18T09:30:00.000Z",
     });
 
+    await host.closeActiveSession();
+  });
+
+  it("seals a 板砖 run the app exited during, once (ADR 0071 §1.2)", async () => {
+    const cfg = mkConfig();
+    const sessionId = "test-session-crashed";
+    const persister = V2RecordPersister.forNewSession({
+      sessionId,
+      workspaceRoot: cfg.workspaceRoot,
+      startedAt: new Date(),
+      transcriptDir: cfg.transcriptDir,
+    });
+    persister.appendBlock({ kind: "user", text: "run the tests" });
+    persister.appendBlock({
+      kind: "herta",
+      surface: "speech",
+      text: "@板砖 run the tests",
+    });
+    persister.appendBlock({
+      kind: "system",
+      label: "差分协处理器",
+      body: "Running npm test",
+    });
+    const journalPath = dispatchJournalPath(cfg.transcriptDir, sessionId);
+    mkdirSync(dispatchJournalDir(cfg.transcriptDir), { recursive: true });
+    writeFileSync(
+      journalPath,
+      `${[
+        {
+          kind: "start",
+          v: 1,
+          taskId: "t1",
+          at: "2026-09-28T10:00:00.000Z",
+          recordLength: 2,
+          workspaceRoot: cfg.workspaceRoot,
+          brief: { taskId: "t1" },
+          frame: {
+            userMessages: [{ text: "run the tests" }],
+            omittedUserMessages: 0,
+            scopedMemory: "",
+            recentDialogue: "",
+            workingHistory: "",
+            lang: "zh",
+          },
+        },
+        {
+          kind: "message",
+          message: {
+            role: "assistant",
+            text: "",
+            ts: "2026-09-28T10:00:01.000Z",
+            toolCalls: [
+              { id: "c1", tool: "run_command", input: { command: "npm test" } },
+            ],
+          },
+        },
+        { kind: "dispatch", callIds: ["c1"] },
+      ]
+        .map((e) => JSON.stringify(e))
+        .join("\n")}\n`,
+    );
+
+    const host = createSessionHost(cfg);
+    const session = await host.openSession({ sessionId });
+    expect(session.record).toHaveLength(4);
+    expect(session.record.at(-1)).toMatchObject({
+      role: "done-marker",
+      body: "中断 · 应用意外退出",
+      evidenceDetail: "↳ 中断时: run_command npm test — 结果未知",
+    });
+    await host.closeActiveSession();
+
+    // Reopened: sealed once, nothing more.
+    const again = await host.openSession({ sessionId });
+    expect(again.record).toHaveLength(4);
+    expect(
+      readSessionFile(join(cfg.transcriptDir, `${sessionId}.jsonl`))
+        .lastTurnEnd,
+    ).toEqual({ outcome: "interrupted", atBlockCount: 4 });
     await host.closeActiveSession();
   });
 
@@ -326,6 +409,153 @@ describe("deleteSession", () => {
     writeFileSync(join(wsDir, "x.txt"), "x");
     await host.deleteSession(s.sessionId);
     expect(existsSync(wsDir)).toBe(false);
+  });
+});
+
+// ── Rename and export (ADR 0072 §3) ──────────────────────────────────────
+
+function persistClosedSession(
+  cfg: AppServerConfig,
+  sessionId: string,
+  blocks: Parameters<V2RecordPersister["appendBlock"]>[0][],
+  lang?: "zh" | "en",
+): void {
+  const persister = V2RecordPersister.forNewSession({
+    sessionId,
+    workspaceRoot: cfg.workspaceRoot,
+    startedAt: new Date(),
+    transcriptDir: cfg.transcriptDir,
+    ...(lang !== undefined ? { lang } : {}),
+  });
+  for (const b of blocks) persister.appendBlock(b);
+}
+
+describe("renameSession", () => {
+  it("names a closed session's CURRENT topic: the title and the last topic, earlier topics kept", async () => {
+    const cfg = mkConfig();
+    const sessionId = "to-rename";
+    persistClosedSession(cfg, sessionId, [
+      { kind: "user", text: "hi" },
+      { kind: "user", text: "later" },
+    ]);
+    const topics = [
+      { title: "第一个话题", anchorIndex: 0, anchorText: "hi", at: "t1" },
+      { title: "旧标题", anchorIndex: 1, anchorText: "later", at: "t2" },
+    ];
+    writeSessionTitle(cfg.transcriptDir, sessionId, "旧标题", topics);
+    const host = createSessionHost(cfg);
+
+    const r = await host.renameSession?.(sessionId, "  新的\n名字  ");
+
+    expect(r).toEqual({ ok: true, title: "新的 名字" });
+    expect(readSessionTitle(cfg.transcriptDir, sessionId)).toBe("新的 名字");
+    expect(readSessionTopics(cfg.transcriptDir, sessionId)).toEqual([
+      topics[0],
+      { ...topics[1], title: "新的 名字" },
+    ]);
+    // What the sidebar lists.
+    expect(host.listSessions()[0]?.title).toBe("新的 名字");
+  });
+
+  it("renames the open session through its titler once it has a message, and refuses while it has none — nothing to anchor a topic at (review 2026-09-30)", async () => {
+    const cfg = mkConfig();
+    const host = createSessionHost(cfg);
+    // A fresh session: a name kept here would show on the sidebar's card
+    // and be dropped by the next open, which keeps no title without a
+    // user turn. Refused, and nothing written.
+    const fresh = await host.createSession({});
+    expect(await host.renameSession?.(fresh.sessionId, "我起的名字")).toEqual({
+      ok: false,
+    });
+    expect(
+      existsSync(join(cfg.transcriptDir, `${fresh.sessionId}.title.json`)),
+    ).toBe(false);
+    await host.closeActiveSession();
+
+    persistClosedSession(cfg, "spoken", [{ kind: "user", text: "hi" }]);
+    const s = await host.openSession({ sessionId: "spoken" });
+    const r = await host.renameSession?.(s.sessionId, "我起的名字");
+    expect(r?.ok).toBe(true);
+    expect(r?.ok === true && r.title).toBe("我起的名字");
+    expect(s.title).toBe("我起的名字");
+    expect(readSessionTitle(cfg.transcriptDir, s.sessionId)).toBe("我起的名字");
+    await host.closeActiveSession();
+  });
+
+  it("refuses an empty name and a session that does not exist, writing nothing", async () => {
+    const cfg = mkConfig();
+    persistClosedSession(cfg, "real", [{ kind: "user", text: "hi" }]);
+    const host = createSessionHost(cfg);
+
+    expect(await host.renameSession?.("real", "   ")).toEqual({ ok: false });
+    expect(await host.renameSession?.("ghost", "名字")).toEqual({ ok: false });
+    expect(existsSync(join(cfg.transcriptDir, "real.title.json"))).toBe(false);
+    expect(existsSync(join(cfg.transcriptDir, "ghost.title.json"))).toBe(false);
+  });
+
+  it("caps a long name", async () => {
+    const cfg = mkConfig();
+    persistClosedSession(cfg, "long", [{ kind: "user", text: "hi" }]);
+    const host = createSessionHost(cfg);
+    const r = await host.renameSession?.("long", "名".repeat(200));
+    expect(r?.ok && [...r.title].length).toBe(80);
+  });
+});
+
+describe("readSessionForExport", () => {
+  it("reads a closed session as the window shows it: no thoughts, no evidence sections", async () => {
+    const cfg = mkConfig();
+    const sessionId = "to-export";
+    persistClosedSession(
+      cfg,
+      sessionId,
+      [
+        { kind: "user", text: "hi" },
+        { kind: "herta", surface: "thought", text: "（想）" },
+        { kind: "herta", surface: "speech", text: "你好。" },
+        {
+          kind: "system",
+          label: "差分协处理器",
+          body: "完成",
+          role: "done-marker",
+          evidenceDetail: "↳ 输出:\n很长的输出",
+          evidence: [{ kind: "output", text: "很长的输出" }],
+        },
+      ],
+      "en",
+    );
+    writeSessionTitle(cfg.transcriptDir, sessionId, "导出的会话");
+    const host = createSessionHost(cfg);
+
+    const src = await host.readSessionForExport?.(sessionId);
+
+    expect(src?.title).toBe("导出的会话");
+    expect(src?.lang).toBe("en");
+    expect(src?.record.map((b) => b.kind)).toEqual(["user", "herta", "system"]);
+    const marker = src?.record[2];
+    expect(marker).toMatchObject({ kind: "system", body: "完成" });
+    expect(marker).not.toHaveProperty("evidenceDetail");
+    expect(marker).not.toHaveProperty("evidence");
+    expect(host.activeSession).toBeNull();
+  });
+
+  it("leaves out a title the record no longer supports, as the window does", async () => {
+    const cfg = mkConfig();
+    persistClosedSession(cfg, "rewound", []);
+    writeSessionTitle(cfg.transcriptDir, "rewound", "被撤回的标题");
+    const host = createSessionHost(cfg);
+    expect((await host.readSessionForExport?.("rewound"))?.title).toBeNull();
+  });
+
+  it("reads the open session from memory, and answers null for one that cannot be read", async () => {
+    const cfg = mkConfig();
+    const host = createSessionHost(cfg);
+    const s = await host.createSession({ lang: "zh" });
+    const src = await host.readSessionForExport?.(s.sessionId);
+    expect(src?.sessionId).toBe(s.sessionId);
+    expect(src?.lang).toBe("zh");
+    expect(await host.readSessionForExport?.("ghost")).toBeNull();
+    await host.closeActiveSession();
   });
 });
 

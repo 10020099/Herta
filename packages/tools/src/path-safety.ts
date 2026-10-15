@@ -1,5 +1,6 @@
-import { existsSync, statSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { realpath } from "node:fs/promises";
+import { homedir } from "node:os";
 import {
   basename,
   dirname,
@@ -278,6 +279,225 @@ export function gitDirShapeWriteDenial(
     dir = join(dir, raw[i] as string);
   }
   return null;
+}
+
+/** The deepest existing ancestor of `candidate`, realpath-ed, with the
+ *  not-yet-created suffix re-joined — the sync twin of
+ *  {@link realpathViaExistingAncestor}, for the sync shell classifier.
+ *  Bounded by path depth; the raw candidate when nothing resolves. */
+function realpathSyncViaExistingAncestor(candidate: string): string {
+  let dir = candidate;
+  const suffix: string[] = [];
+  while (true) {
+    try {
+      return join(realpathSync(dir), ...suffix.reverse());
+    } catch {
+      const parent = dirname(dir);
+      if (parent === dir) return candidate;
+      suffix.push(basename(dir));
+      dir = parent;
+    }
+  }
+}
+
+/** True when a path RELATIVE to the workspace passes through a directory
+ *  named `name` (the filesystem's case policy, Win32's trimmed spelling). */
+function relativeTouchesSegment(
+  workspaceRoot: string,
+  absolute: string,
+  name: string,
+): boolean {
+  if (!isPathInside(workspaceRoot, absolute)) return false;
+  const rel = relativePath(workspaceRoot, absolute);
+  if (rel === "") return false;
+  return rel
+    .split(sep)
+    .map(winCanonicalizeSegment)
+    .some((seg) => caseNormalize(seg) === caseNormalize(name));
+}
+
+function relativeTouchesHerta(
+  workspaceRoot: string,
+  absolute: string,
+): boolean {
+  return relativeTouchesSegment(workspaceRoot, absolute, ".herta");
+}
+
+/**
+ * True when a COMMAND's write lands inside a repository's `.git` beneath the
+ * workspace — its config, hooks or internals (2026-10-09).
+ *
+ * The editors never write there (the structural `.git` denial in
+ * {@link resolveSafePath}); a shell could, as a plain write: `> .git/config`,
+ * `cp x .git/hooks/pre-commit`, `sed -i … .git/config`. Those were classes
+ * workspace trust answered with no card, and a hook or a config key there is
+ * a command git runs later — `git commit` runs `pre-commit`, `git status`
+ * runs `core.fsmonitor` — behind commands that are allowed or trusted
+ * themselves. Not a block: removing a stale `.git/index.lock` is an honest
+ * repair. The classifiers ask in a class trust never covers. Judged like
+ * {@link hertaStateWriteDenial}: as spelled and through links.
+ */
+export function gitInternalsWrite(
+  workspaceRoot: string,
+  absolute: string,
+): boolean {
+  const resolved = realpathSyncViaExistingAncestor(absolute);
+  const rootResolved = realpathSyncViaExistingAncestor(workspaceRoot);
+  return (
+    relativeTouchesSegment(workspaceRoot, absolute, ".git") ||
+    relativeTouchesSegment(workspaceRoot, resolved, ".git") ||
+    relativeTouchesSegment(rootResolved, resolved, ".git")
+  );
+}
+
+/**
+ * Denial message when a COMMAND would write into the harness's own state —
+ * `.herta` anywhere beneath the workspace — else null (2026-09-30).
+ *
+ * `.herta/permissions.json` holds the workspace's automatic-review choice
+ * (once also ADR 0030's command rules and ADR 0064's trust); beside it sit memory, logs
+ * and attachments. The editors could never write there (the structural
+ * denial in {@link resolveSafePath}), but a shell could: a redirect, `tee`,
+ * `cp`, `rm` were classes the trust tier answered with no card, so one line in
+ * a trusted workspace — every managed one, by default — planted rules or trust
+ * that outlived the session and a later switch back to 逐项确认. Codex keeps
+ * `.codex`, Claude Code its settings, Cursor `.cursor` out of the agent's
+ * reach for the same reason: a harness that obeys a file the agent can write
+ * has handed the agent its own permissions.
+ *
+ * Judged RELATIVE to the workspace — a managed workspace itself lives under
+ * `~/.herta/workspaces/`, and its ordinary files must stay writable — both
+ * as spelled and through symlinks (the deepest existing ancestor realpath-ed,
+ * sync and bounded by depth), so a link planted outside `.herta` that points
+ * into it is caught. A path outside the workspace is not this guard's: those
+ * already ask as leaving it. What no argv guard can see — a workspace script
+ * run by an interpreter — needs an OS sandbox (docs/handoff/
+ * 2026-09-30-sandbox-study.md). Exported for both command classifiers.
+ */
+export function hertaStateWriteDenial(
+  workspaceRoot: string,
+  absolute: string,
+): string | null {
+  const resolved = realpathSyncViaExistingAncestor(absolute);
+  // The root through its own links too (a subst drive, a symlinked checkout,
+  // an 8.3 temp spelling), so a resolved target is judged against the
+  // resolved root.
+  const rootResolved = realpathSyncViaExistingAncestor(workspaceRoot);
+  if (
+    relativeTouchesHerta(workspaceRoot, absolute) ||
+    relativeTouchesHerta(workspaceRoot, resolved) ||
+    relativeTouchesHerta(rootResolved, resolved)
+  ) {
+    return `writes into .herta — the harness's own state (its automatic-review choice, memory, logs); no command may change it`;
+  }
+  return null;
+}
+
+/**
+ * True when a path PATTERN relative to the workspace could expand to a path
+ * through `.herta`: some segment carries a live `*`, `?` or `[…]` and matches
+ * the name under bash's default rule — a leading `.` must be spelled, since
+ * `dotglob` is off in the shells the harness starts, so `*` and `?herta`
+ * cannot reach it while `.her?a`, `.[h]erta`, `.h*` and `.*` can (review
+ * 2026-09-30: each of those was a plain fs / write card). The literal spelling
+ * is {@link hertaStateWriteDenial}'s; this is only for what bash would expand.
+ */
+export function globReachesHertaState(relative: string): boolean {
+  return relative
+    .split(/[\\/]/)
+    .some((segment) => globSegmentMatches(segment, ".herta"));
+}
+
+/** Whether one glob segment matches one name, case-folded (the filesystems
+ *  the harness runs on may be). Fail-closed on a bracket class the matcher
+ *  does not read (`[[:alpha:]]`) or a pattern it cannot compile. */
+export function globSegmentMatches(pattern: string, name: string): boolean {
+  if (!/[*?[]/.test(pattern)) return false;
+  if (name.startsWith(".") && !pattern.startsWith(".")) return false;
+  let re = "";
+  for (let i = 0; i < pattern.length; i += 1) {
+    const ch = pattern[i] as string;
+    if (ch === "*") re += ".*";
+    else if (ch === "?") re += ".";
+    else if (ch === "[") {
+      // A `]` right after the opener (or after a negation) is literal.
+      let j = i + 1;
+      if (pattern[j] === "!" || pattern[j] === "^") j += 1;
+      if (pattern[j] === "]") j += 1;
+      const close = pattern.indexOf("]", j);
+      if (close === -1) {
+        re += "\\[";
+        continue;
+      }
+      const body = pattern.slice(i + 1, close);
+      if (/\[[:=.]/.test(body)) return true;
+      re += `[${body.replace(/^[!^]/, "^").replace(/\\/g, "\\\\")}]`;
+      i = close;
+    } else re += ch.replace(/[.+^${}()|\\]/g, "\\$&");
+  }
+  try {
+    return new RegExp(`^${re}$`, "i").test(name);
+  } catch {
+    return true;
+  }
+}
+
+/** True when shell text names `.herta` as a path component — for a body the
+ *  argv hands to another shell (`bash -c "…"`, `cmd /c …`), whose redirects
+ *  and operands no argv parse reaches. Case-folded everywhere: a body is
+ *  text, and the fail-closed direction is the right one for it. */
+export function mentionsHertaState(text: string): boolean {
+  return /(^|[\s'"=:/\\>|;&(`])\.herta(?=$|[\s'"/\\;&|)`])/i.test(text);
+}
+
+/**
+ * `mentionsHertaState`, with the workspace root's own spellings taken out
+ * first. A session's managed sandbox lives at `~/.herta/workspaces/<id>`,
+ * so `cd <workspace> && npm test` names `.herta` without reaching any
+ * harness state, while `<workspace>/.herta/…` still does. The root is
+ * matched as Windows, a POSIX shell on Windows (`/c/…`) and the home
+ * shorthands (`~`, `$HOME`) would spell it, case-folded.
+ */
+export function namesHertaState(
+  text: string,
+  workspaceRoot: string,
+  home: string = homedir(),
+): boolean {
+  return mentionsHertaState(withoutWorkspaceRoot(text, workspaceRoot, home));
+}
+
+function withoutWorkspaceRoot(
+  text: string,
+  workspaceRoot: string,
+  home: string,
+): string {
+  const fwd = workspaceRoot.replace(/\\/g, "/").replace(/\/+$/, "");
+  if (fwd.length === 0) return text;
+  const spellings = new Set([fwd, fwd.replace(/\//g, "\\")]);
+  const drive = /^([A-Za-z]):\/(.*)$/.exec(fwd);
+  if (drive !== null) spellings.add(`/${drive[1]}/${drive[2]}`);
+  const homeFwd = home.replace(/\\/g, "/").replace(/\/+$/, "");
+  if (
+    homeFwd.length > 0 &&
+    fwd.toLowerCase().startsWith(`${homeFwd.toLowerCase()}/`)
+  ) {
+    const rest = fwd.slice(homeFwd.length);
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: bash's own ${HOME}
+    for (const h of ["~", "$HOME", "${HOME}"]) spellings.add(`${h}${rest}`);
+  }
+  let out = text;
+  // Longest first, so a spelling never leaves half of a longer one behind;
+  // and only where the root ends — `…/abc` is not the start of `…/abcd`.
+  for (const s of [...spellings].sort((a, b) => b.length - a.length)) {
+    out = out.replace(
+      new RegExp(
+        `${s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=$|[\\s'"/\\\\;&|)\`<>])`,
+        "gi",
+      ),
+      "<workspace>",
+    );
+  }
+  return out;
 }
 
 export interface ResolveSafePathOpts {

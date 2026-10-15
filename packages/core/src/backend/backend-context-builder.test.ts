@@ -178,16 +178,12 @@ describe("BackendContextBuilder", () => {
     const frame = builder.build({
       brief: sampleBrief,
       userMessages: sampleUserMessages,
-      scopedRepoInstructions: "Repo prefers edit_file over write_new_file.",
       scopedMemory: "User dislikes overlong replies.",
       messages: [],
     });
 
     expect(frame.backendSystem).toContain(BACKEND_EXECUTION_CONTRACT);
     expect(frame.backendSystem).toContain("fix the failing parser test");
-    expect(frame.scopedRepoInstructions).toBe(
-      "Repo prefers edit_file over write_new_file.",
-    );
     expect(frame.scopedMemory).toBe("User dislikes overlong replies.");
     expect(frame.messages).toEqual([]);
     expect(frame.toolSchemas).toEqual([]);
@@ -200,14 +196,12 @@ describe("BackendContextBuilder", () => {
     const a = builder.build({
       brief: sampleBrief,
       userMessages: sampleUserMessages,
-      scopedRepoInstructions: "",
       scopedMemory: "",
       messages: [],
     });
     const b = builder.build({
       brief: sampleBrief,
       userMessages: sampleUserMessages,
-      scopedRepoInstructions: "",
       scopedMemory: "",
       messages: [],
     });
@@ -236,7 +230,6 @@ describe("BackendContextBuilder", () => {
     const frame = builder.build({
       brief: sampleBrief,
       userMessages: sampleUserMessages,
-      scopedRepoInstructions: "",
       scopedMemory: "",
       messages: [],
     });
@@ -251,7 +244,6 @@ describe("BackendContextBuilder", () => {
     const frame = builder.build({
       brief: sampleBrief,
       userMessages: [],
-      scopedRepoInstructions: "",
       scopedMemory: "",
       messages: [],
     });
@@ -265,7 +257,6 @@ describe("BackendContextBuilder", () => {
     const frame = builder.build({
       brief: sampleBrief,
       userMessages: sampleUserMessages,
-      scopedRepoInstructions: "",
       scopedMemory: "",
       messages: [],
     });
@@ -281,7 +272,6 @@ describe("BackendContextBuilder", () => {
     const frame = builder.build({
       brief: sampleBrief,
       userMessages: sampleUserMessages,
-      scopedRepoInstructions: "",
       scopedMemory: "",
       messages: [],
       workingHistory: "完成 · 1 file\n↳ 改动文件: auth.ts",
@@ -307,7 +297,6 @@ describe("BackendContextBuilder", () => {
     const frame = builder.build({
       brief: sampleBrief,
       userMessages: sampleUserMessages,
-      scopedRepoInstructions: "",
       scopedMemory: "",
       messages: [],
       workingHistory: "",
@@ -329,7 +318,6 @@ describe("prompt separation invariants", () => {
   const frame = builder.build({
     brief: sampleBrief,
     userMessages: sampleUserMessages,
-    scopedRepoInstructions: "scoped repo only",
     scopedMemory: "scoped memory only",
     messages: [],
   });
@@ -442,7 +430,6 @@ describe("EN backend prompt (ADR 0016)", () => {
     const frame = builder.build({
       brief: sampleBrief,
       userMessages: sampleUserMessages,
-      scopedRepoInstructions: "",
       scopedMemory: "",
       messages: [],
       lang: "en",
@@ -470,7 +457,6 @@ describe("EN backend prompt (ADR 0016)", () => {
     const common = {
       brief: sampleBrief,
       userMessages: sampleUserMessages,
-      scopedRepoInstructions: "",
       scopedMemory: "",
       messages: [],
       workingHistory: "完成 · 1 file",
@@ -489,7 +475,6 @@ describe("minimal contract (ADR 0040)", () => {
   const common = {
     brief: sampleBrief,
     userMessages: sampleUserMessages,
-    scopedRepoInstructions: "",
     scopedMemory: "",
     messages: [],
   };
@@ -597,40 +582,32 @@ describe("BackendContextBuilder project rules", () => {
 });
 
 describe("user-facing text follows the conversation's language (ADR 0016 amendment, 2026-09-03)", () => {
-  // The todo list and the findings are shown to the user inside the
-  // conversation. A zh session once got an English task list: nothing in
-  // the contract said which language the items are in, and the model copied
-  // the register of the (English) tool descriptions. Both contracts now say
-  // it, in both languages, next to the tool they govern.
-  it("zh contracts say the todo items and the claim are written in Chinese", () => {
-    expect(BACKEND_EXECUTION_CONTRACT).toContain("条目用中文写");
+  // The findings are shown to the user inside the conversation. A zh session
+  // once got an English task list: nothing in the contract said which
+  // language the items were in, and the model copied the register of the
+  // (English) tool descriptions. Both contracts now say it, in both
+  // languages, next to the tool they govern.
+  it("zh contracts say the claim is written in Chinese", () => {
     expect(BACKEND_EXECUTION_CONTRACT).toContain("claim 是一句话，用中文写");
-    const minimal = minimalBackendContract("zh");
-    expect(minimal).toContain("条目用中文写");
-    expect(minimal).toContain("claim 用中文写");
+    expect(minimalBackendContract("zh")).toContain("claim 用中文写");
   });
 
-  it("EN contracts say the same in English, with no CJK", () => {
-    expect(BACKEND_EXECUTION_CONTRACT_EN).toContain(
-      "Write the items in English",
-    );
+  it("EN contracts say the same in English", () => {
     expect(BACKEND_EXECUTION_CONTRACT_EN).toContain(
       '"claim" one sentence written in English',
     );
-    const minimal = minimalBackendContract("en");
-    expect(minimal).toContain("items in English");
-    expect(minimal).toContain("claim in English");
+    expect(minimalBackendContract("en")).toContain("claim in English");
   });
 
-  it("the language line sits inside the section that governs the tool, not as a stray rule", () => {
-    const todoSection =
-      BACKEND_EXECUTION_CONTRACT.split("# 任务清单")[1]?.split("# 动手优先")[0];
-    expect(todoSection).toContain("条目用中文写");
-    const todoSectionEn =
-      BACKEND_EXECUTION_CONTRACT_EN.split("# Todo list")[1]?.split(
-        "# Action bias",
-      )[0];
-    expect(todoSectionEn).toContain("Write the items in English");
+  it("no contract mentions a todo list (ADR 0073)", () => {
+    for (const text of [
+      BACKEND_EXECUTION_CONTRACT,
+      BACKEND_EXECUTION_CONTRACT_EN,
+      minimalBackendContract("zh", "/ws"),
+      minimalBackendContract("en", "/ws"),
+    ]) {
+      expect(text).not.toMatch(/todo_write|任务清单|todo list/i);
+    }
   });
 });
 
@@ -638,7 +615,6 @@ describe("host note (ADR 0044)", () => {
   const common = {
     brief: sampleBrief,
     userMessages: sampleUserMessages,
-    scopedRepoInstructions: "",
     scopedMemory: "",
     messages: [],
   };
@@ -724,7 +700,6 @@ describe("repo snapshot section (ADR 0049)", () => {
   const common = {
     brief: sampleBrief,
     userMessages: sampleUserMessages,
-    scopedRepoInstructions: "",
     scopedMemory: "",
     messages: [],
   };

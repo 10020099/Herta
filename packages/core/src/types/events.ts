@@ -1,7 +1,6 @@
 import type { AgentExecutionReport } from "../bridge/types.js";
 import type { CommandConsequence, RiskLevel } from "../permission-engine.js";
 import type { AgentError } from "./errors.js";
-import type { TodoItem } from "./todo.js";
 import type { ToolCallRequest, ToolResult } from "./tool.js";
 import type { AssistantMessage } from "./transcript.js";
 
@@ -28,6 +27,11 @@ export interface PermissionRequest {
   /** Consequence note code (ADR 0049 §5) — display-only; see
    *  `CommandConsequence` in permission-engine. */
   consequence?: CommandConsequence;
+  /** Rule-decided: everything it changes is a workspace file kept for undo;
+   *  see `RuleVerdict`. */
+  undoable?: true;
+  /** Rule-derived: the directory the command runs in; see RuleVerdict. */
+  cwd?: string;
 }
 
 /** What a test run came back with. `passed` was added 2026-09-03 so the
@@ -53,12 +57,36 @@ export type AgentEvent =
       id: string;
       tool: string;
       inputSummary: string;
+      /** The tool recognised the call as a test run (`HertaTool.runsTests`,
+       *  ADR 0073 amendment 2026-10-08). Absent otherwise. */
+      runsTests?: true;
     }
   | {
       type: "tool.call.progress";
       layer: EventLayer;
       id: string;
       message: string;
+    }
+  // A call's arguments as the model writes them (ADR 0073): one fragment of
+  // the JSON text per provider chunk, before the call exists. `id` is the
+  // call's own id — the one its `tool.call.started` will carry, if it is
+  // ever dispatched (a malformed or retried inference never is). Live UI
+  // only; the record and the transcript take the finished call.
+  | {
+      type: "tool.call.delta";
+      layer: EventLayer;
+      id: string;
+      tool: string;
+      argsDelta: string;
+    }
+  // What a running command prints (ADR 0073), a chunk at a time and in the
+  // order it arrived, stdout and stderr merged as a terminal shows them.
+  // Live UI only; the record keeps the bounded tail the result carries.
+  | {
+      type: "tool.call.output";
+      layer: EventLayer;
+      id: string;
+      chunk: string;
     }
   | {
       type: "tool.call.finished";
@@ -84,7 +112,7 @@ export type AgentEvent =
       tool?: string;
       /** blocked only (2026-08-26): the deny verdict's code and refused-risk
        *  tier, threaded so the status gate can tell a withheld READ (or a
-       *  malformed call) from a refused mutation — the rule always had both
+       *  call error, permission-deny-codes.ts) from a refused mutation — the rule always had both
        *  in hand and used to drop them here. */
       code?: string;
       risk?: RiskLevel;
@@ -96,9 +124,6 @@ export type AgentEvent =
       layer: EventLayer;
       result: VerificationResult;
     }
-  // Neutral name kept from the pre-ADR-0025 plan contract (D2); the
-  // payload is the backend's full todo list after a `todo_write`.
-  | { type: "plan.updated"; layer: EventLayer; todos: readonly TodoItem[] }
   | { type: "turn.finished"; layer: EventLayer; summary: TurnSummary }
   | { type: "turn.failed"; layer: EventLayer; error: AgentError }
   | { type: "agent.report"; layer: EventLayer; report: AgentExecutionReport }

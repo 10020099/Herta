@@ -4,16 +4,22 @@ import type {
   RecordEvent,
   RepoContextSnapshot,
   RepoEvent,
+  ResumeEvent,
   SessionAgentEvent,
   SessionDeletedEvent,
   SessionTopic,
   TerminalRecord,
   TitleEvent,
   TurnLifecycleEvent,
+  UndoEvent,
+  UndoTarget,
+  UndoTurnEditsResult,
   WorkspaceEvent,
 } from "@herta/app-server";
+import { EMPTY_LIVE } from "../../shared/live-tool-feed.js";
 import type {
   HertaBridge,
+  LiveToolSnapshot,
   NavBlockedEvent,
   SessionError,
   SessionNoSession,
@@ -22,6 +28,7 @@ import type {
   StagedImageInfo,
 } from "../ipc/bridge-types.js";
 import { journeyMark, journeyMarkAfterPaint } from "../lib/journey.js";
+import type { ComposerQuote } from "../lib/quote-format.js";
 
 export type SessionStatus = "idle" | "thinking" | "speaking";
 
@@ -47,6 +54,11 @@ export interface SessionSnapshotView {
    *  screen and jump in the wrong transcript. */
   readonly pendingJump: { sessionId: string; blockIndex: number } | null;
   readonly streamingText: string | null;
+  /** The Trailblazer's likely next message, offered in the composer after a
+   *  finished turn (composer predictions, owner 2026-10-10): Tab fills it
+   *  in, typing replaces it. Null when there is none; cleared when a turn
+   *  starts or the session changes. Never part of the record. */
+  readonly prediction: string | null;
   readonly overlay: ApprovalOverlayState | null;
   readonly status: SessionStatus;
   readonly error: string | null;
@@ -86,6 +98,12 @@ export interface SessionSnapshotView {
    *  drives the multi-row shimmer in ActivityBlock. Reset with the backend
    *  turn lifecycle. */
   readonly backendInFlight: number;
+  /** The live views of 板砖's run (ADR 0073) — its recent calls, numbered as
+   *  the record will number their op rows, and the focused call's stream
+   *  (the file it is writing, a command's output) — as main last sent them.
+   *  Kept past the backend's end (the record trails it), cleared by the next
+   *  run and by a reset. Screen-only: never in the record. */
+  readonly live: LiveToolSnapshot;
   /** Renderer wall-clock (Date.now) when the @板砖 backend turn started (its
    *  backend-layer turn.started). Anchors the backend activity timer to the
    *  actual 板砖 start, NOT turnStartedAt — which begins when Herta's turn
@@ -153,6 +171,10 @@ export interface SessionSnapshotView {
    *  GC'd, so there is nothing left to restage. Rides `composerDraft`'s
    *  lifecycle via the emit guard. */
   readonly composerDraftImages: readonly StagedImageInfo[] | null;
+  /** Quotes picked from the viewer's page (ADR 0078 §4), staged as chips in
+   *  the composer until they are sent or removed. They belong to the
+   *  session: a new activation starts with none. */
+  readonly composerQuotes: readonly ComposerQuote[];
   /** One-shot: pictures main still holds staged for this session, carried
    *  by a reset (a window that reloaded with pictures in its strip, UX
    *  review 2026-09-22, item 7). The composer adopts them into its strip,
@@ -164,6 +186,17 @@ export interface SessionSnapshotView {
    *  A composer-side draft with a delivery trigger — never in the record,
    *  and gone with the activation like any other draft. */
   readonly held: string | null;
+  /** A 继续 is on offer (ADR 0071 §1.4): 板砖's last run was interrupted —
+   *  the app exited under it, or the user pressed Stop — and main can
+   *  continue it. Main's answer, from the reset snapshot and `onResume`. */
+  readonly resumable: boolean;
+  /** The latest turn's edits can be taken back (ADR 0074 §4) — its card's
+   *  撤销 chip. Main's answer, from the reset snapshot and `onUndo`. */
+  readonly undoable: boolean;
+  /** The rewind notice's 撤销改动 (ADR 0074 §4): `offer` while the withdrawn
+   *  turn's edits can still be taken back, `busy` while they are. Rides the
+   *  notice: a new notice, or the notice's clearing, takes it away. */
+  readonly rewindUndo: "offer" | "busy" | null;
   /** One-shot transient notice shown by the composer — e.g. the rewind warning
    *  that 板砖's file edits were NOT reverted. Cleared on the next keystroke. */
   readonly composerNotice: string | null;
@@ -213,6 +246,7 @@ const INITIAL: SessionSnapshotView = {
   recordStart: 0,
   pendingJump: null,
   streamingText: null,
+  prediction: null,
   overlay: null,
   status: "idle",
   error: null,
@@ -224,6 +258,7 @@ const INITIAL: SessionSnapshotView = {
   turnStartedAt: null,
   backendActive: false,
   backendInFlight: 0,
+  live: EMPTY_LIVE,
   backendStartedAt: null,
   backendError: false,
   backendSucceededSeq: 0,
@@ -238,8 +273,12 @@ const INITIAL: SessionSnapshotView = {
   repo: null,
   composerDraft: null,
   composerDraftImages: null,
+  composerQuotes: [],
   restagedImages: null,
   held: null,
+  resumable: false,
+  undoable: false,
+  rewindUndo: null,
   composerNotice: null,
   needsKeyText: null,
   needsKeyImages: null,
@@ -343,6 +382,18 @@ export class SessionStore {
       ...(bridge.onRepo !== undefined
         ? [bridge.onRepo((e) => this.onRepo(e))]
         : []),
+      // Optional: the 继续 offer (ADR 0071 §1.4).
+      ...(bridge.onResume !== undefined
+        ? [bridge.onResume((e) => this.onResume(e))]
+        : []),
+      // Optional: the 撤销 chip (ADR 0074 §4).
+      ...(bridge.onUndo !== undefined
+        ? [bridge.onUndo((e) => this.onUndo(e))]
+        : []),
+      // Optional: the live views of the call in flight (ADR 0073).
+      ...(bridge.onLive !== undefined
+        ? [bridge.onLive((e) => this.onLive(e))]
+        : []),
     ];
     // Subscribed: now ask for the state. Main's own push at did-finish-load
     // can land before this line after a reload, and was then lost — the
@@ -353,6 +404,82 @@ export class SessionStore {
   }
 
   private navBlockSeq = 0;
+
+  /** Main's newest live views (ADR 0073). Only while a run is live: once
+   *  the backend has ended, the views it left are what the trace card shows
+   *  until the record catches up, and a late snapshot (main's own clearing
+   *  one included) must not replace them. */
+  private onLive(e: LiveToolSnapshot): void {
+    if (!this.snapshot.backendActive) return;
+    if (
+      e.views.length === 0 &&
+      this.snapshot.live.views.length === 0 &&
+      e.quietSince === this.snapshot.live.quietSince
+    )
+      return;
+    this.emit({ ...this.snapshot, live: e });
+  }
+
+  /** Main's answer on the 继续 offer changed. A dropped-events sentinel
+   *  says nothing about it; the next reset re-syncs. */
+  private onResume(e: ResumeEvent): void {
+    if (e.kind !== "offer" || e.resumable === this.snapshot.resumable) return;
+    this.emit({ ...this.snapshot, resumable: e.resumable });
+  }
+
+  /** Main's answer on the 撤销 chip changed (ADR 0074 §4). */
+  private onUndo(e: UndoEvent): void {
+    if (e.kind !== "offer" || e.undoable === this.snapshot.undoable) return;
+    this.emit({ ...this.snapshot, undoable: e.undoable });
+  }
+
+  /**
+   * Take a turn's edits back (ADR 0074 §4), bound to the session it was
+   * asked in. Null when there is no bridge or session to ask, or the
+   * session changed while main answered — the answer then belongs to a
+   * record no longer on screen. Never rejects: a failed invoke answers as
+   * nothing to undo.
+   */
+  async undoTurnEdits(target: UndoTarget): Promise<UndoTurnEditsResult | null> {
+    const bridge = this.bridge;
+    const sessionId = this.snapshot.sessionId;
+    if (bridge?.undoLastTurnEdits === undefined || sessionId === null) {
+      return null;
+    }
+    let r: UndoTurnEditsResult;
+    try {
+      r = await bridge.undoLastTurnEdits(sessionId, target);
+    } catch {
+      r = { ok: false, reason: "nothing_to_undo" };
+    }
+    return this.snapshot.sessionId === sessionId ? r : null;
+  }
+
+  /** The rewind notice's 撤销改动 is running (or offered again). */
+  setRewindUndo(state: "offer" | "busy" | null): void {
+    if (this.snapshot.rewindUndo === state) return;
+    this.emit({ ...this.snapshot, rewindUndo: state });
+  }
+
+  /**
+   * 继续 pressed: the strip goes at once (the turn's own lifecycle takes over
+   * the composer), and main continues the run. With no key, the no-key card
+   * opens as for a send; with nothing to continue, the strip just stays gone.
+   */
+  async continueInterrupted(): Promise<void> {
+    const bridge = this.bridge;
+    if (bridge?.continueInterrupted === undefined || !this.snapshot.resumable) {
+      return;
+    }
+    this.emit({ ...this.snapshot, resumable: false });
+    let r: Awaited<ReturnType<NonNullable<HertaBridge["continueInterrupted"]>>>;
+    try {
+      r = await bridge.continueInterrupted();
+    } catch {
+      return;
+    }
+    if ("needsKey" in r) this.emit({ ...this.snapshot, resumable: true });
+  }
 
   private onNavBlocked(e: NavBlockedEvent): void {
     this.navBlockSeq += 1;
@@ -418,6 +545,9 @@ export class SessionStore {
     text: string | null,
     notice: string | null,
     images?: readonly StagedImageInfo[],
+    /** The rewound turn's edits can still be taken back: the notice offers
+     *  撤销改动 (ADR 0074 §4). */
+    undoOffer = false,
   ): void {
     this.emit({
       ...this.snapshot,
@@ -425,7 +555,30 @@ export class SessionStore {
       composerDraftImages:
         images !== undefined && images.length > 0 ? images : null,
       composerNotice: notice,
+      rewindUndo: undoOffer && notice !== null ? "offer" : null,
     });
+  }
+
+  /** A quote picked from the viewer's page joins the composer's chips
+   *  (ADR 0078 §4). */
+  addComposerQuote(quote: ComposerQuote): void {
+    this.emit({
+      ...this.snapshot,
+      composerQuotes: [...this.snapshot.composerQuotes, quote],
+    });
+  }
+
+  /** The chip's ×. */
+  removeComposerQuote(id: string): void {
+    const kept = this.snapshot.composerQuotes.filter((q) => q.id !== id);
+    if (kept.length === this.snapshot.composerQuotes.length) return;
+    this.emit({ ...this.snapshot, composerQuotes: kept });
+  }
+
+  /** The composer sent them with the message. */
+  clearComposerQuotes(): void {
+    if (this.snapshot.composerQuotes.length === 0) return;
+    this.emit({ ...this.snapshot, composerQuotes: [] });
   }
 
   /** The composer consumed the staged draft — null it so it isn't re-applied.
@@ -481,13 +634,13 @@ export class SessionStore {
    *  is "here is text to put back AND why": passing a null draft through that
    *  path would read as a rewind that lost the message. */
   setComposerNotice(notice: string): void {
-    this.emit({ ...this.snapshot, composerNotice: notice });
+    this.emit({ ...this.snapshot, composerNotice: notice, rewindUndo: null });
   }
 
   /** Dismiss the transient composer notice (e.g. on the next keystroke). */
   clearComposerNotice(): void {
     if (this.snapshot.composerNotice === null) return;
-    this.emit({ ...this.snapshot, composerNotice: null });
+    this.emit({ ...this.snapshot, composerNotice: null, rewindUndo: null });
   }
 
   /** Open the no-key onboarding card, holding the message that couldn't send
@@ -530,6 +683,25 @@ export class SessionStore {
   clearPendingJump(): void {
     if (this.snapshot.pendingJump === null) return;
     this.emit({ ...this.snapshot, pendingJump: null });
+  }
+
+  /** The user renamed a session (ADR 0072 §3). The open one's header takes
+   *  the name at once, without the reveal a generated title gets; main
+   *  sends no title event for a rename. `topics`, when main answered them,
+   *  are the rail's entries with the current topic renamed. Any other
+   *  session is not shown here. */
+  applyUserTitle(
+    sessionId: string,
+    title: string | null,
+    topics?: readonly SessionTopic[],
+  ): void {
+    if (this.snapshot.sessionId !== sessionId) return;
+    this.emit({
+      ...this.snapshot,
+      title,
+      titleAnimate: false,
+      ...(topics !== undefined ? { topics } : {}),
+    });
   }
 
   /** Single-flight guard for loadOlderBlocks. */
@@ -654,6 +826,7 @@ export class SessionStore {
           ? this.snapshot.pendingJump
           : null,
       streamingText: null,
+      prediction: null,
       overlay: e.overlay,
       // A reset that lands mid-turn — a window reloaded while Herta or 板砖
       // worked — comes back busy (UX review 2026-09-22, item 7): Stop, the
@@ -670,6 +843,7 @@ export class SessionStore {
       turnStartedAt: e.turn !== undefined ? Date.now() : null,
       backendActive: e.turn?.backendActive ?? false,
       backendInFlight: 0,
+      live: EMPTY_LIVE,
       backendStartedAt: e.turn?.backendActive === true ? Date.now() : null,
       backendError: false,
       backendSucceededSeq: 0,
@@ -690,11 +864,17 @@ export class SessionStore {
       // no message held for a turn that belonged to another session).
       composerDraft: null,
       composerDraftImages: null,
+      composerQuotes: [],
       restagedImages:
         e.stagedImages !== undefined && e.stagedImages.length > 0
           ? e.stagedImages
           : null,
       held: null,
+      // The 继续 offer as main has it for this session (ADR 0071 §1.4).
+      resumable: e.resumable === true,
+      // The 撤销 chip as main has it for this session (ADR 0074 §4).
+      undoable: e.undoable === true,
+      rewindUndo: null,
       composerNotice: null,
       needsKeyText: null,
       needsKeyImages: null,
@@ -887,6 +1067,7 @@ export class SessionStore {
         ...this.snapshot,
         backendActive: true,
         backendInFlight: 0,
+        live: EMPTY_LIVE,
         backendStartedAt: Date.now(),
         backendError: false,
       });
@@ -896,6 +1077,9 @@ export class SessionStore {
       // backendStartedAt is intentionally left set (carried via spread): the
       // ActivityBlock already froze its elapsed against its captured start; the
       // actor turn-finished clears it. A second @板砖 dispatch re-stamps it.
+      // The live views are KEPT: the record trails the backend by the length of
+      // Herta's beats (lab 2026-09-30), and the trace card needs the last
+      // views until the done-marker lands. The next run clears them.
       this.emit({
         ...this.snapshot,
         backendActive: false,
@@ -930,11 +1114,14 @@ export class SessionStore {
       // the same event. The actor's own failure branch already encodes this
       // policy ("the user did it deliberately", turnFailed below); the device
       // path just never got the exclusion.
+      // Neither is the step limit: the run stopped where it stood and can be
+      // continued (2026-09-29).
       this.emit({
         ...this.snapshot,
         backendActive: false,
         backendInFlight: 0,
-        backendError: ev.error.kind !== "interrupted",
+        backendError:
+          ev.error.kind !== "interrupted" && ev.error.kind !== "step_limit",
       });
       return;
     }
@@ -1075,6 +1262,8 @@ export class SessionStore {
         ...this.snapshot,
         status: "thinking",
         streamingText: null,
+        // The suggestion was for the line just sent.
+        prediction: null,
         retracting: false,
         retryText: null,
         retractKeepLen: null,
@@ -1136,6 +1325,12 @@ export class SessionStore {
         overlay: null,
         ...retractCleanup,
       });
+    } else if (e.kind === "predicted") {
+      // Offered only to an idle composer with no card up; anything that
+      // started since owns the composer now.
+      if (this.snapshot.status === "idle" && this.snapshot.overlay === null) {
+        this.emit({ ...this.snapshot, prediction: e.text });
+      }
     } else if (e.kind === "failed") {
       // Safety net: on failure (no blocks emitted) drop the dangling echo and
       // also clear any retract state (no finalized record block will come to

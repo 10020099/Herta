@@ -35,9 +35,15 @@ import {
 } from "./attachment-protocol.js";
 import { buildCsp } from "./csp.js";
 import { hideToTray } from "./hide-to-tray.js";
+import { installMode } from "./install-mode.js";
 import { applyLoginPath, launchLocaleEnv } from "./login-path.js";
 import { installChromiumFetch } from "./net-transport.js";
-import { quitDisposals, quitsWhenAllWindowsClosed } from "./quit-policy.js";
+import {
+  QUIT_HOLD_MS,
+  quitDisposals,
+  quitsWhenAllWindowsClosed,
+} from "./quit-policy.js";
+import { rendererPermissionAllowed } from "./renderer-permissions.js";
 import { shouldReloadAfterCrash } from "./renderer-recovery.js";
 import {
   appWorkspaceRoot,
@@ -70,7 +76,7 @@ registerAssetScheme();
  * The dev-server URL — ONLY in a non-packaged build (audit 2026-08-05, S2).
  *
  * `ELECTRON_RENDERER_URL` was read straight from the environment with no
- * `app.isPackaged` gate, while the sibling update-feed override IS gated. A
+ * packaged-app gate, while the sibling update-feed override IS gated. A
  * packaged app launched with that variable set (a doctored shortcut, any
  * local process that can shape the environment) loaded an attacker-chosen
  * origin into the main window — and the preload attaches unconditionally, so
@@ -88,7 +94,7 @@ registerAssetScheme();
  * was not a blocker; the project rated the strictly weaker `HERTA_UPDATE_URL`
  * variant Tier 1, so the posture here matches that.
  */
-const devRendererUrl = app.isPackaged
+const devRendererUrl = installMode().installed
   ? undefined
   : process.env.ELECTRON_RENDERER_URL;
 
@@ -187,6 +193,14 @@ function requestExit(): void {
 if (process.platform === "linux") {
   app.commandLine.appendSwitch("enable-wayland-ime");
   app.commandLine.appendSwitch("wayland-text-input-version", "3");
+}
+
+// Windows shows a notification only for an app whose process id matches a
+// Start-menu shortcut's (ADR 0072 §1). The installer's shortcut carries the
+// builder's `appId` (electron-builder.yml), so an installed app says the
+// same; a dev run keeps Electron's own id, which Windows already knows.
+if (process.platform === "win32" && installMode().installed) {
+  app.setAppUserModelId("com.personacli.herta");
 }
 
 // Single-instance lock: two processes would write the same workspace .herta
@@ -574,16 +588,19 @@ void app
     const s = await readGlobalSettings(app.getPath("userData")).catch(
       () => ({}) as Awaited<ReturnType<typeof readGlobalSettings>>,
     );
-    // Deny every renderer permission request (audit BL22). Electron grants them
-    // by default, and this renderer asks for none: its only `navigator.` use is
-    // `navigator.language`, and `new Audio(herta-voice://…)` needs no
-    // permission. So a blanket deny costs nothing today and means a future
-    // dependency cannot quietly acquire the camera, the microphone, geolocation
-    // or notifications on a window that also holds the app's IPC bridge.
-    session.defaultSession.setPermissionRequestHandler((_wc, _perm, done) => {
-      done(false);
+    // Deny every renderer permission but one (audit BL22; the exception and
+    // its reason in renderer-permissions.ts). Electron grants them by default,
+    // and a deny by default means a future dependency cannot quietly acquire
+    // the camera, the microphone, geolocation or notifications on a window
+    // that also holds the app's IPC bridge. Both handlers decide alike: the
+    // check handler answers `navigator.clipboard.writeText`, the request
+    // handler whatever asks the user.
+    session.defaultSession.setPermissionRequestHandler((_wc, perm, done) => {
+      done(rendererPermissionAllowed(perm));
     });
-    session.defaultSession.setPermissionCheckHandler(() => false);
+    session.defaultSession.setPermissionCheckHandler((_wc, perm) =>
+      rendererPermissionAllowed(perm),
+    );
 
     // Content-Security-Policy (audit BL2). Injected here rather than as a <meta>
     // tag so dev and packaged can differ — Vite needs eval and its HMR socket,
@@ -593,7 +610,7 @@ void app
     // send a transcript.
     {
       const csp = buildCsp({
-        isPackaged: app.isPackaged,
+        isPackaged: installMode().installed,
         indexHtmlPath: join(__dirname, "../renderer/index.html"),
         ...(devRendererUrl !== undefined ? { devOrigin: devRendererUrl } : {}),
       });
@@ -663,8 +680,8 @@ void app
     // when packaged, from the workspace's data/voice in dev (2026-07-06).
     registerVoiceProtocol(
       resolveVoiceRoot({
-        isPackaged: app.isPackaged,
-        resourcesPath: process.resourcesPath,
+        isPackaged: installMode().installed,
+        resourcesPath: installMode().resourcesPath,
         workspaceRoot: appWorkspaceRoot(),
       }),
     );
@@ -691,7 +708,7 @@ void app
     {
       const template = appMenuTemplate({
         platform: process.platform,
-        isPackaged: app.isPackaged,
+        isPackaged: installMode().installed,
         onOpenSettings: openSettingsFromMenu,
       });
       if (template !== null) {
@@ -764,7 +781,7 @@ function startBackgroundServices(): void {
     // point the feed anywhere — and the override also disables the
     // update-service dev gate, so autoInstallOnAppQuit would run whatever
     // that feed served.
-    const feedOverride = app.isPackaged
+    const feedOverride = installMode().installed
       ? undefined
       : process.env.HERTA_UPDATE_URL;
     // Lazy import keeps electron-updater out of the dev startup path.
@@ -776,7 +793,7 @@ function startBackgroundServices(): void {
         const settings = await readGlobalSettings(app.getPath("userData"));
         updateService = createUpdateService({
           updater: autoUpdater,
-          isPackaged: app.isPackaged,
+          isPackaged: installMode().installed,
           autoEnabled: settings.autoUpdate ?? true,
           ...(feedOverride !== undefined && feedOverride !== ""
             ? { feedUrlOverride: feedOverride }
@@ -881,7 +898,7 @@ app.on("before-quit", (event) => {
   quitHeld = true;
   event.preventDefault();
   const timeout = new Promise<void>((resolve) => {
-    setTimeout(resolve, 3000);
+    setTimeout(resolve, QUIT_HOLD_MS);
   });
   const flushes = Promise.allSettled([
     pendingDispose ?? Promise.resolve(),

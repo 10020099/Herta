@@ -1,11 +1,10 @@
 import type { HertaToAgentBrief } from "../bridge/types.js";
 import { abortError, errorMessage, isAbortError } from "../errors.js";
 import type { EventBus } from "../event-bus.js";
-import type { FindingsLedger } from "../findings-ledger.js";
+import { type FindingsLedger, MAX_FINDINGS } from "../findings-ledger.js";
 import type { MemoryManager } from "../memory-manager.js";
-import type { PermissionEngine } from "../permission-engine.js";
+import type { AskAnswer, PermissionEngine } from "../permission-engine.js";
 import type { ReadLedger } from "../read-ledger.js";
-import { renderTodoState, type TodoStore } from "../todo-store.js";
 import type { ToolRegistry } from "../tool-registry.js";
 import type { TranscriptStore } from "../transcript-store.js";
 import type { AgentError } from "../types/errors.js";
@@ -13,9 +12,11 @@ import type { AgentEvent, TurnSummary } from "../types/events.js";
 import type { ProviderAdapter } from "../types/provider.js";
 import type {
   ToolCallRequest,
+  ToolCallUndo,
   ToolContext,
   ToolResult,
 } from "../types/tool.js";
+import { reportUsageNote } from "../usage-note.js";
 import type {
   BackendContextBuilder,
   RepoContextSnapshot,
@@ -30,13 +31,23 @@ import {
   type BackendPromptBudget,
   DEFAULT_BACKEND_PROMPT_BUDGET,
   estimateFrameBaseTokens,
+  estimateMessagesTokens,
   fitMessagesToBudget,
 } from "./context-budget.js";
+import {
+  type DispatchJournal,
+  journalUnavailableResult,
+} from "./dispatch-journal.js";
 import {
   type ModelInferenceResult,
   streamModelInference,
 } from "./stream-model-inference.js";
 import { persistOversizedResult } from "./tool-result-persistence.js";
+import {
+  renderStepNotice,
+  renderWorkingState,
+  type WorkingStateInput,
+} from "./working-state.js";
 
 export interface BackendTurnDeps {
   sessionId: string;
@@ -45,7 +56,6 @@ export interface BackendTurnDeps {
   permissions: PermissionEngine;
   backendBuilder: BackendContextBuilder;
   transcript: TranscriptStore;
-  todos: TodoStore;
   bg: BackgroundHost;
   bus: EventBus<AgentEvent>;
   clock: () => Date;
@@ -68,6 +78,25 @@ export interface BackendTurnDeps {
    * Tests inject an instant resolver to skip wall-clock backoff.
    */
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
+  /**
+   * The run's journal (ADR 0071 §1.1). A call that passed its gate is
+   * recorded as dispatched before it runs — durably, and fail-closed, for
+   * anything not read-only — and each tool gets its per-call view. Absent
+   * (the CLI, tests): nothing is recorded.
+   */
+  journal?: DispatchJournal;
+  /**
+   * This segment's view of the undo store (ADR 0074 §1): every tool gets it,
+   * and the editors leave what they replace there. Absent (the CLI, tests):
+   * nothing is kept.
+   */
+  undo?: ToolCallUndo;
+  /**
+   * The working state the harness keeps (working-state.ts), read when old
+   * iterations have been dropped from the transcript. Absent (tests, the
+   * CLI's bare runtime): the trim marker's count is all the model gets.
+   */
+  workingState?: () => WorkingStateInput;
 }
 
 function defaultBackoffSleep(ms: number, signal: AbortSignal): Promise<void> {
@@ -98,11 +127,6 @@ export interface BackendTurnHandle {
   userMessages: ReadonlyArray<{ text: string }>;
   /** Elided older user messages (ADR 0025 slice 2); defaults to 0. */
   omittedUserMessages?: number;
-  /**
-   * Optional scoped repo instructions selected by the actor for this dispatch.
-   * Threaded into `BackendPromptFrame.scopedRepoInstructions`. Defaults to `""`.
-   */
-  scopedRepoInstructions?: string;
   /**
    * The rendered project memory for this dispatch — `CodingAgentRuntime`
    * recalls and renders it at brief start (ADR 0060). Threaded into
@@ -140,6 +164,11 @@ type GateOutcome =
 
 const PERMISSION_DENIED_SUGGESTION =
   "Choose a read-only inspection path or ask the user.";
+
+/** After a reviewer's denial (ADR 0075): what Codex and Claude Code both
+ *  tell their agent with theirs. */
+const REVIEWER_DENIED_SUGGESTION =
+  "Do not reach the same outcome another way. Take an approach the user's request covers, or ask the user.";
 
 /** The model-facing hint for a rule-deny, by code. `invalid_input` surfaces
  *  through the same deny path as real permission denials (rules validate
@@ -233,7 +262,7 @@ export async function* runBackendTurnLoop(
         type: "permission.requested",
         request: decision.request,
       });
-      let resolved: "allow" | "deny";
+      let resolved: AskAnswer;
       try {
         resolved = await decision.decision;
       } catch (err) {
@@ -254,8 +283,26 @@ export async function* runBackendTurnLoop(
       yield* emit({
         type: "permission.resolved",
         id: decision.request.id,
-        decision: resolved,
+        decision: resolved === "allow" ? "allow" : "deny",
       });
+      // A reviewer's denial (ADR 0075): its reason, and the instruction both
+      // reference agents give with theirs — the outcome, not the command, is
+      // what was refused.
+      if (typeof resolved === "object") {
+        return {
+          kind: "result",
+          result: {
+            ok: false,
+            error: {
+              code: "permission_denied",
+              message: `An automatic review denied ${call.tool}: ${resolved.reason}`,
+              retryable: false,
+            },
+            suggestion: REVIEWER_DENIED_SUGGESTION,
+            summary: "denied",
+          },
+        };
+      }
       if (resolved === "deny") {
         return {
           kind: "result",
@@ -287,6 +334,17 @@ export async function* runBackendTurnLoop(
   // Note: user history is system-level context. We do NOT append it to transcript.
 
   const sleep = deps.sleep ?? defaultBackoffSleep;
+  const budget = deps.budget ?? DEFAULT_BACKEND_PROMPT_BUDGET;
+  // What the run's frames needed of the budget trim, for the usage log
+  // (long-run study item 6) — reported once, however the run ends.
+  const trims = {
+    steps: 0,
+    clearedSteps: 0,
+    droppedSteps: 0,
+    maxDropped: 0,
+    peakSent: 0,
+    peakUntrimmed: 0,
+  };
   try {
     // L2 (audit 2026-07-09): everything in the frame EXCEPT `messages` is
     // invariant across the turn's iterations — the execution contract, the
@@ -300,7 +358,6 @@ export async function* runBackendTurnLoop(
       brief,
       userMessages: handle.userMessages,
       omittedUserMessages: handle.omittedUserMessages ?? 0,
-      scopedRepoInstructions: handle.scopedRepoInstructions ?? "",
       scopedMemory: handle.scopedMemory ?? "",
       messages: [],
       recentDialogue: handle.recentDialogue,
@@ -314,9 +371,13 @@ export async function* runBackendTurnLoop(
     let iterations = 0;
     while (true) {
       if (iterations >= MAX_TURN_ITERATIONS) {
+        // The step limit ends the run where it stands — like an interruption,
+        // not a failure: the model was told in its last iterations, the report
+        // says so, and the run can be continued from its journal (2026-09-29
+        // long-run study, proposal 3).
         const error: AgentError = {
-          kind: "internal",
-          message: `backend turn exceeded ${MAX_TURN_ITERATIONS} iterations`,
+          kind: "step_limit",
+          message: `reached the step limit (${MAX_TURN_ITERATIONS} steps)`,
         };
         yield* emit({ type: "turn.failed", error });
         return;
@@ -334,24 +395,59 @@ export async function* runBackendTurnLoop(
         deps.transcript.appendUser(text, deps.clock());
       }
 
-      // Per-iteration todo reminder (ADR 0025 §2): recomputed each call so
-      // the model always sees the list it last wrote; appended by the
-      // translate layer AFTER the transcript, so the cache-stable prefix
-      // is untouched. Empty list → no section.
-      const todoState = renderTodoState(deps.todos.all(), handle.lang ?? "zh");
+      // The state trailer, recomputed each call and appended by the translate
+      // layer AFTER the transcript, so the cache-stable prefix is untouched:
+      // the working state once old iterations are dropped (below) and the
+      // steps left near the limit.
+      const lang = handle.lang ?? "zh";
+      const stepNotice = renderStepNotice(
+        iterations,
+        MAX_TURN_ITERATIONS,
+        lang,
+      );
+      const trailerWith = (workingState: string): string =>
+        [workingState, stepNotice].filter((s) => s.length > 0).join("\n\n");
+      let trailingState = trailerWith("");
 
       // Working-set budget (ADR 0025 slice 2): deterministic two-phase trim
       // of the frame COPY (clear old tool payloads, then drop oldest
       // groups). The durable transcript is untouched — every iteration
       // re-derives the projection. Pre-flight, so a bloated frame is fixed
       // BEFORE a provider call is burned on it.
-      const budget = deps.budget ?? DEFAULT_BACKEND_PROMPT_BUDGET;
-      const fit = fitMessagesToBudget({
+      let fit = fitMessagesToBudget({
         messages: deps.transcript.all(),
-        baseTokens: estimateFrameBaseTokens(baseFrame, todoState),
+        baseTokens: estimateFrameBaseTokens(baseFrame, trailingState),
         budget,
-        lang: handle.lang ?? "zh",
+        lang,
       });
+      // Whole iterations were dropped: the harness states what they did
+      // that the model cannot cheaply work out again (working-state.ts),
+      // and the trim is fitted again with that block counted.
+      if (fit.droppedGroups > 0 && deps.workingState !== undefined) {
+        trailingState = trailerWith(
+          renderWorkingState(deps.workingState(), lang, MAX_FINDINGS),
+        );
+        fit = fitMessagesToBudget({
+          messages: deps.transcript.all(),
+          baseTokens: estimateFrameBaseTokens(baseFrame, trailingState),
+          budget,
+          lang,
+        });
+      }
+      const trimmed =
+        fit.clearedPayloads > 0 || fit.droppedGroups > 0 || fit.overBudget;
+      trims.steps += 1;
+      if (fit.clearedPayloads > 0) trims.clearedSteps += 1;
+      if (fit.droppedGroups > 0) trims.droppedSteps += 1;
+      trims.maxDropped = Math.max(trims.maxDropped, fit.droppedGroups);
+      trims.peakSent = Math.max(trims.peakSent, fit.estimatedTokens);
+      trims.peakUntrimmed = Math.max(
+        trims.peakUntrimmed,
+        trimmed
+          ? estimateFrameBaseTokens(baseFrame, trailingState) +
+              estimateMessagesTokens(deps.transcript.all())
+          : fit.estimatedTokens,
+      );
       if (fit.overBudget) {
         // Even the minimal tail (marker + last group) exceeds the budget —
         // the base frame itself must be near/over it. Surface honestly
@@ -366,7 +462,7 @@ export async function* runBackendTurnLoop(
       const frame = {
         ...baseFrame,
         messages: fit.messages,
-        ...(todoState.length > 0 ? { todoState } : {}),
+        ...(trailingState.length > 0 ? { trailingState } : {}),
       };
 
       // Bounded retry around the provider call: classify each failure to a named
@@ -465,12 +561,19 @@ export async function* runBackendTurnLoop(
         signal: handle.signal,
         workspaceRoot: deps.workspaceRoot,
         reads: deps.reads,
-        todos: deps.todos,
         bg: deps.bg,
         bus: deps.bus,
         memory: deps.memory,
         ...(deps.findings !== undefined ? { findings: deps.findings } : {}),
+        ...(deps.undo !== undefined ? { undo: deps.undo } : {}),
       };
+      // Each call records through its own view of the journal (ADR 0071
+      // §1.1): a writer's `write`, a command's `spawn`, stamped with the call.
+      const journal = deps.journal;
+      const ctxFor = (call: ToolCallRequest): ToolContext =>
+        journal === undefined
+          ? toolCtx
+          : { ...toolCtx, journal: journal.forCall(call.id) };
       const progressFor =
         (callId: string) =>
         (progress: { id: string; message: string }): void => {
@@ -479,6 +582,17 @@ export async function* runBackendTurnLoop(
             layer: "backend",
             id: callId,
             message: progress.message,
+          });
+        };
+      const outputFor =
+        (callId: string) =>
+        (chunk: string): void => {
+          if (chunk.length === 0) return;
+          deps.bus.publish({
+            type: "tool.call.output",
+            layer: "backend",
+            id: callId,
+            chunk,
           });
         };
       // Malformed-argument containment. A call whose `arguments` were not
@@ -564,6 +678,17 @@ export async function* runBackendTurnLoop(
               id: call.id,
               tool: call.tool,
               inputSummary: headerFor(deps, call),
+              ...runsTestsFor(deps, call),
+            });
+          }
+          // A read-only batch: recorded as dispatched, not synced — a read
+          // interrupted by a crash is safe to redo (ADR 0071 §1.3). After
+          // the started events, as on the serial path below.
+          if (journal !== undefined && allowed.length > 0) {
+            await journal.append({
+              kind: "dispatch",
+              callIds: allowed.map((c) => c.id),
+              readOnly: true,
             });
           }
           // An AbortError from any concurrent tool rejects the whole
@@ -574,8 +699,9 @@ export async function* runBackendTurnLoop(
               try {
                 return await deps.tools.run(
                   call,
-                  toolCtx,
+                  ctxFor(call),
                   progressFor(call.id),
+                  outputFor(call.id),
                 );
               } catch (err) {
                 if (isAbortError(err)) throw err;
@@ -637,16 +763,58 @@ export async function* runBackendTurnLoop(
           continue;
         }
 
+        // Started goes out in the same synchronous burst as the gate's
+        // `permission.resolved`, BEFORE the journal's awaited append: the
+        // bridge fires a beat held behind the prompt as soon as the prompt
+        // clears, and an await between the two let that beat land ahead of
+        // its own Writing row. The event carries no side effect; the run
+        // below is what the dispatch entry must precede.
         yield* emit({
           type: "tool.call.started",
           id: call.id,
           tool: call.tool,
           inputSummary: headerFor(deps, call),
+          ...runsTestsFor(deps, call),
         });
+
+        // Recorded as dispatched BEFORE it runs (ADR 0071 §1.1): durably for
+        // anything not read-only, so a crash from here on reads as "may have
+        // run". A mutating call the journal cannot record does not run.
+        if (journal !== undefined) {
+          if (deps.tools.get(call.tool)?.readOnly === true) {
+            await journal.append({
+              kind: "dispatch",
+              callIds: [call.id],
+              readOnly: true,
+            });
+          } else {
+            try {
+              await journal.appendDurable({
+                kind: "dispatch",
+                callIds: [call.id],
+              });
+            } catch (err) {
+              const refused = journalUnavailableResult(errorMessage(err));
+              yield* emit({
+                type: "tool.call.finished",
+                id: call.id,
+                tool: call.tool,
+                result: refused,
+              });
+              deps.transcript.appendTool(call.id, refused, deps.clock());
+              continue;
+            }
+          }
+        }
 
         let result: ToolResult;
         try {
-          result = await deps.tools.run(call, toolCtx, progressFor(call.id));
+          result = await deps.tools.run(
+            call,
+            ctxFor(call),
+            progressFor(call.id),
+            outputFor(call.id),
+          );
         } catch (err) {
           // An abort mid-tool (run_command's runner, the fs walkers — audit
           // M4) is an interrupt, not a tool failure: rethrow to the outer
@@ -734,6 +902,14 @@ export async function* runBackendTurnLoop(
       cause: err,
     };
     yield* emit({ type: "turn.failed", error });
+  } finally {
+    if (trims.steps > 0) {
+      reportUsageNote({
+        kind: "backend-run",
+        ...trims,
+        budget: budget.budgetTokens,
+      });
+    }
   }
 }
 
@@ -852,6 +1028,22 @@ const SUMMARY_CAP = 80;
  * `summarizeInput`. Same single-line cap either way; a hook that throws or
  * returns nothing is simply not consulted for that call.
  */
+/** The tool's own test-run recognition, spread into `tool.call.started`
+ *  (ADR 0073 amendment 2026-10-08): `runsTests: true`, or nothing — an absent
+ *  hook, a "no" and a throw alike. */
+function runsTestsFor(
+  deps: BackendTurnDeps,
+  call: ToolCallRequest,
+): { runsTests?: true } {
+  const tool = deps.tools.get(call.tool);
+  if (tool?.runsTests === undefined) return {};
+  try {
+    return tool.runsTests(call.input) ? { runsTests: true } : {};
+  } catch {
+    return {};
+  }
+}
+
 function headerFor(deps: BackendTurnDeps, call: ToolCallRequest): string {
   const tool = deps.tools.get(call.tool);
   if (tool?.summarize !== undefined) {
@@ -1062,20 +1254,6 @@ export function summarizeInput(
       case "git_status":
       case "git_diff":
         return ""; // verb alone is enough
-      case "todo_write": {
-        // Compact progress ratio: "Planning 2/5" in the activity row.
-        if (Array.isArray(obj.todos)) {
-          const total = obj.todos.length;
-          const done = obj.todos.filter(
-            (t) =>
-              typeof t === "object" &&
-              t !== null &&
-              (t as { status?: unknown }).status === "completed",
-          ).length;
-          return total > 0 ? `${done}/${total}` : "";
-        }
-        return "";
-      }
       default:
         break; // unknown tool → JSON fallback below
     }

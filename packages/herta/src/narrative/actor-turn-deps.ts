@@ -73,6 +73,12 @@ export interface ActorTurnDeps {
    * not sanitize at read, so construction is the only gate.
    */
   readonly userAttachments?: readonly SystemBlock[];
+  /**
+   * A 继续 turn (ADR 0071 §1.4): the user block is marked `resume`, and the
+   * harness continues the interrupted 板砖 run (the bridge's `resume`) before
+   * Herta says anything, as a typed `@板砖` dispatches.
+   */
+  readonly resume?: true;
   /** Max speech iterations before the loop terminates defensively. Default 5. */
   readonly maxIterations?: number;
   /**
@@ -155,6 +161,13 @@ export interface ActorTurnDeps {
       | "supervisor-retry-out",
     prompt: string,
   ) => void;
+  /**
+   * Fires with every completion prompt the turn asks for — each thought and
+   * speech (the phase-2 funnel, an adopted speculative thought included) and
+   * each beat. `runActorCompletionTurn` sets it to measure the turn for the
+   * usage log (long-run study item 6); a caller's own hook still fires.
+   */
+  readonly onCompletionPrompt?: (prompt: string) => void;
   /**
    * The intent router's state (Slice 13). The actor runs in two-phase
    * mood-routing mode: every iteration always thinks first (（我 想）), then

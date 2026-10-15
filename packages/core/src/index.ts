@@ -3,8 +3,6 @@ export {
   ApprovalPolicy,
   type ApprovalPolicyOpts,
   type ApprovalPreflight,
-  commandArgv,
-  commandCwd,
 } from "./approval-policy.js";
 export {
   type AtomicWriteOptions,
@@ -44,6 +42,7 @@ export {
   CodingAgentRuntime,
   type CodingAgentRuntimeDeps,
   type RepoSnapshot,
+  type ResumeBriefOptions,
   type RunBriefOptions,
 } from "./backend/coding-agent-runtime.js";
 export {
@@ -54,6 +53,41 @@ export {
   type FitResult,
   fitMessagesToBudget,
 } from "./backend/context-budget.js";
+export {
+  currentJournalHost,
+  DISPATCH_JOURNAL_VERSION,
+  DispatchJournal,
+  type DispatchJournalEntry,
+  dispatchJournalDir,
+  dispatchJournalPath,
+  hashFile,
+  type JournalFrameInputs,
+  type JournalHost,
+  type JournalProcessFate,
+  type JournalSpawnRole,
+  type JournalStartEntry,
+  journalLastAlive,
+  journalUnavailableResult,
+  markJournalOpen,
+  openJournalIndexPath,
+  parseDispatchJournal,
+  readDispatchJournal,
+  readJournalIndex,
+} from "./backend/dispatch-journal.js";
+export {
+  type OpenDispatch,
+  openDispatch,
+  planResume,
+  planSeal,
+  processLine,
+  type ResumableRun,
+  type ResumePlan,
+  resumableRun,
+  type SealedCall,
+  type SealedProcess,
+  type SealPlan,
+  type StopCause,
+} from "./backend/journal-seal.js";
 export {
   type RenderScopedMemoryOptions,
   renderScopedMemory,
@@ -74,6 +108,23 @@ export {
   type PersistOutcome,
   persistOversizedResult,
 } from "./backend/tool-result-persistence.js";
+export {
+  restoreUndo,
+  type UndoOutcome,
+  undoSpan,
+} from "./backend/undo-restore.js";
+export {
+  readUndoIndex,
+  UNDO_SESSION_MAX_BYTES,
+  type UndoIndexEntry,
+  type UndoMark,
+  type UndoSegment,
+  type UndoSegmentView,
+  UndoStore,
+  undoBlobPath,
+  undoSegments,
+  undoStoreDir,
+} from "./backend/undo-store.js";
 export { ExecutionReportBuilder } from "./bridge/report-builder.js";
 export type * from "./bridge/types.js";
 export { abortError, errorMessage, isAbortError } from "./errors.js";
@@ -98,12 +149,18 @@ export {
   type PathApi,
   type PathContainmentOptions,
 } from "./path-containment.js";
+export {
+  CALL_ERROR_DENY_CODES,
+  REFUSAL_DENY_CODES,
+} from "./permission-deny-codes.js";
 export type {
+  AskAnswer,
   AskResolver,
   CommandConsequence,
   PermissionDecision,
   PermissionEngine,
   PermissionRule,
+  ReviewerDenial,
   RiskLevel,
   RuleVerdict,
 } from "./permission-engine.js";
@@ -112,14 +169,11 @@ export {
   RulePermissionEngine,
 } from "./permission-engine.js";
 export {
-  deriveProjectCommandRule,
-  isRuleEligibleAskCode,
-  type ProjectCommandRule,
-  ProjectCommandRuleStore,
-  ruleDisplay,
+  binaryBasename,
+  pinnedScript,
+  RUNS_ITS_ARGUMENTS,
   SCRIPT_INTERPRETERS,
-  type WorkspaceTrust,
-} from "./project-command-rules.js";
+} from "./program-identity.js";
 export { ReadLedger, type ReadLedgerEntry } from "./read-ledger.js";
 export {
   isCacheableProgram,
@@ -141,6 +195,8 @@ export {
 export {
   type LastTurnEnd,
   readSessionFile,
+  readSessionFileAsync,
+  type SessionFileContents,
   SessionFileError,
   type SessionFileErrorCode,
   type SessionMeta,
@@ -162,6 +218,7 @@ export {
   narrativeDirFor,
   narrativeDirName,
   resolveEffectiveWorkspace,
+  trailblazerNotesFileName,
   workspacesBaseDir,
 } from "./session-io/workspace-paths.js";
 export {
@@ -189,7 +246,6 @@ export {
   workspaceRelativeRepoPath,
 } from "./text/repo-path.js";
 export { stripDisplayUnsafe } from "./text-sanitize.js";
-export { renderTodoState, TodoStore } from "./todo-store.js";
 export type { ToolRegistry } from "./tool-registry.js";
 export { InMemoryToolRegistry } from "./tool-registry.js";
 export { TranscriptStore } from "./transcript-store.js";
@@ -200,6 +256,8 @@ export type * from "./types/events.js";
 export type * from "./types/prompt.js";
 export type * from "./types/provider.js";
 export {
+  type CutoffOutcome,
+  type CutoffStep,
   type DoneMarkerSummary,
   type EvidenceSection,
   type HertaBlock,
@@ -210,10 +268,19 @@ export {
   type SystemBlockLabel,
   type TerminalRecord,
   type TerminalRecordBlock,
-  type TodoDigestItem,
+  type UndoFileResult,
   type UserBlock,
 } from "./types/terminal-record.js";
-export type * from "./types/todo.js";
 export type * from "./types/tool.js";
 export type * from "./types/transcript.js";
-export { trustCovers, WORKSPACE_TRUST_CODES } from "./workspace-trust.js";
+export { UNDOABLE_WRITE_CODES, undoableWrite } from "./undoable-write.js";
+export {
+  type ActorTurnNote,
+  type BackendRunNote,
+  type ReviewNote,
+  reportUsageNote,
+  setUsageNoteSink,
+  type UsageNote,
+  type UsageNoteSink,
+} from "./usage-note.js";
+export { WorkspacePermissions } from "./workspace-permissions.js";

@@ -268,10 +268,17 @@
      backdrop; dark draws light sheets that lift a dark one. */
   --aura-color:#9fc4ce;
   --aura-base:0.84;
+  /* The tide's prism (2026-09-30): its sheets tinted the backdrop's jade →
+     blue, as light as the dark theme's sheets. */
+  --aura-prism-a:#8fead0;
+  --aura-prism-b:#a3bfff;
 }
 :root{
-  --aura-color:#3c5a62; /* light default — mirrors AuraVisual's constant */
+  /* Light defaults — mirrored by LIGHT_AURA_PALETTE in aura-gl.ts. */
+  --aura-color:#3c5a62;
   --aura-base:0.16;     /* mirrors the shader's original hardcoded sheet gray */
+  --aura-prism-a:#13806b; /* deep enough to stay ink on the light glass */
+  --aura-prism-b:#2c55c4;
 }
 /* Dark-mode raster/canvas companions (night mode 2026-07-13): surfaces the
    token flip can't reach. The galaxy-row transfer icons swap for the
@@ -341,7 +348,8 @@
   color: #ffc46b;
   background: rgba(217, 119, 6, 0.22);
 }
-:root[data-theme="dark"] button.session-item__badge--dismiss {
+:root[data-theme="dark"] button.session-item__badge--dismiss,
+:root[data-theme="dark"] .session-item__badge--notice.is-error {
   color: #ff9d92;
   background: rgba(214, 90, 80, 0.2);
 }
@@ -358,6 +366,25 @@
   color: #63d68e;
 }
 *{box-sizing:border-box}
+/* The house scrollbar is the default for EVERY scroller (owner 2026-10-08:
+   a Markdown code block in the viewer still showed the OS bar, arrows and
+   all). Each surface used to opt in by name, and every new scroller —
+   a rendered document's <pre>, its tables — started on the system's grey
+   bar until someone noticed. The named rules below keep their own sizes;
+   these lose to any of them on specificity. */
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner{background:transparent}
+::-webkit-scrollbar-thumb{
+  background:var(--ink-a13);
+  border-radius:999px;
+  border:3px solid transparent;
+  background-clip:padding-box;
+}
+::-webkit-scrollbar-thumb:hover{
+  background:var(--ink-a22);
+  background-clip:padding-box;
+}
 body{
   margin:0;
   min-height:100vh;
@@ -454,7 +481,7 @@ body {
 .activity-step__text,
 .activity-step__headline,
 .activity-step__detail,
-.activity-plan__text,
+.trace-ticker,
 .diff-body,
 .file-viewer__body {
   user-select: text;
@@ -613,6 +640,13 @@ button,
 .app.is-booting {
   opacity: 0;
 }
+/* No warm-up here, deliberately (ADR 0068 §20). The workbench's first
+   raster, at the snap above, builds its GPU shader programs (~150–250 ms,
+   never cached on disk by Electron) and the opening freezes that long as it
+   starts to dissolve. Rastering it earlier with an opacity blip moved the
+   freeze instead of removing it: with a kept glyph sheet the opening's
+   first frame comes ~20 ms after mount, and on the macOS runner the hold
+   then froze for ~1 s. */
 .app.sidebar-collapsed .sidebar {
   padding-left: 0;
   padding-right: 0;
@@ -778,6 +812,16 @@ button,
 }
 .conversation-shell > .conversation {
   flex: 1;
+  /* Room for the shadows (owner 2026-09-29: "a white band between the left
+     bar and the conversation"). The scroller clips at its box, and her
+     bubbles sit 8px inside it (--record-left) under a 32px-blur shadow — so
+     every shadow was cut in one straight vertical line, tinted to its right
+     and bare to its left: a pale band down the whole column. The box now
+     reaches back over the body's left padding (the gap to the sidebar, or to
+     the window's edge) and pads the same amount, so the content does not
+     move and the shadows fade out before the clip. */
+  margin-left: calc(-1 * var(--body-pad-left, 0px));
+  padding-left: var(--body-pad-left, 0px);
 }
 /* The fade masks the CONTENT itself instead of overlaying frost: text
    dissolves and reveals the true background — which over the app's
@@ -1137,9 +1181,15 @@ button,
    content-visibility, off-screen rows skip layout and paint entirely, so
    each animation frame costs only the ~dozen visible rows regardless of
    session length. `auto` intrinsic sizing remembers a row's REAL height
-   after its first layout — scroll geometry stays honest; 72px is only the
-   pre-first-layout estimate for rows that have never been on screen.
+   after its first layout — scroll geometry stays honest; the size below is
+   only the pre-first-layout estimate for rows that have never been on screen.
    Chromium-only app, fully supported.
+
+   The estimate is one collapsed group line, 23px (2026-10-08). It was 72px,
+   a message row's height kept when the rule narrowed to activity groups, and
+   every NEW group — mounting at the bottom of a live turn — laid out 49px
+   too tall for one frame, then shrank to its line: under held turn room the
+   conversation dipped 49px (the scroll engine now also re-syncs on shrink).
 
    ACTIVITY GROUPS ONLY — not .message-row: content-visibility imposes
    paint containment, which clips descendants to the row's padding box,
@@ -1152,7 +1202,7 @@ button,
    subtrees and have no overflowing hover UI, so they stay skipped. */
 .activity-line-group {
   content-visibility: auto;
-  contain-intrinsic-size: auto 72px;
+  contain-intrinsic-size: auto 23px;
 }
 .user-row {
   justify-content: flex-end;
@@ -1360,9 +1410,43 @@ button,
   /* Point the u-turn arrow leftward (back/rewind) rather than down. */
   transform: rotate(90deg);
 }
+/* Copy a reply (ADR 0072 §3) — Herta's action row, dressed as the user
+   bubble's rewind. Stays usable while a turn runs: copying disturbs nothing. */
+.message-copy {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin: -2px 0;
+  padding: 0;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted-3);
+  cursor: pointer;
+  transition: background 130ms ease, color 130ms ease;
+}
+.message-copy:hover {
+  background: var(--wash-3);
+  color: var(--ink-2);
+}
+.message-copy:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.message-copy.is-copied {
+  color: var(--accent);
+}
+.message-copy-svg {
+  width: 15px;
+  height: 15px;
+  stroke-width: 1.8;
+}
 /* Revealed while hovering the bubble OR the row itself (so the cursor can land
-   on the rewind button); the row turns interactive only while revealed. */
+   on the rewind button); the row turns interactive only while revealed. A
+   reply that ends on a code card reveals it from the card. */
 .message-bubble:hover + .message-actions,
+.code-standalone:hover + .message-actions,
 .message-actions:hover {
   opacity: 1;
   pointer-events: auto;
@@ -1560,6 +1644,22 @@ button,
 .composer-input::placeholder {
   color: var(--muted-4);
 }
+/* Composer predictions (owner 2026-10-10): the suggestion reads as the
+   placeholder; this is the key that takes it, at the box's right edge while
+   one shows. Clear of the 10px scrollbar gutter. */
+.composer-prediction-key {
+  position: absolute;
+  right: 14px;
+  bottom: 2px;
+  font-family: var(--mono, ui-monospace, "SF Mono", Menlo, monospace);
+  font-size: 10.5px;
+  line-height: 1;
+  color: var(--muted-4);
+  border: 1px solid var(--ink-a13);
+  border-radius: 5px;
+  padding: 2px 5px;
+  pointer-events: none;
+}
 /* Attachment take-back (ADR 0033). Hidden until the row is hovered or the
    button itself is focused — a persistent ✕ on every attachment row would
    make a destructive action the most eye-catching thing in the history, and
@@ -1622,6 +1722,69 @@ button,
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* The pending row of an attach in flight (2026-10-01, the owner's pick
+   "Hairline" from the live gallery): the count at the right of the file
+   name, and a 2px line under it filling as main reads the pages and
+   transcribes the pictures. The name gives way first, like the ✕ row. */
+.activity-step__headline:has(.activity-step__progress-label)
+  .activity-step__body {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.activity-step__progress-label {
+  flex: none;
+  margin-left: auto;
+  padding-left: 10px;
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--muted-4);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.activity-step__progress {
+  height: 2px;
+  margin-top: 3px;
+  border-radius: 2px;
+  background: var(--ink-a06);
+  overflow: hidden;
+}
+.activity-step__progress-fill {
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--banzhuan-led) 78%, transparent);
+  transition: width 240ms var(--ease-out-soft);
+}
+/* The real row that replaced a placeholder: the full line fades AND folds,
+   so the row settles at its final height instead of losing 5px later. */
+.activity-step__progress.is-finishing {
+  animation: attach-progress-finish 300ms ease forwards;
+}
+@keyframes attach-progress-finish {
+  from {
+    opacity: 1;
+    height: 2px;
+    margin-top: 3px;
+  }
+  to {
+    opacity: 0;
+    height: 0;
+    margin-top: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .activity-step__progress-fill {
+    transition: none;
+  }
+  .activity-step__progress.is-finishing {
+    animation: none;
+    height: 0;
+    margin-top: 0;
+    opacity: 0;
+  }
 }
 /* Attach (ADR 0033). A quiet ghost button, not a second primary: attaching is
    an occasional act beside an every-message one, and two filled circles either
@@ -2066,6 +2229,7 @@ button.agent-preview {
   padding: 4px 0;
 }
 .card-menu-current {
+  position: relative;
   padding: 8px 12px;
 }
 .card-menu-label {
@@ -2075,6 +2239,8 @@ button.agent-preview {
 }
 .card-menu-path {
   display: block;
+  /* Clears the copy icon pinned in the block's top-right corner. */
+  width: calc(100% - 22px);
   margin-top: 2px;
   font-family: ui-monospace, "SF Mono", Menlo, "Cascadia Code",
     "Source Code Pro", Consolas, "DejaVu Sans Mono", monospace;
@@ -2084,6 +2250,61 @@ button.agent-preview {
   /* Wrap at the <wbr> separators emitted by breakablePath; fall back to
      breaking an over-long single segment rather than overflowing. */
   overflow-wrap: anywhere;
+}
+/* The path that opens its folder (owner 2026-10-08): underlined faintly at
+   rest, as the viewer's document links are, so it reads as something to
+   click; the house accent on hover. */
+.card-menu-path.is-action {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 3px;
+  text-decoration: underline;
+  text-decoration-color: var(--ink-a22);
+  text-underline-offset: 2px;
+  transition: color 130ms ease, text-decoration-color 130ms ease;
+}
+.card-menu-path.is-action:hover {
+  color: var(--accent-blue);
+  text-decoration-color: currentColor;
+}
+.card-menu-path.is-action:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.card-menu-copy {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted-3);
+  cursor: pointer;
+  transition: background 130ms ease, color 130ms ease;
+}
+.card-menu-copy:hover {
+  background: var(--ink-a06);
+  color: var(--ink-2);
+}
+.card-menu-copy:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.card-menu-copy.is-copied {
+  color: var(--accent);
+}
+.card-menu-copy svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 1.8;
 }
 .card-menu-divider {
   height: 1px;
@@ -2110,39 +2331,40 @@ button.agent-preview {
   cursor: default;
   background: transparent;
 }
+/* The sidebar session card's menu (ADR 0072 §3): this frame and these items,
+   fitted to its few short items and opened at the pointer, so it grows from
+   its top-left corner. The keyboard's highlight is the pointer's. */
+.session-menu.card-menu-tooltip[role="menu"] {
+  /* The frame's `right: 0` would stretch a box placed by its `left` to the
+     window's edge (stopped only by its 280px max). */
+  right: auto;
+  width: auto;
+  min-width: 168px;
+  transform-origin: top left;
+}
+.session-menu .card-menu-item:focus-visible {
+  outline: none;
+  background: var(--ink-a06);
+}
 .card-menu-error {
   padding: 6px 12px 8px;
   font-size: 11px;
   line-height: 1.4;
   color: #c0392b;
 }
-/* ADR 0030 — project command rules, managed in THIS menu (owner 2026-08-04:
-   session-scoped state next to the workspace it binds to, not in Settings).
-   Empty state is one dim line; many rules scroll inside a capped list so the
-   menu never outgrows the rail. */
-.card-menu-rules {
-  padding: 6px 12px 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.card-menu-rules-empty {
-  font-size: 11px;
-  color: var(--muted-slate);
-}
-/* Workspace trust row (ADR 0064): the label, the one-line state, and the
-   toggle — same register as the rules section it sits above. */
-.card-menu-trust {
+/* Automatic review row (ADR 0075, which replaced workspace trust): the
+   label, the one-line state, and the toggle. */
+.card-menu-review {
   padding: 6px 12px 4px;
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
-.card-menu-trust-state {
+.card-menu-review-state {
   font-size: 11px;
   color: var(--muted-slate);
 }
-.card-menu-trust-toggle {
+.card-menu-review-toggle {
   /* Bleeds through the section's 12px side padding so its hover band runs
      edge to edge like the rows above it. The width has to bleed WITH the
      margins: `.card-menu-item` is `width: 100%`, and a negative left margin
@@ -2150,45 +2372,6 @@ button.agent-preview {
      edge and stopped 24px short of its right one (owner 2026-09-21). */
   margin: 2px -12px 0;
   width: calc(100% + 24px);
-}
-.card-menu-rules-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  max-height: 96px;
-  overflow-y: auto;
-}
-.card-menu-rule {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-.card-menu-rule-text {
-  font-family: var(--mono, ui-monospace, "SF Mono", Menlo, monospace);
-  font-size: 11px;
-  color: var(--slate-deep);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.card-menu-rule-remove {
-  flex: none;
-  border: 0;
-  background: transparent;
-  color: var(--muted-slate);
-  font-size: 11px;
-  line-height: 1;
-  padding: 2px 4px;
-  border-radius: 6px;
-  cursor: pointer;
-}
-.card-menu-rule-remove:hover {
-  color: #9a5b5b;
-  background: rgba(154, 91, 91, 0.1);
 }
 
 /* Slice 3.1 addition — frameless-window drag strip (SPEC v0.3 §5.1.1).
@@ -2259,23 +2442,6 @@ button.agent-preview {
 .window-controls__btn:focus-visible {
   outline: 2px solid var(--banzhuan-led);
   outline-offset: -2px;
-}
-
-/* Slice 3.1 — WCO caption-button clearance (SPEC v0.3 §5.1.1).
-   The native min/max/close buttons render at the window's top-right,
-   ~40px tall (titleBarOverlay.height). The card's top-right column is
-   the utility rail, whose DeviceCard has an interactive ⋯ menu near the
-   top. To keep the buttons floating in the green gutter ABOVE the card
-   (never over card content), the top gutter must stay ≥ the button
-   height. The full-size layout leaves ~52px, but the lifted
-   @media(max-width:1200px) rule shrinks the card margin to 18px — this
-   override restores ≥48px of vertical gutter (24px top) at that
-   breakpoint. Overrides only `height`; the lifted rule's width and
-   grid-template-columns still apply (later same-specificity rule wins). */
-@media (max-width: 1200px) {
-  .app {
-    height: calc(100vh - 96px);
-  }
 }
 
 /* Control-button styling. Shared by the TopBar buttons (the controls moved
@@ -2941,6 +3107,122 @@ button.agent-preview {
 .composer-notice.is-exiting {
   animation: notice-out 240ms var(--ease-accel) both;
 }
+/* 撤销改动 (ADR 0074 §4): the pill lets clicks through to the record; its
+   one action does not. */
+.composer-notice__action {
+  pointer-events: auto;
+  margin-left: 10px;
+  padding: 1px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--ink-a06);
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.composer-notice__action:hover {
+  background: var(--ink-a09);
+}
+.composer-notice__action:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.composer-notice__action:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+/* @-file mentions (ADR 0072 §2): the workspace's matching files, floating
+   above the composer like the rewind notice — absolute, so the input row
+   never reflows. Dressed as the app's other menu (the Settings select): a
+   solid card that reads over the conversation in either theme. */
+.composer-mentions {
+  position: absolute;
+  left: 12px;
+  bottom: 100%;
+  width: min(520px, calc(100% - 24px));
+  max-height: 296px;
+  overflow-y: auto;
+  margin: 0 0 10px;
+  padding: 5px;
+  border: 1px solid var(--ink-a10);
+  border-radius: 12px;
+  background: var(--card-solid);
+  box-shadow: 0 10px 28px var(--shadow-pop);
+  backdrop-filter: blur(12px) saturate(130%);
+  z-index: 7;
+  animation: mentions-in 160ms var(--ease-pop) both;
+}
+.composer-mentions__item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: left;
+  color: var(--ink);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.composer-mentions__item.is-active {
+  background: var(--ink-a06);
+}
+.composer-mentions__name {
+  flex: none;
+  font-weight: 600;
+}
+/* The folder, muted, ellipsized at its START so the part nearest the file
+   stays readable. */
+.composer-mentions__dir {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+  color: var(--muted-slate);
+  font-size: 12px;
+}
+/* The delegation token's row (owner 2026-10-08): first while the query can
+   still become it, in the chip's ink, with what it does beside it. */
+.composer-mentions__item.is-brick .composer-mentions__name {
+  color: var(--mention-ink);
+}
+.composer-mentions__desc {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted-slate);
+  font-size: 12px;
+}
+/* What the rows below it are: the list names its files. */
+.composer-mentions__section {
+  padding: 7px 10px 3px;
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--muted-3);
+}
+@keyframes mentions-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .composer-mentions {
+    animation: none;
+  }
+}
 @keyframes notice-in {
   from {
     opacity: 0;
@@ -3408,6 +3690,31 @@ button.agent-preview {
   );
   mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent);
 }
+/* Rename in place (ADR 0072 §3): the title becomes a field, so the fade
+   mask and the clip come off — the field's own edge is the edge. The field
+   keeps the title's type, so nothing shifts as it opens. */
+.session-item__title.is-editing {
+  overflow: visible;
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+.session-item__rename {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  margin: -2px 0;
+  padding: 1px 6px;
+  border: 1px solid var(--input-border);
+  border-radius: 6px;
+  background: var(--card-solid);
+  font: inherit;
+  color: inherit;
+  outline: none;
+}
+.session-item__rename:focus {
+  box-shadow: 0 0 0 2px var(--focus-ring);
+}
 /* Full-title pop-out (user 2026-07-16): the fade mask above hides a long
    title's tail with no way to read it — resting the pointer on the card (or
    keyboard-focusing it) shows the WHOLE title in a fixed tip beside the
@@ -3607,6 +3914,20 @@ button.agent-preview {
    fallback — a sudden pop out of nowhere). It appears under the cursor
    (the failed click) so the reveal is immediate; leaving the card fades it
    out in place and the leave timer swaps in the trash once invisible. */
+/* A menu action's notice (ADR 0072 §3): 已导出 in the plain badge's blue, a
+   failure in the dismiss badge's red. It pops in like the plain badge and
+   fades out when its time is up, rather than vanish. */
+.session-item__badge--notice {
+  white-space: nowrap;
+  transition: opacity 150ms ease;
+}
+.session-item__badge--notice.is-error {
+  background: rgba(190, 60, 60, 0.13);
+  color: #b03a3a;
+}
+.session-item__badge--notice.is-leaving {
+  opacity: 0;
+}
 button.session-item__badge--dismiss {
   border: 0;
   font: inherit;
@@ -4059,6 +4380,48 @@ button.session-item__badge--dismiss {
   font-size: 11px;
   color: var(--muted-faint);
 }
+/* 撤销 (ADR 0074 §4): a quiet text chip on the latest turn's finished card,
+   right of the summary and before the duration — the shape of the reference
+   the owner picked (Claude Desktop's per-turn Undo). The user's alone: it
+   is not in the record. */
+.activity-undo {
+  flex: none;
+  margin-left: auto;
+  padding: 1px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--ink-a05);
+  font: inherit;
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--muted-slate);
+  cursor: pointer;
+  transition:
+    background var(--dur-micro) ease,
+    color var(--dur-micro) ease;
+}
+.activity-undo:hover {
+  background: var(--ink-a09);
+  color: var(--ink-2);
+}
+.activity-undo:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.activity-undo:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.activity-undo.is-done {
+  padding: 1px 0;
+  background: transparent;
+  color: var(--muted-faint);
+  cursor: default;
+}
+/* The chip takes the row's auto margin; the duration follows it. */
+.activity-undo + .activity-line__duration {
+  margin-left: 0;
+}
 .activity-line__chevron {
   flex: none;
   color: var(--muted-4);
@@ -4087,126 +4450,17 @@ button.session-item__badge--dismiss {
   flex-direction: column;
   gap: 6px;
 }
-/* ── Live plan strip (2026-07-26) ──────────────────────────────────────
-   板砖's 任务清单 while the dispatch runs: one quiet row per todo item,
-   under the status line. The header answers "what is it doing this
-   second"; this answers "where are we in the plan".
-
-   Same hairline family as the history panel above — identical margin (the
-   LED's centre, derived from --record-left) + 12px padding + 1px rule — so
-   the two read as one gutter even though the strip is deliberately OUTSIDE
-   the collapsible panel (its measured max-height animation must not see
-   this growth). */
-.activity-plan {
-  margin: 3px 0 0 calc(var(--record-left, 8px) + 3px);
-  /* The 3px bottom clearance predates the 2026-07-27 caret (the in-progress
-     mark used led-pulse, whose glow reached past the row and was clipped by
-     the group's content-visibility padding box). Kept: it is breathing room
-     now, and removing it would nudge every strip's height for no gain. */
-  padding: 1px 0 3px 12px;
-  border-left: 1px solid var(--hairline);
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.activity-plan__row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  font-size: 11.5px;
-  line-height: 1.5;
-  color: var(--muted-4);
-}
-.activity-plan__text {
-  /* One line per item, always: the strip is a glance at the plan's shape,
-     not a place to read a paragraph. The full text rides `title`. */
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.activity-plan__mark {
-  flex: none;
-  /* 7px = the LED's diameter, so the markers sit on the same visual grid. */
-  width: 7px;
-  height: 7px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--muted-faint);
-}
-.activity-plan__check {
-  width: 9px;
-  height: 9px;
-  /* The check overflows the 7px marker box by 1px each side — centered, so
-     it stays optically aligned with the dots above and below it. */
-  flex: none;
-}
-.activity-plan__row.is-pending .activity-plan__mark {
-  border: 1px solid var(--muted-faint);
-  border-radius: 50%;
-}
-.activity-plan__row.is-in-progress {
-  color: var(--muted-strong);
-}
-.activity-plan__row.is-in-progress .activity-plan__mark {
-  /* Caret, not a pulsing dot (2026-07-27, same rule as .plan-card__caret):
-     the header LED four rows up is the pulse; the strip states which step
-     in form. */
-  color: var(--banzhuan-led);
-}
-.activity-plan__caret {
-  width: 7px;
-  height: 9px;
-  flex: none;
-  fill: currentColor;
-}
-.activity-plan__more {
-  /* Aligned with the text column (7px marker + 8px gap), not the markers:
-     it is chrome about the list, not an item of it. */
-  padding-left: 15px;
-  color: var(--muted-faint);
-}
-/* The inline strip is the NARROW-window fallback for the rail plan card
-   (2026-07-26). Above 900px the rail is visible and owns the plan — showing
-   it twice is noise, and the rail's copy is the better one (fixed, so it does
-   not scroll away mid-run). Below 900px `.utility-rail` is display:none, so
-   without this the plan would vanish entirely on a small window. A media
-   query decides, not JS: nothing to keep in sync, nothing to go stale. */
-@media (min-width: 901px) {
-  .activity-plan { display: none; }
-}
-/* The strip had no entrance either — it was minted by React already in its
-   final state, so it appeared between one frame and the next. @starting-style
-   gives that first paint an origin to move from. It fades and settles rather
-   than sliding: this one lives INSIDE the transcript, where a horizontal move
-   would fight the column it sits in.
-
-   The strip's DISAPPEARANCE stays instant, and deliberately so. It is owned by
-   its activity group, and a Herta beat ENDS that group — the strip is not
-   hidden, its host is finished, and a new group's strip takes over below the
-   beat. That discontinuity is exactly what moving the plan to the rail solved;
-   re-solving it here would mean duplicating the rail's hold/retract machinery
-   into a surface that only appears under 900px. */
-.activity-plan {
-  transition: opacity 260ms ease;
-}
-@starting-style {
-  .activity-plan {
-    opacity: 0;
-  }
-}
 @media (prefers-reduced-motion: reduce) {
   .activity-line__led.is-pulsing { animation: none; opacity: 1; }
   .activity-line__history { transition: none; }
 }
 
-/* ── 板砖 plan card (rail, 2026-07-26) ────────────────────────────────────
-   A sibling of the device card, not a new kind of object: same 18px radius,
-   same frosted --speech-* surface, so the two read as one instrument — the
-   machine, and what it is working through.
+/* ── The rail card family (plan card 2026-07-26; the name outlived it, ADR
+   0073) ────────────────────────────────────────────────────────────────
+   The chrome the trace and repository cards ride. A sibling of the device
+   card, not a new kind of object: same 18px radius, same frosted --speech-*
+   surface, so they read as one instrument — the machine, and what it is
+   working through.
 
    Every colour is a token with a [data-theme="dark"] override, so dark mode
    is automatic. The one thing NOT copied from .device-card is its
@@ -4301,19 +4555,6 @@ button.session-item__badge--dismiss {
   color: var(--muted-4);
   font-variant-numeric: tabular-nums;
 }
-.plan-card__meter {
-  height: 3px;
-  border-radius: 999px;
-  background: var(--hairline-strong);
-  overflow: hidden;
-}
-.plan-card__meter-fill {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: var(--banzhuan-led);
-  transition: width 420ms var(--ease-signature);
-}
 .plan-card__list {
   margin: 2px 0 0;
   padding: 0;
@@ -4351,6 +4592,9 @@ button.session-item__badge--dismiss {
     --fog-top-h 180ms ease,
     --fog-bottom-h 180ms ease;
 }
+/* A card sliding shut squeezes its list: no scrollbar for the moment it
+   takes (`hidden` still scrolls, so the position is kept). */
+.plan-card:not(.is-open) .plan-card__list { overflow-y: hidden; }
 .plan-card__list.has-fog-top { --fog-top-h: 18px; }
 .plan-card__list.has-fog-bottom { --fog-bottom-h: 18px; }
 /* The house scrollbar — identical to .conversation / .composer-input, so the
@@ -4376,17 +4620,12 @@ button.session-item__badge--dismiss {
   min-width: 0;
   font-size: 12.5px;
   line-height: 1.45;
-  /* A step changing status EASES. 板砖 sometimes lands two flips in one
-     todo_write (it does the work, then updates the list once), and an
-     instant recolour of two rows at once reads as a glitch; the same change
-     eased over a beat reads as what it is — the plan catching up. */
+  /* A row changing status EASES: two rows settling in one update recolour
+     over a beat instead of flickering at once. */
   transition: color 260ms ease;
-  /* --muted-2, not the --muted-4 the inline strip uses: measured on the
-     composited card surface, --muted-4 lands at 3.1:1 in light mode. That is
-     fine for the strip (a glanceable echo of a line the transcript already
-     spells out) and not fine here — this card IS the plan now, and its rows
-     are meant to be read. The three tiers survive: pending at this weight,
-     completed dimmed below, in-flight promoted to full --ink. */
+  /* --muted-2: measured on the composited card surface, --muted-4 lands at
+     3.1:1 in light mode, and these rows are meant to be read. The in-flight
+     row is promoted to full --ink. */
   color: var(--muted-2);
 }
 .plan-card__mark {
@@ -4410,126 +4649,149 @@ button.session-item__badge--dismiss {
   height: 10px;
   flex: none;
 }
-.plan-card__row.is-pending .plan-card__mark {
-  border: 1px solid var(--muted-faint);
-  border-radius: 50%;
-}
-/* Done rows are marked, not faded. An earlier `opacity: .72` here bought
-   recession by fading the text toward the card surface — measured, that put
-   completed items at 2.65:1, i.e. the steps you might want to re-read became
-   the hardest to read. The ✓ already says "done" unambiguously, and the
-   in-flight row is promoted to full --ink, so the hierarchy survives without
-   spending contrast on it. The mark carries the tint instead. */
-.plan-card__row.is-completed .plan-card__mark {
-  color: var(--banzhuan-led);
-  opacity: .75;
-}
-.plan-card__row.is-in-progress {
-  color: var(--ink);
-}
 /* The current step is a CARET, not a pulsing dot (owner 2026-07-27: three
    identical blue pulses — sidebar, activity LED, this — ran at once during a
    dispatch). The redesign's rule: motion means "the live thing" and only the
    record's activity LED may claim it; every other surface states its fact in
-   FORM. The caret is the CLI plan strip's own in-progress mark (✓ / ▸ / ·),
-   so the two frontends point at the current step the same way — and it needs
-   no motion to read as "you are here". */
-.plan-card__row.is-in-progress .plan-card__mark {
-  color: var(--banzhuan-led);
-}
-/* Size comes from the `.plan-card__mark svg` rule above (10px box, same
-   1px overflow-and-center as the ✓); the 8×10 viewBox letterboxes the
+   FORM. It needs no motion to read as "you are here". Size comes from the
+   `.plan-card__mark svg` rule above; the 8×10 viewBox letterboxes the
    triangle back to its true proportions inside it. */
-.plan-card__caret {
-  fill: currentColor;
+/* ── 操作轨迹 rail card (2026-08-17; the timeline, ADR 0073) ────────────
+   Rides the .plan-card chrome — glass, slide, fog — as a timeline: one
+   node per stretch of one phase down a hairline, the finished ones folded
+   to a counted line, the one in flight naming its step with one ticker line
+   of what that step is producing (the owner's pick, 2026-09-30). Form, not
+   motion: the node in flight is a hollow LED ring (dashed while parked on an
+   approval); the text is the only thing that moves. */
+/* A long run lands hundreds of steps: the timeline caps its visible height
+   and scrolls inside — with the fog edges and the follow-tail pin, the card
+   reaches this size and then stays. */
+.trace-card .plan-card__list {
+  max-height: min(320px, 42vh);
+  gap: 11px;
+  --card-row-gap: 11px;
+  /* Room for the hairline under a node while the node after it opens or
+     closes from zero height: without it the line overhangs the list and a
+     scrollbar blinks in (lab 2026-09-30). The negative margin gives the
+     space back to the card. */
+  padding-bottom: 12px;
+  margin-bottom: -12px;
 }
-/* Parked on a permission gate: the step is the current one but nothing is
-   being done to it — it is waiting on the user. The caret goes hollow, same
-   move as the pending ring, keeping the LED tint so it still reads as the
-   CURRENT step rather than a not-started one. */
-.plan-card.is-waiting .plan-card__caret {
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.2;
-  stroke-linejoin: round;
+.trace-node {
+  position: relative;
+  display: grid;
+  grid-template-columns: 9px minmax(0, 1fr);
+  column-gap: 10px;
+  align-items: start;
 }
-.plan-card__text {
+/* The hairline to the next node: from under this dot across the list gap. */
+.trace-node::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 15px;
+  bottom: -11px;
+  width: 1px;
+  background: var(--hairline-strong);
+}
+.trace-node:last-child::before {
+  display: none;
+}
+/* Every dot carries its ring (2026-10-08): a filled dot's is transparent
+   over its own fill. The ring used to exist only on the in-flight and queued
+   states, so finishing a step dropped it in one frame while the fill was
+   still fading in from transparent — the dot blinked out as the next node
+   arrived. Now only colours and the ring's width move, and they cross-fade. */
+.trace-node__dot {
+  box-sizing: border-box;
+  width: 9px;
+  height: 9px;
+  /* Optical centre of the first line (12.5px × 1.45 ≈ 18px). */
+  margin-top: 5px;
+  border-radius: 50%;
+  border: 1.5px solid transparent;
+  background: color-mix(in srgb, var(--banzhuan-led) 42%, transparent);
+  transition:
+    background-color 260ms ease,
+    border-color 260ms ease,
+    border-width 260ms ease;
+}
+.trace-node.is-fail .trace-node__dot {
+  background: #b98080;
+}
+/* Written, not run yet: it waits its turn behind the node in flight — a
+   faint ring, its line in the quietest ink. */
+.trace-node.is-queued .trace-node__dot {
+  background: transparent;
+  border-width: 1px;
+  border-color: var(--hairline-strong);
+}
+.trace-node.is-queued .trace-node__line {
+  color: var(--muted-4);
+}
+.trace-node.is-in-flight .trace-node__dot {
+  background: transparent;
+  border-color: var(--banzhuan-led);
+}
+/* Parked on an approval: the step is the current one, but nothing is being
+   done to it — the ring breaks. */
+.plan-card.is-waiting .trace-node.is-in-flight .trace-node__dot {
+  border-style: dashed;
+}
+.trace-node__body {
   min-width: 0;
-  /* Wraps, unlike the inline strip's single line: the rail is a column with
-     room to spend, and a truncated task name is the one thing this card
-     exists to show. */
-  overflow-wrap: anywhere;
 }
-.plan-card__unknown {
-  margin: 0;
-  font-size: 12px;
+/* The ticker's place under the node in flight (TickerSlot, 2026-10-08): it
+   eases open as a step starts and shut as the node folds, so the card's
+   height glides instead of dipping by a line and growing back. Row heights
+   to and from auto via the 0fr/1fr grid track; the length MUST match
+   CARD_TICKER_MS (card-motion.ts). */
+.trace-node__slot {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 260ms var(--ease-signature),
+    opacity 200ms ease;
+}
+.trace-node__slot.is-open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+/* Closing: the line goes first, then its room. */
+.trace-node__slot.is-closing {
+  transition:
+    grid-template-rows 260ms var(--ease-signature),
+    opacity 140ms ease;
+}
+.trace-node__slot-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+.trace-node__line {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--muted-2);
+  transition: color 260ms ease;
+}
+.trace-node.is-in-flight .trace-node__line {
+  color: var(--ink);
+}
+.trace-node__phase {
+  flex: none;
+  color: var(--muted-4);
+}
+.trace-node__phase::after {
+  content: "·";
+  margin-left: 7px;
   color: var(--muted-faint);
 }
-
-/* ── 操作轨迹 rail card (2026-08-17) — rides the .plan-card chrome ──────
-   The plan card's fallback for dispatches with no 任务清单 (every 极简 run).
-   Same glass, slide, fog and mark triad; what differs lives under the
-   `trace-card` variant class below. */
-/* No denominator, so no fill fraction: a slow edge-to-edge sweep is the
-   live state (and the card's ONE moving element — the row marks stay
-   static per the 2026-07-27 form-not-motion rule); settled, the meter
-   rests as a solid full line, the same "done" register as the plan meter
-   reaching its end. */
-.trace-card__meter-fill {
-  display: block;
-  height: 100%;
-  width: 100%;
-  border-radius: inherit;
-  background: var(--banzhuan-led);
-  opacity: .55;
-  transition: opacity 420ms ease;
-}
-.trace-card__meter-fill.is-live {
-  opacity: 1;
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    var(--banzhuan-led) 35%,
-    var(--banzhuan-led) 65%,
-    transparent 100%
-  );
-  background-size: 45% 100%;
-  background-repeat: no-repeat;
-  animation: trace-meter-sweep 1.6s ease-in-out infinite;
-}
-@keyframes trace-meter-sweep {
-  0% { background-position: -80% 0; }
-  100% { background-position: 180% 0; }
-}
-/* Parked on a permission gate: nothing is being worked — the sweep stops
-   mid-flight (paused, not removed: resuming continues rather than
-   restarting). Same discipline as the plan caret going hollow. */
-.plan-card.is-waiting .trace-card__meter-fill.is-live {
-  animation-play-state: paused;
-}
-/* Rows are append-only within a dispatch, so each mounts exactly once —
-   a small rise-and-fade entrance makes the trace visibly GROW instead of
-   rows teleporting in. */
-/* The per-mount fade this row used to carry gave way to the family's
-   shared row motion (ADR 0058 §5.7): an appended op enters with it, the
-   first trace lands still with the card's slide. */
-.trace-card__row {
-  align-items: center;
-}
-/* A long-run dispatch lands hundreds of ops (owner 2026-08-17): the list
-   caps its VISIBLE height (~6 rows) and scrolls inside — with the fog
-   edges and the follow-tail pin, the card reaches this size and then
-   stays, instead of creeping down the rail. trace-context caps the DOM
-   rows separately (TRACE_MAX_ROWS); the header count still covers the
-   whole run. The plan card keeps its grow-then-flex behaviour — a todo
-   list is finite and its tail is the payoff. */
-.trace-card .plan-card__list {
-  max-height: 168px;
-}
-/* One line per op, ellipsized — a command line can be arbitrarily long and
-   the row is a pointer, not the record (hover carries the full text via
-   title; the record's own rows keep everything). Unlike plan items, which
-   wrap: a task NAME is the card's content, an op ARG is its address. */
+/* One line per node, ellipsized — a command line can be arbitrarily long and
+   the node is a pointer, not the record (hover carries the full text). */
 .trace-card__text {
   min-width: 0;
   flex: 1;
@@ -4537,35 +4799,93 @@ button.session-item__badge--dismiss {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.trace-card__verb {
-  color: var(--muted-4);
-}
-.trace-card__row.is-running {
-  color: var(--ink);
-}
-.trace-card__row.is-running .plan-card__mark {
-  color: var(--banzhuan-led);
-}
-.trace-card__row.is-ok .plan-card__mark {
-  color: var(--banzhuan-led);
-  opacity: .75;
-}
-.trace-card__row.is-fail .plan-card__mark {
-  color: #9a5b5b;
-}
-/* The optical-centre nudge is for the plan card's wrapping rows; these are
-   single-line and centre-aligned. */
-.trace-card__row .plan-card__mark {
-  margin-top: 0;
-}
 .trace-card__note {
   flex: none;
   margin-left: auto;
-  padding-left: 8px;
+  padding-left: 6px;
   font-size: 11.5px;
   color: var(--muted-4);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+/* The ticker (ADR 0073): the newest line the step in flight is producing —
+   the file as it is written, the command as it prints — one mono line that
+   fades out at its right edge, with the LED block where the next character
+   lands. A new line rises into place; a growing line just flows. */
+.trace-ticker {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  margin-top: 4px;
+  font-family: ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted-2);
+  white-space: pre;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(90deg, #000 76%, transparent);
+  mask-image: linear-gradient(90deg, #000 76%, transparent);
+}
+.trace-ticker__line {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: clip;
+  animation: trace-ticker-rise 180ms var(--ease-signature) both;
+}
+@keyframes trace-ticker-rise {
+  from {
+    opacity: .2;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* A command still being written (ticker-pacer, 2026-09-30): its newest
+   characters are the news, so the line shows its END — the start spills off
+   the left edge, which fades instead of the right. */
+.trace-ticker.is-growing {
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 24%);
+  mask-image: linear-gradient(90deg, transparent, #000 24%);
+}
+.trace-ticker.is-growing .trace-ticker__line {
+  display: flex;
+  justify-content: flex-end;
+}
+.trace-ticker__text {
+  flex: none;
+}
+/* An edit's lines carry the diff stat's own greens and reds. */
+.trace-ticker__line.is-add {
+  color: #3f7d50;
+}
+.trace-ticker__line.is-del {
+  color: #a4544c;
+}
+:root[data-theme="dark"] .trace-ticker__line.is-add {
+  color: #6fa86f;
+}
+:root[data-theme="dark"] .trace-ticker__line.is-del {
+  color: #c4736b;
+}
+.trace-ticker__empty {
+  color: var(--muted-faint);
+}
+.trace-ticker__cursor {
+  flex: none;
+  width: 5px;
+  height: 11px;
+  margin-left: 1px;
+  background: var(--banzhuan-led);
+  opacity: .7;
+}
+/* The step finished: its last line stays, the cursor goes. */
+.trace-ticker.is-done .trace-ticker__cursor {
+  display: none;
+}
+.trace-ticker.is-done {
+  color: var(--muted-4);
 }
 
 /* ── 仓库 rail card (ADR 0058) — rides the .plan-card chrome ────────────
@@ -4796,21 +5116,26 @@ button.repo-card__path,
   transition: color 140ms ease;
 }
 /* Row entrance / exit, shared by every card in the family (repository,
-   plan, trace — card-motion.ts). The height animates to and from `auto`
-   (`interpolate-size`, Chromium 129+): a plan step that wraps to two
-   lines opens to its own height, not to a guessed cap. The 7px list gap
-   collapses with the row (the negative margin) so the rows below settle
-   without a jump; opacity leads the exit so the row is gone before its
-   space closes. */
+   trace — card-motion.ts). The height animates to and from `auto`
+   (`interpolate-size`, Chromium 129+): a row that wraps to two lines opens
+   to its own height, not to a guessed cap. The list gap (--card-row-gap,
+   7px unless the list says otherwise) collapses with the row (the negative
+   margin) so the rows below settle without a jump;
+   opacity leads the exit so the row is gone before its space closes. A
+   trace segment moves as one row, its steps and live pane with it. */
 .plan-card__row.is-entering,
-.plan-card__row.is-leaving {
+.plan-card__row.is-leaving,
+.trace-card__segment.is-entering,
+.trace-card__segment.is-leaving {
   interpolate-size: allow-keywords;
   overflow: hidden;
 }
-.plan-card__row.is-entering {
+.plan-card__row.is-entering,
+.trace-card__segment.is-entering {
   animation: card-row-in 300ms var(--ease-signature) both;
 }
-.plan-card__row.is-leaving {
+.plan-card__row.is-leaving,
+.trace-card__segment.is-leaving {
   animation: card-row-out 220ms ease both;
   pointer-events: none;
 }
@@ -4819,7 +5144,7 @@ button.repo-card__path,
     opacity: 0;
     transform: translateY(-4px);
     height: 0;
-    margin-top: -7px;
+    margin-top: calc(-1 * var(--card-row-gap, 7px));
   }
   60% {
     height: auto;
@@ -4847,13 +5172,16 @@ button.repo-card__path,
     opacity: 0;
     transform: translateY(-3px);
     height: 0;
-    margin-top: -7px;
+    margin-top: calc(-1 * var(--card-row-gap, 7px));
   }
 }
 @media (prefers-reduced-motion: reduce) {
   .plan-card__row.is-entering,
-  .plan-card__row.is-leaving { animation: none; }
-  .plan-card__row.is-leaving { display: none; }
+  .plan-card__row.is-leaving,
+  .trace-card__segment.is-entering,
+  .trace-card__segment.is-leaving { animation: none; }
+  .plan-card__row.is-leaving,
+  .trace-card__segment.is-leaving { display: none; }
   .repo-card__all svg { transition: none; }
 }
 .trace-card__note.is-fail {
@@ -4862,14 +5190,10 @@ button.repo-card__path,
 
 @media (prefers-reduced-motion: reduce) {
   .plan-card,
-  .plan-card__list,
-  .plan-card__meter-fill { transition: none; }
-  .trace-card__meter-fill { transition: none; }
-  .trace-card__meter-fill.is-live {
-    animation: none;
-    background: var(--banzhuan-led);
-  }
-  .trace-card__row { animation: none; }
+  .plan-card__list { transition: none; }
+  .trace-ticker__line { animation: none; }
+  .trace-node__slot,
+  .trace-node__dot { transition: none; }
   .plan-card__row { animation: none; }
 }
 .activity-step {
@@ -7276,7 +7600,12 @@ button.commit-view__path:hover {
    The settings "?" tip's face, floating. */
 .hover-tip {
   position: fixed;
-  z-index: 60;
+  /* With the app's other portal tooltips (.tooltip--portal), above every
+     popover a tipped element can sit in — the card menu floats at 70
+     (2026-10-08: its rule rows took this tip). */
+  z-index: 1000;
+  /* Fits its text, up to the layer's max-width (HoverTipLayer). */
+  width: max-content;
   padding: 7px 10px;
   font-size: 12.5px;
   line-height: 1.5;
@@ -8624,4 +8953,201 @@ button.commit-view__path:hover {
   .lightbox-backdrop {
     animation: none;
   }
+}
+/* ── Piece quoting (ADR 0078) ────────────────────────────────────────────
+   A mask over the page, cut into the document's pieces; the page never
+   moves. Values locked by the owner's tuner, 2026-10-13: 1200 ms rest,
+   14 % ink veil, straight 2 px seams, 280 ms fade, the selected piece
+   tinted accent at 16 %, the hovered piece lightened to 8 %. */
+.file-viewer__doc-host {
+  position: relative;
+}
+.piece-mask {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 280ms ease;
+}
+.piece-mask.is-shown {
+  opacity: 1;
+  pointer-events: auto;
+}
+.piece-mask__piece {
+  position: absolute;
+  left: 0;
+  right: 0;
+  background: color-mix(in srgb, var(--ink-3) 14%, transparent);
+  cursor: pointer;
+  transition: background-color 160ms ease;
+}
+.piece-mask__piece:hover {
+  background: color-mix(in srgb, var(--ink-3) 8%, transparent);
+}
+.piece-mask__piece.is-selected {
+  background: color-mix(in srgb, var(--accent-blue) 16%, transparent);
+}
+/* The selection pill: under the last picked piece, at the visible right
+   edge of the scroller (its left is that edge; it hangs back from it). */
+.piece-mask__pill {
+  position: absolute;
+  transform: translateX(-100%);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 4px 3px 10px;
+  border-radius: 999px;
+  background: var(--surface-pop);
+  border: 1px solid var(--hairline);
+  box-shadow: 0 6px 18px var(--shadow-pop);
+  font-size: 12px;
+  color: var(--ink-3);
+  white-space: nowrap;
+  z-index: 3;
+}
+.piece-mask__count {
+  color: var(--muted-slate);
+  margin-right: 2px;
+}
+.piece-mask__quote,
+.piece-mask__clear {
+  border: 0;
+  background: transparent;
+  color: var(--ink-3);
+  font: inherit;
+  border-radius: 999px;
+  padding: 2px 8px;
+  cursor: pointer;
+  transition: background-color 140ms ease;
+}
+.piece-mask__quote:hover,
+.piece-mask__clear:hover {
+  background: var(--ink-a13);
+}
+.piece-mask__clear {
+  display: grid;
+  place-items: center;
+  padding: 4px;
+  color: var(--muted-slate);
+}
+/* The switch's icon (icon B, 抽出一块): the middle band pulled out 2 px
+   while on, slid back into line while off — 220 ms with a little overshoot. */
+.piece-quote-icon__mid {
+  transition: transform 220ms cubic-bezier(.34, 1.56, .64, 1);
+}
+.piece-quote-icon.is-off .piece-quote-icon__mid {
+  transform: translateX(-2px);
+}
+@media (prefers-reduced-motion: reduce) {
+  .piece-mask,
+  .piece-mask__piece,
+  .piece-quote-icon__mid { transition: none; }
+}
+
+/* ── Quotes in the composer (ADR 0078 §6) ────────────────────────────────
+   Pieces quoted from the viewer's page wait here as chips, above the input
+   like the staged pictures, and grow the composer by one row the same way.
+   × takes one back; the source rides the message when it is sent. */
+.composer.has-quotes { height: 112px; }
+.composer.has-staged.has-quotes { height: 178px; }
+@media (max-width: 1200px) {
+  .composer.has-quotes { height: 138px; }
+  .composer.has-staged.has-quotes { height: 204px; }
+}
+.composer-quotes {
+  order: -1;
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  max-width: 100%;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+  position: relative;
+  animation: staged-strip-in 0.28s ease 0.14s both;
+}
+.composer-quote {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  max-width: 340px;
+  height: 24px;
+  padding: 0 3px 0 8px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent-blue) 9%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-blue) 22%, transparent);
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.composer-quote__icon {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  color: var(--accent-blue);
+}
+.composer-quote__label {
+  flex: none;
+  font-family: ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, monospace;
+  font-size: 11.5px;
+  color: var(--accent-deep);
+  white-space: nowrap;
+}
+.composer-quote__preview {
+  min-width: 0;
+  color: var(--muted-slate);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.composer-quote__remove {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted-slate);
+  cursor: pointer;
+}
+.composer-quote__remove svg { width: 9px; height: 9px; }
+.composer-quote__remove:hover { background: var(--ink-a13); color: var(--slate-deep); }
+
+/* A quote in the sent bubble (ADR 0078 §7): its label opens the file at
+   those lines; the first lines of the source under it. */
+.message-quote {
+  margin: 0 0 8px;
+  padding: 6px 10px 7px;
+  border-radius: 10px;
+  background: var(--ink-a05);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+}
+.message-quote__label {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-family: ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  color: var(--accent-blue);
+  text-align: left;
+}
+button.message-quote__label { cursor: pointer; }
+button.message-quote__label:hover { text-decoration: underline; text-underline-offset: 2px; }
+.message-quote__text {
+  margin: 4px 0 0;
+  font-family: ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted-slate);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 4.5em;
+  overflow: hidden;
 }

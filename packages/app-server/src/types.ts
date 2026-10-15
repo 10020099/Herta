@@ -5,7 +5,7 @@ import type {
   SessionTopic,
   TerminalRecord,
   TerminalRecordBlock,
-  WorkspaceTrust,
+  UndoFileResult,
 } from "@herta/core";
 import type {
   BranchList,
@@ -188,6 +188,12 @@ export interface SynthesizedAudio {
  */
 export interface SpeechSynthesizer {
   available(): boolean;
+  /** True when a request made now would pay no cold start: the local model
+   *  is loaded, or the engine has none to load (a cloud voice). The voiced
+   *  reveal reads it at a stream's first request — a warm engine's first
+   *  unit is held to the same liveness cap as any later one (ADR 0042 §7d).
+   *  Absent reads as cold: the head keeps its own, longer rules. */
+  warm?(): boolean;
   synthesize(req: SynthesisRequest): Promise<SynthesizedAudio | null>;
   cancel(utteranceId: string): void;
 }
@@ -248,26 +254,41 @@ export interface ResolveApprovalOpts {
   readonly requestId: string;
   readonly decision: "allow" | "deny";
   /** "session" → task-scoped remember (ADR 0026, cleared when the brief
-   *  ends). "always" → persist the derived PROJECT command rule (ADR 0030,
-   *  `.herta/permissions.json`); no-ops when the pending request derives no
-   *  rule — the GUI only offers it when `projectRule` is present. "trust"
-   *  → turn workspace trust on for this workspace (ADR 0064); no-ops unless
-   *  the pending request's class is one the tier covers — the GUI only
-   *  offers it when `trustable` is present. */
-  readonly persistence?: "once" | "session" | "always" | "trust";
+   *  ends). "auto_review" → turn automatic review on for this workspace (ADR 0064
+   *  amendment 2026-10-10); no-ops unless it would answer the pending
+   *  request — the GUI only offers it when `offerAutoReview` is present. */
+  readonly persistence?: "once" | "session" | "auto_review";
 }
 
-/** Workspace trust as the session sees it (ADR 0064): the owner's explicit
- *  choice, the default for this workspace kind, and what applies now. */
-export interface WorkspaceTrustState {
-  /** What applies: "workspace" auto-allows the covered classes. */
-  readonly effective: WorkspaceTrust;
+/** Automatic review as the session sees it (ADR 0075, which replaced
+ *  workspace trust on 2026-10-10): the owner's explicit choice, the default
+ *  for this workspace kind, and what applies now. */
+export interface AutoReviewState {
+  /** What applies: undoable writes run, and a reviewer answers the rest. */
+  readonly on: boolean;
   /** The owner's recorded choice for this workspace, or null when the
    *  default applies. */
-  readonly explicit: WorkspaceTrust | null;
-  /** The backend workspace is the session's managed sandbox — trusted by
+  readonly explicit: boolean | null;
+  /** The backend workspace is the session's managed sandbox — on by
    *  default; nothing of the user's lives there. */
   readonly isDefaultWorkspace: boolean;
+}
+
+/**
+ * One automatic review the owner sees (ADR 0075) — user-only, like the
+ * card it stands in for (D7): it never enters the record, and Herta is not
+ * told. `paused` marks the brake engaging: every later request asks until
+ * the next user message.
+ */
+export interface AutoReviewNotice {
+  readonly requestId: string;
+  readonly tool: string;
+  /** The command as the card would have shown it. */
+  readonly command: string | null;
+  readonly decision: "allow" | "deny" | "paused";
+  /** The reviewer's one sentence, in formal Chinese. */
+  readonly reason: string;
+  readonly at: string;
 }
 
 export type ApprovalResult =
@@ -293,11 +314,47 @@ export type RewindResult =
        *  draft. Absent when the turn carried none (or the strip was full and
        *  the GC took them). */
       readonly images?: readonly StagedImageInfo[];
+      /** The withdrawn turn's edits can still be taken back (ADR 0074 §4):
+       *  the notice offers 撤销改动 — `undoLastTurnEdits("withdrawn")` — until
+       *  the next send. */
+      readonly undoable: boolean;
     }
   | {
       readonly ok: false;
       readonly reason: "turn_in_progress" | "no_user_turn";
     };
+
+/**
+ * Which turn's edits `undoLastTurnEdits` takes back (ADR 0074 §4):
+ * `latest` — the record's latest turn, from its card; `withdrawn` — the
+ * turn(s) ⟲ took out since the last send, from the rewind notice.
+ */
+export type UndoTarget = "latest" | "withdrawn";
+
+/** What `undoLastTurnEdits` answers. Per file (workspace-relative, `/`):
+ *  what happened to it. `commands`: paths commands changed — never
+ *  restored; `commandsUnknown`: commands ran and what they changed could
+ *  not be read; `incomplete`: some bytes were never kept. */
+export type UndoTurnEditsResult =
+  | {
+      readonly ok: true;
+      readonly files: readonly {
+        readonly path: string;
+        readonly result: UndoFileResult;
+      }[];
+      readonly commands: readonly string[];
+      readonly commandsUnknown: boolean;
+      readonly incomplete: boolean;
+    }
+  | {
+      readonly ok: false;
+      readonly reason: "turn_in_progress" | "nothing_to_undo";
+    };
+
+/** Whether the record's latest turn has edits that can be taken back
+ *  changed (ADR 0074 §4). The 撤销 chip's state — the user's alone: it never
+ *  enters the record. */
+export type UndoEvent = { readonly kind: "offer"; readonly undoable: boolean };
 
 /** Result of setWorkspace/resetWorkspace. Idle-only ops (audit 2026-07-10,
  *  finding 13): a mid-turn call is refused rather than dropping the → 系统
@@ -312,6 +369,21 @@ export interface AttachedFile {
   readonly name: string;
   readonly path: string;
   readonly unreadable?: string;
+}
+
+/**
+ * How far one file of an attach has got (2026-10-01): what the pending row's
+ * progress line shows while main reads. `index` is the file's place in the
+ * batch. Per file, in order: `pages` (the text and the picture search, page
+ * by page; `total` 0 = not paged, a Word file), `transcripts` (a PDF's
+ * pictures, counted as each call finishes), then `done`. Display only —
+ * nothing decides anything on it.
+ */
+export interface AttachProgress {
+  readonly index: number;
+  readonly stage: "pages" | "transcripts" | "done";
+  readonly done: number;
+  readonly total: number;
 }
 
 /** Result of `attachFiles`. Idle-only for the same reason as setWorkspace —
@@ -406,6 +478,8 @@ export type OverlayEvent =
       readonly overlay: ApprovalOverlayState;
     }
   | { readonly kind: "resolved"; readonly requestId: string }
+  /** ADR 0075: a request the automatic reviewer settled, no card shown. */
+  | { readonly kind: "reviewed"; readonly notice: AutoReviewNotice }
   | { readonly kind: "dropped"; readonly count: number };
 
 export type SessionAgentEvent =
@@ -420,6 +494,15 @@ export type SpeechControlEvent =
 export type TurnLifecycleEvent =
   | { readonly kind: "started"; readonly turnId: string }
   | { readonly kind: "finished"; readonly turnId: string }
+  /** After `finished`: the Trailblazer's likely next message, for the
+   *  composer to offer (composer predictions, owner 2026-10-10). User-side
+   *  chrome — it never enters the record. Not a turn's end: `finished`
+   *  came first, and a consumer counting turn ends must skip it. */
+  | {
+      readonly kind: "predicted";
+      readonly turnId: string;
+      readonly text: string;
+    }
   | {
       readonly kind: "failed";
       readonly turnId: string;
@@ -507,6 +590,28 @@ export type VoiceCueEvent =
  *  drop the card (always) and blank the main panel (if it was the open one). */
 export type SessionDeletedEvent = { readonly sessionId: string };
 
+/** What an export is built from (ADR 0072 §3). `record` is what the window
+ *  shows: Herta's thoughts are left out, and so are the system blocks'
+ *  evidence sections (`evidenceDetail`, `evidence`), which the export does
+ *  not print and which can run to megabytes. */
+export interface SessionExportSource {
+  readonly sessionId: string;
+  readonly title: string | null;
+  readonly lang: "zh" | "en";
+  readonly record: TerminalRecord;
+}
+
+/** What a rename answers (ADR 0072 §3): the title as kept, and — for the
+ *  open session — its topics as they now stand, the rail's last entry
+ *  renamed with it. */
+export type RenameSessionResult =
+  | {
+      readonly ok: true;
+      readonly title: string;
+      readonly topics?: readonly SessionTopic[];
+    }
+  | { readonly ok: false };
+
 // ───── SessionHost / Session interfaces ─────
 
 export interface SessionHost {
@@ -530,6 +635,18 @@ export interface SessionHost {
   deleteSession(
     sessionId: string,
   ): Promise<{ ok: boolean; wasActive: boolean; removed?: boolean }>;
+  /** Name a session by hand, open or not (ADR 0072 §3). The title is
+   *  cleaned (one line, capped); an empty one, an unknown session or a
+   *  failed write answers `ok: false`. Optional: a host without the GUI's
+   *  sidebar omits it. */
+  renameSession?(
+    sessionId: string,
+    title: string,
+  ): Promise<RenameSessionResult>;
+  /** A session's record, title and language for an export (ADR 0072 §3):
+   *  the open one's from memory, any other's read off the event loop. Null
+   *  when it cannot be read. Optional like `renameSession`. */
+  readSessionForExport?(sessionId: string): Promise<SessionExportSource | null>;
   closeActiveSession(): Promise<void>;
   /** Release host-level resources (clears the idle trigger interval, if any).
    *  Call on app shutdown. Idempotent. */
@@ -538,11 +655,24 @@ export interface SessionHost {
    *  session reads it through a getter, so the NEXT turn uses the new value with
    *  no restart. Pass "" to clear. Persistence is the caller's job (key-store). */
   setDeepSeekKey(key: string): void;
+  /** Update the PDF-picture transcription switch (Settings, 2026-10-01): the
+   *  NEXT attach, in any session, reads it — no restart. On until set.
+   *  Persistence is the caller's job. */
+  setPdfPictureTranscription(enabled: boolean): void;
+  /** Update the composer-prediction switch (Settings, 2026-10-10): the NEXT
+   *  finished turn, in any session, reads it — no restart. On until set.
+   *  Persistence is the caller's job. */
+  setComposerPredictions(enabled: boolean): void;
   /** The user did something in the window that is not a turn (a rewind, an
    *  attachment, a search, a file opened in the viewer): it counts as
    *  activity for the dream trigger, and a running pass steps aside at its
    *  next episode. Optional: a host without a dream trigger omits it. */
   noteUserActivity?(): void;
+  /** End the processes 板砖 runs left running when the app exited (ADR 0071
+   *  §1.6): only a process still running as the one the run started (same
+   *  pid, same start time), and each outcome goes into its run's journal.
+   *  Call once after launch, off the startup path. Never rejects. */
+  reapOrphanedProcesses(): Promise<void>;
   readonly activeSession: Session | null;
 }
 
@@ -579,6 +709,19 @@ export type SteerTextResult =
   | { readonly accepted: string }
   | { readonly queued: true };
 
+/** Whether a 继续 is on offer changed (ADR 0071 §1.4). */
+export type ResumeEvent =
+  | { readonly kind: "offer"; readonly resumable: boolean }
+  | { readonly kind: "dropped"; readonly count: number };
+
+/** What `continueInterrupted` answers. `turnId`: the continued run's turn,
+ *  now finished. `needsKey`: no DeepSeek key yet. `unavailable`: nothing to
+ *  continue (the offer had lapsed, or a turn was running). Never an error. */
+export type ContinueInterruptedResult =
+  | { readonly turnId: string }
+  | { readonly needsKey: true }
+  | { readonly unavailable: true };
+
 export interface Session {
   readonly sessionId: string;
   readonly workspaceRoot: string;
@@ -597,8 +740,15 @@ export interface Session {
   readonly record: TerminalRecord;
   /** Synchronous snapshot of the current pending overlay, or null when idle. */
   readonly overlay: ApprovalOverlayState | null;
-  /** Current session title (generated after the first turn), or null. */
+  /** Current session title (generated after the first turn, or the user's
+   *  own), or null. */
   readonly title: string | null;
+  /** The user renamed the session (ADR 0072 §3): the current topic takes the
+   *  name — the title and the rail's last entry — and the retitle rules go
+   *  on as before. `title` is already cleaned (`cleanUserTitle`). Returns
+   *  the topics as they now stand. Throws when the title sidecar cannot be
+   *  written. Optional: only the GUI SessionImpl implements it. */
+  renameTitle?(title: string): readonly SessionTopic[];
   /** The session's topic history (title changes anchored at the user block
    *  that started each topic) — the topic rail's jump targets. Empty until
    *  a title exists. */
@@ -612,6 +762,9 @@ export interface Session {
    *  (ADR 0063). A window that reloads mid-turn re-learns it from the reset
    *  snapshot. Optional: hosts without the GUI's session omit it. */
   readonly backendActive?: boolean;
+  /** A 继续 is on offer (ADR 0071 §1.4) — what a reloaded window's strip is
+   *  rebuilt from. Optional like the above. */
+  readonly resumable?: boolean;
   /** Pictures staged in the composer and not yet sent (ADR 0048 §4) — what
    *  a reloaded window's strip is rebuilt from. Optional like the above. */
   readonly stagedImageList?: readonly StagedImageInfo[];
@@ -665,6 +818,13 @@ export interface Session {
    */
   steerText?(text: string): Promise<SteerTextResult>;
   /**
+   * 继续 (ADR 0071 §1.4): continue the interrupted 板砖 run. OPTIONAL like
+   * `steerText`: fakes and the website demo omit it, and no offer is shown.
+   */
+  continueInterrupted?(): Promise<ContinueInterruptedResult>;
+  /** The offer's changes (see `resumable`). Optional with the above. */
+  subscribeResume?(): AsyncIterable<ResumeEvent>;
+  /**
    * Rewind the latest 开拓者 (user) turn: withdraw it and everything below it
    * (Herta reply, 板砖 system blocks, beats, markers) from every record store,
    * returning the withdrawn user text to restore into the composer. Idle-only —
@@ -675,6 +835,18 @@ export interface Session {
    * SessionImpl implements it. See the 2026-06-21-rewind-last-turn spec.
    */
   rewindLastTurn?(): Promise<RewindResult>;
+  /**
+   * Take a turn's edits back (ADR 0074): what 板砖's editors wrote returns to
+   * what it was; a file changed since is left alone and named; command
+   * effects are never reverted. `latest` also appends a `→ 系统` line saying
+   * so — the turn stays in the record, and Herta must not believe edits that
+   * are gone. Idle-only. Optional: only the GUI SessionImpl implements it.
+   */
+  undoLastTurnEdits?(target: UndoTarget): Promise<UndoTurnEditsResult>;
+  /** Whether the record's latest turn can be undone (see `UndoEvent`). */
+  readonly undoable?: boolean;
+  /** Its changes. Optional with the above. */
+  subscribeUndo?(): AsyncIterable<UndoEvent>;
   /** GUI easter egg: a successful 板砖-card lift may play a voice clip. Rolls a
    *  50% chance, throttled to ≤1 play per session per hour, then emits a
    *  `voice` cue. No-op without easter-egg clips. Optional: only the GUI
@@ -687,20 +859,12 @@ export interface Session {
    *  Optional: only the GUI SessionImpl implements it. */
   resyncRecord?(): void;
   resolveApproval(opts: ResolveApprovalOpts): Promise<ApprovalResult>;
-  /** Project command allow rules (ADR 0030) for the CURRENT effective
-   *  workspace, as display strings (`node src/index.mjs:*`) — the Settings
-   *  management list. Optional: only the GUI SessionImpl implements them. */
-  listCommandRules?(): Promise<readonly string[]>;
-  /** Removes one rule by its display form. False when nothing matched. */
-  removeCommandRule?(display: string): Promise<boolean>;
-  /** Workspace trust (ADR 0064) for the CURRENT effective workspace.
+  /** Automatic review (ADR 0075) for the CURRENT effective workspace.
    *  Optional: only the GUI SessionImpl implements the pair. */
-  getWorkspaceTrust?(): Promise<WorkspaceTrustState>;
+  getAutoReview?(): Promise<AutoReviewState>;
   /** Record the owner's choice for this workspace; null clears it back to
    *  the default. Resolves with the state after the change. */
-  setWorkspaceTrust?(
-    value: WorkspaceTrust | null,
-  ): Promise<WorkspaceTrustState>;
+  setAutoReview?(on: boolean | null): Promise<AutoReviewState>;
   /** Set the effective backend (板砖) workspace. Trusts its caller —
    *  validation happens at the GUI/CLI boundary. Persisted + broadcast.
    *  Idle-only (audit 2026-07-10, finding 13): refused with
@@ -714,7 +878,11 @@ export interface Session {
    *  session's attachment directory and append one → 系统 block per file.
    *  Idle-only, like setWorkspace — it rides the same out-of-turn append.
    *  Optional: only the GUI SessionImpl implements it. */
-  attachFiles?(paths: readonly string[]): Promise<AttachResult>;
+  attachFiles?(
+    paths: readonly string[],
+    /** How far each file has got, while it is read (2026-10-01). */
+    onProgress?: (progress: AttachProgress) => void,
+  ): Promise<AttachResult>;
   /** Take back an attached document: delete the stored file and mark every
    *  block citing it removed. Idle-only, like attachFiles. */
   removeAttachment?(path: string): Promise<RemoveAttachmentResult>;

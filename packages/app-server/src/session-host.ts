@@ -5,15 +5,22 @@ import { isAbsolute, join } from "node:path";
 import {
   defaultWorkspaceFor,
   deleteSessionFiles,
+  dispatchJournalDir,
+  dispatchJournalPath,
   dreamDirFor,
   ensureHertaGitignore,
   readSessionFile,
+  readSessionFileAsync,
   listSessionHeaders as readSessionHeaders,
   listSessions as readSessionListings,
+  readSessionTitle,
+  readSessionTopics,
   resolveEffectiveWorkspace,
   type TerminalRecord,
+  type TerminalRecordBlock,
   V2RecordPersister,
   workspacesBaseDir,
+  writeSessionTitle,
 } from "@herta/core";
 import {
   type DreamSessionInput,
@@ -26,6 +33,10 @@ import {
   runDreamPass,
 } from "@herta/knowledge";
 import { reportProviderUsage } from "@herta/providers";
+import {
+  reapOrphanedDispatches,
+  sealOpenDispatch,
+} from "./dispatch-recovery.js";
 import { DreamTrigger } from "./dream-trigger.js";
 import { SessionImpl } from "./session.js";
 import {
@@ -35,13 +46,17 @@ import {
   type SessionSearchHit,
   searchSessionTranscripts,
 } from "./session-search.js";
+import { cleanUserTitle } from "./session-titler.js";
+import { renameCurrentTopic } from "./session-topics.js";
 import { cachedRecapBoundary } from "./session-wiring.js";
 import type {
   AppServerConfig,
   CreateSessionOpts,
   ListSessionsOpts,
   OpenSessionOpts,
+  RenameSessionResult,
   Session,
+  SessionExportSource,
   SessionHost,
   SessionMetadata,
 } from "./types.js";
@@ -67,6 +82,12 @@ class SessionHostImpl implements SessionHost {
    *  (no-key onboarding / Settings). Each session reads it through a getter, so
    *  a change takes effect on the NEXT turn with no restart. */
   private readonly keyHolder: { current: string };
+  /** The user's PDF-picture transcription switch (2026-10-01), live the same
+   *  way as the key: each session reads it at every attach. On until a host
+   *  says otherwise — the CLI never does. */
+  private readonly pdfTranscriptsHolder = { current: true };
+  /** Composer predictions (2026-10-10): on unless the user turned them off. */
+  private readonly predictionsHolder = { current: true };
   /** Serializes create/open/delete/closeActive (audit 2026-07-10, finding
    *  11): each op awaits a long disk load and then assigns `_active`
    *  unconditionally, so two concurrent activations could leave `_active`
@@ -348,6 +369,37 @@ class SessionHostImpl implements SessionHost {
     this.keyHolder.current = key;
   }
 
+  /** Update the PDF-picture transcription switch (Settings, 2026-10-01). The
+   *  next attach — in this session or any later one — reads the new value.
+   *  Persistence is the caller's job. */
+  setPdfPictureTranscription(enabled: boolean): void {
+    this.pdfTranscriptsHolder.current = enabled;
+  }
+
+  /** Update the composer-prediction switch (Settings, 2026-10-10). The next
+   *  finished turn — in this session or any later one — reads the new
+   *  value. Persistence is the caller's job. */
+  setComposerPredictions(enabled: boolean): void {
+    this.predictionsHolder.current = enabled;
+  }
+
+  async reapOrphanedProcesses(): Promise<void> {
+    try {
+      const reaped = await reapOrphanedDispatches(
+        dispatchJournalDir(this.config.transcriptDir),
+      );
+      if (reaped.fates.length > 0) {
+        console.log(
+          `[herta] processes left by interrupted runs: ${reaped.fates
+            .map((f) => `${f.pid} ${f.fate}`)
+            .join(", ")}`,
+        );
+      }
+    } catch (err) {
+      console.error("[herta] reaping interrupted runs failed:", err);
+    }
+  }
+
   createSession(opts: CreateSessionOpts): Promise<Session> {
     return this.serializeLifecycle(() => this.createSessionInner(opts));
   }
@@ -388,6 +440,8 @@ class SessionHostImpl implements SessionHost {
       isDefaultWorkspace: opts.backendWorkspace === undefined,
       config: this.config,
       deepSeekKey: () => this.keyHolder.current,
+      transcribePdfPictures: () => this.pdfTranscriptsHolder.current,
+      composerPredictions: () => this.predictionsHolder.current,
       persister,
       ...(opts.lang !== undefined ? { lang: opts.lang } : {}),
     });
@@ -415,8 +469,30 @@ class SessionHostImpl implements SessionHost {
     // Closing can flush an interrupted turn's blocks into this same file, so
     // a self-reopen re-reads to resume from the final on-disk record.
     if (reopeningActive) loaded = readSessionFile(sessionFile);
-    const { meta, record, latestWorkspaceSet, lastTurnEnd } = loaded;
+    const { meta, latestWorkspaceSet } = loaded;
+    let { record, lastTurnEnd } = loaded;
     const persister = V2RecordPersister.forResume({ sessionFile });
+    // A 板砖 run the app exited during is sealed first, before anything
+    // else reads the record: its open steps decided and closed, a 中断
+    // marker and `turn_end interrupted` written (ADR 0071 §1.2). The
+    // marker ends the dispatch for every reader, and the turn_end keeps the
+    // regenerate path off a turn that did not lose a reply.
+    try {
+      const sealed = await sealOpenDispatch({
+        journalPath: dispatchJournalPath(
+          this.config.transcriptDir,
+          opts.sessionId,
+        ),
+        record,
+        persister,
+      });
+      if (sealed !== null) {
+        record = sealed.record;
+        lastTurnEnd = sealed.lastTurnEnd;
+      }
+    } catch (err) {
+      console.error("[herta] sealing an interrupted run failed:", err);
+    }
     // Recover the effective backend workspace in precedence order (latest
     // workspace_set → header backendWorkspace → legacy workspaceRoot). It is
     // "default" only when it equals the managed sandbox for this session.
@@ -438,6 +514,8 @@ class SessionHostImpl implements SessionHost {
       isDefaultWorkspace,
       config: this.config,
       deepSeekKey: () => this.keyHolder.current,
+      transcribePdfPictures: () => this.pdfTranscriptsHolder.current,
+      composerPredictions: () => this.predictionsHolder.current,
       persister,
       initialRecord: record,
       // How the last turn ENDED, when the file recorded it. Its absence is
@@ -582,6 +660,86 @@ class SessionHostImpl implements SessionHost {
     return { ok: true, wasActive, removed: true };
   }
 
+  /**
+   * Name a session by hand (ADR 0072 §3): the current topic takes the name.
+   * Serialized with the lifecycle ops: a session opening concurrently reads
+   * the sidecar as it loads, and a rename written in between would be
+   * overwritten by its titler's next write. The open session is renamed
+   * through its titler (which fences out a generation in flight) and answers
+   * its topics; any other gets its sidecar rewritten, the last topic renamed
+   * (with none, its reopen synthesizes the first from the name).
+   */
+  renameSession(
+    sessionId: string,
+    title: string,
+  ): Promise<RenameSessionResult> {
+    return this.serializeLifecycle(async () => {
+      const clean = cleanUserTitle(title);
+      if (clean === null) return { ok: false } as const;
+      try {
+        const active = this._active;
+        if (active !== null && active.sessionId === sessionId) {
+          if (active.renameTitle === undefined) return { ok: false } as const;
+          // No message yet means no topic to name: the name would show on
+          // the sidebar's card and be dropped by the next open, which keeps
+          // no title without a user turn (review 2026-09-30).
+          if (!active.record.some((b) => b.kind === "user")) {
+            return { ok: false } as const;
+          }
+          const topics = active.renameTitle(clean);
+          return { ok: true, title: clean, topics } as const;
+        }
+        // Never a sidecar for a session that does not exist.
+        await access(join(this.config.transcriptDir, `${sessionId}.jsonl`));
+        writeSessionTitle(this.config.transcriptDir, sessionId, clean, [
+          ...renameCurrentTopic(
+            readSessionTopics(this.config.transcriptDir, sessionId),
+            clean,
+            [],
+          ),
+        ]);
+        return { ok: true, title: clean } as const;
+      } catch (err) {
+        console.warn(`[herta] renaming session ${sessionId} failed:`, err);
+        return { ok: false } as const;
+      }
+    });
+  }
+
+  async readSessionForExport(
+    sessionId: string,
+  ): Promise<SessionExportSource | null> {
+    try {
+      const active = this._active;
+      if (active !== null && active.sessionId === sessionId) {
+        return {
+          sessionId,
+          title: active.title,
+          lang: active.lang,
+          record: exportRecord(active.record),
+        };
+      }
+      const { meta, record } = await readSessionFileAsync(
+        join(this.config.transcriptDir, `${sessionId}.jsonl`),
+      );
+      const title = readSessionTitle(this.config.transcriptDir, sessionId);
+      return {
+        sessionId,
+        // What the window shows: a title whose every user turn was rewound
+        // away is not the session's (loadSessionTitleState).
+        title:
+          title !== undefined && record.some((b) => b.kind === "user")
+            ? title
+            : null,
+        lang: meta.lang ?? "zh",
+        record: exportRecord(record),
+      };
+    } catch (err) {
+      console.warn(`[herta] reading session ${sessionId} for export:`, err);
+      return null;
+    }
+  }
+
   closeActiveSession(): Promise<void> {
     return this.serializeLifecycle(() => this.closeActiveInner());
   }
@@ -620,6 +778,27 @@ export function makeLifecycleSerializer(): <T>(
   };
 }
 
+/**
+ * The record as an export reads it (ADR 0072 §3): what the window shows.
+ * Herta's thoughts are never shown, and a system block's evidence sections
+ * are the prompt's and the expander's — an export prints one line per
+ * block, and a command's output tail or an attachment's head excerpt can
+ * run to megabytes on the way over IPC. Exported for testing.
+ */
+export function exportRecord(record: TerminalRecord): TerminalRecord {
+  const out: TerminalRecordBlock[] = [];
+  for (const block of record) {
+    if (block.kind === "herta" && block.surface === "thought") continue;
+    if (block.kind === "system") {
+      const { evidenceDetail: _detail, evidence: _evidence, ...rest } = block;
+      out.push(rest);
+      continue;
+    }
+    out.push(block);
+  }
+  return out;
+}
+
 /** The dream trigger's activity surface (structural — tests pass a fake). */
 export interface DreamActivitySink {
   noteActivity(): void;
@@ -633,6 +812,7 @@ export interface DreamActivitySink {
  *  turns. Session open/create reset the clock host-side. */
 const ACTIVITY_METHODS: ReadonlySet<string> = new Set([
   "submitText",
+  "continueInterrupted",
   "regenerateLastReplyIfOrphaned",
   "playOpening",
 ]);

@@ -3,7 +3,7 @@
  * `settings:*` handler the desktop's session service registers — Dream,
  * the coprocessor's effort and contract, the DeepSeek model rows and key,
  * the UI and interaction languages, close-to-tray, automatic updates, the
- * appearance, the 3D device card, the real-time voice with its engine,
+ * appearance, the PDF-picture switch, the real-time voice with its engine,
  * the MiniMax keys and clone, the model download. They were a 370-line
  * block inside the service's 1 200-line handler closure; the service still
  * registers them at construction (synchronously, before any bootstrap —
@@ -31,16 +31,19 @@ import { findBash } from "@herta/tools";
 import { app, type ipcMain } from "electron";
 import { CMD } from "../preload/channels.js";
 import type {
+  AttentionSettings,
   InteractionLanguageChoice,
   MiniMaxRefusalState,
   RealtimeVoiceState,
 } from "../renderer/ipc/bridge-types.js";
-import { DEVICE_SCENE_DEFAULT } from "../shared/device-scene.js";
 import type { VoiceEngine } from "./app-global-settings.js";
 import {
+  composerPredictionsEnabled,
   defaultCloseToTray,
+  type GlobalSettings,
   type Locale,
   osLocale,
+  pdfPictureTranscriptsEnabled,
   readGlobalSettings,
   resolveInitialLocale,
   type ThemePref,
@@ -96,6 +99,10 @@ export interface SettingsHooks {
    *  window close handler lives in main's index.ts — this hook updates its
    *  cached flag so the change applies to the very next close click. */
   readonly onCloseToTrayChanged?: (enabled: boolean) => void;
+  /** Fired after Settings → Window persists an attention setting (ADR 0072
+   *  §1), with both values as they now stand — the watcher reads them at
+   *  every event, so the change applies to the next one. */
+  readonly onAttentionChanged?: (prefs: AttentionSettings) => void;
   /** Fired after Settings → Update persists the automatic-update toggle.
    *  The update service lives in main's index.ts — this hook live-applies
    *  it (cancelling or restarting the check cycle). */
@@ -143,6 +150,14 @@ export interface SettingsIpcDeps {
   /** The Dream flag the RUNNING host was built with; undefined before
    *  bootstrap. Optional for tests. */
   readonly dreamRunning?: () => boolean | undefined;
+}
+
+/** The attention settings as they stand: absent = on (ADR 0072 §1). */
+export function attentionSettingsOf(s: GlobalSettings): AttentionSettings {
+  return {
+    notifications: s.notifications ?? true,
+    keepAwake: s.keepAwake ?? true,
+  };
 }
 
 export function registerSettingsHandlers(deps: SettingsIpcDeps): void {
@@ -431,6 +446,34 @@ export function registerSettingsHandlers(deps: SettingsIpcDeps): void {
     }));
     hooks.onCloseToTrayChanged?.(enabled === true);
   });
+  // Settings → Window: attention (ADR 0072 §1). Both default on; a write
+  // carries either or both, and anything but a boolean is ignored.
+  handle(CMD.getAttention, async (): Promise<AttentionSettings> => {
+    return attentionSettingsOf(
+      await readGlobalSettings(app.getPath("userData")),
+    );
+  });
+  handle(
+    CMD.setAttention,
+    async (_e, prefs: { notifications?: unknown; keepAwake?: unknown }) => {
+      const notifications =
+        typeof prefs?.notifications === "boolean"
+          ? prefs.notifications
+          : undefined;
+      const keepAwake =
+        typeof prefs?.keepAwake === "boolean" ? prefs.keepAwake : undefined;
+      if (notifications === undefined && keepAwake === undefined) return;
+      const userData = app.getPath("userData");
+      await updateGlobalSettings(userData, (s) => ({
+        ...s,
+        ...(notifications !== undefined ? { notifications } : {}),
+        ...(keepAwake !== undefined ? { keepAwake } : {}),
+      }));
+      hooks.onAttentionChanged?.(
+        attentionSettingsOf(await readGlobalSettings(userData)),
+      );
+    },
+  );
   // Settings → Update: automatic checks/downloads. App-global and applied
   // LIVE via the hook (the update service cancels or restarts its cycle).
   handle(CMD.getAutoUpdate, async () => {
@@ -460,17 +503,37 @@ export function registerSettingsHandlers(deps: SettingsIpcDeps): void {
     }));
     hooks.onThemeChanged?.(theme);
   });
-  // Settings → 差分协处理器 → 3D device card (ADR 0057). The renderer
-  // applies it live; main only persists. Absent = the shipped default.
-  handle(CMD.getDeviceScene, async () => {
-    const s = await readGlobalSettings(app.getPath("userData"));
-    return s.deviceScene ?? DEVICE_SCENE_DEFAULT;
-  });
-  handle(CMD.setDeviceScene, async (_e, enabled: boolean) => {
+  // Settings → 差分协处理器 → PDF picture transcription (2026-10-01). Per user
+  // and LIVE: persisted here, mirrored to the running host, which every
+  // session reads at its next attach. Anything but a boolean is ignored.
+  handle(CMD.getPdfPictureTranscripts, async () =>
+    pdfPictureTranscriptsEnabled(
+      await readGlobalSettings(app.getPath("userData")),
+    ),
+  );
+  handle(CMD.setPdfPictureTranscripts, async (_e, enabled: unknown) => {
+    if (typeof enabled !== "boolean") return;
     await updateGlobalSettings(app.getPath("userData"), (s) => ({
       ...s,
-      deviceScene: enabled === true,
+      pdfPictureTranscripts: enabled,
     }));
+    deps.host()?.setPdfPictureTranscription(enabled);
+  });
+  // Settings → 窗口 → composer predictions (2026-10-10). Per user and LIVE:
+  // persisted here, mirrored to the running host, which reads it at every
+  // finished turn. Anything but a boolean is ignored.
+  handle(CMD.getComposerPredictions, async () =>
+    composerPredictionsEnabled(
+      await readGlobalSettings(app.getPath("userData")),
+    ),
+  );
+  handle(CMD.setComposerPredictions, async (_e, enabled: unknown) => {
+    if (typeof enabled !== "boolean") return;
+    await updateGlobalSettings(app.getPath("userData"), (s) => ({
+      ...s,
+      composerPredictions: enabled,
+    }));
+    deps.host()?.setComposerPredictions(enabled);
   });
   // Settings → Voice: Herta's real-time synthesized voice (ADR 0042).
   // App-global and applied LIVE — the synthesizer reads the cached flag at
@@ -487,7 +550,7 @@ export function registerSettingsHandlers(deps: SettingsIpcDeps): void {
       bundle: st?.bundle ?? false,
       runtime: st?.runtime ?? false,
       failed: st?.failed ?? false,
-      model: voice.voiceModel?.state() ?? {
+      model: (await voice.voiceModel?.state()) ?? {
         phase: "absent",
         receivedBytes: 0,
         totalBytes: TTS_ARCHIVE_BYTES,

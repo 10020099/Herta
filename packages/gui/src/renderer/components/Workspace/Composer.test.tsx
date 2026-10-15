@@ -16,10 +16,15 @@ import { createMockHertaBridge } from "../../ipc/mock-bridge.js";
 import type { SessionStore } from "../../store/session-store.js";
 import { isVoicePlaying, playVoiceClip } from "../../voice/play-voice.js";
 import { Composer } from "./Composer.js";
+import {
+  peekPendingAttachForTest,
+  resetPendingAttachForTest,
+} from "./pending-attach.js";
 import { WorkspaceRefsProvider } from "./WorkspaceRefs.js";
 
 afterEach(() => {
   cleanup();
+  resetPendingAttachForTest();
 });
 
 /** The provider builds its own SessionStore; a probe beside the Composer
@@ -1420,6 +1425,130 @@ describe("Composer — attachments (ADR 0033)", () => {
     expect(screen.getByText(/Ten files at most/i)).toBeInTheDocument();
   });
 
+  /** A bridge whose `attachFiles` stays open until the test answers it. */
+  function heldAttach(): {
+    mock: ReturnType<typeof createMockHertaBridge>;
+    answer: (r: { ok: boolean; message?: string }) => void;
+  } {
+    let answer: (r: { ok: boolean; message?: string }) => void = () => {};
+    const mock = createMockHertaBridge({
+      attachFilesResult: new Promise((resolve) => {
+        answer = resolve;
+      }),
+    });
+    return { mock, answer: (r) => answer(r) };
+  }
+
+  it("a second drop while a file is read is refused and says so, and the next drop goes through once main answers (2026-09-30)", async () => {
+    // A PDF's pictures are transcribed before its record block arrives —
+    // seconds; the dropped-again document used to be ingested twice. The
+    // read itself shows as the file's pending row (2026-10-01), so the
+    // first drop puts nothing in the notice lane.
+    const { mock, answer } = heldAttach();
+    const { container, store } = renderAttached(mock);
+    const form = container.querySelector(".composer") as HTMLElement;
+    await act(async () => {
+      fireEvent.drop(form, fileDrop([{ name: "handout.pdf" }]));
+    });
+    expect(store().getSnapshot().composerNotice).toBeNull();
+
+    await act(async () => {
+      fireEvent.drop(form, fileDrop([{ name: "handout.pdf" }]));
+    });
+    expect(mock.calls.attachFiles).toHaveLength(1);
+    expect(store().getSnapshot().composerNotice).toBe(
+      "Still reading the previous file",
+    );
+
+    await act(async () => {
+      answer({ ok: true });
+    });
+    expect(store().getSnapshot().composerNotice).toBeNull();
+
+    // Free again: the next drop goes through.
+    await act(async () => {
+      fireEvent.drop(form, fileDrop([{ name: "notes.md" }]));
+    });
+    expect(mock.calls.attachFiles).toHaveLength(2);
+  });
+
+  it("the read in flight is a pending attach — the files by name, where the record ends — and a refusal ends it at once (2026-10-01)", async () => {
+    const { mock, answer } = heldAttach();
+    const { container } = renderAttached(mock);
+    const form = container.querySelector(".composer") as HTMLElement;
+    await act(async () => {
+      fireEvent.drop(
+        form,
+        fileDrop([{ name: "handout.pdf" }, { name: "notes.md" }]),
+      );
+    });
+    expect(peekPendingAttachForTest()).toMatchObject({
+      sessionId: "s-1",
+      names: ["handout.pdf", "notes.md"],
+    });
+    await act(async () => {
+      answer({ ok: false, message: "too many files at once" });
+    });
+    expect(peekPendingAttachForTest()).toBeNull();
+  });
+
+  it("the send waits while a file is read: the button is disabled, Enter says why, and the words stay (review on #6)", async () => {
+    // attachFiles is idle-only: a turn started mid-read would make main refuse
+    // the whole attach at the end, transcripts already paid for.
+    const { mock, answer } = heldAttach();
+    const { container, store } = renderAttached(mock);
+    const form = container.querySelector(".composer") as HTMLFormElement;
+    await act(async () => {
+      fireEvent.drop(form, fileDrop([{ name: "handout.pdf" }]));
+    });
+    const input = screen.getByPlaceholderText(
+      "Message Herta…",
+    ) as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "solve question 3" } });
+    expect(screen.getByLabelText("Send message")).toBeDisabled();
+
+    fireEvent.submit(form);
+    expect(mock.calls.submitText).toHaveLength(0);
+    expect(input.value).toBe("solve question 3");
+    expect(store().getSnapshot().composerNotice).toBe(
+      "Sending waits until the file is read",
+    );
+
+    await act(async () => {
+      answer({ ok: true });
+    });
+    expect(store().getSnapshot().composerNotice).toBeNull();
+    expect(screen.getByLabelText("Send message")).not.toBeDisabled();
+    fireEvent.submit(form);
+    expect(mock.calls.submitText).toEqual(["solve question 3"]);
+  });
+
+  it("a notice the read raised never clears a newer notice", async () => {
+    const { mock, answer } = heldAttach();
+    const { container, store } = renderAttached(mock);
+    const form = container.querySelector(".composer") as HTMLElement;
+    await act(async () => {
+      fireEvent.drop(form, fileDrop([{ name: "handout.pdf" }]));
+    });
+    await act(async () => {
+      fireEvent.drop(form, fileDrop([{ name: "again.pdf" }]));
+    });
+    expect(store().getSnapshot().composerNotice).toBe(
+      "Still reading the previous file",
+    );
+    // Something else takes the notice lane while the file is read…
+    act(() => {
+      store().setComposerNotice("Files 板砖 edited stay edited");
+    });
+    await act(async () => {
+      answer({ ok: true });
+    });
+    // …and the answer leaves it alone.
+    expect(store().getSnapshot().composerNotice).toBe(
+      "Files 板砖 edited stay edited",
+    );
+  });
+
   // ── Staged images (ADR 0048 §4) ─────────────────────────────────────────
 
   it("a dropped PICTURE stages instead of entering the record", async () => {
@@ -1647,5 +1776,338 @@ describe("Composer — attachments (ADR 0033)", () => {
     expect(container.querySelectorAll(".composer-staged__item")).toHaveLength(
       0,
     );
+  });
+});
+
+describe("Composer — Up-arrow recall (ADR 0072 §3)", () => {
+  function recallComposer() {
+    const mock = createMockHertaBridge();
+    const r = renderComposer(mock);
+    act(() =>
+      mock.emitReset({
+        sessionId: "s-r",
+        workspaceRoot: "/r",
+        record: [
+          { kind: "user", text: "先看看 parser" },
+          { kind: "herta", surface: "speech", text: "好。" },
+          { kind: "user", text: "再跑一遍测试" },
+        ],
+        overlay: null,
+        backendWorkspace: "/r",
+        backendWorkspaceIsDefault: true,
+      }),
+    );
+    const input = screen.getByPlaceholderText(
+      "Message Herta…",
+    ) as HTMLTextAreaElement;
+    return { ...r, mock, input };
+  }
+
+  it("↑ in an empty composer puts back the last message sent", () => {
+    const { input } = recallComposer();
+    fireEvent.keyDown(input, { key: "ArrowUp" });
+    expect(input.value).toBe("再跑一遍测试");
+  });
+
+  it("↑ with text already typed leaves it alone", () => {
+    const { input } = recallComposer();
+    fireEvent.change(input, { target: { value: "新的一句" } });
+    fireEvent.keyDown(input, { key: "ArrowUp" });
+    expect(input.value).toBe("新的一句");
+  });
+
+  it("↑ while an IME composes moves its candidate, not the history — the textarea can still be empty then (review 2026-09-30)", () => {
+    const { input } = recallComposer();
+    fireEvent.keyDown(input, { key: "ArrowUp", isComposing: true });
+    expect(input.value).toBe("");
+    fireEvent.keyDown(input, { key: "ArrowUp", keyCode: 229 });
+    expect(input.value).toBe("");
+  });
+});
+
+describe("Composer — @-file mentions (ADR 0072 §2)", () => {
+  const FILES = ["README.md", "src/parser.ts", "docs/parsers.md", "build.ts"];
+
+  function mentionComposer(
+    lang: "zh" | "en" = "zh",
+    opts: { readonly listing?: boolean } = {},
+  ) {
+    const mock = createMockHertaBridge(
+      opts.listing === false ? {} : { workspaceFiles: FILES },
+    );
+    const r = renderComposer(mock);
+    act(() =>
+      mock.emitReset({
+        sessionId: "s-m",
+        workspaceRoot: "/r",
+        record: [],
+        overlay: null,
+        backendWorkspace: "/r",
+        backendWorkspaceIsDefault: true,
+        lang,
+      }),
+    );
+    const input = screen.getByPlaceholderText(
+      "Message Herta…",
+    ) as HTMLTextAreaElement;
+    const type = (value: string) =>
+      fireEvent.change(input, {
+        target: { value, selectionStart: value.length },
+      });
+    const options = () =>
+      [...document.querySelectorAll(".composer-mentions__item")].map(
+        (li) => li.textContent,
+      );
+    return { ...r, mock, input, type, options };
+  }
+
+  it("lists the matching workspace files and inserts the plain path, replacing @query", async () => {
+    const { input, type, options, mock } = mentionComposer();
+    type("看看 @pars");
+    await waitFor(() =>
+      expect(options()).toEqual(["parser.tssrc", "parsers.mddocs"]),
+    );
+    expect(mock.calls.listWorkspaceFiles).toBe(1);
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(input.value).toBe("看看 docs/parsers.md ");
+    expect(document.querySelector(".composer-mentions")).toBeNull();
+    // Enter picked; it did not send.
+    expect(mock.calls.submitText).toHaveLength(0);
+  });
+
+  it("the highlight survives the selection React re-reports after a key (live check 2026-09-29)", async () => {
+    const { input, type, options } = mentionComposer();
+    type("看看 @pars");
+    await waitFor(() => expect(options()).toHaveLength(2));
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    // What a real key-up does: the selection is re-reported, unchanged.
+    fireEvent.select(input);
+    expect(
+      document.querySelector(".composer-mentions__item.is-active")?.textContent,
+    ).toBe("parsers.mddocs");
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(input.value).toBe("看看 docs/parsers.md ");
+  });
+
+  it("Tab inserts too, and the list is fetched once while typing", async () => {
+    const { input, type, options, mock } = mentionComposer();
+    type("@p");
+    await waitFor(() => expect(options().length).toBeGreaterThan(0));
+    type("@pa");
+    type("@par");
+    await waitFor(() => expect(options()[0]).toBe("parser.tssrc"));
+    fireEvent.keyDown(input, { key: "Tab" });
+    expect(input.value).toBe("src/parser.ts ");
+    expect(mock.calls.listWorkspaceFiles).toBe(1);
+  });
+
+  it("Esc dismisses the list for that mention; Enter then sends as usual", async () => {
+    const { input, type, options, mock } = mentionComposer();
+    type("fix @pars");
+    await waitFor(() => expect(options().length).toBe(2));
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(document.querySelector(".composer-mentions")).toBeNull();
+    type("fix @parse");
+    expect(document.querySelector(".composer-mentions")).toBeNull();
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(mock.calls.submitText).toEqual(["fix @parse"]);
+  });
+
+  it("a bare @ opens the list at once: @板砖 first and highlighted, then the files under their label (owner 2026-10-08)", async () => {
+    // It used to wait for a query past what could still be @板砖, so a bare
+    // @ showed the ghost alone and the files went unnoticed.
+    const { input, type, options, mock } = mentionComposer();
+    type("整理 @");
+    await waitFor(() =>
+      expect(options()).toEqual([
+        "@板砖Delegate to the coprocessor",
+        "README.md",
+        "parser.tssrc",
+        "parsers.mddocs",
+        "build.ts",
+      ]),
+    );
+    expect(
+      document.querySelector(".composer-mentions__section")?.textContent,
+    ).toBe("Workspace files");
+    expect(
+      document.querySelector(".composer-mentions__item.is-active")?.textContent,
+    ).toBe("@板砖Delegate to the coprocessor");
+    // The ghost previews the highlighted token.
+    expect(document.querySelector(".composer-ghost")?.textContent).toBe("板砖");
+    // Enter takes the token — as Tab on the ghost always has — and sends
+    // nothing.
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(input.value).toBe("整理 @板砖");
+    expect(document.querySelector(".composer-mentions")).toBeNull();
+    expect(mock.calls.submitText).toHaveLength(0);
+  });
+
+  it("a highlight moved onto a file hides the ghost, and Tab takes the file", async () => {
+    const { input, type, options } = mentionComposer();
+    type("@");
+    await waitFor(() => expect(options().length).toBe(5));
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    expect(document.querySelector(".composer-ghost")).toBeNull();
+    fireEvent.keyDown(input, { key: "Tab" });
+    expect(input.value).toBe("README.md ");
+  });
+
+  it("Esc at a bare @ dismisses the list and the ghost together", async () => {
+    const { input, type, options } = mentionComposer();
+    type("hi @");
+    await waitFor(() => expect(options().length).toBe(5));
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(document.querySelector(".composer-mentions")).toBeNull();
+    expect(document.querySelector(".composer-ghost")).toBeNull();
+    // What a real key-up re-reports changes nothing.
+    fireEvent.select(input);
+    expect(document.querySelector(".composer-mentions")).toBeNull();
+    expect(document.querySelector(".composer-ghost")).toBeNull();
+    expect(input.value).toBe("hi @");
+  });
+
+  it("a bare @ offers the files being worked on first, in the workspace's own spelling", async () => {
+    const { type, options, mock } = mentionComposer();
+    act(() =>
+      mock.emitRepo({
+        kind: "repo",
+        workspace: "/r",
+        repo: {
+          root: "/repo",
+          // The workspace is a folder inside the repository: git's paths
+          // are rebased onto it, and one outside it is not offered.
+          prefix: "app/",
+          gitDir: null,
+          branch: "main",
+          detached: false,
+          headShort: "a1b2c3d",
+          upstream: null,
+          upstreamGone: false,
+          ahead: 0,
+          behind: 0,
+          defaultBranch: null,
+          inProgress: null,
+          conflicted: [],
+          dirty: [
+            { x: " ", y: "M", path: "app/build.ts" },
+            { x: " ", y: "M", path: "lib/elsewhere.ts" },
+          ],
+          dirtyTotal: 2,
+          recentSubjects: [],
+          recentCommits: [],
+        },
+      }),
+    );
+    type("@");
+    await waitFor(() => expect(options().length).toBe(5));
+    expect(options().slice(1, 3)).toEqual(["build.ts", "README.md"]);
+  });
+
+  it("a query that can still be @板砖 / @brick offers the token first, then its files; typed out, nothing", async () => {
+    const zh = mentionComposer("zh");
+    zh.type("@板");
+    await waitFor(() =>
+      expect(zh.options()).toEqual(["@板砖Delegate to the coprocessor"]),
+    );
+    fireEvent.keyDown(zh.input, { key: "Tab" });
+    expect(zh.input.value).toBe("@板砖");
+    zh.type("@板砖");
+    expect(document.querySelector(".composer-mentions")).toBeNull();
+    zh.unmount();
+
+    const en = mentionComposer("en");
+    en.type("@b");
+    await waitFor(() =>
+      expect(en.options()).toEqual([
+        "@brickDelegate to the coprocessor",
+        "build.ts",
+      ]),
+    );
+    // "bu" can no longer be @brick: files only.
+    en.type("@bu");
+    await waitFor(() => expect(en.options()).toEqual(["build.ts"]));
+  });
+
+  it("an IME's pre-edit keeps its keys: the arrows walk its candidates, not the list", async () => {
+    const { input, type, options } = mentionComposer();
+    type("@");
+    await waitFor(() => expect(options().length).toBe(5));
+    fireEvent.keyDown(input, { key: "ArrowDown", keyCode: 229 });
+    expect(
+      document.querySelector(".composer-mentions__item.is-active")?.textContent,
+    ).toBe("@板砖Delegate to the coprocessor");
+  });
+
+  it("without a file listing on the bridge, @ offers @板砖 alone", async () => {
+    const { type, options, mock } = mentionComposer("zh", { listing: false });
+    type("@");
+    expect(options()).toEqual(["@板砖Delegate to the coprocessor"]);
+    type("@src");
+    await Promise.resolve();
+    expect(document.querySelector(".composer-mentions")).toBeNull();
+    expect(mock.calls.listWorkspaceFiles).toBe(0);
+  });
+});
+
+describe("Composer — predictions (owner 2026-10-10)", () => {
+  function open(
+    mock: ReturnType<typeof createMockHertaBridge>,
+    lang: "zh" | "en" = "en",
+  ): void {
+    act(() =>
+      mock.emitReset({
+        sessionId: "s-pred",
+        workspaceRoot: "/mock",
+        record: [],
+        overlay: null,
+        backendWorkspace: "/mock",
+        backendWorkspaceIsDefault: true,
+        lang,
+      }),
+    );
+  }
+  const predict = (
+    mock: ReturnType<typeof createMockHertaBridge>,
+    text: string,
+  ): void =>
+    act(() => mock.emitTurn({ kind: "predicted", turnId: "t1", text }));
+
+  it("shows the suggestion in the empty box; Tab takes it in and sends nothing", () => {
+    const { mock } = renderComposer();
+    open(mock);
+    predict(mock, "@板砖 add an undo test");
+    // An EN composer spells the trigger its own way.
+    const input = screen.getByPlaceholderText(
+      "@brick add an undo test",
+    ) as HTMLTextAreaElement;
+    expect(document.querySelector(".composer-prediction-key")).not.toBeNull();
+    fireEvent.keyDown(input, { key: "Tab" });
+    expect(input.value).toBe("@brick add an undo test");
+    expect(mock.calls.submitText).toEqual([]);
+    // With text in the box, the suggestion and its key are gone.
+    expect(document.querySelector(".composer-prediction-key")).toBeNull();
+  });
+
+  it("typing replaces it, and Tab then does nothing of the kind", () => {
+    const { mock } = renderComposer();
+    open(mock, "zh");
+    predict(mock, "再跑一遍测试");
+    const input = screen.getByPlaceholderText(
+      "再跑一遍测试",
+    ) as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "不用了" } });
+    fireEvent.keyDown(input, { key: "Tab" });
+    expect(input.value).toBe("不用了");
+  });
+
+  it("a new turn clears it", () => {
+    const { mock } = renderComposer();
+    open(mock);
+    predict(mock, "run the tests again");
+    act(() => mock.emitTurn({ kind: "started", turnId: "t2" }));
+    act(() => mock.emitTurn({ kind: "finished", turnId: "t2" }));
+    expect(screen.getByPlaceholderText("Message Herta…")).toBeInTheDocument();
   });
 });

@@ -2,10 +2,12 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
+  AutoReviewer,
   createActorStack,
   createBackendProvider,
   createBackendStack,
   defaultDigestModel,
+  defaultReviewModel,
   installUsageLog,
   prepareBackendStack,
 } from "@herta/app-server/wiring";
@@ -17,6 +19,7 @@ import {
   readSessionFile,
   resolveEffectiveWorkspace,
   SessionFileError,
+  type TerminalRecord,
 } from "@herta/core";
 import { type PromptLang, V2ActorDriver } from "@herta/herta";
 import { resolveDeepSeekKey } from "@herta/providers";
@@ -86,7 +89,8 @@ export async function main(
   // before anything writes there (audit BL6).
   ensureHertaGitignore(workspaceRoot);
   // HERTA_USAGE_LOG: each model call's token counts as the API states them,
-  // prompt-cache hits included (numbers only) — `1` writes
+  // prompt-cache hits included, plus one line per 板砖 run and Herta turn
+  // (how much trimming each needed; numbers only) — `1` writes
   // `<workspace>/.herta/usage.jsonl`, anything else is the file to write.
   // An environment knob like the CLI's model knobs; the desktop app always
   // keeps one beside its settings.
@@ -269,6 +273,14 @@ export async function main(
   // The CLI takes the knob from the environment like its model knobs.
   const wantMinimal = process.env.HERTA_BACKEND_CONTRACT !== "standard";
   await prepareBackendStack({ wantMinimal });
+  // ADR 0075: the automatic reviewer, as the desktop mounts it — it answers
+  // only where automatic review is on (`/permissions auto-review on`, or [r]
+  // on a prompt; off by default in the CLI, which has no managed sandbox). It reads
+  // the record's user messages plus the line this turn answers: the driver
+  // commits the turn's own message only when the turn ends.
+  const autoReviewer = new AutoReviewer(defaultReviewModel(apiKey, baseUrl));
+  const turnInput: { text: string | null } = { text: null };
+  let reviewDriver: { getRecord(): TerminalRecord } | null = null;
   const backend = createBackendStack({
     wsHolder,
     workspaceRoot,
@@ -283,13 +295,25 @@ export async function main(
     // The digest tool's side model (ADR 0043) — the same flash sidecar the
     // GUI host builds.
     digestModel: defaultDigestModel(apiKey, baseUrl),
-    makeAsk: ({ cache, rules }) =>
+    makeAsk: ({ cache, workspacePermissions }) =>
       new CachingAskResolver(
         new CliAskResolver(stdin as NodeJS.ReadStream, stdout, style),
         cache,
         stdout,
         style,
-        rules,
+        workspacePermissions,
+        {
+          reviewer: autoReviewer,
+          userMessages: () => {
+            const committed = (reviewDriver?.getRecord() ?? []).flatMap((b) =>
+              b.kind === "user" && b.resume !== true ? [b.text] : [],
+            );
+            return turnInput.text === null
+              ? committed
+              : [...committed, turnInput.text];
+          },
+          workspace: () => wsHolder.current,
+        },
       ),
   });
   if (
@@ -301,7 +325,7 @@ export async function main(
       "herta: HERTA_BACKEND_CONTRACT=minimal but no bash found (install Git for Windows or set HERTA_BASH); running the standard contract\n",
     );
   }
-  const { bus, approvalCache, commandRules } = backend;
+  const { bus, approvalCache, workspacePermissions } = backend;
 
   // Actor session ID — for new sessions, a fresh uuid; for resumes, the
   // original session's id from the loaded file's header. Reusing the
@@ -442,6 +466,7 @@ export async function main(
     persister.appendBlock(actor.seedBlock);
   }
 
+  reviewDriver = driver;
   await repl({
     actor: driver,
     // In-REPL /resume rebinds the driver to the loaded session's own
@@ -456,13 +481,23 @@ export async function main(
     style,
     lang,
     approvalCache,
-    commandRules,
+    workspacePermissions,
     transcriptDir,
     currentWorkspaceRoot: workspaceRoot,
     workspaceHolder: wsHolder,
     persister,
     home: deps?.homedir ?? homedir(),
     sessionId: actorSessionId,
+    autoReview: {
+      begin: (userText) => {
+        turnInput.text = userText;
+        // The owner has spoken: the reviewer's brake lifts.
+        autoReviewer.resetBrake();
+      },
+      end: () => {
+        turnInput.text = null;
+      },
+    },
   });
 
   return 0;

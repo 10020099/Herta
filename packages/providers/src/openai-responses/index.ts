@@ -151,7 +151,7 @@ function translateChat(
     const f = frame as BackendPromptFrame;
     systems = [
       f.backendSystem,
-      f.scopedRepoInstructions,
+      f.scopedRepoInstructions ?? "",
       f.scopedMemory,
     ].filter((s) => s.length > 0);
     messages = f.messages;
@@ -160,7 +160,7 @@ function translateChat(
     const f = frame as ActorPromptFrame;
     systems = [
       f.stableSystem,
-      f.repoInstructions,
+      f.repoInstructions ?? "",
       f.memoryContext,
       f.retrievedLore,
     ].filter((s) => s.length > 0);

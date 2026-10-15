@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { renderWithLocale } from "../../i18n/test-util.js";
 import { GalaxyTravelRow } from "./GalaxyTravelRow.js";
@@ -210,10 +210,74 @@ describe("HertaBubble", () => {
     ).toBe("就一句。");
   });
 
-  it("hides the action row when no timestamp is given (pre-timestamp block)", () => {
+  it("a pre-timestamp block shows no time — its action row carries the copy only", () => {
     renderWithLocale(<HertaBubble text="certainly" />);
     expect(screen.getByText("certainly")).toBeInTheDocument();
-    expect(document.querySelector(".message-actions")).toBeNull();
+    expect(document.querySelector(".message-actions__time")).toBeNull();
+    expect(screen.getByLabelText("Copy reply")).toBeInTheDocument();
+  });
+
+  it("copies her prose only — the code stays behind (ADR 0072 §3) — and confirms", async () => {
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    renderWithLocale(
+      <HertaBubble
+        text={"改好了。\n\n```ts\nconst x = 1;\n```\n\n测试也过了。"}
+        at={justNow()}
+      />,
+    );
+    // Once per utterance, on the stack's last row.
+    expect(screen.getAllByLabelText("Copy reply")).toHaveLength(1);
+    fireEvent.click(screen.getByLabelText("Copy reply"));
+    expect(writeText).toHaveBeenCalledWith("改好了。\n\n测试也过了。");
+    await waitFor(() =>
+      expect(screen.getByLabelText("Copied")).toBeInTheDocument(),
+    );
+  });
+
+  it("a write the platform refuses is said, not shown as copied (2026-09-30)", async () => {
+    const writeText = vi.fn(async () => {
+      throw new DOMException("Write permission denied.", "NotAllowedError");
+    });
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    renderWithLocale(<HertaBubble text="改好了。" at={justNow()} lang="en" />);
+    fireEvent.click(screen.getByLabelText("Copy reply"));
+    await waitFor(() =>
+      expect(screen.getByLabelText("Copy failed")).toBeInTheDocument(),
+    );
+    expect(screen.queryByLabelText("Copied")).not.toBeInTheDocument();
+  });
+
+  it("the copy button's pill is lifted onto the body, so the scroller's edge cannot cut it (owner 2026-09-29)", () => {
+    vi.useFakeTimers();
+    try {
+      renderWithLocale(<HertaBubble text="certainly" at={justNow()} />);
+      const button = screen.getByLabelText("Copy reply");
+      // No in-flow pill beside the button: that one was clipped in half at
+      // the column's left edge.
+      expect(button.parentElement?.querySelector(".tooltip")).toBeNull();
+      fireEvent.pointerEnter(button.parentElement as HTMLElement);
+      act(() => {
+        vi.advanceTimersByTime(500);
+      });
+      const pill = document.body.querySelector(".tooltip--portal");
+      expect(pill?.textContent).toBe("Copy reply");
+      expect(pill?.parentElement).toBe(document.body);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a code-only reply offers no copy — its row keeps just the time", () => {
+    renderWithLocale(<HertaBubble text={"```\nplain()\n```"} at={justNow()} />);
+    expect(screen.queryByLabelText("Copy reply")).toBeNull();
+    expect(document.querySelector(".message-actions")).not.toBeNull();
   });
 
   it("places the timestamp BELOW the bubble in an action row, and never a rewind button", () => {
@@ -268,8 +332,8 @@ describe("bubbles render @板砖 as a chip", () => {
 });
 
 describe("GalaxyTravelRow", () => {
-  it("renders the Chinese transfer text", () => {
-    renderWithLocale(<GalaxyTravelRow />);
+  it("renders the transfer text in the session's language", () => {
+    renderWithLocale(<GalaxyTravelRow lang="en" />);
     expect(
       screen.getByText("Message is crossing the galaxy…"),
     ).toBeInTheDocument();
@@ -285,7 +349,7 @@ describe("GalaxyTravelRow", () => {
       cb(0);
       return 1;
     });
-    const { container } = renderWithLocale(<GalaxyTravelRow />);
+    const { container } = renderWithLocale(<GalaxyTravelRow lang="en" />);
     const row = container.querySelector(".status-row") as HTMLElement;
     expect(row.classList.contains("is-shown")).toBe(true);
     vi.restoreAllMocks();
@@ -298,7 +362,7 @@ describe("GalaxyTravelRow", () => {
       addEventListener() {},
       removeEventListener() {},
     }));
-    const { container } = renderWithLocale(<GalaxyTravelRow />);
+    const { container } = renderWithLocale(<GalaxyTravelRow lang="en" />);
     expect(
       (
         container.querySelector(".status-row") as HTMLElement

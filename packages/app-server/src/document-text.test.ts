@@ -9,6 +9,11 @@ import {
   walkWordprocessingXml,
 } from "./document-text.js";
 import {
+  MAX_PDF_PICTURES,
+  MAX_PICTURE_DECODE_PIXELS,
+  pictureToken,
+} from "./pdf-pictures.js";
+import {
   docxHeading,
   docxParagraphs,
   makeDocx,
@@ -16,7 +21,9 @@ import {
   makeOleBytes,
   makePdf,
   type PdfBookmark,
+  type PdfPictureFixture,
 } from "./testing/document-fixtures.js";
+import { readPng } from "./testing/read-png.js";
 
 /** The zh page marker (the default), for the PDF expectations. */
 const pg = (n: number): string => `── 第 ${n} 页 ──`;
@@ -391,5 +398,296 @@ describe("textOfWordprocessingXml — the walk", () => {
   it("a self-closing w:t emits nothing and does not swallow what follows", () => {
     const xml = "<w:p><w:r><w:t/></w:r><w:r><w:t>after</w:t></w:r></w:p>";
     expect(textOfWordprocessingXml(xml)).toBe("after");
+  });
+});
+
+describe("extractDocumentText — pdf pictures (2026-09-30)", () => {
+  // Lines 60pt apart: "Question 1." at y=720, "(a)" at 660, "(b)" at 600 —
+  // room to draw a picture under (a), the way a handout draws its formula.
+  const questionPage = ["Question 1.", "(a)", "(b)"];
+  const underA: PdfPictureFixture = {
+    at: [72, 610, 120, 40],
+    width: 12,
+    height: 10,
+    kind: "rgb",
+  };
+
+  it("without `pictures`, a PDF that draws pictures extracts exactly as before", async () => {
+    const plain = makePdf([questionPage], { lineGap: 60 });
+    const drawn = makePdf([questionPage], {
+      lineGap: 60,
+      pictures: [[underA]],
+    });
+    const a = await extractDocumentText("pdf", plain);
+    const b = await extractDocumentText("pdf", drawn);
+    expect(b).toEqual(a);
+    expect(b).not.toHaveProperty("pictures");
+  });
+
+  it("with `pictures`, each picture becomes a PNG and a token line after the last line above it", async () => {
+    const r = await extractDocumentText(
+      "pdf",
+      makePdf([questionPage], { lineGap: 60, pictures: [[underA]] }),
+      { pictures: true },
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.text).toBe(`${pg(1)}\nQuestion 1.\n(a)\n${pictureToken(1)}\n(b)`);
+    expect(r.pictures).toHaveLength(1);
+    const picture = r.pictures?.[0];
+    expect(picture).toMatchObject({ id: 1, page: 1, index: 1 });
+    const png = readPng(picture?.png as Buffer);
+    expect([png.width, png.height, png.colorType]).toEqual([12, 10, 2]);
+    // The fixture's left half is red.
+    expect([...(png.rows[0]?.subarray(0, 3) ?? [])]).toEqual([255, 0, 0]);
+  });
+
+  /** A distinct picture: identical pixels would be one picture drawn twice. */
+  const shaded = (
+    at: PdfPictureFixture["at"],
+    shade: number,
+  ): PdfPictureFixture => ({
+    ...underA,
+    at,
+    data: new Uint8Array(12 * 10 * 3).fill(shade),
+  });
+
+  it("numbers pictures top to bottom per page, with ids running across the document", async () => {
+    const r = await extractDocumentText(
+      "pdf",
+      makePdf([questionPage, ["Page two"]], {
+        lineGap: 60,
+        // Drawn bottom-first: the order in the file is not the reading order.
+        pictures: [
+          [shaded([72, 540, 120, 40], 1), shaded([72, 610, 120, 40], 2)],
+          [shaded([72, 600, 120, 40], 3)],
+        ],
+      }),
+      { pictures: true },
+    );
+    if (!r.ok) throw new Error(r.reason);
+    expect(r.pictures?.map(({ id, page, index }) => [id, page, index])).toEqual(
+      [
+        [1, 1, 1],
+        [2, 1, 2],
+        [3, 2, 1],
+      ],
+    );
+    expect(r.text).toBe(
+      `${pg(1)}\nQuestion 1.\n(a)\n${pictureToken(1)}\n(b)\n${pictureToken(2)}\n\n${pg(2)}\nPage two\n${pictureToken(3)}`,
+    );
+  });
+
+  it("a 1-bit picture decodes with a set bit as white; an RGBA picture keeps its alpha", async () => {
+    const r = await extractDocumentText(
+      "pdf",
+      makePdf([questionPage], {
+        lineGap: 60,
+        pictures: [
+          [
+            { at: [72, 670, 160, 40], width: 16, height: 8, kind: "gray1" },
+            { ...underA, kind: "rgba" },
+          ],
+        ],
+      }),
+      { pictures: true },
+    );
+    if (!r.ok) throw new Error(r.reason);
+    const [gray, rgba] = (r.pictures ?? []).map((p) => readPng(p.png));
+    expect(gray?.colorType).toBe(0);
+    // Row 0 is 0xF0 0x0F: 4 white, 8 black, 4 white.
+    expect([...(gray?.rows[0] ?? [])]).toEqual([
+      255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255,
+    ]);
+    expect(rgba?.colorType).toBe(6);
+    // Right half: blue at alpha 128.
+    expect([...(rgba?.rows[0]?.subarray(11 * 4, 12 * 4) ?? [])]).toEqual([
+      0, 0, 255, 128,
+    ]);
+  });
+
+  it("specks are not pictures: too few pixels, or drawn too small", async () => {
+    const r = await extractDocumentText(
+      "pdf",
+      makePdf([questionPage], {
+        lineGap: 60,
+        pictures: [
+          [
+            { ...underA, width: 4, height: 4 },
+            { ...underA, at: [72, 610, 2, 40] },
+          ],
+        ],
+      }),
+      { pictures: true },
+    );
+    if (!r.ok) throw new Error(r.reason);
+    expect(r).not.toHaveProperty("pictures");
+    expect(r.text).toBe(`${pg(1)}\nQuestion 1.\n(a)\n(b)`);
+  });
+
+  it("a scan — pictures and no text layer — stays empty (ADR 0038 §4)", async () => {
+    const r = await extractDocumentText(
+      "pdf",
+      makePdf([[]], { pictures: [[underA]] }),
+      { pictures: true },
+    );
+    expect(r).toEqual({ ok: false, reason: "empty", pages: 1 });
+  });
+
+  it(`keeps at most ${MAX_PDF_PICTURES} pictures a document`, async () => {
+    const many: PdfPictureFixture[] = Array.from(
+      { length: MAX_PDF_PICTURES + 5 },
+      (_, i) => ({
+        at: [72 + (i % 10) * 50, 100 + Math.floor(i / 10) * 60, 40, 40],
+        width: 8,
+        height: 8,
+        kind: "rgb",
+        // Distinct pixels per picture, so none is a duplicate of another.
+        data: new Uint8Array(8 * 8 * 3).fill(i),
+      }),
+    );
+    const r = await extractDocumentText(
+      "pdf",
+      makePdf([questionPage], { lineGap: 60, pictures: [many] }),
+      { pictures: true },
+    );
+    if (!r.ok) throw new Error(r.reason);
+    expect(r.pictures).toHaveLength(MAX_PDF_PICTURES);
+  });
+});
+
+describe("extractDocumentText — pictures that are not content (review on #6)", () => {
+  const questionPage = ["Question 1.", "(a)", "(b)"];
+  /** Covers the whole 612×792 page, like a scan's page image or a slide's
+   *  full-bleed background. */
+  const fullPage: PdfPictureFixture = {
+    at: [0, 0, 612, 792],
+    width: 16,
+    height: 20,
+    kind: "rgb",
+  };
+  const formula = (shade: number): PdfPictureFixture => ({
+    at: [72, 610, 120, 40],
+    width: 12,
+    height: 10,
+    kind: "rgb",
+    data: new Uint8Array(12 * 10 * 3).fill(shade),
+  });
+
+  it("a picture covering most of a page that has text is skipped — a scan under its OCR layer, a slide background", async () => {
+    const r = await extractDocumentText(
+      "pdf",
+      makePdf([questionPage], {
+        lineGap: 60,
+        pictures: [[fullPage, formula(1)]],
+      }),
+      { pictures: true },
+    );
+    if (!r.ok) throw new Error(r.reason);
+    // Only the formula: the page image is left to the text it carries.
+    expect(r.pictures).toHaveLength(1);
+    expect(r.text).toBe(
+      `── 第 1 页 ──\nQuestion 1.\n(a)\n${pictureToken(1)}\n(b)`,
+    );
+  });
+
+  it("an image above the decode ceiling is never decoded or kept, whatever it covers; one below it is (2026-10-01)", async () => {
+    // pdfjs drops it from the operator list before decoding — the main-process
+    // cost the full-page rule cannot avoid, because that rule needs the
+    // decoded draw. Drawn small here, so ONLY the ceiling can exclude it.
+    const side = Math.ceil(Math.sqrt(MAX_PICTURE_DECODE_PIXELS)) + 1;
+    const huge: PdfPictureFixture = {
+      at: [300, 300, 150, 150],
+      width: side,
+      height: side,
+      kind: "gray1",
+    };
+    const under: PdfPictureFixture = {
+      ...huge,
+      width: side - 200,
+      height: side - 200,
+    };
+    expect(huge.width * huge.height).toBeGreaterThan(MAX_PICTURE_DECODE_PIXELS);
+    expect(under.width * under.height).toBeLessThan(MAX_PICTURE_DECODE_PIXELS);
+    const r = await extractDocumentText(
+      "pdf",
+      makePdf([questionPage, questionPage], {
+        lineGap: 60,
+        pictures: [
+          [huge, formula(1)],
+          [under, formula(2)],
+        ],
+      }),
+      { pictures: true },
+    );
+    if (!r.ok) throw new Error(r.reason);
+    // Page 1 keeps only its formula; page 2 keeps both.
+    expect(r.pictures?.map(({ page, index }) => `${page}-${index}`)).toEqual([
+      "1-1",
+      "2-1",
+      "2-2",
+    ]);
+  });
+
+  it("…but on a page WITHOUT text the same picture is the content, and is kept", async () => {
+    const r = await extractDocumentText(
+      "pdf",
+      makePdf([questionPage, []], {
+        lineGap: 60,
+        pictures: [[], [fullPage]],
+      }),
+      { pictures: true },
+    );
+    if (!r.ok) throw new Error(r.reason);
+    expect(r.pictures?.map(({ page }) => page)).toEqual([2]);
+    expect(r.text.endsWith(`── 第 2 页 ──\n${pictureToken(1)}`)).toBe(true);
+  });
+
+  it("the same picture elsewhere is content and keeps a line; at the same place on another page it is chrome (2026-10-01)", async () => {
+    // Page 1 draws the formula under (a); page 2 draws the SAME pixels under
+    // its (b) — a different place: content used twice. Page 3 draws them at
+    // page 1's exact place: a template element, so no line.
+    const same = formula(42);
+    const elsewhere: PdfPictureFixture = { ...same, at: [72, 550, 120, 40] };
+    const r = await extractDocumentText(
+      "pdf",
+      makePdf([questionPage, questionPage, questionPage], {
+        lineGap: 60,
+        pictures: [[same], [elsewhere], [same]],
+      }),
+      { pictures: true },
+    );
+    if (!r.ok) throw new Error(r.reason);
+    expect(r.pictures?.map(({ page }) => page)).toEqual([1, 2]);
+    // One picture, encoded once: both lines carry the same PNG.
+    expect(r.pictures?.[1]?.png).toBe(r.pictures?.[0]?.png);
+    const pages = r.text.split(/── 第 \d+ 页 ──\n/).slice(1);
+    expect(pages[0]).toContain(pictureToken(1));
+    expect(pages[1]).toContain(pictureToken(2));
+    expect(pages[2]).not.toMatch(/⟦picture:/);
+  });
+
+  it("a picture drawn again — a letterhead on every page — keeps its first line only and counts once toward the cap", async () => {
+    const logo: PdfPictureFixture = {
+      at: [400, 730, 60, 30],
+      width: 12,
+      height: 8,
+      kind: "rgb",
+      data: new Uint8Array(12 * 8 * 3).fill(77),
+    };
+    const pages = Array.from({ length: 5 }, () => questionPage);
+    const r = await extractDocumentText(
+      "pdf",
+      makePdf(pages, {
+        lineGap: 60,
+        pictures: pages.map((_, i) => [logo, formula(10 + i)]),
+      }),
+      { pictures: true },
+    );
+    if (!r.ok) throw new Error(r.reason);
+    // One logo and five formulas: six distinct pictures, six lines.
+    expect(r.pictures).toHaveLength(6);
+    expect(r.pictures?.[0]).toMatchObject({ page: 1, index: 1 });
+    expect(r.text.match(/\u27E6picture:\d+\u27E7/g)).toHaveLength(6);
   });
 });

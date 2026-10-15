@@ -111,7 +111,7 @@ function frameStaticTokens(frame: FrameBase): number {
   if (cached !== undefined) return cached;
   const t =
     estimatePromptTokens(frame.backendSystem) +
-    estimatePromptTokens(frame.scopedRepoInstructions) +
+    estimatePromptTokens(frame.scopedRepoInstructions ?? "") +
     estimatePromptTokens(frame.scopedMemory) +
     estimatePromptTokens(JSON.stringify(frame.toolSchemas));
   frameBaseTokenCache.set(frame, t);
@@ -119,12 +119,12 @@ function frameStaticTokens(frame: FrameBase): number {
 }
 
 /** Estimated tokens of everything in the frame EXCEPT `messages`. Only the
- *  todo state — which changes between iterations — is walked per call. */
+ *  state trailer — which changes between iterations — is walked per call. */
 export function estimateFrameBaseTokens(
   frame: FrameBase,
-  todoState: string,
+  trailingState: string,
 ): number {
-  return frameStaticTokens(frame) + estimatePromptTokens(todoState);
+  return frameStaticTokens(frame) + estimatePromptTokens(trailingState);
 }
 
 const CLEARED_NOTE =
@@ -155,9 +155,12 @@ function trimMarker(lang: "zh" | "en", droppedGroups: number): Message {
   return {
     role: "assistant",
     text:
+      // The task statement is in the system prompt above; the working state
+      // the harness keeps trails the transcript, at the end
+      // (`BackendPromptFrame.trailingState`).
       lang === "en"
-        ? `(context trimmed: ${droppedGroups} earlier tool iteration(s) removed to fit the budget — the task statement and the todo list above remain authoritative)`
-        : `（上下文已裁剪：更早的 ${droppedGroups} 轮工具调用记录已移除；上方的任务说明与任务清单仍然有效。）`,
+        ? `(context trimmed: ${droppedGroups} earlier tool iteration(s) removed to fit the budget. The task statement above, and the working state at the end, remain authoritative.)`
+        : `（上下文已裁剪：更早的 ${droppedGroups} 轮工具调用记录已移除。上方的任务说明，以及末尾的工作状态，仍然有效。）`,
     toolCalls: [],
     ts: "",
   };
@@ -226,8 +229,8 @@ function clearOldest(
  *   Phase 1 — clear OLD tool payloads (keep the newest
  *   `keepRecentToolPayloads` tool messages verbatim; older ones keep
  *   their one-line summary but lose the JSON payload). The summaries
- *   plus the todo list preserve "what have I done" at a fraction of the
- *   cost — the CC microcompact pattern, re-derived.
+ *   preserve "what have I done" at a fraction of the cost — the CC
+ *   microcompact pattern, re-derived.
  *
  *   Phase 2 — drop whole leading groups (assistant + its tool replies),
  *   oldest first, always keeping the final group, and prepend a marker

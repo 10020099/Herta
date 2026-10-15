@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { MessageKey } from "../../i18n/keys.js";
+import { en } from "../../i18n/messages/en.js";
+import { zh } from "../../i18n/messages/zh.js";
 import type { SystemBlock } from "./group-record.js";
 import {
   latestOpStep,
-  latestTodoProgressStep,
   stepDisplayBody,
   stepDisplayDetail,
 } from "./step-display.js";
@@ -23,8 +24,6 @@ const ZH: Partial<Record<MessageKey, string>> = {
   "activity.bg.stopped": "已停止",
   "activity.bg.exited": "已退出",
   "activity.bg.signal": "信号中止",
-  "activity.todo.list": "任务清单",
-  "activity.todo.step": "步骤",
   "evidence.output": "输出",
   "evidence.excerpt": "摘录",
   "evidence.files": "改动文件",
@@ -102,7 +101,7 @@ describe("stepDisplayBody — patch magnitude (2026-08-25)", () => {
   });
 });
 
-describe("stepDisplayBody — bg + todo digests (2026-07-23)", () => {
+describe("stepDisplayBody — bg digests (2026-07-23), legacy todo rows", () => {
   it("localizes background lifecycle rows, incl. the signal case", () => {
     expect(
       stepDisplayBody(
@@ -138,15 +137,11 @@ describe("stepDisplayBody — bg + todo digests (2026-07-23)", () => {
     ).toBe("↳ 后台 bg-1: 已退出 (0)");
   });
 
-  it("localizes the todo layout header, keeping item lines verbatim", () => {
+  it("a legacy todo row (records before ADR 0073) shows the body it was recorded with", () => {
     const body = "todo list (2):\n[~] 定位 bug\n[ ] 修复";
     expect(
       stepDisplayBody(sys(body, { kind: "todo", total: 2, completed: 0 }), t),
-    ).toBe("任务清单 (0/2):\n[~] 定位 bug\n[ ] 修复");
-  });
-
-  it("renders a todo progress row as the localized step line (2026-07-23)", () => {
-    // In-flight item is #completed+1 of the sequential plan.
+    ).toBe(body);
     expect(
       stepDisplayBody(
         sys("todo 1/3: 修复", {
@@ -157,50 +152,24 @@ describe("stepDisplayBody — bg + todo digests (2026-07-23)", () => {
         }),
         t,
       ),
-    ).toBe("步骤 2/3 · 修复");
-    // All done (no current): counts only.
-    expect(
-      stepDisplayBody(
-        sys("todo 3/3", { kind: "todo", total: 3, completed: 3 }),
-        t,
-      ),
-    ).toBe("任务清单 3/3");
+    ).toBe("todo 1/3: 修复");
   });
 });
 
-describe("latestTodoProgressStep + todo headline eligibility (2026-07-23)", () => {
-  const layout = sys("todo list (3):\n[~] a\n[ ] b\n[ ] c", {
-    kind: "todo",
-    total: 3,
-    completed: 0,
-  });
-  const progress = sys("todo 1/3: b", {
-    kind: "todo",
-    total: 3,
-    completed: 1,
-    current: "b",
-  });
-
-  it("a progress row IS headline-eligible; the multiline layout is not", () => {
+describe("latestOpStep — a legacy todo row is never the live state (ADR 0073)", () => {
+  it("skips back past it to the op", () => {
     const op = sys("Reading a.ts", {
       kind: "op",
       verb: "Reading",
       arg: "a.ts",
     });
-    expect(latestOpStep([op, progress])).toBe(progress);
-    // Layout newest → skip back to the op, never the multiline body.
-    expect(latestOpStep([op, layout])).toBe(op);
-  });
-
-  it("finds the newest progress row for the live line's step context", () => {
-    const op = sys("Writing x.ts", {
-      kind: "op",
-      verb: "Writing",
-      arg: "x.ts",
+    const progress = sys("todo 1/3: b", {
+      kind: "todo",
+      total: 3,
+      completed: 1,
+      current: "b",
     });
-    expect(latestTodoProgressStep([layout, progress, op])).toBe(progress);
-    expect(latestTodoProgressStep([layout, op])).toBeUndefined();
-    expect(latestTodoProgressStep([op])).toBeUndefined();
+    expect(latestOpStep([op, progress])).toBe(op);
   });
 });
 
@@ -789,6 +758,37 @@ describe("stepDisplayDetail — the evidence pane localizes (2026-08-01)", () =>
           key === "activity.verb.digesting" ? "摘要" : tEn(key),
       ),
     ).toBe("摘要 x");
+  });
+
+  it("the crash marker's cut-off steps: the outcome words translate, the steps stay verbatim (ADR 0071 §1.2)", () => {
+    const tCat =
+      (cat: Record<MessageKey, string>) =>
+      (key: MessageKey): string =>
+        cat[key];
+    // The canonical detail exactly as the seal writes it (pinned by the
+    // app-server's dispatch-recovery test).
+    const marker: SystemBlock = {
+      kind: "system",
+      label: "差分协处理器",
+      body: "中断 · 1 个文件 · 应用意外退出",
+      role: "done-marker",
+      evidenceDetail:
+        "↳ 中断时: edit_file a.ts — 已写入; run_command npm test — 未开始\n↳ 改动文件: a.ts",
+      evidence: [
+        {
+          kind: "cutoff",
+          steps: [
+            { step: "edit_file a.ts", outcome: "write_applied" },
+            { step: "run_command npm test", outcome: "not_started" },
+          ],
+        },
+        { kind: "files", paths: ["a.ts"] },
+      ],
+    };
+    expect(stepDisplayDetail(marker, tCat(zh))).toBe(marker.evidenceDetail);
+    expect(stepDisplayDetail(marker, tCat(en))).toBe(
+      "↳ when the app exited: edit_file a.ts — written; run_command npm test — not started\n↳ changed files: a.ts",
+    );
   });
 
   it("falls back to the canonical string for records without sections", () => {

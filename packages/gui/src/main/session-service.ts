@@ -5,6 +5,8 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   type AppServerConfig,
+  type AutoReviewState,
+  type ContinueInterruptedResult,
   createSessionHost,
   defaultDirsFor,
   globalMcpConfigPath,
@@ -16,7 +18,8 @@ import {
   type SessionMetadata,
   type SpeechSynthesizer,
   type SteerTextResult,
-  type WorkspaceTrustState,
+  type UndoTarget,
+  type UndoTurnEditsResult,
 } from "@herta/app-server";
 import { errorMessage } from "@herta/core";
 import {
@@ -42,10 +45,14 @@ import type {
   SessionSnapshot,
 } from "../renderer/ipc/bridge-types.js";
 import { slimAgentEventForRenderer } from "../shared/agent-event-wire.js";
+import { createLiveToolFeed } from "../shared/live-tool-feed.js";
 import type { VoiceEngine } from "./app-global-settings.js";
 import {
+  composerPredictionsEnabled,
   type InteractionLang,
+  type Locale,
   osLocale,
+  pdfPictureTranscriptsEnabled,
   readGlobalSettings,
   resolveInitialLocale,
   resolveInteractionLang,
@@ -59,6 +66,14 @@ import {
   normalizeModelChoice,
   readAppSettings,
 } from "./app-settings.js";
+import { createAttachProgressRelay } from "./attach-progress-relay.js";
+import {
+  type AttentionPrefs,
+  DEFAULT_ATTENTION_PREFS,
+  watchAttention,
+} from "./attention.js";
+import { createElectronAttentionHost } from "./attention-electron.js";
+import { installMode } from "./install-mode.js";
 import {
   type ProviderConfig,
   readDeepSeekKeyPlain,
@@ -72,7 +87,9 @@ import {
   resolveInsideWorkspace,
 } from "./read-workspace-file.js";
 import { createSessionActivation } from "./session-activation.js";
+import { createExportSaver } from "./session-export.js";
 import {
+  attentionSettingsOf,
   registerSettingsHandlers,
   type SettingsHooks,
 } from "./settings-ipc.js";
@@ -111,6 +128,7 @@ import {
   type VoiceModelService,
 } from "./tts/voice-model.js";
 import { resolveVoiceRoot } from "./voice-path.js";
+import { listWorkspaceFiles } from "./workspace-files.js";
 
 type Send = (channel: string, payload: unknown) => void;
 
@@ -178,12 +196,14 @@ const USER_ACTION_CHANNELS: ReadonlySet<string> = new Set([
   CMD.interrupt,
   CMD.steerText,
   CMD.rewindLastTurn,
+  CMD.undoLastTurnEdits,
   CMD.search,
   CMD.recordSlice,
   CMD.deleteSession,
+  CMD.renameSession,
+  CMD.saveSessionExport,
   CMD.resolveApproval,
-  CMD.removeCommandRule,
-  CMD.setWorkspaceTrust,
+  CMD.setAutoReview,
   CMD.pickWorkspace,
   CMD.setWorkspace,
   CMD.resetWorkspace,
@@ -238,11 +258,11 @@ export function resolveWorkspaceRoot(packagedUserDataDir?: string): string {
   );
 }
 
-/** `resolveWorkspaceRoot` with THIS process's packaged-ness applied — the
+/** `resolveWorkspaceRoot` with THIS process's install mode applied — the
  *  thin electron-aware wrapper (the pure fn stays unit-testable). */
 export function appWorkspaceRoot(): string {
   return resolveWorkspaceRoot(
-    app.isPackaged ? app.getPath("userData") : undefined,
+    installMode().installed ? app.getPath("userData") : undefined,
   );
 }
 
@@ -332,12 +352,12 @@ export async function buildConfig(
   // (kept out of this pure, unit-tested fn). Null when none is stored.
   secureKey: string | null = null,
   // Packaged-aware voice root override (resolveVoiceRoot), injected by the
-  // caller for the same purity reason as the key: `app.isPackaged` /
-  // `process.resourcesPath` need Electron. Absent → defaultDirsFor's dev
-  // layout (<cwd>/data/voice) stands.
+  // caller for the same purity reason as the key: the install mode needs
+  // Electron (install-mode.ts). Absent → defaultDirsFor's dev layout
+  // (<cwd>/data/voice) stands.
   voiceAssetsDir?: string,
   // Dev-only DeepSeek base-URL override (chaos/staging proxy). The CALLER
-  // gates this on `!app.isPackaged` before passing (same credential-safety
+  // gates this on an installed app before passing (same credential-safety
   // reasoning as HERTA_UPDATE_URL, audit T1.3: a packaged build honoring an
   // env-set base URL would send the API key to an arbitrary host).
   devBaseUrl?: string,
@@ -472,6 +492,10 @@ export function snapshot(s: Session): SessionSnapshot {
     ...(s.stagedImageList !== undefined && s.stagedImageList.length > 0
       ? { stagedImages: s.stagedImageList }
       : {}),
+    // The 继续 offer (ADR 0071 §1.4): a reloaded window's strip comes back.
+    ...(s.resumable === true ? { resumable: true } : {}),
+    // The 撤销 chip (ADR 0074 §4): a reloaded window's card keeps it.
+    ...(s.undoable === true ? { undoable: true } : {}),
   };
 }
 
@@ -504,6 +528,35 @@ export async function handleSetWorkspace(
   return { ok: true };
 }
 
+/**
+ * Take a turn's edits back (ADR 0074 §4) — a destructive call, bound to the
+ * session the user clicked in like the rewind (a session switch can land
+ * between the click and the invoke), and to a target the session knows.
+ * Anything else answers that there is nothing to undo. Exported for testing.
+ */
+export async function handleUndoLastTurnEdits(
+  host: {
+    activeSession: {
+      sessionId: string;
+      undoLastTurnEdits?(target: UndoTarget): Promise<UndoTurnEditsResult>;
+    } | null;
+  },
+  sessionId: unknown,
+  target: unknown,
+): Promise<UndoTurnEditsResult> {
+  const nothing = { ok: false as const, reason: "nothing_to_undo" as const };
+  const s = host.activeSession;
+  if (
+    s === null ||
+    typeof sessionId !== "string" ||
+    s.sessionId !== sessionId
+  ) {
+    return nothing;
+  }
+  if (target !== "latest" && target !== "withdrawn") return nothing;
+  return (await s.undoLastTurnEdits?.(target)) ?? nothing;
+}
+
 /** Pipes a session's 8 subscriptions to `send`. Returns a stop fn. Exported for testing. */
 export function startForwarders(session: Session, send: Send): () => void {
   let live = true;
@@ -531,12 +584,18 @@ export function startForwarders(session: Session, send: Send): () => void {
   void pump(session.subscribeRecord(), EVT.record);
   void pump(session.subscribeOverlay(), EVT.overlay);
   void pump(session.subscribeSpeech(), EVT.speech);
-  // The raw stream is a trace; the renderer wants its signals only.
-  void pump(
-    session.subscribeAgentEvents(),
-    EVT.agent,
-    slimAgentEventForRenderer,
-  );
+  // The raw stream is a trace; the renderer wants its signals only — and,
+  // folded from it, the live views of the call in flight (ADR 0073): a
+  // bounded tail per call, ten times a second at most.
+  const liveFeed = createLiveToolFeed((snapshot) => send(EVT.live, snapshot), {
+    // Pointed at mid-run (a reload, a resync): the calls before now were
+    // never seen, so none is numbered until the next run.
+    midRun: session.backendActive === true,
+  });
+  void pump(session.subscribeAgentEvents(), EVT.agent, (e) => {
+    liveFeed.push(e);
+    return slimAgentEventForRenderer(e);
+  });
   void pump(session.subscribeTurnLifecycle(), EVT.turn);
   void pump(session.subscribeTitle(), EVT.title);
   void pump(session.subscribeWorkspace(), EVT.workspace);
@@ -545,8 +604,17 @@ export function startForwarders(session: Session, send: Send): () => void {
   if (session.subscribeRepo !== undefined) {
     void pump(session.subscribeRepo(), EVT.repo);
   }
+  // The 继续 offer (ADR 0071 §1.4); optional on the interface.
+  if (session.subscribeResume !== undefined) {
+    void pump(session.subscribeResume(), EVT.resume);
+  }
+  // The 撤销 chip (ADR 0074 §4); optional on the interface.
+  if (session.subscribeUndo !== undefined) {
+    void pump(session.subscribeUndo(), EVT.undo);
+  }
   return () => {
     live = false;
+    liveFeed.close();
     for (const it of iterators) {
       // Resolves the parked next() with {done:true}; best-effort (a generator
       // mid-yield settles on its own).
@@ -691,6 +759,22 @@ export function createSessionService(
     if (!wc.isDestroyed()) wc.send(ch, payload);
   };
 
+  // When the user is away from the window (ADR 0072 §1): notifications and
+  // keep-awake for the active session. Both settings and the UI language are
+  // cached here (seeded at bootstrap, kept by the Settings hooks) because the
+  // watcher reads them at every event.
+  let attentionPrefs: AttentionPrefs = DEFAULT_ATTENTION_PREFS;
+  let uiLocale: Locale = "en";
+  const refreshUiLocale = async (): Promise<void> => {
+    const s = await readGlobalSettings(app.getPath("userData"));
+    uiLocale = resolveInitialLocale(s, osLocale(process.platform, app));
+  };
+  const attentionHost = createElectronAttentionHost({
+    win,
+    prefs: () => attentionPrefs,
+    locale: () => uiLocale,
+  });
+
   // Interaction language (slice 4): resolved FRESH here per activation (like
   // getTheme reads per call) — stored choice, else follow the UI locale.
   // Threaded into the host so the session builds its static prefix, openings,
@@ -713,7 +797,17 @@ export function createSessionService(
   const activation = createSessionActivation({
     host: () => host,
     send,
-    startForwarders,
+    // The window's forwarders, and beside them the attention watcher — which
+    // therefore always concerns the session the window shows, and stops
+    // (releasing any keep-awake hold) when the window points elsewhere.
+    startForwarders: (session, sendTo) => {
+      const stopForwarders = startForwarders(session, sendTo);
+      const stopAttention = watchAttention(session, attentionHost);
+      return () => {
+        stopForwarders();
+        stopAttention();
+      };
+    },
     snapshot,
     lang: currentInteractionLang,
   });
@@ -801,6 +895,15 @@ export function createSessionService(
       async (_e, text: string): Promise<SteerTextResult> =>
         (await host?.activeSession?.steerText?.(text)) ?? { queued: true },
     );
+    // 继续 (ADR 0071 §1.4). No session, or one that cannot continue: there
+    // is nothing to continue, and the renderer drops its strip.
+    handle(
+      CMD.continueInterrupted,
+      async (): Promise<ContinueInterruptedResult> =>
+        (await host?.activeSession?.continueInterrupted?.()) ?? {
+          unavailable: true,
+        },
+    );
     handle(CMD.rewindLastTurn, async (_e, sessionId?: string) => {
       const active = host?.activeSession ?? null;
       // Destructive call, session-bound (same pattern as setWorkspace): the
@@ -820,6 +923,13 @@ export function createSessionService(
         }
       );
     });
+    handle(CMD.undoLastTurnEdits, (_e, sessionId?: unknown, target?: unknown) =>
+      handleUndoLastTurnEdits(
+        { activeSession: host?.activeSession ?? null },
+        sessionId,
+        target,
+      ),
+    );
     handle(CMD.maybePlayEasterEgg, () => {
       // Fire-and-forget GUI flourish: a successful 板砖-card lift may play the
       // easter-egg clip. The session owns the 50% roll + per-session hourly
@@ -891,33 +1001,51 @@ export function createSessionService(
       if (!isSafeSessionId(id)) return { ok: false, wasActive: false };
       return activation.deleteAndReconcile(id);
     });
+    // Rename and export (ADR 0072 §3), from the sidebar's session menu —
+    // any session, open or not. Same id gate: both join transcript paths.
+    handle(CMD.renameSession, async (_e, id: string, title: string) => {
+      if (!isSafeSessionId(id) || typeof title !== "string") {
+        return { ok: false };
+      }
+      return (await host?.renameSession?.(id, title)) ?? { ok: false };
+    });
+    handle(CMD.readSessionForExport, async (_e, id: string) => {
+      if (!isSafeSessionId(id)) return null;
+      return (await host?.readSessionForExport?.(id)) ?? null;
+    });
+    const saveExport = createExportSaver({
+      showSaveDialog: (opts) =>
+        dialog.showSaveDialog(win, {
+          defaultPath: opts.defaultPath,
+          filters: opts.filters.map((f) => ({
+            name: f.name,
+            extensions: [...f.extensions],
+          })),
+        }),
+      documentsDir: () => app.getPath("documents"),
+    });
+    handle(CMD.saveSessionExport, (_e, name: unknown, markdown: unknown) =>
+      saveExport(name, markdown),
+    );
     handle(CMD.resolveApproval, (_e, opts) =>
       host?.activeSession?.resolveApproval(opts),
     );
-    // Project command allow rules (ADR 0030) — scoped to the ACTIVE session's
-    // effective workspace. No session → empty list / no-op remove.
-    handle(
-      CMD.listCommandRules,
-      async () => (await host?.activeSession?.listCommandRules?.()) ?? [],
-    );
-    handle(CMD.removeCommandRule, async (_e, display: string) => {
-      if (typeof display !== "string" || display.length === 0) return false;
-      return (await host?.activeSession?.removeCommandRule?.(display)) ?? false;
-    });
-    // Workspace trust (ADR 0064) — the ACTIVE session's effective workspace.
-    // No session → a real project that asks (the honest default).
-    const noTrust: WorkspaceTrustState = {
-      effective: "ask",
+    // Automatic review (ADR 0075, which replaced workspace trust) — the
+    // ACTIVE session's effective workspace. No session → a real project,
+    // off (the honest default).
+    const noReview: AutoReviewState = {
+      on: false,
       explicit: null,
       isDefaultWorkspace: false,
     };
     handle(
-      CMD.getWorkspaceTrust,
-      async () => (await host?.activeSession?.getWorkspaceTrust?.()) ?? noTrust,
+      CMD.getAutoReview,
+      async () => (await host?.activeSession?.getAutoReview?.()) ?? noReview,
     );
-    handle(CMD.setWorkspaceTrust, async (_e, value: unknown) => {
-      const v = value === "workspace" || value === "ask" ? value : null;
-      return (await host?.activeSession?.setWorkspaceTrust?.(v)) ?? noTrust;
+    // Only a literal boolean from the window is a choice; null clears it.
+    handle(CMD.setAutoReview, async (_e, on: unknown) => {
+      const v = typeof on === "boolean" ? on : null;
+      return (await host?.activeSession?.setAutoReview?.(v)) ?? noReview;
     });
     // Record heal after a record-channel overflow drop: the session re-emits
     // its live record as a `reset` through the record stream (FIFO with block
@@ -982,7 +1110,17 @@ export function createSessionService(
         if (s.attachFiles === undefined) {
           return { ok: false as const, message: "attachments unavailable" };
         }
-        const r = await s.attachFiles(paths);
+        // The pending row's hairline (2026-10-01): each file's pages and
+        // transcripts as they go, throttled per file, the last always sent.
+        const relay = createAttachProgressRelay((p) =>
+          send(EVT.attachProgress, { sessionId, ...p }),
+        );
+        let r: Awaited<ReturnType<typeof s.attachFiles>>;
+        try {
+          r = await s.attachFiles(paths, relay.push);
+        } finally {
+          relay.flush();
+        }
         if (r.ok) return { ok: true as const };
         // Each refusal gets its own words: "a turn is in progress" is a
         // retry-in-a-moment, "too many files" is a do-something-different.
@@ -1047,6 +1185,13 @@ export function createSessionService(
         return readWorkspaceFileBounded(s.backendWorkspace, path);
       },
     );
+    // The composer's @-mention list (ADR 0072 §2): the files of the same
+    // workspace, listed asynchronously and bounded (workspace-files.ts).
+    handle(CMD.listWorkspaceFiles, async (_e, sessionId: string) => {
+      const s = host?.activeSession ?? null;
+      if (s === null || s.sessionId !== sessionId) return null;
+      return listWorkspaceFiles(s.backendWorkspace);
+    });
     // The rich kinds' read (ADR 0054 §2): the whole file as bytes for the
     // renderers that parse it themselves — same jail, 64 MB ceiling.
     handle(
@@ -1204,7 +1349,17 @@ export function createSessionService(
     // getters and setters below.
     registerSettingsHandlers({
       handle,
-      hooks,
+      hooks: {
+        ...hooks,
+        onAttentionChanged: (prefs) => {
+          attentionPrefs = prefs;
+          hooks.onAttentionChanged?.(prefs);
+        },
+        onLocaleChanged: () => {
+          void refreshUiLocale();
+          hooks.onLocaleChanged?.();
+        },
+      },
       host: () => host,
       workspaceRoot: appWorkspaceRoot,
       dreamRunning: () => dreamRunning,
@@ -1332,15 +1487,15 @@ export function createSessionService(
         // a packaged app has only the first.
         modelRoots: resolveTtsModelRoots({
           userDataPath,
-          isPackaged: app.isPackaged,
+          isPackaged: installMode().installed,
           workspaceRoot,
         }),
         // electron.vite.config.ts emits the worker beside the main bundle;
         // it is a plain .cjs on purpose — a native addon cannot be bundled.
         workerPath: join(__dirname, "tts-worker.cjs"),
         sherpaPath: resolveSherpaEntry({
-          isPackaged: app.isPackaged,
-          resourcesPath: process.resourcesPath,
+          isPackaged: installMode().installed,
+          resourcesPath: installMode().resourcesPath,
           startDir: __dirname,
         }),
         enabled: () => realtimeVoiceEnabled,
@@ -1353,7 +1508,7 @@ export function createSessionService(
         // with its hash; a dev run may point it at a local server for the
         // lab — NEVER a packaged build (the T1.3 rule the update feed and
         // the DeepSeek base URL already follow).
-        const override = app.isPackaged
+        const override = installMode().installed
           ? undefined
           : process.env[TTS_ARCHIVE_URL_ENV];
         const synth = synthesizer;
@@ -1387,9 +1542,14 @@ export function createSessionService(
       // record come from settings; the key from the secure store, per call.
       const startupSettings = await readGlobalSettings(userDataPath);
       voiceEngine = startupSettings.voiceEngine ?? "local";
+      attentionPrefs = attentionSettingsOf(startupSettings);
+      uiLocale = resolveInitialLocale(
+        startupSettings,
+        osLocale(process.platform, app),
+      );
       const referencePath = resolveVoiceCloneReference({
-        isPackaged: app.isPackaged,
-        resourcesPath: process.resourcesPath,
+        isPackaged: installMode().installed,
+        resourcesPath: installMode().resourcesPath,
         workspaceRoot,
       });
       const fetchLike = minimaxFetch;
@@ -1447,14 +1607,16 @@ export function createSessionService(
         readDeepSeekKeyPlain(),
         // Packaged builds read the bundled clips; dev reads the workspace.
         resolveVoiceRoot({
-          isPackaged: app.isPackaged,
-          resourcesPath: process.resourcesPath,
+          isPackaged: installMode().installed,
+          resourcesPath: installMode().resourcesPath,
           workspaceRoot,
         }),
         // Dev-only chaos/staging feed: NEVER honored in a packaged build
         // (T1.3 pattern — an env-settable base URL in production would
         // redirect the API key to an arbitrary host).
-        app.isPackaged ? undefined : process.env.HERTA_DEEPSEEK_BASE_URL,
+        installMode().installed
+          ? undefined
+          : process.env.HERTA_DEEPSEEK_BASE_URL,
         speech,
       );
       dreamRunning = config.dream?.enabled === true;
@@ -1466,6 +1628,13 @@ export function createSessionService(
         // `buildConfig`.
         usageLogPath: join(userDataPath, "usage.jsonl"),
       });
+      // The PDF-picture switch (2026-10-01) before any session can attach;
+      // Settings mirrors later changes to the host live.
+      host.setPdfPictureTranscription(
+        pdfPictureTranscriptsEnabled(startupSettings),
+      );
+      // And the composer-prediction switch (2026-10-10), before any turn.
+      host.setComposerPredictions(composerPredictionsEnabled(startupSettings));
       // Launch lands on the connect screen (接入黑塔空间站) rather than
       // auto-resuming the latest session: the user explicitly opens one from the
       // sidebar or starts a new one from the connect button (user 2026-06-20).
@@ -1475,6 +1644,11 @@ export function createSessionService(
       // future "resume last" affordance.
       console.log("[herta] launch: connect screen (no auto-resume)");
       send(EVT.reset, { noSession: true });
+      // Commands a 板砖 run left running when the app last exited are ended
+      // now, each only if it is still that process (ADR 0071 §1.6). The index
+      // it reads is empty unless a run was cut off, so this costs a file read;
+      // the process query it may spawn runs off this thread.
+      void host.reapOrphanedProcesses();
     } catch (err) {
       console.error("[herta] session bootstrap failed:", err);
       host = null;

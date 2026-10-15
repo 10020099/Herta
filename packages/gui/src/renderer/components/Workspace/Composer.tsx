@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { workspaceRelativeRepoPath } from "@herta/core/repo-path";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { attachmentImageUrl } from "../../../shared/attachment-image.js";
 import { useHertaBridge } from "../../context/HertaBridgeContext.js";
 import { useSessionLang } from "../../hooks/useActiveSession.js";
@@ -9,12 +17,23 @@ import {
 import { useT } from "../../i18n/LocaleProvider.js";
 import { aliasBrickInput } from "../../lib/banzhuan-mention.js";
 import { renderBanzhuanText } from "../../lib/banzhuan-text.js";
+import {
+  brickComplete,
+  findMentionQuery,
+  insertBrick,
+  insertMention,
+  type MentionItem,
+  mentionItems,
+} from "../../lib/file-mention.js";
+import { composeQuotedMessage, quoteLabel } from "../../lib/quote-format.js";
+import { recallLastMessage } from "../../lib/recall-last-message.js";
 import { submitMessage } from "../../lib/submit-message.js";
 import { stopAllVoice } from "../../voice/play-voice.js";
 import { Tooltip } from "../Tooltip/Tooltip.js";
 import { AuraVisual } from "../UtilityRail/AuraVisual.js";
 import { ContextIndicator } from "./ContextIndicator.js";
 import { useLightbox } from "./ImageLightbox.js";
+import { endPendingAttach, startPendingAttach } from "./pending-attach.js";
 import { SendArrowIcon } from "./SendArrowIcon.js";
 import { useStagedImages } from "./useStagedImages.js";
 import { useWorkspaceRefs } from "./WorkspaceRefs.js";
@@ -60,6 +79,10 @@ function caretIsFree(form: HTMLElement | null): boolean {
  *  the `.composer-notice.is-exiting` animation duration in reference-ux.css. */
 const NOTICE_EXIT_MS = 240;
 
+/** How long the workspace's file list is reused before `@` lists it again
+ *  (ADR 0072 §2) — a file 板砖 just created shows up on the next mention. */
+const MENTION_FILES_TTL_MS = 10_000;
+
 /** Filename extension for a pasted image whose File carries no name. The
  *  MIME subtype is the only thing the clipboard tells us. */
 function pasteName(mime: string): string {
@@ -80,9 +103,13 @@ export function Composer(): JSX.Element {
     composerDraft,
     composerDraftImages,
     composerNotice,
+    rewindUndo,
     backendActive,
     held,
+    resumable,
     restagedImages,
+    prediction,
+    composerQuotes,
   } = useSessionSelector(
     (s) => ({
       status: s.status,
@@ -91,9 +118,13 @@ export function Composer(): JSX.Element {
       composerDraft: s.composerDraft,
       composerDraftImages: s.composerDraftImages,
       composerNotice: s.composerNotice,
+      rewindUndo: s.rewindUndo,
       backendActive: s.backendActive,
       held: s.held,
+      resumable: s.resumable,
       restagedImages: s.restagedImages,
+      prediction: s.prediction,
+      composerQuotes: s.composerQuotes,
     }),
     shallowEqualObjects,
   );
@@ -135,8 +166,41 @@ export function Composer(): JSX.Element {
   // After a Tab insertion we must restore the caret AFTER the inserted 板砖,
   // applied post-render via this ref (React owns the controlled value).
   const pendingCaret = useRef<number | null>(null);
+  // @-file mentions (ADR 0072 §2): the `@query` the caret is in, the
+  // workspace's files (listed by main, kept briefly per session), the
+  // highlighted match, and the `@` whose list the user dismissed with Esc
+  // (it stays dismissed while the caret stays in that mention).
+  const [mention, setMention] = useState<{
+    readonly start: number;
+    readonly query: string;
+  } | null>(null);
+  const [mentionFiles, setMentionFiles] = useState<readonly string[] | null>(
+    null,
+  );
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const mentionKey = useRef("");
+  const mentionDismissed = useRef(-1);
+  const mentionCache = useRef<{
+    readonly sessionId: string;
+    readonly at: number;
+  } | null>(null);
   const busy = status !== "idle";
   const suppressed = overlay?.kind === "pending-permission";
+  // Composer predictions (owner 2026-10-10): the Trailblazer's likely next
+  // line, shown where the placeholder is while the box is empty. Tab takes
+  // it (nothing is sent); typing replaces it. In an EN session the trigger
+  // is spelled the way this composer spells it, `@brick`.
+  // A staged quote (ADR 0078 §6) is its own subject: no prediction for it.
+  const suggestion =
+    prediction !== null &&
+    text.length === 0 &&
+    composerQuotes.length === 0 &&
+    !busy &&
+    !suppressed
+      ? lang === "en"
+        ? prediction.replaceAll("@板砖", "@brick")
+        : prediction
+      : null;
   // A message while 板砖 works (ADR 0063). The hold exists ONLY while the
   // coprocessor runs — the one phase with a sampling boundary a steer can
   // reach (owner 2026-09-14: a conversation with Herta has no such
@@ -180,6 +244,31 @@ export function Composer(): JSX.Element {
     sessionStore.setComposerNotice(text);
   }, [sessionStore, t]);
 
+  // A document's record block arrives only when main has read it — and, for
+  // a PDF, transcribed its pictures (2026-09-30): seconds. The read in flight
+  // shows as the files' own rows with a hairline (2026-10-01, the owner's
+  // pick; pending-attach.ts), which replaced a "reading the file" notice here.
+  // While a read is in flight a second batch is refused rather than queued,
+  // and the SEND waits: `attachFiles` is idle-only, so a turn started
+  // meanwhile makes main refuse the whole attach once it has read it,
+  // transcripts already paid for (review on #6). The refusal notices are
+  // remembered like `turnNotice`, so the answer clears its own notice and
+  // never a newer one.
+  const reading = useRef(false);
+  const [readingDoc, setReadingDoc] = useState(false);
+  const readingNotice = useRef<string | null>(null);
+  const showReadingNotice = (text: string): void => {
+    readingNotice.current = text;
+    sessionStore.setComposerNotice(text);
+  };
+  const clearReadingNotice = (): void => {
+    const shown = readingNotice.current;
+    readingNotice.current = null;
+    if (shown !== null && sessionStore.getSnapshot().composerNotice === shown) {
+      sessionStore.clearComposerNotice();
+    }
+  };
+
   // Staged pictures (ADR 0048 §4). Refusals go through the same notice lane
   // every other composer refusal uses.
   const onStageRefusal = useCallback(
@@ -218,7 +307,8 @@ export function Composer(): JSX.Element {
       return;
     }
     const trimmed = text.trim();
-    if (trimmed.length === 0) {
+    // Quotes alone are a message (ADR 0078 §6): the source is what was said.
+    if (trimmed.length === 0 && composerQuotes.length === 0) {
       // Pictures need words (owner 2026-08-27, reversing the first cut): an
       // empty user block is a degenerate moment in the record — （用户 说）
       // with nothing said, which the narrative actor then completes against.
@@ -230,11 +320,23 @@ export function Composer(): JSX.Element {
       }
       return;
     }
+    if (reading.current) {
+      // See `reading`: a turn started now would cost the attach in flight.
+      // The words stay in the field for when the read is done.
+      showReadingNotice(t("composer.attach.waitToSend"));
+      return;
+    }
     // EN surface alias: translate a typed "@brick" (any case) back to the wire
     // trigger "@板砖" BEFORE it enters the record/dispatch — code spans exempt
     // (a backticked `@brick` is quotation). See aliasBrickInput, kept in
     // lockstep with the CLI's converter of the same name.
-    const dispatched = aliasBrickInput(trimmed, lang);
+    // The quotes go first, as written (ADR 0078 §5): the alias applies to
+    // what was typed, never to quoted source.
+    const dispatched = composeQuotedMessage(
+      composerQuotes,
+      aliasBrickInput(trimmed, lang),
+      lang,
+    );
     // Take the staged pictures BEFORE dispatching: they ride this message,
     // and the strip must empty on the same frame the text does (ADR 0048 §4).
     const staged = images.take();
@@ -247,6 +349,7 @@ export function Composer(): JSX.Element {
       staged.length > 0 ? staged : undefined,
     );
     setText("");
+    sessionStore.clearComposerQuotes();
     // The rewind file-edit notice persists through editing; clear it once the
     // (re-)send actually goes out (a session switch clears it via onReset).
     if (composerNotice !== null) sessionStore.clearComposerNotice();
@@ -392,6 +495,38 @@ export function Composer(): JSX.Element {
   // the source; `noticeText` is the locally-held copy that stays mounted through
   // the slide-out (React would otherwise unmount it instantly, skipping the exit).
   const [noticeText, setNoticeText] = useState<string | null>(null);
+  // 撤销改动 pressed (ADR 0074 §4): take the withdrawn turn's edits back and
+  // say what happened in the notice's place. The withdrawn turn is out of
+  // the record, so this notice is the only place a file left alone shows.
+  const undoWithdrawn = async (): Promise<void> => {
+    if (sessionStore.getSnapshot().rewindUndo !== "offer") return;
+    sessionStore.setRewindUndo("busy");
+    const r = await sessionStore.undoTurnEdits("withdrawn");
+    // The session changed under the answer: the notice went with it.
+    if (r === null) return;
+    if (!r.ok) {
+      sessionStore.setComposerNotice(t("workspace.undoFailed"));
+      return;
+    }
+    const left = r.files
+      .filter(
+        (f) =>
+          f.result !== "restored" &&
+          f.result !== "deleted" &&
+          f.result !== "unchanged",
+      )
+      .map((f) => f.path);
+    sessionStore.setComposerNotice(
+      left.length === 0
+        ? t("workspace.editsUndone")
+        : t("workspace.editsUndoneLeftAlone").replace(
+            "{files}",
+            left.length > 3
+              ? `${left.slice(0, 3).join(t("workspace.listJoin"))}${t("workspace.listJoin")}…`
+              : left.join(t("workspace.listJoin")),
+          ),
+    );
+  };
   const [noticeExiting, setNoticeExiting] = useState(false);
   const noticeShown = useRef(false);
   const noticeTimer = useRef<number | null>(null);
@@ -405,7 +540,92 @@ export function Composer(): JSX.Element {
     setText("");
     setHintActive(false);
     escDismissed.current = -1;
+    setMention(null);
+    setMentionFiles(null);
+    mentionCache.current = null;
+    mentionDismissed.current = -1;
   }, [sessionId]);
+
+  // The mention list for the caret's `@query`, from the bare `@` on (owner
+  // 2026-10-08: it waited for a query past what could still be `@板砖`, so a
+  // bare `@` showed the ghost alone and the files went unnoticed). Not for
+  // the token already typed out, nor for a mention the user dismissed. The
+  // files are fetched once and kept for a few seconds, so typing does not
+  // re-list; where the bridge cannot list them, the list offers `@板砖`
+  // alone.
+  const updateMention = (value: string, caret: number | null): void => {
+    const mq = findMentionQuery(value, caret);
+    if (mq === null) mentionDismissed.current = -1;
+    if (
+      mq === null ||
+      mq.start === mentionDismissed.current ||
+      brickComplete(mq.query, lang)
+    ) {
+      mentionKey.current = "";
+      setMention(null);
+      return;
+    }
+    // The highlight resets only when the mention itself changes: React
+    // re-reports the selection on key-up, and resetting there undid every
+    // ArrowDown (live check 2026-09-29).
+    const key = `${mq.start}:${mq.query}`;
+    if (key !== mentionKey.current) {
+      mentionKey.current = key;
+      setMentionIndex(0);
+    }
+    setMention(mq);
+    if (bridge.listWorkspaceFiles === undefined || sessionId === null) return;
+    const cached = mentionCache.current;
+    if (
+      cached === null ||
+      cached.sessionId !== sessionId ||
+      Date.now() - cached.at > MENTION_FILES_TTL_MS
+    ) {
+      mentionCache.current = { sessionId, at: Date.now() };
+      const asked = sessionId;
+      void bridge.listWorkspaceFiles(asked).then(
+        (r) => {
+          if (mentionCache.current?.sessionId !== asked) return;
+          setMentionFiles(r?.files ?? []);
+        },
+        () => setMentionFiles([]),
+      );
+    }
+  };
+  // A bare `@` offers the files being worked on first: the repository's
+  // uncommitted paths, read from the store when the list is built (the
+  // composer does not re-render on every repository probe).
+  const mentionMatches = useMemo((): MentionItem[] => {
+    if (mention === null) return [];
+    const repo = sessionStore.getSnapshot().repo;
+    const changed =
+      repo === null
+        ? []
+        : repo.dirty.map((d) => workspaceRelativeRepoPath(d.path, repo.prefix));
+    return mentionItems(mention.query, lang, mentionFiles, changed);
+  }, [mention, mentionFiles, lang, sessionStore]);
+  const mentionOpen = mention !== null && mentionMatches.length > 0;
+  const mentionActive = mentionOpen
+    ? mentionMatches[mentionIndex % mentionMatches.length]
+    : undefined;
+  const pickMention = (item: MentionItem): void => {
+    if (mention === null) return;
+    const caret = taRef.current?.selectionStart ?? text.length;
+    const next =
+      item.kind === "brick"
+        ? insertBrick(
+            text,
+            mention.start,
+            caret,
+            lang === "en" ? "brick" : "板砖",
+          )
+        : insertMention(text, mention.start, caret, item.path);
+    pendingCaret.current = next.caret;
+    setText(next.text);
+    setMention(null);
+    setHintActive(false);
+    taRef.current?.focus({ preventScroll: true });
+  };
 
   useEffect(() => {
     if (pendingCaret.current !== null && taRef.current) {
@@ -495,7 +715,8 @@ export function Composer(): JSX.Element {
   // pictures also hold it open: the strip is the only sign the pictures are
   // pending, and shrinking would clip it (ADR 0048 §4).
   const hasStaged = images.staged.length > 0;
-  const shrunk = !focusWithin && !dragOver && !hasStaged;
+  const hasQuotes = composerQuotes.length > 0;
+  const shrunk = !focusWithin && !dragOver && !hasStaged && !hasQuotes;
 
   /**
    * A picked or dropped batch splits by KIND (ADR 0048 §4): pictures stage in
@@ -524,9 +745,25 @@ export function Composer(): JSX.Element {
     const names = new Set(notImages);
     const docs = paths.filter((p) => names.has(p.split(/[\\/]/).at(-1) ?? p));
     if (docs.length === 0) return;
+    if (reading.current) {
+      showReadingNotice(t("composer.attach.stillReading"));
+      return;
+    }
+    reading.current = true;
+    setReadingDoc(true);
+    // The read shows as the files' own rows, with a hairline (2026-10-01,
+    // pending-attach.ts) — placed where the record blocks will land.
+    const snap = sessionStore.getSnapshot();
+    const pendingId = startPendingAttach({
+      sessionId,
+      names: docs.map((p) => p.split(/[\\/]/).at(-1) ?? p),
+      baseAbs: snap.recordStart + snap.record.length,
+    });
     void bridge
       .attachFiles(sessionId, docs)
       .then((r) => {
+        endPendingAttach(pendingId, r.ok);
+        clearReadingNotice();
         // Refusals are SHOWN. `attachFiles` is idle-only, and a drop that
         // silently did nothing mid-turn would read as a broken drop target
         // (the same no-op-silently failure the M6 audit found on setWorkspace).
@@ -544,7 +781,15 @@ export function Composer(): JSX.Element {
       })
       // A rejected IPC call (handler threw) must land in the same notice, not
       // as an unhandled rejection with a drop that looked like it worked.
-      .catch(() => sessionStore.setComposerNotice(t("composer.attach.failed")));
+      .catch(() => {
+        endPendingAttach(pendingId, false);
+        clearReadingNotice();
+        sessionStore.setComposerNotice(t("composer.attach.failed"));
+      })
+      .finally(() => {
+        reading.current = false;
+        setReadingDoc(false);
+      });
   };
 
   const onPickAttachments = (): void => {
@@ -581,6 +826,18 @@ export function Composer(): JSX.Element {
           role="status"
         >
           {noticeText}
+          {/* 撤销改动 (ADR 0074 §4): the rewound turn's edits can still be
+              taken back — until the next send, which clears this notice. */}
+          {rewindUndo !== null && !noticeExiting && (
+            <button
+              type="button"
+              className="composer-notice__action"
+              disabled={rewindUndo === "busy"}
+              onClick={() => void undoWithdrawn()}
+            >
+              {t("workspace.undoEdits")}
+            </button>
+          )}
         </div>
       )}
       {/* The held message (ADR 0063): sent while 板砖 worked, waiting to go
@@ -595,6 +852,55 @@ export function Composer(): JSX.Element {
           the other two are always there. The label ("sends when 板砖 is
           done") is the card's title, not a row of its own: the placeholder
           already said it, and the card reads as the message itself. */}
+      {/* 继续 (ADR 0071 §1.4): 板砖's last run was interrupted — the app
+          exited under it, or the user pressed Stop — and main can continue
+          it. Offered in the held card's place and shape, only while the
+          session is idle; pressing it sends the 继续 turn. */}
+      {resumable && !busy && bridge.continueInterrupted !== undefined && (
+        <section
+          className="composer-held composer-resume"
+          aria-label={t("composer.resume.aria")}
+          data-testid="composer-resume"
+        >
+          <span className="composer-held__icon" aria-hidden="true">
+            <svg
+              viewBox="0 0 14 14"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.4"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="7" cy="7" r="5.6" />
+              <path d="M5.6 4.6v4.8M8.4 4.6v4.8" />
+            </svg>
+          </span>
+          <span className="composer-held__text">
+            {t("composer.resume.text")}
+          </span>
+          <span className="composer-held__actions">
+            <button
+              type="button"
+              className="composer-held__action composer-held__action--steer"
+              onClick={() => void sessionStore.continueInterrupted()}
+            >
+              <svg
+                viewBox="0 0 11 11"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M3 2l5.5 3.5L3 9z" />
+              </svg>
+              {t("composer.resume.action")}
+            </button>
+          </span>
+        </section>
+      )}
       {held !== null && (
         <section
           ref={heldCardRef}
@@ -669,7 +975,7 @@ export function Composer(): JSX.Element {
       )}
       <form
         ref={composerRef}
-        className={`composer${shrunk ? " is-shrunk" : ""}${hasStaged ? " has-staged" : ""}${suppressed ? " is-suppressed" : ""}${dragOver ? " is-dragover" : ""}`}
+        className={`composer${shrunk ? " is-shrunk" : ""}${hasStaged ? " has-staged" : ""}${hasQuotes ? " has-quotes" : ""}${suppressed ? " is-suppressed" : ""}${dragOver ? " is-dragover" : ""}`}
         onSubmit={(e) => {
           e.preventDefault();
           doSubmit();
@@ -796,10 +1102,128 @@ export function Composer(): JSX.Element {
             ))}
           </ul>
         )}
+        {/* Quotes from the viewer's page (ADR 0078 §6): the source rides
+          the message when it is sent; × takes one back. */}
+        {composerQuotes.length > 0 && (
+          <ul className="composer-quotes">
+            {composerQuotes.map((q) => (
+              <li className="composer-quote" key={q.id}>
+                <svg
+                  className="composer-quote__icon"
+                  viewBox="0 0 13 13"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M3 9.5c-.3-1.8.3-3.4 2-4.2M7.5 9.5c-.3-1.8.3-3.4 2-4.2" />
+                </svg>
+                <span className="composer-quote__label">{quoteLabel(q)}</span>
+                <span className="composer-quote__preview">
+                  {q.title ??
+                    q.text.split("\n").find((l) => l.trim().length > 0) ??
+                    ""}
+                </span>
+                <button
+                  type="button"
+                  className="composer-quote__remove"
+                  aria-label={`${t("composer.quote.remove")} ${quoteLabel(q)}`}
+                  onClick={() => sessionStore.removeComposerQuote(q.id)}
+                >
+                  <svg
+                    viewBox="0 0 10 10"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                    strokeLinecap="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M2.5 2.5l5 5M7.5 2.5l-5 5" />
+                  </svg>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {mentionOpen && (
+          <div
+            id="composer-mentions"
+            className="composer-mentions"
+            role="listbox"
+            aria-label={t("composer.mentions.aria")}
+          >
+            {mentionMatches.map((item, i) => {
+              const active = item === mentionActive;
+              const firstFile =
+                item.kind === "file" && mentionMatches[i - 1]?.kind !== "file";
+              const option = (children: JSX.Element): JSX.Element => (
+                <button
+                  key={item.kind === "brick" ? "@brick" : item.path}
+                  id={`composer-mention-${i}`}
+                  type="button"
+                  role="option"
+                  // The caret stays in the textarea; the keys it takes move
+                  // the highlight, so an option is never tabbed to.
+                  tabIndex={-1}
+                  aria-selected={active}
+                  className={`composer-mentions__item${item.kind === "brick" ? " is-brick" : ""}${active ? " is-active" : ""}`}
+                  // mousedown, not click: the textarea keeps the caret.
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    pickMention(item);
+                  }}
+                  onMouseEnter={() => setMentionIndex(i)}
+                >
+                  {children}
+                </button>
+              );
+              if (item.kind === "brick") {
+                return option(
+                  <>
+                    <span className="composer-mentions__name">
+                      {lang === "en" ? "@brick" : "@板砖"}
+                    </span>
+                    <span className="composer-mentions__desc">
+                      {t("composer.mentions.brick")}
+                    </span>
+                  </>,
+                );
+              }
+              const cut = item.path.lastIndexOf("/");
+              const name = item.path.slice(cut + 1);
+              const dir = cut >= 0 ? item.path.slice(0, cut) : "";
+              return (
+                <Fragment key={item.path}>
+                  {firstFile && (
+                    // What the rows below are — the list says so itself.
+                    <div
+                      className="composer-mentions__section"
+                      aria-hidden="true"
+                    >
+                      {t("composer.mentions.files")}
+                    </div>
+                  )}
+                  {option(
+                    <>
+                      <span className="composer-mentions__name">{name}</span>
+                      {dir.length > 0 && (
+                        <span className="composer-mentions__dir">{dir}</span>
+                      )}
+                    </>,
+                  )}
+                </Fragment>
+              );
+            })}
+          </div>
+        )}
         <div className="composer-input-wrap">
           <div className="composer-highlight" aria-hidden="true">
             {renderBanzhuanText(text, "composer", lang)}
-            {hintActive && (
+            {/* The ghost previews the token while its row is the one Tab
+                or Enter would take — not once the highlight is on a file. */}
+            {hintActive && (mentionActive?.kind ?? "brick") === "brick" && (
               <span className="composer-ghost">
                 {lang === "en" ? "brick" : "板砖"}
               </span>
@@ -808,7 +1232,23 @@ export function Composer(): JSX.Element {
           <textarea
             ref={taRef}
             className="composer-input"
-            placeholder={t("composer.placeholder")}
+            placeholder={
+              suggestion ??
+              t(
+                composerQuotes.length > 0
+                  ? "composer.quote.placeholder"
+                  : "composer.placeholder",
+              )
+            }
+            // The mention list is the textarea's: assistive technology hears
+            // it open and follows the highlighted option (review 2026-09-30).
+            aria-autocomplete="list"
+            aria-controls={mentionOpen ? "composer-mentions" : undefined}
+            aria-activedescendant={
+              mentionOpen
+                ? `composer-mention-${mentionIndex % mentionMatches.length}`
+                : undefined
+            }
             onFocus={() => {
               if (!quietFocus.current) setFocusWithin(true);
             }}
@@ -822,17 +1262,92 @@ export function Composer(): JSX.Element {
               setHintActive(
                 shouldHint(e.target.value, e.target.selectionStart, -1),
               );
+              updateMention(e.target.value, e.target.selectionStart);
             }}
-            onSelect={(e) =>
+            onSelect={(e) => {
               setHintActive(
                 shouldHint(
                   e.currentTarget.value,
                   e.currentTarget.selectionStart,
                   escDismissed.current,
                 ),
-              )
-            }
+              );
+              updateMention(
+                e.currentTarget.value,
+                e.currentTarget.selectionStart,
+              );
+            }}
+            onBlur={() => setMention(null)}
             onKeyDown={(e) => {
+              // The @-mention list, while it is open (ADR 0072 §2): arrows
+              // move, Enter or Tab inserts the row, Esc dismisses it — and
+              // the ghost with it. An IME's pre-edit keeps every key: its
+              // arrows walk the candidates, its Enter confirms one.
+              if (
+                mentionOpen &&
+                mention !== null &&
+                !(e.nativeEvent.isComposing || e.keyCode === 229)
+              ) {
+                const n = mentionMatches.length;
+                if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setMentionIndex(
+                    (i) => (i + (e.key === "ArrowDown" ? 1 : n - 1)) % n,
+                  );
+                  return;
+                }
+                if ((e.key === "Enter" && !e.shiftKey) || e.key === "Tab") {
+                  e.preventDefault();
+                  if (mentionActive !== undefined) pickMention(mentionActive);
+                  return;
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  mentionDismissed.current = mention.start;
+                  escDismissed.current = mention.start;
+                  setHintActive(false);
+                  setMention(null);
+                  return;
+                }
+              }
+              // Up-arrow recall (ADR 0072 §3): in an EMPTY composer, ↑ puts
+              // back the last message sent in this session. Anything typed
+              // keeps ↑ for moving the caret.
+              if (
+                e.key === "ArrowUp" &&
+                text.length === 0 &&
+                !e.shiftKey &&
+                !e.altKey &&
+                !e.ctrlKey &&
+                !e.metaKey
+              ) {
+                // An IME whose pre-edit is not in the textarea yet leaves it
+                // empty while composing: ↑ then moves its candidate, not the
+                // history (review 2026-09-30).
+                if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+                const last = recallLastMessage(
+                  sessionStore.getSnapshot().record,
+                  lang,
+                );
+                if (last !== null) {
+                  e.preventDefault();
+                  setText(last);
+                  pendingCaret.current = last.length;
+                }
+                return;
+              }
+              if (
+                e.key === "Tab" &&
+                suggestion !== null &&
+                !e.shiftKey &&
+                !(e.nativeEvent.isComposing || e.keyCode === 229)
+              ) {
+                // Take the suggestion into the box — never send it.
+                e.preventDefault();
+                setText(suggestion);
+                pendingCaret.current = suggestion.length;
+                return;
+              }
               if (e.key === "Enter" && !e.shiftKey) {
                 // IME safety (Chinese input): Enter during composition confirms
                 // the candidate, it does NOT send. isComposing covers the spec
@@ -872,8 +1387,16 @@ export function Composer(): JSX.Element {
             }}
             rows={2}
             aria-label={t("composer.aria")}
+            aria-description={
+              suggestion !== null ? t("composer.predictionAria") : undefined
+            }
             disabled={busy && !holding}
           />
+          {suggestion !== null && (
+            <span className="composer-prediction-key" aria-hidden="true">
+              Tab
+            </span>
+          )}
         </div>
         {/* ONE persistent button that morphs between SEND (↑) and STOP (■).
           While a turn runs it is wired to bridge.interrupt — previously a
@@ -928,7 +1451,11 @@ export function Composer(): JSX.Element {
           type={busy ? "button" : "submit"}
           className={`composer-send${busy ? " is-stop" : ""}`}
           aria-label={busy ? t("composer.stop") : t("composer.send")}
-          disabled={!busy && text.trim().length === 0}
+          disabled={
+            !busy &&
+            ((text.trim().length === 0 && composerQuotes.length === 0) ||
+              readingDoc)
+          }
           onClick={
             busy
               ? () => {

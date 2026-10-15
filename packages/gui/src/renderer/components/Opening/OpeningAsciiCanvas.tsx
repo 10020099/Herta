@@ -24,6 +24,19 @@ const FIRST_FRAME_WATCHDOG_MS = 2000;
  *  only bounds a sheet that never comes, after which the loop draws text. */
 const SHEET_WAIT_MAX_MS = 2500;
 
+/** The opening's first frame, as `onFirstFrame` reports it. `host` and
+ *  `sheet` say how it was drawn; the launch mark carries them, so a CI probe
+ *  on another platform can tell the worker path and the glyph sheet ran. */
+export interface OpeningFirstFrame {
+  /** Epoch ms the draw worker committed it at; absent when it was drawn on
+   *  this thread (just now). */
+  readonly atEpochMs?: number;
+  readonly host: "worker" | "main";
+  /** Where the glyphs came from: the sheet (drawn at this launch, or kept
+   *  from an earlier one), or text. */
+  readonly sheet: "drawn" | "kept" | "none";
+}
+
 export interface OpeningAsciiCanvasProps {
   /** The segment to play; null while it loads (the draw worker is already
    *  starting). */
@@ -33,10 +46,8 @@ export interface OpeningAsciiCanvasProps {
    *  wall-clock playback — so the overlay's opacity fade-out and the onDone
    *  unmount span the same window the figure dissolves over. */
   readonly onComplete: (dissolveMs: number) => void;
-  /** Fired once, when the opening's first frame has been drawn: with the
-   *  epoch ms the draw worker committed it at, or with nothing when it was
-   *  drawn on this thread (just now). */
-  readonly onFirstFrame?: (atEpochMs?: number) => void;
+  /** Fired once, when the opening's first frame has been drawn. */
+  readonly onFirstFrame?: (frame: OpeningFirstFrame) => void;
   /** Test seam: the draw worker, or null for none. Defaults to the bundled
    *  worker where the platform has one. */
   readonly spawnWorker?: () => Worker | null;
@@ -92,7 +103,7 @@ export function OpeningAsciiCanvas(
     if (stage === null) return;
     const host = createOpeningHost(stage, spawnRef.current, sheetRef.current, {
       onComplete: (ms) => onCompleteRef.current(ms),
-      onFirstFrame: (at) => onFirstFrameRef.current?.(at),
+      onFirstFrame: (frame) => onFirstFrameRef.current?.(frame),
     });
     hostRef.current = host;
     return () => {
@@ -114,7 +125,7 @@ function createOpeningHost(
   getSheet: () => Promise<OpeningSheet | null>,
   events: {
     readonly onComplete: (dissolveMs: number) => void;
-    readonly onFirstFrame: (atEpochMs?: number) => void;
+    readonly onFirstFrame: (frame: OpeningFirstFrame) => void;
   },
 ): OpeningHost {
   // Resolved once at mount: the index.html early stamp lands before React.
@@ -140,12 +151,14 @@ function createOpeningHost(
   // app through: the worker's first paint comes ~0.1–0.2 s after the mount
   // (owner 2026-09-25). The veil at playback 0 is this colour, fully opaque.
   stage.style.background = dark ? "rgb(13, 17, 22)" : "rgb(255, 255, 255)";
-  const markFirstFrame = (atEpochMs?: number): void => {
+  const markFirstFrame = (frame: OpeningFirstFrame): void => {
     if (firstFrame || disposed) return;
     firstFrame = true;
     stage.style.background = "";
-    events.onFirstFrame(atEpochMs);
+    events.onFirstFrame(frame);
   };
+  const sheetUsed = (used: boolean): OpeningFirstFrame["sheet"] =>
+    used && ready?.sheet != null ? ready.sheet.origin : "none";
 
   let canvas = freshCanvas(stage);
   const viewSize = (): { width: number; height: number; dpr: number } => ({
@@ -180,32 +193,58 @@ function createOpeningHost(
       stops.push(() => clearTimeout(timer));
       return;
     }
-    const player = createOpeningPlayer(
-      canvas,
-      ctx,
-      segment,
-      dark,
-      { onDissolve: complete, onInstant: () => complete(0) },
-      performance.now(),
-      sheet,
-    );
+    // A player that throws — a kept sheet from another build the loop cannot
+    // read — must not leave the splash up: this is the last host, and no
+    // watchdog covers it. The opening plays again from text; a second
+    // failure completes it at once (review 2026-09-30).
+    const giveUp = (): void => {
+      stopAll();
+      if (sheet !== null && !completed) playOnMainThread(segment, null);
+      else complete(0);
+    };
+    let player: ReturnType<typeof createOpeningPlayer>;
+    try {
+      player = createOpeningPlayer(
+        canvas,
+        ctx,
+        segment,
+        dark,
+        { onDissolve: complete, onInstant: () => complete(0) },
+        performance.now(),
+        sheet,
+      );
+    } catch {
+      giveUp();
+      return;
+    }
     const resize = (): void => {
       const v = viewSize();
       player.resize(v.width, v.height, v.dpr);
     };
-    resize();
-    window.addEventListener("resize", resize);
     let raf = 0;
     const step = (timeMs: number): void => {
-      const more = player.frame(timeMs);
-      markFirstFrame();
+      let more: boolean;
+      try {
+        more = player.frame(timeMs);
+      } catch {
+        giveUp();
+        return;
+      }
+      markFirstFrame({ host: "main", sheet: sheetUsed(player.usesSheet()) });
       if (more) raf = requestAnimationFrame(step);
     };
-    raf = requestAnimationFrame(step);
     stops.push(() => {
       cancelAnimationFrame(raf);
       window.removeEventListener("resize", resize);
     });
+    try {
+      resize();
+    } catch {
+      giveUp();
+      return;
+    }
+    window.addEventListener("resize", resize);
+    raf = requestAnimationFrame(step);
   };
 
   // null: the main thread plays (no worker could start, or it failed).
@@ -245,8 +284,13 @@ function createOpeningHost(
       spawned.postMessage(request, transfer);
     spawned.onmessage = (event: MessageEvent<OpeningDrawEvent>) => {
       const message = event.data;
-      if (message.type === "first-frame") markFirstFrame(message.atEpochMs);
-      else if (message.type === "dissolve") complete(message.dissolveMs);
+      if (message.type === "first-frame") {
+        markFirstFrame({
+          atEpochMs: message.atEpochMs,
+          host: "worker",
+          sheet: sheetUsed(message.usesSheet),
+        });
+      } else if (message.type === "dissolve") complete(message.dissolveMs);
       else if (message.type === "instant") complete(0);
       else if (message.type === "no-context") fallBack();
     };

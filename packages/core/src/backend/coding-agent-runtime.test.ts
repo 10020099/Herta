@@ -11,6 +11,10 @@ import {
   NoopMemoryManager,
 } from "../memory-manager.js";
 import {
+  CALL_ERROR_DENY_CODES,
+  REFUSAL_DENY_CODES,
+} from "../permission-deny-codes.js";
+import {
   NoopPermissionEngine,
   type PermissionEngine,
 } from "../permission-engine.js";
@@ -166,8 +170,40 @@ describe("CodingAgentRuntime.runBrief", () => {
             type: "tool-call-request",
             call: {
               id: "call-1",
+              tool: "command_stop",
+              input: { id: "bg-1" },
+            },
+          },
+          { type: "finish", reason: "tool_calls" },
+        ],
+        [{ type: "finish", reason: "stop" }],
+      ],
+    });
+    const { runtime, tools } = makeRuntime(provider);
+    tools.register({
+      name: "command_stop",
+      schema: () => ({
+        name: "command_stop",
+        description: "Stop a command",
+        inputSchema: { type: "object", properties: {} },
+      }),
+      run: async () => ({ ok: true, summary: "stopped bg-1" }),
+    });
+
+    const report = await runtime.runBrief(sampleBrief);
+    expect(report.status).toBe("completed");
+  });
+
+  it("a saved fact is not completion evidence: it changes the harness's store, not the task (ADR 0077)", async () => {
+    const provider = new FakeProvider({
+      turns: [
+        [
+          {
+            type: "tool-call-request",
+            call: {
+              id: "call-1",
               tool: "memory_save",
-              input: { text: "remember this" },
+              input: { kind: "repo_fact", text: "x", why: "y" },
             },
           },
           { type: "finish", reason: "tool_calls" },
@@ -183,11 +219,11 @@ describe("CodingAgentRuntime.runBrief", () => {
         description: "Save a memory",
         inputSchema: { type: "object", properties: {} },
       }),
-      run: async () => ({ ok: true, summary: "saved 1 note" }),
+      run: async () => ({ ok: true, summary: "remembered: repo_fact" }),
     });
 
     const report = await runtime.runBrief(sampleBrief);
-    expect(report.status).toBe("completed");
+    expect(report.status).toBe("partial");
   });
 
   describe("minimal-contract tools (ADR 0040)", () => {
@@ -522,7 +558,7 @@ describe("CodingAgentRuntime.runBrief", () => {
     expect(first).not.toBe(second);
   });
 
-  it("forwards scopedRepoInstructions and scopedMemory through the loop", async () => {
+  it("forwards scopedMemory through the loop", async () => {
     let capturedFrame: ProviderPromptFrame | undefined;
     const provider = new FakeProvider({
       turns: [
@@ -535,13 +571,11 @@ describe("CodingAgentRuntime.runBrief", () => {
     const { runtime } = makeRuntime(provider);
 
     await runtime.runBrief(sampleBrief, {
-      scopedRepoInstructions: "scoped-repo-text",
       scopedMemory: "scoped-memory-text",
     });
 
     expect(capturedFrame).toBeDefined();
     if (capturedFrame !== undefined && "backendSystem" in capturedFrame) {
-      expect(capturedFrame.scopedRepoInstructions).toBe("scoped-repo-text");
       expect(capturedFrame.scopedMemory).toBe("scoped-memory-text");
     }
   });
@@ -625,8 +659,8 @@ describe("CodingAgentRuntime.runBrief", () => {
         throw new Error("expected a backend frame");
       }
       expect(memory.recalls).toBe(1);
-      expect(captured.scopedMemory).toContain(
-        "- [test_command] pnpm vitest run --project core",
+      expect(captured.scopedMemory).toMatch(
+        /- \[test_command · (今天|\d+ 天前)\] pnpm vitest run --project core/,
       );
       // Chinese by default (no lang given), the header in the session's
       // language.
@@ -1165,6 +1199,106 @@ describe("CodingAgentRuntime.runBrief", () => {
 
     const report = await runtime.runBrief(sampleBrief);
     expect(report.status).toBe("completed");
+  });
+
+  /** A run that writes a file, then has one editor call rule-denied with
+   *  `code`, then stops — the shape of the live todo-lab run (2026-09-29)
+   *  whose relative path was refused before the model retried it. */
+  async function statusAfterDeny(code: string): Promise<string> {
+    const provider = new FakeProvider({
+      turns: [
+        [
+          {
+            type: "tool-call-request",
+            call: {
+              id: "tc1",
+              tool: "str_replace_editor",
+              input: { command: "str_replace", path: "src/stats.mjs" },
+            },
+          },
+          { type: "finish", reason: "tool_calls" },
+        ],
+        [
+          {
+            type: "tool-call-request",
+            call: {
+              id: "tc2",
+              tool: "write_new_file",
+              input: { path: "src/x.ts" },
+            },
+          },
+          { type: "finish", reason: "tool_calls" },
+        ],
+        [
+          { type: "text-delta", text: "done" },
+          { type: "finish", reason: "stop" },
+        ],
+      ],
+    });
+    const tools = new InMemoryToolRegistry();
+    for (const name of ["str_replace_editor", "write_new_file"]) {
+      tools.register({
+        name,
+        schema: () => ({
+          name,
+          description: name,
+          inputSchema: { type: "object", properties: {} },
+        }),
+        run: async () => ({
+          ok: true,
+          summary: "wrote src/x.ts",
+          data: { relPath: "src/x.ts", created: true },
+        }),
+      });
+    }
+    const engine: PermissionEngine = {
+      check: async (call) =>
+        call.tool === "str_replace_editor"
+          ? { kind: "deny", reason: `refused: ${code}`, code }
+          : { kind: "allow" },
+      resolve: () => {},
+    };
+    const runtime = new CodingAgentRuntime({
+      sessionId: "s-1",
+      provider,
+      tools,
+      permissions: engine,
+      backendBuilder: new BackendContextBuilder({ tools }),
+      bus: new InMemoryEventBus<AgentEvent>(),
+      clock: () => new Date("2026-05-07T00:00:00.000Z"),
+      workspaceRoot: wsRoot,
+      memory: new NoopMemoryManager(),
+    });
+    const report = await runtime.runBrief(sampleBrief);
+    expect(report.permissions.some((p) => p.decision === "blocked")).toBe(true);
+    return report.status;
+  }
+
+  it.each([
+    "path_not_absolute",
+    "edit_not_found",
+    "hunk_not_found",
+    "create_exists",
+    "stale_read",
+    "view_required",
+  ])("a call-error rule-deny (%s) does not cap the status — the call was wrong, nothing was refused (ADR 0047 amendment 2026-09-29)", async (code) => {
+    expect(await statusAfterDeny(code)).toBe("completed");
+  });
+
+  it.each([
+    "path_outside_workspace",
+    "path_denied",
+    "command_blocked",
+    "file_too_large",
+    "a_code_nobody_decided",
+  ])("a refusal rule-deny (%s) still caps the status — policy withheld the change, or the tool cannot make it; an undecided code counts too", async (code) => {
+    expect(await statusAfterDeny(code)).toBe("partial");
+  });
+
+  it("the deny-code sets are disjoint", () => {
+    for (const code of CALL_ERROR_DENY_CODES) {
+      expect(REFUSAL_DENY_CODES.has(code)).toBe(false);
+    }
   });
 
   it("a USER-denied read-only ask does not cap the status either", async () => {

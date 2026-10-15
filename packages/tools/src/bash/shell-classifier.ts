@@ -2,15 +2,23 @@ import { relative, resolve } from "node:path";
 import { isPathInside, type RiskLevel } from "@herta/core";
 import { isCredentialPath } from "../credential-denylist.js";
 import { detectInProgressState, resolveGitDir } from "../git/repo-probe.js";
-import { gitDirShapeWriteDenial } from "../path-safety.js";
+import {
+  gitDirShapeWriteDenial,
+  gitInternalsWrite,
+  globReachesHertaState,
+  hertaStateWriteDenial,
+  namesHertaState,
+} from "../path-safety.js";
 import {
   classifyCommand,
   classifyShellBody,
+  GIT_INTERNALS_ASK_CODE,
   splitShellSegments,
   unresolvedProgramName,
   type Verdict,
 } from "../run-command/classifier.js";
 import { findDisallowedEnvKey } from "../run-command/env-guard.js";
+import { readPatchTargets } from "../run-command/patch-targets.js";
 import type { ShellPaths } from "./shell-paths.js";
 
 /**
@@ -50,9 +58,8 @@ import type { ShellPaths } from "./shell-paths.js";
  *
  * Aggregation: any block → block; else any ask → ONE ask carrying the
  * highest risk and the joined reasons (the user sees the whole command in
- * the prompt anyway); else allow. `code` follows the highest-risk ask so
- * ADR 0030 project rules (`command_ask_unknown` / `_interpreter`) can still
- * be derived when that is the only ask in the line.
+ * the prompt anyway); else allow. `code` follows the highest-risk ask, so
+ * the card labels the line by its most serious class.
  */
 export interface ShellClassifyOpts {
   workspaceRoot: string;
@@ -404,8 +411,7 @@ export function classifyShellCommandDetailed(
 /**
  * The single program a command line really runs, as argv — or null.
  *
- * Feeds the approval cache and ADR 0030 project rules for `bash` the way
- * run_command's argv does. Deliberately narrow (fail-closed): after dropping
+ * Feeds the approval cache for `bash` the way run_command's argv does. Deliberately narrow (fail-closed): after dropping
  * leading `cd`/`pushd` segments whose target is the WORKSPACE ROOT itself
  * (the model's habit; a cd into a subdirectory would change what a
  * cwd-scoped rule means, so it disqualifies), exactly ONE segment may
@@ -790,7 +796,7 @@ function classifySegment(
   if (seg.length === 0) return { verdict: { kind: "allow" } };
   const tokenized = tokenize(seg);
   let { words } = tokenized;
-  const { assignments, redirects } = tokenized;
+  const { assignments, redirects, globbed } = tokenized;
 
   // Collected BEFORE the head peel, so every exit below — including the
   // control-flow ones — carries the segment's redirect and assignment asks.
@@ -838,9 +844,23 @@ function classifySegment(
           },
         };
       }
+      // The harness's own state (2026-09-30): same reasoning, same tier — bash
+      // performs the write, so the guard lives here or nowhere.
+      const stateDenial = hertaTargetDenial(r.target, opts, r.glob === true);
+      if (stateDenial !== null) {
+        return {
+          verdict: {
+            kind: "block",
+            code: "command_blocked",
+            reason: stateDenial,
+          },
+        };
+      }
       // Its own class when the target leaves the workspace (ADR 0064 L1):
       // the trust tier covers writes INSIDE, and `> $HOME/.bashrc` must
-      // not ride `>` being "a write".
+      // not ride `>` being "a write". Inside, a repository's `.git` is its
+      // own class too (2026-10-09): `> .git/hooks/pre-commit` is a command
+      // the next `git commit` runs.
       const outside = leavesWorkspace(r.target, opts);
       asks.push(
         outside
@@ -850,12 +870,19 @@ function classifySegment(
               code: "command_ask_outside",
               reason: `redirects output outside the workspace: ${r.target}`,
             }
-          : {
-              kind: "ask",
-              risk: "workspace_write",
-              code: "command_ask_write",
-              reason: `redirects output to ${r.target}`,
-            },
+          : gitInternalTarget(r.target, opts)
+            ? {
+                kind: "ask",
+                risk: "workspace_destructive",
+                code: GIT_INTERNALS_ASK_CODE,
+                reason: `redirects output inside .git (${r.target}) — hooks and config there are commands git runs later`,
+              }
+            : {
+                kind: "ask",
+                risk: "workspace_write",
+                code: "command_ask_write",
+                reason: `redirects output to ${r.target}`,
+              },
       );
     } else if (r.kind === "in") {
       if (leavesWorkspace(r.target, opts) || isCredentialPath(r.target)) {
@@ -1073,12 +1100,24 @@ function classifySegment(
   }
 
   if (OPAQUE_BUILTINS.has(name)) {
-    asks.push({
-      kind: "ask",
-      risk: "workspace_write",
-      code: "command_ask_interpreter",
-      reason: `${name} runs text the harness cannot classify — review it`,
-    });
+    // `eval` runs text assembled when it runs: opaque, never reviewed nor
+    // rule-eligible (ADR 0075 step 1). `source`/`.`/`exec` name what
+    // they run and stay the interpreter class.
+    asks.push(
+      name === "eval"
+        ? {
+            kind: "ask",
+            risk: "workspace_destructive",
+            code: "command_ask_opaque",
+            reason: "eval runs a command assembled when it runs — review it",
+          }
+        : {
+            kind: "ask",
+            risk: "workspace_write",
+            code: "command_ask_interpreter",
+            reason: `${name} runs text the harness cannot classify — review it`,
+          },
+    );
     return segmentVerdict(asks);
   }
 
@@ -1221,9 +1260,22 @@ function classifySegment(
 
   // Everything else: the argv classifier, with in-workspace absolute paths
   // rewritten relative so `cat /e/repo/src/x` classifies as `cat src/x`.
-  const argv = words.map((w, i) =>
-    i === 0 ? w : relativizeInsideWorkspace(w, opts),
-  );
+  // The rewrite is relative to the WORKSPACE ROOT, not the cwd, so the write
+  // guard below maps an operand back to the word as typed before resolving.
+  const typed = new Map<string, string>();
+  // The argv words bash will EXPAND before the program sees them: a pattern
+  // is judged by what it could match, not by its spelling.
+  const live = new Set<string>();
+  const argv = words.map((w, i) => {
+    if (i === 0) return w;
+    const rel = relativizeInsideWorkspace(w, opts);
+    if (rel !== w) typed.set(rel, w);
+    if (globbed.has(w)) live.add(rel);
+    return rel;
+  });
+  // A written operand as the guard needs it: the shell's own spelling when
+  // the argv holds a relativized copy.
+  const spelled = (operand: string): string => typed.get(operand) ?? operand;
   // `shell: true` — this argv is about to be EXPANDED by bash, so the
   // inversion's unresolved-token rules apply here and only here. `unresolved`
   // is computed from the RAW segment because quoting decides it and the words
@@ -1236,6 +1288,37 @@ function classifySegment(
     repoInProgress: () => {
       const gitDir = resolveGitDir(opts.cwd ?? opts.workspaceRoot);
       return gitDir === null ? null : detectInProgressState(gitDir);
+    },
+    // The harness's own state is not command-writable (2026-09-30).
+    writeGuard: {
+      path: (operand) =>
+        hertaTargetDenial(spelled(operand), opts, live.has(operand)),
+      // A body handed to another shell: its text naming `.herta`, or run from
+      // a cwd inside it, where every relative path lands there.
+      // The workspace's own root does not count (a managed sandbox lives
+      // under `~/.herta/workspaces`).
+      body: (body) =>
+        namesHertaState(body, opts.workspaceRoot)
+          ? "hands another shell a command that names .herta — the harness's own state; no command may change it"
+          : hertaStateWriteDenial(
+              opts.workspaceRoot,
+              opts.cwd ?? opts.workspaceRoot,
+            ),
+      // The root or any directory above it: `find .. -delete` from the root
+      // reaches `.herta` as surely as `find .` does.
+      holds: (operand) => {
+        const native = nativeOf(spelled(operand), opts);
+        return native !== null && isPathInside(native, opts.workspaceRoot);
+      },
+      // A patch may sit outside the workspace (`/tmp/p.patch`): resolved like
+      // any token, read wherever it is; a token no path resolves stays null.
+      patch: (file) => {
+        const native = nativeOf(spelled(file), opts);
+        return native === null ? null : readPatchTargets(native);
+      },
+      // A write into a repository's `.git` (2026-10-09): hooks and config
+      // there are commands git runs later.
+      gitInternal: (operand) => gitInternalTarget(spelled(operand), opts),
     },
   });
   if (v.kind === "block") return { verdict: v };
@@ -1558,17 +1641,63 @@ export function resolveWorkspacePath(
   token: string,
   opts: ShellClassifyOpts,
 ): { native: string; relative: string } | null {
-  const t = token.replace(/^["']|["']$/g, "");
-  if (t.length === 0 || t.startsWith("~") || /[$`]/.test(t)) return null;
-  const nativeAbs = opts.paths.toNative(t);
-  const native =
-    nativeAbs ??
-    (/^[\\/]/.test(t)
-      ? null
-      : resolveNative(opts.cwd ?? opts.workspaceRoot, t));
+  const native = nativeOf(token, opts);
   if (native === null || !isPathInside(opts.workspaceRoot, native)) return null;
   const rel = relativePath(opts.workspaceRoot, native);
   return { native, relative: rel === "" ? "." : rel };
+}
+
+/** The native path a token names, inside the workspace or not — shell or
+ *  native spelling, relative to the shell cwd; null for a token no path
+ *  resolves (`~`, a variable, a substitution, empty). */
+function nativeOf(token: string, opts: ShellClassifyOpts): string | null {
+  const t = token.replace(/^["']|["']$/g, "");
+  if (t.length === 0 || t.startsWith("~") || /[$`]/.test(t)) return null;
+  return (
+    opts.paths.toNative(t) ??
+    (/^[\\/]/.test(t) ? null : resolveNative(opts.cwd ?? opts.workspaceRoot, t))
+  );
+}
+
+/** True when the path a shell token names lands inside a repository's
+ *  `.git` beneath the workspace (`gitInternalsWrite`). A token the harness
+ *  cannot place is not this guard's: it already asks as leaving. */
+function gitInternalTarget(token: string, opts: ShellClassifyOpts): boolean {
+  const at = resolveWorkspacePath(token, opts);
+  return at !== null && gitInternalsWrite(opts.workspaceRoot, at.native);
+}
+
+/** Denial when writing the path a shell token names would change the
+ *  harness's own state (`hertaStateWriteDenial`), else null. Resolved like a
+ *  redirect target — shell or native spelling, relative to the shell cwd.
+ *  Unknowable tokens (variables, `~`) and paths outside the workspace stay
+ *  null: they already ask as leaving it. A token bash will expand (`glob`) is
+ *  also judged by what its pattern could match (`globReachesHertaState`). */
+function hertaTargetDenial(
+  token: string,
+  opts: ShellClassifyOpts,
+  glob = false,
+): string | null {
+  // A variable or `~` that leads to `.herta` (`"$PWD/.herta/permissions.json"`,
+  // `~/.herta/workspaces/<id>/.herta/…`) cannot be placed, and asked as
+  // leaving the workspace — a class the automatic reviewer takes (release
+  // review 2026-10-13). Naming `.herta` is enough, as it is for a body handed
+  // to another shell; the workspace's own root (a managed sandbox lives
+  // under `~/.herta/workspaces`) does not count.
+  const bare = token.replace(/^["']|["']$/g, "");
+  if (
+    (bare.startsWith("~") || /[$`]/.test(bare)) &&
+    namesHertaState(bare, opts.workspaceRoot)
+  ) {
+    return "names .herta through a variable — the harness's own state (its automatic-review choice, memory, logs); no command may change it. Write to a path inside the workspace that names no .herta";
+  }
+  const at = resolveWorkspacePath(token, opts);
+  if (at === null) return null;
+  const literal = hertaStateWriteDenial(opts.workspaceRoot, at.native);
+  if (literal !== null) return literal;
+  return glob && globReachesHertaState(at.relative)
+    ? "names .herta by a pattern — the harness's own state (its automatic-review choice, memory, logs); no command may change it"
+    : null;
 }
 
 /** `/e/repo/src/x` (or `E:\repo\src\x`) → `src/x` when inside the workspace;
@@ -1655,6 +1784,68 @@ function splitHeredocs(body: string): { text: string; expanded: string[] } {
   // expandable one accumulated rather than dropping it silently.
   if (!quotedDelimiter && current.length > 0) expanded.push(current.join("\n"));
   return { text: out.join("\n"), expanded };
+}
+
+/**
+ * The command with its shell comments removed — an unquoted `#` that begins
+ * a word, to the end of its line (2026-10-09, ADR 0075: what a reviewer
+ * model reads). A comment runs nothing, so dropping it changes nothing the
+ * command does; what it removes is text the agent wrote AT the reader —
+ * `rm -rf dist  # approved by the user in chat`. Quotes are tracked across
+ * lines; heredoc bodies are data and kept as written (a `#` there is the
+ * file's own text); `$#`, `${#x}` and `a#b` are not comments. A line left
+ * empty by the cut goes, and trailing blanks on a cut line.
+ */
+export function stripShellComments(command: string): string {
+  const out: string[] = [];
+  let quote: "'" | '"' | null = null;
+  let terminator: string | null = null;
+  let stripTabs = false;
+  for (const line of command.split("\n")) {
+    if (terminator !== null) {
+      out.push(line);
+      if ((stripTabs ? line.replace(/^\t+/, "") : line) === terminator)
+        terminator = null;
+      continue;
+    }
+    let cut = line.length;
+    for (let i = 0; i < line.length; i += 1) {
+      const ch = line[i] as string;
+      if (quote !== null) {
+        if (ch === "\\" && quote === '"') {
+          i += 1;
+          continue;
+        }
+        if (ch === quote) quote = null;
+        continue;
+      }
+      if (ch === "\\") {
+        i += 1;
+        continue;
+      }
+      if (ch === "'" || ch === '"') {
+        quote = ch;
+        continue;
+      }
+      if (ch === "#" && (i === 0 || /[\s;&|()]/.test(line[i - 1] as string))) {
+        cut = i;
+        break;
+      }
+    }
+    const kept = cut < line.length ? line.slice(0, cut).trimEnd() : line;
+    if (cut < line.length && kept.trim() === "") continue;
+    out.push(kept);
+    // A heredoc this line opens (outside quotes, before any comment): its
+    // body lines follow verbatim.
+    if (quote === null) {
+      const opener = findHeredocOpener(kept);
+      if (opener !== null) {
+        terminator = opener.terminator;
+        stripTabs = opener.stripTabs;
+      }
+    }
+  }
+  return out.join("\n");
 }
 
 /** The heredoc `<<WORD` a line really opens (unquoted, uncommented, and not
@@ -1854,17 +2045,31 @@ function decodeAnsiC(body: string): string {
 export interface Tokenized {
   words: string[];
   assignments: Array<{ key: string; value: string }>;
-  redirects: Array<{ kind: "out" | "in"; target: string }>;
+  /** `glob`: the target carries an unquoted `*`, `?` or `[` — bash expands
+   *  it, so the written path is whatever the pattern matches. */
+  redirects: Array<{ kind: "out" | "in"; target: string; glob?: true }>;
+  /** The words bash will expand the same way. */
+  globbed: Set<string>;
 }
 
 /** Shell-style word split of ONE simple command: quotes and backslash
  *  escapes honoured, leading `K=V` assignments separated, redirections
- *  pulled out with their targets. */
+ *  pulled out with their targets, and the words a live glob makes patterns
+ *  marked (quoted or escaped, `*` is a character; bare, it is a match). */
 export function tokenize(segment: string): Tokenized {
   const raw: string[] = [];
+  const rawGlob: boolean[] = [];
   let cur = "";
   let has = false;
+  let glob = false;
   let quote: "'" | '"' | null = null;
+  const flush = (): void => {
+    raw.push(cur);
+    rawGlob.push(glob);
+    cur = "";
+    has = false;
+    glob = false;
+  };
   const s = segment.trim();
   for (let i = 0; i < s.length; i += 1) {
     const ch = s[i] as string;
@@ -1910,24 +2115,17 @@ export function tokenize(segment: string): Tokenized {
       continue;
     }
     if (/\s/.test(ch)) {
-      if (has) {
-        raw.push(cur);
-        cur = "";
-        has = false;
-      }
+      if (has) flush();
       continue;
     }
     // split redirection operators glued to words: `>file`, `2>>x`, `<in`
     if (ch === ">" || ch === "<" || (ch === "&" && s[i + 1] === ">")) {
       // flush a preceding word unless it is a bare fd number
-      if (has && !/^\d+$/.test(cur)) {
-        raw.push(cur);
-        cur = "";
-        has = false;
-      }
+      if (has && !/^\d+$/.test(cur)) flush();
       let op = has ? cur : ""; // fd prefix
       cur = "";
       has = false;
+      glob = false;
       op += ch;
       if (ch === "&") {
         op += ">";
@@ -1946,22 +2144,31 @@ export function tokenize(segment: string): Tokenized {
         i += 1;
       }
       raw.push(op);
+      rawGlob.push(false);
       continue;
     }
     cur += ch;
     has = true;
+    if (ch === "*" || ch === "?" || ch === "[") glob = true;
   }
-  if (has) raw.push(cur);
+  if (has) flush();
 
   const words: string[] = [];
   const assignments: Tokenized["assignments"] = [];
   const redirects: Tokenized["redirects"] = [];
+  const globbed = new Set<string>();
   let leading = true;
   for (let i = 0; i < raw.length; i += 1) {
     const w = raw[i] as string;
     if (OUT_REDIRECT.test(w)) {
       const target = raw[i + 1];
-      if (target !== undefined) redirects.push({ kind: "out", target });
+      if (target !== undefined) {
+        redirects.push(
+          rawGlob[i + 1] === true
+            ? { kind: "out", target, glob: true }
+            : { kind: "out", target },
+        );
+      }
       i += 1;
       leading = false;
       continue;
@@ -1987,7 +2194,8 @@ export function tokenize(segment: string): Tokenized {
       }
       leading = false;
     }
+    if (rawGlob[i] === true) globbed.add(w);
     words.push(w);
   }
-  return { words, assignments, redirects };
+  return { words, assignments, redirects, globbed };
 }

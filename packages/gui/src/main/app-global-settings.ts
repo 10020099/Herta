@@ -61,10 +61,6 @@ export interface GlobalSettings {
    *  config from Electron userData into the visible global `~/.herta` layer.
    *  The legacy file is always retained; true means the prompt must not recur. */
   readonly legacyMcpMigrationHandled?: boolean;
-  /** The 3D device card (ADR 0057). ABSENT = the shipped default
-   *  (`DEVICE_SCENE_DEFAULT`); the Settings → 差分协处理器 toggle writes an
-   *  explicit boolean. Live-applied in the renderer; no restart. */
-  readonly deviceScene?: boolean;
   /**
    * Herta's synthesized real-time voice (ADR 0042): she SPEAKS her replies,
    * and the text types in step with the audio. Default TRUE, and LIVE — the
@@ -82,6 +78,35 @@ export interface GlobalSettings {
   readonly voiceEngine?: VoiceEngine;
   /** The MiniMax clone this install made, or absent when none / forgotten. */
   readonly minimaxVoice?: MiniMaxVoiceRecord;
+  /** OS notifications while the window is not attended (ADR 0072 §1).
+   *  ABSENT = on. Live: the watcher reads it at every event. */
+  readonly notifications?: boolean;
+  /** Keep the machine awake while 板砖 runs (ADR 0072 §1). ABSENT = on. */
+  readonly keepAwake?: boolean;
+  /** Transcribe an attached PDF's pictures with the vision model (2026-10-01,
+   *  Settings → 差分协处理器). ABSENT = on (the owner's pick). Live: the host
+   *  reads it at every attach. Per user, like the other cost switches here,
+   *  because the calls are paid on the user's key. */
+  readonly pdfPictureTranscripts?: boolean;
+  /** Composer predictions (2026-10-10, Settings → 窗口): after Herta
+   *  replies, the message box suggests the Trailblazer's likely next line.
+   *  ABSENT = on (the owner's pick, as Codex ships it). Live: the host reads
+   *  it at every finished turn. Per user — one small call per reply, on the
+   *  user's key. */
+  readonly composerPredictions?: boolean;
+}
+
+/** Whether an attached PDF's pictures are transcribed: the ONE resolver the
+ *  bootstrap and the Settings row both read, so the row never shows a default
+ *  the app is not running with. */
+export function pdfPictureTranscriptsEnabled(s: GlobalSettings): boolean {
+  return s.pdfPictureTranscripts ?? true;
+}
+
+/** Whether the composer offers a predicted next message — the ONE resolver
+ *  the bootstrap and the Settings row both read. */
+export function composerPredictionsEnabled(s: GlobalSettings): boolean {
+  return s.composerPredictions ?? true;
 }
 
 export interface WindowStateSnapshot {
@@ -114,10 +139,12 @@ export async function readGlobalSettings(
       windowState,
       interactionLanguage,
       legacyMcpMigrationHandled,
-      deviceScene,
       realtimeVoice,
       voiceEngine,
       minimaxVoice,
+      notifications,
+      keepAwake,
+      pdfPictureTranscripts,
     } = parsed as {
       locale?: unknown;
       closeToTray?: unknown;
@@ -126,14 +153,28 @@ export async function readGlobalSettings(
       windowState?: unknown;
       interactionLanguage?: unknown;
       legacyMcpMigrationHandled?: unknown;
-      deviceScene?: unknown;
       realtimeVoice?: unknown;
       voiceEngine?: unknown;
       minimaxVoice?: unknown;
+      notifications?: unknown;
+      keepAwake?: unknown;
+      pdfPictureTranscripts?: unknown;
     };
-    if (deviceScene !== undefined && typeof deviceScene !== "boolean") {
+    if (
+      pdfPictureTranscripts !== undefined &&
+      typeof pdfPictureTranscripts !== "boolean"
+    ) {
       return {};
     }
+    if (notifications !== undefined && typeof notifications !== "boolean") {
+      return {};
+    }
+    if (keepAwake !== undefined && typeof keepAwake !== "boolean") {
+      return {};
+    }
+    // `deviceScene` (the 3D device toggle, ADR 0057 §2.7) is no longer a
+    // setting (2026-10-01): a file that still carries it is read as if it did
+    // not, and the value is never consulted.
     if (
       voiceEngine !== undefined &&
       voiceEngine !== "local" &&

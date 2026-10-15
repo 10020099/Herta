@@ -13,30 +13,39 @@
  */
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import {
   type AgentEvent,
   type ApprovalOverlayState,
   defaultWorkspaceFor,
+  dispatchJournalPath,
   type EventBus,
   isAbortError,
   type LastTurnEnd,
-  type ProjectCommandRuleStore,
   type ProviderAdapter,
   type RepoContextSnapshot,
-  ruleDisplay,
+  readDispatchJournal,
+  readUndoIndex,
+  restoreUndo,
+  resumableRun,
   type SessionTopic,
   type SystemBlock,
   type TerminalRecord,
   type TerminalRecordBlock,
+  type UndoMark,
+  type UndoSegmentView,
+  UndoStore,
+  undoSegments,
+  undoStoreDir,
   type V2RecordPersister,
-  type WorkspaceTrust,
+  type WorkspacePermissions,
 } from "@herta/core";
 import {
   type MetaThinkCorpus,
   type OpeningChoice,
   type PromptLang,
   type StaticHertaPrefix,
+  sanitizeSystemBlock,
   V2ActorDriver,
 } from "@herta/herta";
 import { type ApiKey, deepseekVisionCaptioner } from "@herta/providers";
@@ -55,9 +64,19 @@ import {
   type WorkingDiff,
 } from "@herta/tools";
 import { type ImageCaptioner, migrateAttachments } from "./attachments.js";
+import {
+  AutoReviewer,
+  defaultReviewModel,
+  reviewModelFrom,
+} from "./auto-review.js";
 import { BusActorStreamingSink } from "./bus-streaming-sink.js";
+import { dropWithdrawnJournal } from "./dispatch-recovery.js";
 import { connectMcpServers } from "./mcp/connect.js";
 import { loadEffectiveMcpConfig } from "./mcp/mcp-config.js";
+import {
+  offlineChatProvider,
+  offlineCompletionProvider,
+} from "./offline-providers.js";
 import { OverlayAskResolver } from "./overlay-ask-resolver.js";
 import { createChatProvider } from "./provider-factory.js";
 import { recordTail } from "./record-window.js";
@@ -83,14 +102,18 @@ import { SteerChannel } from "./steer-channel.js";
 import type {
   ApprovalResult,
   AppServerConfig,
+  AttachProgress,
   AttachResult,
+  AutoReviewState,
   ContextUsage,
+  ContinueInterruptedResult,
   McpConnectionStatus,
   OverlayEvent,
   RecordEvent,
   RemoveAttachmentResult,
   RepoEvent,
   ResolveApprovalOpts,
+  ResumeEvent,
   RewindResult,
   Session,
   SessionAgentEvent,
@@ -99,11 +122,14 @@ import type {
   SteerTextResult,
   TitleEvent,
   TurnLifecycleEvent,
+  UndoEvent,
+  UndoTarget,
+  UndoTurnEditsResult,
   VoiceCueEvent,
   WorkspaceEvent,
   WorkspaceSetResult,
-  WorkspaceTrustState,
 } from "./types.js";
+import { undoNoteBody } from "./undo-note.js";
 import { loadEffectiveRules, withProjectRules } from "./workspace-rules.js";
 
 /**
@@ -121,6 +147,32 @@ export function spanEditedFiles(blocks: TerminalRecord): boolean {
       (b.evidenceDetail?.includes("改动文件") === true ||
         /\b\d+ files?\b/.test(b.body)),
   );
+}
+
+/**
+ * Whether a withdrawn span leaves edits on disk for the rewind notice to
+ * name: its file edits, less what the turn's own undo line already took
+ * back. After 撤销 then 回到此处 the notice said 改动的文件未撤销 of files
+ * that were back as they were (release review 2026-10-13). What that undo
+ * left alone, what commands changed, and edits after it still count.
+ */
+export function spanEditsLeft(blocks: TerminalRecord): boolean {
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const b = blocks[i];
+    if (b?.kind !== "system" || b.digest?.kind !== "undo") continue;
+    const d = b.digest;
+    const leftByUndo =
+      d.files.some(
+        (f) =>
+          f.result !== "restored" &&
+          f.result !== "deleted" &&
+          f.result !== "unchanged",
+      ) ||
+      d.commands.length > 0 ||
+      d.commandsUnknown;
+    return leftByUndo || spanEditedFiles(blocks.slice(i + 1));
+  }
+  return spanEditedFiles(blocks);
 }
 
 // The title machinery — tuning constants, the recent-window input, the
@@ -178,6 +230,9 @@ export interface SessionInternalDeps {
     /** The digest tool's side model (ADR 0043). With `providerOverrides`
      *  present and this absent, the tool mounts `unavailable`. */
     readonly digest?: ProviderAdapter;
+    /** The automatic reviewer's model (ADR 0075). With `providerOverrides`
+     *  present and this absent, no reviewer is mounted. */
+    readonly review?: ProviderAdapter;
   };
   /** Skip the async buildStaticHertaPrefix disk scan. */
   readonly staticPrefixOverride?: StaticHertaPrefix;
@@ -278,6 +333,15 @@ function contractFallbackNote(lang: PromptLang): string {
     : "未检测到 bash：工具契约「极简」不可用，本次按「标准」运行。安装 Git for Windows（或设置 HERTA_BASH）后重启生效。";
 }
 
+/**
+ * How long `close()` waits for an interrupted turn to finish unwinding (the
+ * bridge's done-marker, the driver's persist) before it tears down anyway.
+ * A host's quit hold must outlast it (ADR 0071 §1.7): the desktop app held
+ * 3 s against this 5 s, so a slow unwind lost the turn's ending on a plain
+ * quit.
+ */
+export const CLOSE_SETTLE_CAP_MS = 5_000;
+
 // ── SessionImpl ─────────────────────────────────────────────────────────────
 
 export class SessionImpl implements Session {
@@ -355,9 +419,9 @@ export class SessionImpl implements Session {
   // resolveApproval() can call resolveExternal().
   private readonly overlayResolver: OverlayAskResolver;
 
-  // Project command allow rules (ADR 0030) — held for the Settings
-  // management surface (list/remove); the resolver consults it directly.
-  private readonly commandRules: ProjectCommandRuleStore;
+  // The workspace's permission choices — held for the automatic-review
+  // switch; the resolver consults it directly.
+  private readonly workspacePermissions: WorkspacePermissions;
 
   // The narrative-completion actor driver — owns the growing TerminalRecord,
   // mood routing, the supervisor, and (via its persister) block persistence.
@@ -404,6 +468,11 @@ export class SessionImpl implements Session {
   // Live DeepSeek key getter (the host's mutable holder). submitText reads it to
   // detect the no-key case; the providers were built with the same getter.
   private readonly deepSeekKey: () => string;
+  /** The composer-prediction switch, live (2026-10-10). */
+  private readonly composerPredictions: () => boolean;
+  /** The prediction in flight after a finished turn, if any — aborted when
+   *  the next turn starts or the session closes. */
+  private prediction: AbortController | null = null;
 
   /** Closes any connected MCP servers on session close (方案 A). Optional —
    *  absent when no MCP servers were configured. */
@@ -444,6 +513,19 @@ export class SessionImpl implements Session {
    *  `turn.failed` on the bus — the window in which a steer has a sampling
    *  boundary to reach. Tracked from the bus, cleared with the turn. */
   private backendRunning = false;
+  private readonly contract: string;
+  /** Whether a 继续 is on offer (ADR 0071 §1.4); see `refreshResumable`. */
+  private _resumable = false;
+  /** Whether the latest turn can be undone (ADR 0074); see
+   *  `refreshUndoable`. */
+  private _undoable = false;
+  /** An undo is running: a second one waits its turn by refusing. */
+  private undoing = false;
+  /** Settles when the running undo has landed. A send or a 继续 that
+   *  arrives meanwhile waits for it, so the undo's `→ 系统` line goes in
+   *  before the message, never inside its turn (release review 2026-10-13:
+   *  only the undo checked for a turn, not a turn for the undo). */
+  private undoSettled: Promise<void> = Promise.resolve();
 
   /** The session title and its topic history — generation after a user
    *  turn, the rewind fence, the sidecar (session-titler.ts). */
@@ -494,7 +576,7 @@ export class SessionImpl implements Session {
     sink: BusActorStreamingSink;
     projector: SessionEventProjector;
     overlayResolver: OverlayAskResolver;
-    commandRules: ProjectCommandRuleStore;
+    workspacePermissions: WorkspacePermissions;
     transcriptDir: string;
     titler: SessionTitler;
     pendingOpening: TerminalRecordBlock | null;
@@ -507,6 +589,10 @@ export class SessionImpl implements Session {
     lastTurnEnd?: LastTurnEnd;
     pendingContractNote: string | null;
     captionImage: ImageCaptioner | null;
+    /** The user's PDF-picture transcription switch, live (2026-10-01). */
+    transcribePdfPictures: () => boolean;
+    /** The composer-prediction switch, live (2026-10-10). */
+    composerPredictions: () => boolean;
     steer: SteerChannel;
     bus: EventBus<AgentEvent>;
     /** ADR 0067: the toolset follows the environment. Fired after the
@@ -514,7 +600,11 @@ export class SessionImpl implements Session {
     onWorkspaceChanged?: () => void;
     /** ADR 0067: fired when a readable document is attached. */
     onDocumentAttached?: () => void;
+    /** The contract this session's backend runs (ADR 0040): an interrupted
+     *  run that started under another cannot be continued here. */
+    contract: string;
   }) {
+    this.contract = opts.contract;
     this.steer = opts.steer;
     this.bus = opts.bus;
     this.onWorkspaceChanged = opts.onWorkspaceChanged;
@@ -539,7 +629,7 @@ export class SessionImpl implements Session {
     this._record = opts.driver.getRecord();
     this.projector = opts.projector;
     this.overlayResolver = opts.overlayResolver;
-    this.commandRules = opts.commandRules;
+    this.workspacePermissions = opts.workspacePermissions;
     this.transcriptDir = opts.transcriptDir;
     this.titler = opts.titler;
     this.pendingOpening = opts.pendingOpening;
@@ -548,6 +638,7 @@ export class SessionImpl implements Session {
     this.deepSeekKey = opts.deepSeekKey;
     if (opts.mcpDispose !== undefined) this.mcpDispose = opts.mcpDispose;
     this.mcpConnectionStatus = opts.mcpConnectionStatus;
+    this.composerPredictions = opts.composerPredictions;
     this.lang = opts.lang;
     this.pendingContractNote = opts.pendingContractNote;
     this.attachments = new SessionAttachments({
@@ -555,6 +646,7 @@ export class SessionImpl implements Session {
       lang: opts.lang,
       wsHolder: this.wsHolder,
       captionImage: opts.captionImage,
+      transcribePdfPictures: opts.transcribePdfPictures,
       turnInFlight: () => this.currentTurn !== null,
       driver: this.driver,
       onAppended: () => {
@@ -630,6 +722,7 @@ export class SessionImpl implements Session {
       settleTurn = resolve;
     });
     this.currentTurn = { turnId, abortController, settled };
+    this.abortPrediction();
     this.projector.emitTurnLifecycle({ kind: "started", turnId });
     try {
       await body(abortController.signal);
@@ -640,6 +733,9 @@ export class SessionImpl implements Session {
       // streaming bubble out from under it. In the shared runner rather than
       // one caller, so a regenerated reply (D2) settles the same way a
       // submitted one does; the opening is unvoiced and this is a no-op there.
+      // A text reveal (a beat, or the whole reply with the supervisor off)
+      // finishes at its own pace first: landing it would flash its tail.
+      await this.sink.textRevealsDone();
       this.sink.settleVoice();
       this._record = this.driver.getRecord();
       hooks.onFinished?.();
@@ -689,6 +785,11 @@ export class SessionImpl implements Session {
       // entry replacing `currentTurn` mid-turn is what the callers' gates
       // forbid; the check keeps a wrong release impossible regardless.)
       if (this.currentTurn?.turnId === turnId) this.currentTurn = null;
+      // A dispatch, a Stop or a 继续 may have changed what can be continued
+      // (ADR 0071 §1.4).
+      void this.refreshResumable();
+      // And whether its edits can be taken back (ADR 0074).
+      void this.refreshUndoable();
     }
     return turnId;
   }
@@ -723,6 +824,10 @@ export class SessionImpl implements Session {
 
   get topics(): readonly SessionTopic[] {
     return this.titler.topics;
+  }
+
+  renameTitle(title: string): readonly SessionTopic[] {
+    return this.titler.renameCurrentTopic(title);
   }
 
   get turnInFlight(): boolean {
@@ -775,6 +880,269 @@ export class SessionImpl implements Session {
     return this.backendRunning;
   }
 
+  /** Whether a 继续 is on offer now (ADR 0071 §1.4). */
+  get resumable(): boolean {
+    return this._resumable;
+  }
+
+  subscribeResume(): AsyncIterable<ResumeEvent> {
+    return this.projector.subscribeResume();
+  }
+
+  /**
+   * Work out whether a 继续 is on offer, and say so when it changes. On
+   * offer while the session is idle, its latest terminal marker is a 中断
+   * one (the app exited, or the user pressed Stop), and the journal still
+   * holds that run — ended interrupted, begun before the marker — under
+   * this session's contract. A later dispatch, a rewind past the marker or
+   * a 继续 takes the offer away; chatting with Herta in between does not.
+   */
+  async refreshResumable(): Promise<void> {
+    this.setResumable(await this.computeResumable());
+  }
+
+  private async computeResumable(): Promise<boolean> {
+    if (this.currentTurn !== null) return false;
+    const record = this.driver.getRecord();
+    let marker = -1;
+    for (let i = record.length - 1; i >= 0; i -= 1) {
+      const b = record[i];
+      if (
+        b?.kind === "system" &&
+        (b.role === "done-marker" || b.role === "noop-marker")
+      ) {
+        marker = i;
+        break;
+      }
+    }
+    const block = record[marker];
+    if (
+      block?.kind !== "system" ||
+      block.role !== "done-marker" ||
+      block.markerSummary?.state !== "interrupted"
+    ) {
+      return false;
+    }
+    let entries: Awaited<ReturnType<typeof readDispatchJournal>>;
+    try {
+      entries = await readDispatchJournal(
+        dispatchJournalPath(this.transcriptDir, this.sessionId),
+      );
+    } catch {
+      return false;
+    }
+    const run = entries === null ? null : resumableRun(entries);
+    // The same contract AND the same workspace: a run continued after a
+    // workspace_set would run in the new one with the old one's paths in
+    // its closers and journal (review 2026-09-30). A journal that names no
+    // workspace is taken as this one's.
+    return (
+      run !== null &&
+      run.recordLength !== undefined &&
+      run.recordLength <= marker &&
+      run.start.contract === this.contract &&
+      (run.start.workspaceRoot ?? this.backendWorkspace) ===
+        this.backendWorkspace
+    );
+  }
+
+  private setResumable(value: boolean): void {
+    if (value === this._resumable) return;
+    this._resumable = value;
+    this.projector.emitResume({ kind: "offer", resumable: value });
+  }
+
+  // ───── Undo (ADR 0074) ─────────────────────────────────────────────────
+
+  /** Whether the record's latest turn can be undone — the 撤销 chip. */
+  get undoable(): boolean {
+    return this._undoable;
+  }
+
+  subscribeUndo(): AsyncIterable<UndoEvent> {
+    return this.projector.subscribeUndo();
+  }
+
+  /** Work out whether the latest turn can be undone, and say so when it
+   *  changes. The user's alone: nothing of it enters the record. */
+  async refreshUndoable(): Promise<void> {
+    const value =
+      this.currentTurn === null &&
+      this.latestTurnSegments(await this.undoViews()).some(
+        (v) => v.writes.length > 0,
+      );
+    if (value === this._undoable) return;
+    this._undoable = value;
+    this.projector.emitUndo({ kind: "offer", undoable: value });
+  }
+
+  private get undoDir(): string {
+    return undoStoreDir(this.transcriptDir, this.sessionId);
+  }
+
+  private async undoViews(): Promise<UndoSegmentView[]> {
+    return undoSegments(await readUndoIndex(this.undoDir));
+  }
+
+  /** Where the latest turn starts: its user block, never a steer (ADR 0063
+   *  §1.10) — the cut a rewind makes. -1 with no turn. */
+  private latestTurnStart(): number {
+    const record = this.driver.getRecord();
+    for (let i = record.length - 1; i >= 0; i -= 1) {
+      const b = record[i];
+      if (b?.kind === "user" && b.steer !== true) return i;
+    }
+    return -1;
+  }
+
+  /** The latest turn's segments still to be undone: begun after its user
+   *  block, and neither withdrawn, undone nor dropped. */
+  private latestTurnSegments(
+    views: readonly UndoSegmentView[],
+  ): UndoSegmentView[] {
+    const start = this.latestTurnStart();
+    if (start === -1) return [];
+    return views.filter(
+      (v) => v.at > start && !v.withdrawn && !v.undone && !v.dropped,
+    );
+  }
+
+  /** Segments ⟲ took out since the last send, not yet undone. */
+  private static pendingWithdrawn(
+    views: readonly UndoSegmentView[],
+  ): UndoSegmentView[] {
+    return views.filter((v) => v.withdrawn && !v.undone && !v.dropped);
+  }
+
+  private async markUndo(
+    kind: UndoMark,
+    views: readonly UndoSegmentView[],
+  ): Promise<void> {
+    if (views.length === 0) return;
+    const store = await UndoStore.open(this.undoDir);
+    await store.mark(
+      kind,
+      views.map((v) => v.seg),
+    );
+    await store.close();
+  }
+
+  /** A withdrawn turn's edits stay undoable until the next send (the
+   *  rewind notice lasts that long); then they go. Called inside the next
+   *  turn, so no undo can race it. */
+  private async dropWithdrawnEdits(): Promise<void> {
+    await this.markUndo(
+      "dropped",
+      SessionImpl.pendingWithdrawn(await this.undoViews()),
+    );
+  }
+
+  /**
+   * Take a turn's edits back (ADR 0074 §3–§4): harness code, three ways per
+   * file — never overwriting one changed since. `latest`: the record's
+   * latest turn, from its card; the turn stays in the record, so a `→ 系统`
+   * line says what came back and what is still changed — Herta must not
+   * believe edits that are gone. `withdrawn`: what ⟲ took out since the
+   * last send, from its notice; that turn is no longer in the record, so
+   * nothing is written there. Idle-only.
+   */
+  async undoLastTurnEdits(target: UndoTarget): Promise<UndoTurnEditsResult> {
+    if (this.currentTurn !== null || this.undoing) {
+      return { ok: false, reason: "turn_in_progress" };
+    }
+    this.undoing = true;
+    let landed: () => void = () => {};
+    this.undoSettled = new Promise((resolve) => {
+      landed = resolve;
+    });
+    try {
+      const views = await this.undoViews();
+      const segs =
+        target === "latest"
+          ? this.latestTurnSegments(views)
+          : SessionImpl.pendingWithdrawn(views);
+      if (!segs.some((v) => v.writes.length > 0)) {
+        return { ok: false, reason: "nothing_to_undo" };
+      }
+      const root = this.backendWorkspace;
+      const outcome = await restoreUndo(this.undoDir, segs, root);
+      await this.markUndo("undone", segs);
+      const result = {
+        files: outcome.files.map((f) => ({
+          path: relative(root, f.path).replaceAll("\\", "/"),
+          result: f.result,
+        })),
+        commands: outcome.commands.paths,
+        commandsUnknown: outcome.commands.unknown,
+        incomplete: outcome.incomplete,
+      };
+      if (target === "latest") {
+        // The paths came from 板砖's writes: sanitized at construction, the
+        // one gate on a system block (the serializer does not clean bodies).
+        this.driver.appendSystemBlock(
+          sanitizeSystemBlock({
+            kind: "system",
+            label: "系统",
+            body: undoNoteBody(result, this.lang),
+            digest: { kind: "undo", ...result },
+          }),
+        );
+        this._record = this.driver.getRecord();
+      }
+      return { ok: true, ...result };
+    } finally {
+      try {
+        await this.refreshUndoable();
+      } finally {
+        this.undoing = false;
+        landed();
+      }
+    }
+  }
+
+  /** Wait for an undo in flight to land (see `undoSettled`). Callers check
+   *  `undoing` first: with none running, a turn still takes its slot in the
+   *  call's own tick. */
+  private async undoLanded(): Promise<void> {
+    while (this.undoing) await this.undoSettled;
+  }
+
+  /**
+   * 继续 (ADR 0071 §1.4): continue the interrupted 板砖 run. The turn's user
+   * block is `继续` (`Continue`) marked `resume`; the run continues from its
+   * journal before Herta speaks, and she comments after it. Never rejects:
+   * no key, a turn already running, or no run to continue each answer as a
+   * result the renderer can act on.
+   */
+  async continueInterrupted(): Promise<ContinueInterruptedResult> {
+    if (this.deepSeekKey().trim() === "") return { needsKey: true };
+    if (this.undoing) await this.undoLanded();
+    if (this.currentTurn !== null) return { unavailable: true };
+    // Checked against the journal now, not trusted from the last answer.
+    await this.refreshResumable();
+    if (!this._resumable || this.currentTurn !== null) {
+      return { unavailable: true };
+    }
+    this.setResumable(false);
+    const text = this.lang === "en" ? "Continue" : "继续";
+    const turnId = await this.runAsTurn(
+      async (signal) => {
+        // A send: a withdrawn turn's edits are past undoing now (ADR 0074).
+        await this.dropWithdrawnEdits();
+        return this.driver.runTurn(text, signal, true, [], { resume: true });
+      },
+      {
+        onFinished: () => this.recordTurnEnd("completed"),
+        onFailed: (err) => {
+          this.reconcileRecordAfterFailure();
+          this.recordTurnEnd(isAbortError(err) ? "interrupted" : "failed");
+        },
+        rethrow: false,
+      },
+    );
+    return { turnId };
+  }
+
   /** A dream pass changed the corpus: the next turn re-derives the prefix
    *  once (ADR 0069 §1b). */
   markPrefixStale(): void {
@@ -798,15 +1166,22 @@ export class SessionImpl implements Session {
     // gate, so a duplicate IPC / renderer-reload race could otherwise run two
     // turns concurrently on the single-threaded driver and corrupt the shared
     // record + persist cursor.
+    if (this.undoing) await this.undoLanded();
     if (this.currentTurn !== null) {
       throw new Error("a turn is already in progress");
     }
+    // ADR 0075: the owner has spoken — the reviewer's brake lifts.
+    this.overlayResolver.resetReviewBrake();
     // ADR 0044: a front-end that never calls playOpening (the CLI) still gets
     // the contract-fallback note — between turns, before this turn's user
     // block. One-shot no-op everywhere else.
     this.flushContractNote();
     const turnId = await this.runAsTurn(
       async (signal) => {
+        // A send: a withdrawn turn's edits are past undoing now — the rewind
+        // notice that offered them is gone (ADR 0074 §4). Inside the turn,
+        // so no undo can race it.
+        await this.dropWithdrawnEdits();
         // Take the staged pictures BEFORE the driver runs (ADR 0048 §4):
         // their blocks go in right after the user block, so Herta reads the
         // message and what came with it as one thing. `commit` awaits the
@@ -849,7 +1224,38 @@ export class SessionImpl implements Session {
     // re-entry, or periodic on a long session). Fire-and-forget — the user
     // already sees Herta's reply; the title fills/updates after.
     this.titler.afterUserTurn();
+    // And the composer's suggestion for what they might say next.
+    void this.predictNextMessage(turnId);
     return { turnId };
+  }
+
+  /**
+   * Composer predictions (owner 2026-10-10): after a submitted turn finishes,
+   * the driver guesses the Trailblazer's next message and the composer offers
+   * it (`predicted`). Fire-and-forget and best-effort: off unless the user's
+   * switch is on, dropped when another turn has started by the time it
+   * lands, and silent on any failure. Never touches the record.
+   */
+  private async predictNextMessage(turnId: string): Promise<void> {
+    if (!this.composerPredictions()) return;
+    this.abortPrediction();
+    const ac = new AbortController();
+    this.prediction = ac;
+    try {
+      const text = await this.driver.predictNextUserMessage(ac.signal);
+      if (text === null || ac.signal.aborted || this.currentTurn !== null)
+        return;
+      this.projector.emitTurnLifecycle({ kind: "predicted", turnId, text });
+    } catch {
+      // An abort, or a failure the driver did not swallow: no suggestion.
+    } finally {
+      if (this.prediction === ac) this.prediction = null;
+    }
+  }
+
+  private abortPrediction(): void {
+    this.prediction?.abort();
+    this.prediction = null;
   }
 
   /**
@@ -1054,13 +1460,23 @@ export class SessionImpl implements Session {
     // D-Idle-only: never rewind across an in-flight turn (mirrors submitText's
     // single-turn invariant). The button is also hidden client-side while busy,
     // but enforce it here so an IPC race can't truncate mid-stream.
-    if (this.currentTurn !== null) {
+    if (this.currentTurn !== null || this.undoing) {
       return { ok: false, reason: "turn_in_progress" };
     }
+    // The turn's edits, read before the cut moves the turn's start (ADR
+    // 0074 §4): they leave the record with it, and stay undoable from the
+    // rewind notice until the next send.
+    const views = await this.undoViews();
+    const turnSegments = this.latestTurnSegments(views);
     const result = this.driver.rewindLastUserTurn();
     if (result === null) {
       return { ok: false, reason: "no_user_turn" };
     }
+    await this.markUndo("withdrawn", turnSegments);
+    const undoable = [
+      ...SessionImpl.pendingWithdrawn(views),
+      ...turnSegments,
+    ].some((v) => v.writes.length > 0);
     this._record = this.driver.getRecord();
     // Reset the sink's canonical-diff cursor to the new (shorter) length: the
     // record just shrank, so the next turn's flushBlocks must emit from there,
@@ -1099,11 +1515,23 @@ export class SessionImpl implements Session {
       result.withdrawn,
       this._record,
     );
+    // A withdrawn dispatch's journal goes with it, so the run is never
+    // sealed or continued (ADR 0071 §1.1). Best effort, like the GC above.
+    await dropWithdrawnJournal(
+      dispatchJournalPath(this.transcriptDir, this.sessionId),
+      this._record.length,
+    ).catch(() => undefined);
+    // Rewinding past a 中断 marker takes the offer away; rewinding a 继续
+    // turn can bring it back.
+    await this.refreshResumable();
+    // The turn now latest may have edits of its own to offer (ADR 0074).
+    await this.refreshUndoable();
     return {
       ok: true,
       userText: result.userText,
-      editedFiles: spanEditedFiles(result.withdrawn),
+      editedFiles: spanEditsLeft(result.withdrawn),
       ...(images.length > 0 ? { images } : {}),
+      undoable,
     };
   }
 
@@ -1186,32 +1614,21 @@ export class SessionImpl implements Session {
     }
   }
 
-  /** Display forms of the project command allow rules (ADR 0030) for the
-   *  CURRENT effective workspace — the Settings management list. */
-  async listCommandRules(): Promise<readonly string[]> {
-    return this.commandRules.list().map(ruleDisplay);
-  }
-
-  /** Removes one rule by its display form. False when nothing matched. */
-  async removeCommandRule(display: string): Promise<boolean> {
-    return this.commandRules.remove(display);
-  }
-
-  /** Workspace trust (ADR 0064) for the CURRENT effective workspace — read
-   *  through the resolver's policy so the card and the menu agree. */
-  async getWorkspaceTrust(): Promise<WorkspaceTrustState> {
+  /** Automatic review (ADR 0075) for the CURRENT effective workspace —
+   *  read through the resolver's policy so the card and the menu agree. */
+  async getAutoReview(): Promise<AutoReviewState> {
     return {
-      effective: this.overlayResolver.workspaceTrusted ? "workspace" : "ask",
-      explicit: this.commandRules.trust(),
+      on: this.overlayResolver.autoReviewOn,
+      explicit: this.workspacePermissions.autoReview(),
       isDefaultWorkspace: this.backendWorkspaceIsDefault,
     };
   }
 
-  async setWorkspaceTrust(
-    value: WorkspaceTrust | null,
-  ): Promise<WorkspaceTrustState> {
-    this.commandRules.setTrust(value);
-    return this.getWorkspaceTrust();
+  /** The owner's choice for the CURRENT workspace, in the file no command
+   *  may write; null clears it back to the default. */
+  async setAutoReview(on: boolean | null): Promise<AutoReviewState> {
+    this.workspacePermissions.setAutoReview(on);
+    return this.getAutoReview();
   }
 
   async resolveApproval(opts: ResolveApprovalOpts): Promise<ApprovalResult> {
@@ -1282,8 +1699,11 @@ export class SessionImpl implements Session {
 
   /** Ingest documents the 开拓者 handed over (ADR 0033) — see
    *  SessionAttachments.attachFiles. */
-  async attachFiles(paths: readonly string[]): Promise<AttachResult> {
-    const result = await this.attachments.attachFiles(paths);
+  async attachFiles(
+    paths: readonly string[],
+    onProgress?: (progress: AttachProgress) => void,
+  ): Promise<AttachResult> {
+    const result = await this.attachments.attachFiles(paths, onProgress);
     // The first readable document mounts `digest_document` for the next
     // brief (ADR 0067); later ones find it already there.
     if (result.ok && result.files.some((f) => f.unreadable === undefined)) {
@@ -1540,8 +1960,9 @@ export class SessionImpl implements Session {
     // currentTurn is null, so this is always safe to call.
     await this.interrupt();
     // Abort any in-flight title generation so a slow flash call can't outlive
-    // the session.
+    // the session — and the composer's prediction with it.
     this.titler.dispose();
+    this.abortPrediction();
 
     // Await the interrupted turn's REAL settlement (audit 2026-07-10,
     // finding 14): one setImmediate was not enough — a still-unwinding turn
@@ -1554,7 +1975,7 @@ export class SessionImpl implements Session {
     if (inFlight !== null) {
       let timer: NodeJS.Timeout | undefined;
       const cap = new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, 5_000);
+        timer = setTimeout(resolve, CLOSE_SETTLE_CAP_MS);
       });
       try {
         await Promise.race([inFlight, cap]);
@@ -1618,6 +2039,13 @@ export class SessionImpl implements Session {
      *  in Settings / onboarding takes effect on the next turn. Falls back to the
      *  static config key when omitted (tests). */
     deepSeekKey?: () => string;
+    /** Live getter for the user's PDF-picture transcription switch (from the
+     *  host's holder, 2026-10-01). Absent = on (tests, the CLI). */
+    transcribePdfPictures?: () => boolean;
+    /** Live getter for the composer-prediction switch (from the host's
+     *  holder, 2026-10-10). Absent = off: a host that offers no switch
+     *  (tests, the CLI) makes no prediction calls. */
+    composerPredictions?: () => boolean;
     /** Interaction language (slice 4): threaded into every language-
      *  parameterized constructor below (static prefix, seeds, opening,
      *  meta-think, hints, recap, title) and into the V2ActorDriver. The
@@ -1648,20 +2076,38 @@ export class SessionImpl implements Session {
       config.providers.baseUrl !== undefined
         ? { baseUrl: config.providers.baseUrl }
         : {};
+    // ADR 0075: the automatic reviewer — flash, thinking low, the replay's
+    // better config. It answers only where the owner opted the workspace in.
+    // A test override takes the real provider's place; a test without one
+    // mounts none, so nothing reaches the network under test.
+    const reviewModel =
+      deps.providerOverrides?.review !== undefined
+        ? reviewModelFrom(deps.providerOverrides.review)
+        : deps.providerOverrides === undefined
+          ? defaultReviewModel(apiKey, baseUrl)
+          : null;
+    const autoReviewer =
+      reviewModel === null ? null : new AutoReviewer(reviewModel);
+    // Under the test seam a role left unstubbed is offline, never a real
+    // provider (offline-providers.ts) — and the same for the actor's roles
+    // and the title below.
+    const stubs = deps.providerOverrides;
     // Backend chat adapter — dispatch on provider type via the shared factory.
     // Thinking-effort normalization lives in provider-factory.ts (the broad
     // ThinkingEffort enum maps onto each vendor's own vocabulary). Settings →
     // Coprocessor supplies the model and the thinking level (default "high").
     const backendProvider =
-      deps.providerOverrides?.backend ??
-      createChatProvider({
-        type: config.providers.type ?? "deepseek",
-        apiKey,
-        model: config.providers.backendModel,
-        actorModel: config.providers.actorModel,
-        thinking: config.thinking,
-        ...baseUrl,
-      });
+      stubs?.backend ??
+      (stubs !== undefined
+        ? offlineChatProvider("backend")
+        : createChatProvider({
+            type: config.providers.type ?? "deepseek",
+            apiKey,
+            model: config.providers.backendModel,
+            actorModel: config.providers.actorModel,
+            thinking: config.thinking,
+            ...baseUrl,
+          }));
 
     // 1. Backend stack (shared wiring — see session-wiring.ts). The
     //    OverlayAskResolver surfaces pending permission requests through the
@@ -1691,6 +2137,10 @@ export class SessionImpl implements Session {
       workspaceRoot,
       lang,
       pendingUserInput: () => steer.drain(),
+      // The run journal beside the session's record (ADR 0071).
+      journalPath: dispatchJournalPath(config.transcriptDir, sessionId),
+      // And what 板砖's editors replace, for undo (ADR 0074).
+      undoDir: undoStoreDir(config.transcriptDir, sessionId),
       // The contract the setting asks for (ADR 0040). `minimal` needs a bash
       // on this machine; without one the session runs `standard`. The
       // Settings row shows the detection result (the GUI's getBackendContract
@@ -1732,15 +2182,45 @@ export class SessionImpl implements Session {
                 }),
               )
             : null,
-      makeAsk: ({ cache, rules }) => {
+      makeAsk: ({ cache, workspacePermissions }) => {
         overlayResolver = new OverlayAskResolver({
           cache,
-          rules,
-          // The managed sandbox trusts by default (ADR 0064): a new session's
-          // workspace under ~/.herta/workspaces holds nothing of the user's.
-          // A provider — setWorkspace moves the workspace mid-session.
-          defaultTrust: () =>
+          permissions: workspacePermissions,
+          // Automatic review is on by default in the managed sandbox (ADR 0064
+          // amendment 2026-10-10): a new session's workspace under
+          // ~/.herta/workspaces holds nothing of the user's. A provider —
+          // setWorkspace moves the workspace mid-session.
+          defaultAutoReview: () =>
             sessionHolder.session?.backendWorkspaceIsDefault === true,
+          ...(autoReviewer !== null
+            ? {
+                review: {
+                  reviewer: autoReviewer,
+                  // What the sink has projected so far — this turn's own
+                  // blocks included. `record` and the driver's `getRecord()`
+                  // both commit at turn boundaries, so mid-turn neither yet
+                  // holds the message this run answers (live lab 2026-10-09:
+                  // the reviewer was sent no user message at all and denied
+                  // what was asked for). The bridge reads the turn's working
+                  // record, which the sink mirrors.
+                  userMessages: () => {
+                    const s = sessionHolder.session;
+                    if (s === undefined || s === null) return [];
+                    const live = s.sink.flushedRecord() ?? s.driver.getRecord();
+                    return live.flatMap((b) =>
+                      b.kind === "user" && b.resume !== true ? [b.text] : [],
+                    );
+                  },
+                  workspace: () =>
+                    sessionHolder.session?.backendWorkspace ?? "",
+                  onReviewed: (notice) =>
+                    sessionHolder.session?.projector.emitOverlay({
+                      kind: "reviewed",
+                      notice,
+                    }),
+                },
+              }
+            : {}),
           setPendingOverlay(overlay) {
             // biome-ignore lint/style/noNonNullAssertion: set before any turn runs
             sessionHolder.session!._overlay = overlay;
@@ -1774,7 +2254,7 @@ export class SessionImpl implements Session {
         "[herta] backendContract=minimal requested but no bash found (install Git for Windows or set HERTA_BASH); running the standard contract",
       );
     }
-    const { bus, commandRules, runtimeFactory } = backend;
+    const { bus, workspacePermissions, runtimeFactory } = backend;
 
     // 1a. Event projector — subscribes to the bus so agent events fan-out
     //     to all SessionAgentEvent consumers automatically.
@@ -1820,14 +2300,17 @@ export class SessionImpl implements Session {
       compactionLevel: config.compactionLevel,
       promptDumpDir: config.transcriptDir,
       overrides: {
-        ...(deps.providerOverrides?.actor !== undefined
-          ? { actorProvider: deps.providerOverrides.actor }
-          : {}),
-        ...(deps.providerOverrides?.router !== undefined
-          ? { routerProvider: deps.providerOverrides.router }
-          : {}),
-        ...(deps.providerOverrides?.supervisor !== undefined
-          ? { supervisorProvider: deps.providerOverrides.supervisor }
+        ...(stubs !== undefined
+          ? {
+              actorProvider: stubs.actor ?? offlineCompletionProvider("actor"),
+              routerProvider: stubs.router ?? offlineChatProvider("router"),
+              // A router stub still covers the supervisor (and the recap,
+              // which rides its adapter) — the wiring's own test-seam rule.
+              supervisorProvider:
+                stubs.supervisor ??
+                stubs.router ??
+                offlineChatProvider("supervisor"),
+            }
           : {}),
         ...(deps.staticPrefixOverride !== undefined
           ? { staticPrefix: deps.staticPrefixOverride }
@@ -1847,17 +2330,19 @@ export class SessionImpl implements Session {
     // The title model (see createTitleProvider) and the title/topics the
     // session opens with, judged against the record actually loaded.
     const titleProvider =
-      deps.providerOverrides?.title ??
-      createChatProvider({
-        type: config.providers.type ?? "deepseek",
-        apiKey,
-        model: config.providers.routerModel,
-        actorModel: config.providers.actorModel,
-        thinking: "low",
-        maxTokens: 1024,
-        temperature: 0.3,
-        ...baseUrl,
-      });
+      stubs?.title ??
+      (stubs !== undefined
+        ? offlineChatProvider("title")
+        : createChatProvider({
+            type: config.providers.type ?? "deepseek",
+            apiKey,
+            model: config.providers.routerModel,
+            actorModel: config.providers.actorModel,
+            thinking: "low",
+            maxTokens: 1024,
+            temperature: 0.3,
+            ...baseUrl,
+          }));
     const existing = loadSessionTitleState(
       config.transcriptDir,
       sessionId,
@@ -2028,7 +2513,7 @@ export class SessionImpl implements Session {
       sink,
       projector,
       overlayResolver,
-      commandRules,
+      workspacePermissions,
       transcriptDir: config.transcriptDir,
       titler: new SessionTitler({
         sessionId,
@@ -2065,6 +2550,8 @@ export class SessionImpl implements Session {
         deps.providerOverrides === undefined
           ? deepseekVisionCaptioner({ apiKey, ...baseUrl })
           : null,
+      transcribePdfPictures: opts.transcribePdfPictures ?? (() => true),
+      composerPredictions: opts.composerPredictions ?? (() => false),
       repoDescriber: deps.repoDescriber ?? describeRepoOutcome,
       repoWatcher: deps.repoWatcher ?? watchGitDir,
       repoWatchDebounceMs: deps.repoWatchDebounceMs ?? REPO_WATCH_DEBOUNCE_MS,
@@ -2072,12 +2559,22 @@ export class SessionImpl implements Session {
       workingDiffDescriber: deps.workingDiffDescriber ?? describeWorkingDiff,
       logDescriber: deps.logDescriber ?? describeLog,
       branchesDescriber: deps.branchesDescriber ?? describeBranches,
+      contract: backend.contract,
     });
     sessionHolder.session = session;
     // The repository card's first answer (ADR 0058): fire-and-forget, the
     // event reaches whoever subscribes; the open/create snapshot carries
     // whatever has landed by then.
     void session.refreshRepo();
+    // Whether a 继续 is on offer (ADR 0071 §1.4) — AWAITED, unlike the repo
+    // card: the open's snapshot is what a reload re-syncs from, and the
+    // answer is one small file read.
+    await session.refreshResumable();
+    // A withdrawn turn's edits were undoable from a rewind notice, which did
+    // not survive the restart; the latest turn's chip state is read fresh
+    // (ADR 0074).
+    await session.dropWithdrawnEdits();
+    await session.refreshUndoable();
     return session;
   }
 }

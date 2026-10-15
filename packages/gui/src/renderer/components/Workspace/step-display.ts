@@ -1,6 +1,22 @@
 import type { MessageKey } from "../../i18n/keys.js";
 import type { SystemBlock } from "./group-record.js";
 
+type CutoffOutcome = Extract<
+  NonNullable<SystemBlock["evidence"]>[number],
+  { kind: "cutoff" }
+>["steps"][number]["outcome"];
+
+/** The crash marker's outcome words (ADR 0071 §1.2), by outcome. */
+const CUTOFF_KEY: Record<CutoffOutcome, MessageKey> = {
+  not_started: "evidence.cutoff.notStarted",
+  read_interrupted: "evidence.cutoff.readInterrupted",
+  write_applied: "evidence.cutoff.writeApplied",
+  write_not_applied: "evidence.cutoff.writeNotApplied",
+  write_changed_since: "evidence.cutoff.writeChangedSince",
+  state_not_applied: "evidence.cutoff.stateNotApplied",
+  outcome_unknown: "evidence.cutoff.outcomeUnknown",
+};
+
 /**
  * Shorten a filename from the MIDDLE for display (owner 2026-08-10: a long
  * name wrapped the attachment row onto three lines).
@@ -37,7 +53,6 @@ export const VERB_KEY: Record<string, MessageKey> = {
   Reading: "activity.verb.reading",
   Writing: "activity.verb.writing",
   Running: "activity.verb.running",
-  Planning: "activity.verb.planning",
   Inspecting: "activity.verb.inspecting",
   "Saving memory": "activity.verb.savingMemory",
   Searching: "activity.verb.searching",
@@ -88,21 +103,6 @@ export function stepDisplayBody(
               ? `${t("activity.bg.exited")} (${t("activity.bg.signal")})`
               : `${t("activity.bg.exited")} (${d.exitCode})`;
       return `↳ ${t("activity.bg.label")} ${d.id}: ${state}`;
-    }
-    case "todo": {
-      // Progress row ("todo k/n: <item>", 2026-07-23): which step 板砖 is
-      // on — the in-flight item is #completed+1 of a sequential plan. The
-      // item text is backend-authored content, verbatim.
-      if (!block.body.startsWith("todo list")) {
-        return d.current === undefined
-          ? `${t("activity.todo.list")} ${d.completed}/${d.total}`
-          : `${t("activity.todo.step")} ${Math.min(d.completed + 1, d.total)}/${d.total} · ${d.current}`;
-      }
-      // Full layout block: localize the header line; the item lines are
-      // backend-authored task content and stay verbatim.
-      const nl = block.body.indexOf("\n");
-      const items = nl >= 0 ? block.body.slice(nl) : "";
-      return `${t("activity.todo.list")} (${d.completed}/${d.total}):${items}`;
     }
     case "finding":
       // "↳ finding: <claim> — cites" → "↳ 结论: <claim> — cites" (ADR 0039).
@@ -344,6 +344,12 @@ export function stepDisplayDetail(
           return `↳ ${t("evidence.error")}: ${s.message}`;
         case "hint":
           return `↳ ${t("evidence.hint")}: ${s.text}`;
+        case "cutoff":
+          // The steps are verbatim (a command, a path); only the outcome
+          // words are the harness's, so they translate.
+          return `↳ ${t("evidence.cutoff")}: ${s.steps
+            .map((c) => `${c.step} — ${t(CUTOFF_KEY[c.outcome])}`)
+            .join("; ")}`;
         default:
           // A section kind this renderer predates: fall back rather than drop
           // evidence on the floor.
@@ -368,13 +374,8 @@ export function latestOpStep(
   for (let i = steps.length - 1; i >= 0; i -= 1) {
     const b = steps[i];
     if (b === undefined) continue;
-    // Todo rows (2026-07-23): a progress row (has `current`) IS the live
-    // state — headline it. The multiline layout block and currentless
-    // progress rows are not a readable one-liner — skip to an older row.
-    if (b.digest?.kind === "todo") {
-      if (b.digest.current !== undefined) return b;
-      continue;
-    }
+    // A legacy todo row (records before ADR 0073) is never the live state.
+    if (b.digest?.kind === "todo") continue;
     // Failures are headline-eligible (2026-07-23): a tool_crashed / failed
     // row IS the current state of the run — hiding it behind the last op
     // made crashes invisible until the history was expanded.
@@ -387,20 +388,4 @@ export function latestOpStep(
     }
   }
   return steps[steps.length - 1];
-}
-
-/**
- * The newest todo-progress row (digest kind "todo" with `current`) — the
- * step-level context for the live activity line. Undefined when the
- * dispatch has no 任务清单 (or no update has flipped an item yet), in which
- * case the line keeps its op-only form.
- */
-export function latestTodoProgressStep(
-  steps: readonly SystemBlock[],
-): SystemBlock | undefined {
-  for (let i = steps.length - 1; i >= 0; i -= 1) {
-    const b = steps[i];
-    if (b?.digest?.kind === "todo" && b.digest.current !== undefined) return b;
-  }
-  return undefined;
 }

@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import type {
+  AttentionSettings,
   BackendContractChoice,
   BackendThinking,
   DeepSeekKeyStatus,
@@ -38,6 +39,8 @@ import type {
 export interface SettingsSnapshot {
   "language.interaction": InteractionLanguageChoice;
   "window.closeToTray": boolean;
+  "window.attention": AttentionSettings;
+  "window.predictions": boolean;
   "update.version": string | null;
   "update.state": UpdateState;
   "update.auto": boolean;
@@ -48,12 +51,19 @@ export interface SettingsSnapshot {
   "voice.minimaxPlanKey": DeepSeekKeyStatus | null;
   "voice.clone": MiniMaxVoiceState | null;
   "voice.refusal": MiniMaxRefusalState | null;
+  /** A MiniMax key saved while the platform could not check it (未核对).
+   *  Only the save's answer says so — main keeps no such flag, so no read
+   *  primes these; the pane's own write is what a remount shows (UX review
+   *  2026-09-22, item 25: it read 已连接 after the pane was reopened). */
+  "voice.minimaxKeyUnverified": boolean;
+  "voice.minimaxPlanKeyUnverified": boolean;
   "dream.enabled": boolean;
   "deepseek.keyStatus": DeepSeekKeyStatus | null;
   "deepseek.models": ModelConfig;
   "banzhuan.thinking": BackendThinking;
   "banzhuan.contract": BackendContractChoice;
   "banzhuan.bashFound": boolean | undefined;
+  "banzhuan.pdfPictureTranscripts": boolean;
 }
 
 type Key = keyof SettingsSnapshot;
@@ -145,6 +155,7 @@ export function primeSettings(bridge: HertaBridge): void {
   void bridge
     .getCloseToTray?.()
     .then((v) => keep("window.closeToTray", v), quiet);
+  void bridge.getAttention?.().then((v) => keep("window.attention", v), quiet);
   void bridge.getAppVersion?.().then((v) => keep("update.version", v), quiet);
   void bridge.getUpdateState?.().then((v) => keep("update.state", v), quiet);
   void bridge.getAutoUpdate?.().then((v) => keep("update.auto", v), quiet);
@@ -169,4 +180,7 @@ export function primeSettings(bridge: HertaBridge): void {
     if (c.contract !== undefined) keep("banzhuan.contract", c.contract);
     keep("banzhuan.bashFound", c.bashFound);
   }, quiet);
+  void bridge
+    .getPdfPictureTranscripts?.()
+    .then((v) => keep("banzhuan.pdfPictureTranscripts", v), quiet);
 }

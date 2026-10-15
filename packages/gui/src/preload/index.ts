@@ -23,8 +23,11 @@ const bridge: HertaBridge = {
   requestContextCompaction: (sessionId) =>
     ipcRenderer.invoke(CMD.requestContextCompaction, sessionId),
   steerText: (text) => ipcRenderer.invoke(CMD.steerText, text),
+  continueInterrupted: () => ipcRenderer.invoke(CMD.continueInterrupted),
   rewindLastTurn: (sessionId) =>
     ipcRenderer.invoke(CMD.rewindLastTurn, sessionId),
+  undoLastTurnEdits: (sessionId, target) =>
+    ipcRenderer.invoke(CMD.undoLastTurnEdits, sessionId, target),
   maybePlayEasterEgg: () => ipcRenderer.invoke(CMD.maybePlayEasterEgg),
   listSessions: () => ipcRenderer.invoke(CMD.list),
   searchSessions: (query) => ipcRenderer.invoke(CMD.search, query),
@@ -33,13 +36,15 @@ const bridge: HertaBridge = {
   openSession: (id) => ipcRenderer.invoke(CMD.open, id),
   createSession: (opts) => ipcRenderer.invoke(CMD.create, opts),
   deleteSession: (id) => ipcRenderer.invoke(CMD.deleteSession, id),
+  renameSession: (id, title) =>
+    ipcRenderer.invoke(CMD.renameSession, id, title),
+  readSessionForExport: (id) =>
+    ipcRenderer.invoke(CMD.readSessionForExport, id),
+  saveSessionExport: (fileName, markdown) =>
+    ipcRenderer.invoke(CMD.saveSessionExport, fileName, markdown),
   resolveApproval: (opts) => ipcRenderer.invoke(CMD.resolveApproval, opts),
-  listCommandRules: () => ipcRenderer.invoke(CMD.listCommandRules),
-  removeCommandRule: (display) =>
-    ipcRenderer.invoke(CMD.removeCommandRule, display),
-  getWorkspaceTrust: () => ipcRenderer.invoke(CMD.getWorkspaceTrust),
-  setWorkspaceTrust: (value) =>
-    ipcRenderer.invoke(CMD.setWorkspaceTrust, value),
+  getAutoReview: () => ipcRenderer.invoke(CMD.getAutoReview),
+  setAutoReview: (on) => ipcRenderer.invoke(CMD.setAutoReview, on),
   resyncRecord: () => ipcRenderer.invoke(CMD.resyncRecord),
   requestSessionSync: () => ipcRenderer.invoke(CMD.requestSync),
   refreshRepo: () => ipcRenderer.invoke(CMD.refreshRepo),
@@ -64,6 +69,8 @@ const bridge: HertaBridge = {
     ipcRenderer.invoke(CMD.unstageImage, sessionId, id),
   readWorkspaceFile: (sessionId, path) =>
     ipcRenderer.invoke(CMD.readWorkspaceFile, sessionId, path),
+  listWorkspaceFiles: (sessionId) =>
+    ipcRenderer.invoke(CMD.listWorkspaceFiles, sessionId),
   readWorkspaceBytes: (sessionId, path) =>
     ipcRenderer.invoke(CMD.readWorkspaceBytes, sessionId, path),
   readWorkspaceCommit: (sessionId, ref) =>
@@ -106,12 +113,22 @@ const bridge: HertaBridge = {
     ipcRenderer.invoke(CMD.setInteractionLanguage, choice),
   getCloseToTray: () => ipcRenderer.invoke(CMD.getCloseToTray),
   setCloseToTray: (enabled) => ipcRenderer.invoke(CMD.setCloseToTray, enabled),
+  getAttention: () => ipcRenderer.invoke(CMD.getAttention),
+  setAttention: (prefs) => ipcRenderer.invoke(CMD.setAttention, prefs),
   getAutoUpdate: () => ipcRenderer.invoke(CMD.getAutoUpdate),
   setAutoUpdate: (enabled) => ipcRenderer.invoke(CMD.setAutoUpdate, enabled),
   getTheme: () => ipcRenderer.invoke(CMD.getTheme),
   setTheme: (theme) => ipcRenderer.invoke(CMD.setTheme, theme),
-  getDeviceScene: () => ipcRenderer.invoke(CMD.getDeviceScene),
-  setDeviceScene: (enabled) => ipcRenderer.invoke(CMD.setDeviceScene, enabled),
+  // The desktop draws the 3D device card (ADR 0057); whether THIS machine's
+  // GPU can is the renderer's probe. No setting since 2026-10-01.
+  getDeviceScene: () => Promise.resolve(true),
+  getPdfPictureTranscripts: () =>
+    ipcRenderer.invoke(CMD.getPdfPictureTranscripts),
+  setPdfPictureTranscripts: (enabled) =>
+    ipcRenderer.invoke(CMD.setPdfPictureTranscripts, enabled),
+  getComposerPredictions: () => ipcRenderer.invoke(CMD.getComposerPredictions),
+  setComposerPredictions: (enabled) =>
+    ipcRenderer.invoke(CMD.setComposerPredictions, enabled),
   getRealtimeVoice: () => ipcRenderer.invoke(CMD.getRealtimeVoice),
   setRealtimeVoice: (enabled) =>
     ipcRenderer.invoke(CMD.setRealtimeVoice, enabled),
@@ -155,6 +172,10 @@ const bridge: HertaBridge = {
   onOpenSettings: (cb) => subscribe(EVT.openSettings, () => cb()),
   onWorkspace: (cb) => subscribe(EVT.workspace, cb),
   onRepo: (cb) => subscribe(EVT.repo, cb),
+  onResume: (cb) => subscribe(EVT.resume, cb),
+  onUndo: (cb) => subscribe(EVT.undo, cb),
+  onLive: (cb) => subscribe(EVT.live, cb),
+  onAttachProgress: (cb) => subscribe(EVT.attachProgress, cb),
   onRecord: (cb) => subscribe(EVT.record, cb),
   onOverlay: (cb) => subscribe(EVT.overlay, cb),
   onSpeech: (cb) => subscribe(EVT.speech, cb),

@@ -1,5 +1,4 @@
 import type { ExecutionStatus } from "../bridge/types.js";
-import type { TodoStatus } from "./todo.js";
 
 /**
  * Canonical system-block labels emitted by the v0.2 harness into
@@ -42,6 +41,11 @@ export interface UserBlock {
    *  holds it, and the ⟲ control never sits on it. Absent on every other
    *  user block. Never enters the prompt (the serializer reads `text`). */
   readonly steer?: true;
+  /** A 继续 (ADR 0071 §1.4): the user asked to continue an interrupted 板砖
+   *  run. A turn of its own — rewind withdraws it like any user turn — and a
+   *  regenerate after a crash re-runs it as a resume, not as chat. Never
+   *  enters the prompt (the serializer reads `text`). */
+  readonly resume?: true;
   /** Wall-clock ISO time the block was emitted/persisted. Optional for
    *  backward compat (pre-timestamp sessions lack it). Stamped at the output
    *  boundaries (live sink emit + JSONL persist), never at construction — the
@@ -142,16 +146,39 @@ export interface DoneMarkerSummary {
    *  instead of fabricating a synthetic risk count. Absent on ordinary
    *  completion markers. */
   readonly aborted?: true;
+  /** Set (only ever `true`) on the marker the harness wrote for a run the
+   *  app exited during, when its session next opened (ADR 0071 §1.2;
+   *  canonical segment `应用意外退出`, state `interrupted`). */
+  readonly crashed?: true;
+  /** Set (only ever `true`) when the run stopped at the harness's step limit
+   *  (state `interrupted`, continuable; canonical segment `步数已达上限`,
+   *  2026-09-29). */
+  readonly stepLimit?: true;
 }
 
-/**
- * One row of a todo digest's `items`. The status union is IMPORTED from the
- * backend's `TodoItem` rather than restated here, so a future backend status
- * cannot silently become a literal no renderer handles.
- */
-export interface TodoDigestItem {
-  readonly content: string;
-  readonly status: TodoStatus;
+/** How a step the app exited during ended, as far as the harness can tell
+ *  (ADR 0071 §1.3). */
+export type CutoffOutcome =
+  /** Never dispatched: it waited for approval, or was queued behind another. */
+  | "not_started"
+  /** A read-only step cut short: no side effect. */
+  | "read_interrupted"
+  /** The file holds the written content. */
+  | "write_applied"
+  /** The file is as it was (or still absent). */
+  | "write_not_applied"
+  /** The file is neither: it was changed after the app exited. */
+  | "write_changed_since"
+  /** Harness state (findings): rebuilt from finished steps. */
+  | "state_not_applied"
+  /** A command, or anything else with side effects: it may have partly run. */
+  | "outcome_unknown";
+
+/** One step of the crash marker's `cutoff` section. */
+export interface CutoffStep {
+  /** The tool and its target: `edit_file src/a.ts`, `run_command npm test`. */
+  readonly step: string;
+  readonly outcome: CutoffOutcome;
 }
 
 /**
@@ -168,6 +195,23 @@ export interface TodoDigestItem {
  * Same stance as `markerSummary`: the canonical `body` stays the single
  * shared-record text; this is derived data for downstream projections.
  */
+/** What taking a turn's edits back did to one file (ADR 0074 §3). */
+export type UndoFileResult =
+  /** Its first bytes are back. */
+  | "restored"
+  /** The turn created it; it is gone again. */
+  | "deleted"
+  /** Already as it was. */
+  | "unchanged"
+  /** Changed since 板砖 wrote it: left alone, never overwritten. */
+  | "changed_since"
+  /** Its bytes were not kept (the bound, or a failed capture): left alone. */
+  | "not_kept"
+  /** No longer inside the workspace: refused. */
+  | "outside_workspace"
+  /** It should have been restored and the write failed: left as it was. */
+  | "failed";
+
 export type SystemBlockDigest =
   | {
       /** A workflow step ("Reading foo.ts") — verb from workflowLabel,
@@ -190,6 +234,11 @@ export type SystemBlockDigest =
          *  word because it spends model tokens. */
         | "Digesting";
       readonly arg: string;
+      /** The command runs tests — recognised at dispatch from the WHOLE
+       *  input (`arg` is the 80-char header, which can cut the test run off),
+       *  by the detector that later writes its test row (ADR 0073 amendment
+       *  2026-10-08). Absent on rows written before it. */
+      readonly runsTests?: true;
     }
   | {
       /** A `digest_document` result (ADR 0043). The overview rides
@@ -258,35 +307,16 @@ export type SystemBlockDigest =
       readonly exitCode?: number | null;
     }
   | {
-      /** A todo-list projection (ADR 0025 §2): the dispatch's FIRST
-       *  todo_write projects as one full layout block so user and Herta
-       *  share the plan, every LATER update as a compact progress row; the
-       *  leftover tail rides the done-marker. */
+      /** LEGACY — a todo-list projection from before ADR 0073 removed the
+       *  backend's todo list. Nothing writes it now; records persisted
+       *  earlier still carry it (a layout block, then `todo k/n: <current>`
+       *  progress rows), so every reader must still recognise the kind. They
+       *  skip it: it was working state, and the op rows beside it say what
+       *  was done. The body stays in the record as Herta read it. */
       readonly kind: "todo";
       readonly total: number;
       readonly completed: number;
-      /** The in_progress item's text (2026-07-23) — set on the compact
-       *  progress rows projected for LATER todo_write updates so renderers
-       *  can show which step 板砖 is on. Absent on the first todo-layout
-       *  block (its body's [~] mark carries the same information) and when
-       *  nothing is in progress. */
       readonly current?: string;
-      /** The WHOLE list as it stood when this block was projected
-       *  (2026-07-26). `todo_write` is full-list replacement: 板砖 may
-       *  reword, reorder, add or drop items on any update, so a renderer
-       *  showing live plan state cannot reconstruct it by taking the first
-       *  layout block and folding later counts onto it — the first layout
-       *  is a snapshot of a list that no longer exists. The only honest
-       *  source is the list carried by the NEWEST todo block, so both block
-       *  kinds carry it. The counts above stay authoritative for the
-       *  canonical `body`'s phrasing; this is the same display-only class
-       *  as `markerSummary` and never reaches Herta's prompt.
-       *
-       *  Optional for backward compatibility: records persisted before this
-       *  field existed carry none, so renderers must keep their
-       *  `total`/`completed`/`current` fallback. Backend-authored text —
-       *  same trust class as `current`, sanitized at projection. */
-      readonly items?: readonly TodoDigestItem[];
     }
   | {
       /** A `show_excerpt` presentation row (ADR 0027). The excerpt itself
@@ -446,6 +476,23 @@ export type SystemBlockDigest =
       readonly cites: readonly string[];
     }
   | {
+      /** The 开拓者 took the latest turn's edits back (ADR 0074 §4): what
+       *  happened to each file, and what commands changed (never restored).
+       *  Display-only, like every digest — Herta reads the body, which
+       *  names the same results; this lets the turn's card show them per
+       *  file without parsing it. Paths are workspace-relative. */
+      readonly kind: "undo";
+      readonly files: readonly {
+        readonly path: string;
+        readonly result: UndoFileResult;
+      }[];
+      readonly commands: readonly string[];
+      /** Commands ran, and what they changed could not be read. */
+      readonly commandsUnknown: boolean;
+      /** Some of the turn's bytes were never kept. */
+      readonly incomplete: boolean;
+    }
+  | {
       /** No richer structure — digest to the text's first line, truncated. */
       readonly kind: "text";
       readonly text: string;
@@ -499,7 +546,10 @@ export type EvidenceSection =
       readonly items: readonly string[];
     }
   | {
-      /** The done-marker's unfinished todos (`↳ 待办:`). */
+      /** LEGACY — the done-marker's unfinished todos (`↳ 待办:`), written
+       *  before ADR 0073 removed the backend's todo list. Records persisted
+       *  earlier still carry it, and a renderer still shows it: it is part
+       *  of what that run reported. */
       readonly kind: "todos";
       readonly items: readonly string[];
     }
@@ -560,6 +610,14 @@ export type EvidenceSection =
       readonly path: string;
       readonly chunks: number;
       readonly text: string;
+    }
+  | {
+      /** The crash marker's open steps (`↳ 中断时:`), ADR 0071 §1.2: each
+       *  step that had no result when the app exited, with the outcome the
+       *  harness decided for it. Structured, so a renderer localizes the
+       *  outcome words; the steps themselves are verbatim. */
+      readonly kind: "cutoff";
+      readonly steps: readonly CutoffStep[];
     }
   | {
       /** The done-marker's conclusions (`↳ 结论:`) — the backend's own cited

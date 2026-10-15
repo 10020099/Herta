@@ -12,7 +12,6 @@ describe("translate", () => {
   it("emits a minimal user-only request", () => {
     const frame: PromptFrame = {
       stableSystem: "",
-      repoInstructions: "",
       memoryContext: "",
       retrievedLore: "",
       messages: [{ role: "user", text: "hello", ts: "2026-05-03T00:00:00Z" }],
@@ -33,7 +32,6 @@ describe("translate", () => {
   it("maps assistant tool-call + tool-result round-trip", () => {
     const frame: PromptFrame = {
       stableSystem: "",
-      repoInstructions: "",
       memoryContext: "",
       retrievedLore: "",
       messages: [
@@ -87,7 +85,6 @@ describe("translate", () => {
   it("sends modelText verbatim when a tool authored it (ADR 0040) — summary/data stay harness-only", () => {
     const frame: PromptFrame = {
       stableSystem: "",
-      repoInstructions: "",
       memoryContext: "",
       retrievedLore: "",
       messages: [
@@ -116,7 +113,6 @@ describe("translate", () => {
   it("uses JSON-stringified data when summary is empty", () => {
     const frame: PromptFrame = {
       stableSystem: "",
-      repoInstructions: "",
       memoryContext: "",
       retrievedLore: "",
       messages: [
@@ -140,7 +136,6 @@ describe("translate", () => {
   it("maps tool schemas to OpenAI tools array", () => {
     const frame: PromptFrame = {
       stableSystem: "",
-      repoInstructions: "",
       memoryContext: "",
       retrievedLore: "",
       messages: [],
@@ -174,7 +169,6 @@ describe("translate", () => {
   it("merges extraBody after base fields (vendor wins)", () => {
     const frame: PromptFrame = {
       stableSystem: "",
-      repoInstructions: "",
       memoryContext: "",
       retrievedLore: "",
       messages: [],
@@ -196,7 +190,6 @@ describe("translate", () => {
   it("omits temperature/max_tokens when not provided", () => {
     const frame: PromptFrame = {
       stableSystem: "",
-      repoInstructions: "",
       memoryContext: "",
       retrievedLore: "",
       messages: [],
@@ -210,7 +203,6 @@ describe("translate", () => {
   it("prepends a system message when stableSystem is non-empty", () => {
     const frame: PromptFrame = {
       stableSystem: "HELLO HERTA",
-      repoInstructions: "",
       memoryContext: "",
       retrievedLore: "",
       messages: [{ role: "user", text: "ping", ts: "t" }],
@@ -226,7 +218,6 @@ describe("translate", () => {
   it("does not emit a system message when stableSystem is empty", () => {
     const frame: PromptFrame = {
       stableSystem: "",
-      repoInstructions: "",
       memoryContext: "",
       retrievedLore: "",
       messages: [{ role: "user", text: "ping", ts: "t" }],
@@ -236,27 +227,9 @@ describe("translate", () => {
     expect(body.messages).toEqual([{ role: "user", content: "ping" }]);
   });
 
-  it("emits two system messages when both stableSystem and repoInstructions non-empty", () => {
+  it("emits only stableSystem when the other slots are empty", () => {
     const frame: PromptFrame = {
       stableSystem: "S",
-      repoInstructions: "R",
-      memoryContext: "",
-      retrievedLore: "",
-      messages: [{ role: "user", text: "ping", ts: "t" }],
-      toolSchemas: [],
-    };
-    const body = translate(frame, baseOpts);
-    expect(body.messages).toEqual([
-      { role: "system", content: "S" },
-      { role: "system", content: "R" },
-      { role: "user", content: "ping" },
-    ]);
-  });
-
-  it("emits only stableSystem when repoInstructions is empty", () => {
-    const frame: PromptFrame = {
-      stableSystem: "S",
-      repoInstructions: "",
       memoryContext: "",
       retrievedLore: "",
       messages: [{ role: "user", text: "ping", ts: "t" }],
@@ -269,10 +242,9 @@ describe("translate", () => {
     ]);
   });
 
-  it("emits three system messages when stable, repo, and memory all non-empty", () => {
+  it("emits two system messages when stable and memory are non-empty", () => {
     const frame: PromptFrame = {
       stableSystem: "S",
-      repoInstructions: "R",
       memoryContext: "M",
       retrievedLore: "",
       messages: [{ role: "user", text: "ping", ts: "t" }],
@@ -281,7 +253,6 @@ describe("translate", () => {
     const body = translate(frame, baseOpts);
     expect(body.messages).toEqual([
       { role: "system", content: "S" },
-      { role: "system", content: "R" },
       { role: "system", content: "M" },
       { role: "user", content: "ping" },
     ]);
@@ -290,7 +261,6 @@ describe("translate", () => {
   it("threads reasoningContent back as reasoning_content on the assistant message", () => {
     const frame: PromptFrame = {
       stableSystem: "",
-      repoInstructions: "",
       memoryContext: "",
       retrievedLore: "",
       messages: [
@@ -351,7 +321,6 @@ describe("translate", () => {
   it("omits reasoning_content when reasoningContent is empty or absent", () => {
     const frame: PromptFrame = {
       stableSystem: "",
-      repoInstructions: "",
       memoryContext: "",
       retrievedLore: "",
       messages: [
@@ -375,7 +344,6 @@ describe("translate", () => {
   it("omits memoryContext system message when empty", () => {
     const frame: PromptFrame = {
       stableSystem: "S",
-      repoInstructions: "R",
       memoryContext: "",
       retrievedLore: "",
       messages: [{ role: "user", text: "ping", ts: "t" }],
@@ -384,7 +352,6 @@ describe("translate", () => {
     const body = translate(frame, baseOpts);
     expect(body.messages).toEqual([
       { role: "system", content: "S" },
-      { role: "system", content: "R" },
       { role: "user", content: "ping" },
     ]);
   });
@@ -392,7 +359,6 @@ describe("translate", () => {
   it("emits retrievedLore as a system message after memoryContext", () => {
     const frame: PromptFrame = {
       stableSystem: "S",
-      repoInstructions: "R",
       memoryContext: "M",
       retrievedLore: "L",
       messages: [{ role: "user", text: "ping", ts: "t" }],
@@ -401,7 +367,6 @@ describe("translate", () => {
     const body = translate(frame, baseOpts);
     expect(body.messages).toEqual([
       { role: "system", content: "S" },
-      { role: "system", content: "R" },
       { role: "system", content: "M" },
       { role: "system", content: "L" },
       { role: "user", content: "ping" },
@@ -411,7 +376,6 @@ describe("translate", () => {
   it("omits retrievedLore system message when empty", () => {
     const frame: PromptFrame = {
       stableSystem: "",
-      repoInstructions: "",
       memoryContext: "",
       retrievedLore: "",
       messages: [{ role: "user", text: "ping", ts: "t" }],
@@ -424,7 +388,6 @@ describe("translate", () => {
   it("emits summary + data envelope when both are present", () => {
     const frame: PromptFrame = {
       stableSystem: "",
-      repoInstructions: "",
       memoryContext: "",
       retrievedLore: "",
       messages: [
@@ -453,7 +416,6 @@ describe("translate", () => {
   it("emits error + suggestion alongside summary on a denied tool call", () => {
     const frame: PromptFrame = {
       stableSystem: "",
-      repoInstructions: "",
       memoryContext: "",
       retrievedLore: "",
       messages: [
@@ -487,7 +449,6 @@ describe("translate", () => {
   it("preserves summary-only output when no data is present (back-compat)", () => {
     const frame: PromptFrame = {
       stableSystem: "",
-      repoInstructions: "",
       memoryContext: "",
       retrievedLore: "",
       messages: [
@@ -511,7 +472,6 @@ describe("translate", () => {
   it("emits literal {} when both summary and data are absent (degenerate fallback)", () => {
     const frame: PromptFrame = {
       stableSystem: "",
-      repoInstructions: "",
       memoryContext: "",
       retrievedLore: "",
       messages: [
@@ -539,7 +499,6 @@ describe("translateBackend", () => {
   ): BackendPromptFrame {
     return {
       backendSystem: "You are the coding execution backend for Herta CLI.",
-      scopedRepoInstructions: "",
       scopedMemory: "",
       toolSchemas: [],
       messages: [],
@@ -556,22 +515,75 @@ describe("translateBackend", () => {
     });
   });
 
-  it("emits scopedRepoInstructions and scopedMemory as additional system messages when non-empty", () => {
+  it('in thinking mode every assistant message carries reasoning_content — "" when the model gave none — so a request that goes on after its final answer is accepted (live todo lab 2026-09-29)', () => {
+    // The end-of-run check's shape: the model's final answer (here with no
+    // reasoning), then the state trailer — no user message in between.
+    // DeepSeek refused exactly this with the field omitted, and took it with
+    // the field as "".
     const frame = makeBackendFrame({
-      scopedRepoInstructions: "Prefer edit_file.",
+      messages: [
+        { role: "user", text: "fix it", ts: "t" },
+        {
+          role: "assistant",
+          text: "",
+          toolCalls: [{ id: "c1", tool: "bash", input: { command: "ls" } }],
+          ts: "t",
+          reasoningContent: "Look first.",
+        },
+        {
+          role: "tool",
+          toolCallId: "c1",
+          result: { ok: true, summary: "listed" },
+          ts: "t",
+        },
+        { role: "assistant", text: "Done.", toolCalls: [], ts: "t" },
+      ],
+      trailingState: "（收尾检查：……）",
+    });
+    const thinking = {
+      model: "deepseek-v4-pro",
+      extraBody: { thinking: { type: "enabled" }, reasoning_effort: "high" },
+    };
+    const req = translate(frame, thinking);
+    const assistants = req.messages.filter((m) => m.role === "assistant");
+    expect(assistants.map((m) => m.reasoning_content)).toEqual([
+      "Look first.",
+      "",
+    ]);
+    expect(req.messages.at(-1)).toEqual({
+      role: "system",
+      content: "（收尾检查：……）",
+    });
+
+    // Thinking disabled, or not asked for: the field stays off an answer
+    // that has none, as before.
+    for (const opts of [
+      {
+        model: "deepseek-flash",
+        extraBody: { thinking: { type: "disabled" } },
+      },
+      { model: "test-model" },
+    ]) {
+      const last = translate(frame, opts).messages.filter(
+        (m) => m.role === "assistant",
+      )[1];
+      expect(last !== undefined && "reasoning_content" in last).toBe(false);
+    }
+  });
+
+  it("emits scopedMemory as an additional system message when non-empty", () => {
+    const frame = makeBackendFrame({
       scopedMemory: "User dislikes long replies.",
     });
     const req = translate(frame, { model: "test-model" });
     expect(req.messages).toEqual([
       { role: "system", content: frame.backendSystem },
-      { role: "system", content: "Prefer edit_file." },
       { role: "system", content: "User dislikes long replies." },
     ]);
   });
 
   it("omits empty scoped fields", () => {
     const frame = makeBackendFrame({
-      scopedRepoInstructions: "",
       scopedMemory: "",
     });
     const req = translate(frame, { model: "test-model" });

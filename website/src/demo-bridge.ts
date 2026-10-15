@@ -29,6 +29,8 @@
  * Voice cues are never emitted (herta-voice:// protocol is Electron-only).
  */
 
+import { codePieces } from "@gui/components/FileViewer/piece-segments";
+import { viewerKindFor } from "@gui/components/FileViewer/viewer-kind";
 import type {
   HertaBridge,
   SessionError,
@@ -36,6 +38,7 @@ import type {
   SessionSnapshot,
   SpeechControlEvent,
 } from "@gui/ipc/bridge-types";
+import { boundQuoteText, composeQuotedMessage } from "@gui/lib/quote-format";
 import type {
   AgentEvent,
   OverlayEvent,
@@ -51,7 +54,6 @@ import type {
   VoiceCueEvent,
   WorkspaceEvent,
 } from "@herta/app-server";
-
 // Opus, not the 411 KB wav master: the same clip the desktop app ships
 // (data/voice/openings/015-archive-cleanup.opus, byte-identical source) at
 // 51 KB. Ogg Opus needs Safari 17.4+; older Safari rejects `play()` with
@@ -59,7 +61,7 @@ import type {
 // the opening still reveals at voice pace, silently. Duration is unchanged,
 // so `openingVoiceMs` below still describes it.
 import openingVoiceUrl from "./assets/opening-voice.opus";
-import { demoWorkspaceFiles } from "./demo-workspace.js";
+import { demoWorkspaceFiles, eventBusAfterPatch } from "./demo-workspace.js";
 
 export type DemoLang = "zh" | "en";
 
@@ -183,10 +185,6 @@ type OpVerb = Extract<
   NonNullable<SystemBlock["digest"]>,
   { kind: "op" }
 >["verb"];
-type TodoItem = {
-  readonly content: string;
-  readonly status: "pending" | "in_progress" | "completed";
-};
 /** One section of a block's evidence detail (ADR 0029) — the structured lane
  *  the GUI localizes the 展开明细 / "show detail" pane from. */
 type EvidenceSection = NonNullable<SystemBlock["evidence"]>[number];
@@ -196,14 +194,15 @@ type EvidenceSection = NonNullable<SystemBlock["evidence"]>[number];
  *
  * Every system row below is the SHAPE THE REAL BRIDGE PROJECTS — body wording,
  * English chrome, and the structured `digest` that lets the GUI localize it
- * (读取/写入/运行, 任务清单, 步骤 k/n). Rewritten 2026-08-01 after diffing the
+ * (读取/写入/运行). Rewritten 2026-08-01 after diffing the
  * demo against seven real transcripts in `.herta/transcript/v2` and against
  * projectBackendEvent itself: the old rows were hand-written Chinese prose
  * ("搜索 addListener 调用点", "↳ 17 处，横跨 6 个文件", "↳ 89 passed") that the
- * harness cannot emit, carried no digest, and skipped the patch-preview and
- * todo rows entirely — so the showcase advertised a record the app never
- * writes. Keep them honest: if a row here has no counterpart in
- * backend-bridge.ts, it does not belong in the demo.
+ * harness cannot emit, carried no digest, and skipped the patch-preview rows
+ * entirely — so the showcase advertised a record the app never writes. Keep
+ * them honest: if a row here has no counterpart in the record projection, it
+ * does not belong in the demo (the todo rows left with the todo list, ADR
+ * 0073).
  */
 const ask = (text: string): TerminalRecordBlock => ({ kind: "user", text });
 const say = (text: string): TerminalRecordBlock => ({
@@ -302,32 +301,6 @@ const attachmentRow = (a: {
       path: a.path,
       lines: a.lines,
       chars: a.chars,
-    },
-  };
-};
-/** The dispatch's FIRST todo_write projects the full layout; every later one a
- *  compact progress row. Item text is backend-authored and stays verbatim. */
-const todoRow = (items: readonly TodoItem[], layout: boolean): SystemBlock => {
-  const completed = items.filter((i) => i.status === "completed").length;
-  const current = items.find((i) => i.status === "in_progress")?.content;
-  const mark = (s: TodoItem["status"]): string =>
-    s === "completed" ? "[x]" : s === "in_progress" ? "[~]" : "[ ]";
-  return {
-    kind: "system",
-    label: CO,
-    body: layout
-      ? [
-          `todo list (${items.length}):`,
-          ...items.map((i) => `${mark(i.status)} ${i.content}`),
-        ].join("\n")
-      : `todo ${completed}/${items.length}${current === undefined ? "" : `: ${current}`}`,
-    digest: {
-      kind: "todo",
-      total: items.length,
-      completed,
-      // The layout block carries no `current` — its [~] mark says the same.
-      ...(layout || current === undefined ? {} : { current }),
-      items: items.map((i) => ({ content: i.content, status: i.status })),
     },
   };
 };
@@ -503,30 +476,6 @@ const CALL_SITES = [
   "packages/core/src/verification/runner.ts:1",
 ];
 
-/** `todo_write` is full-list replacement, so each update carries the WHOLE
- *  list: steps before `done` are completed, `done` itself is in flight. */
-const plan = (steps: readonly string[], done: number): readonly TodoItem[] =>
-  steps.map(
-    (content, i): TodoItem => ({
-      content,
-      status: i < done ? "completed" : i === done ? "in_progress" : "pending",
-    }),
-  );
-
-const ZH_STEPS = [
-  "清点 addListener 的调用点",
-  "把 event-bus.ts 换成类型化订阅",
-  "跑 @herta/core 的测试",
-];
-const ZH_PLAN = (done: number): readonly TodoItem[] => plan(ZH_STEPS, done);
-
-const EN_STEPS = [
-  "Count every addListener call site",
-  "Move event-bus.ts to typed subscriptions",
-  "Run @herta/core's tests",
-];
-const EN_PLAN = (done: number): readonly TodoItem[] => plan(EN_STEPS, done);
-
 /** The previewed patch. `addListener` survives as a shell because he asked for
  *  the public interface not to move — which is what lets her claim it didn't. */
 const EVENT_BUS_DIFF = (deprecatedNote: string): string =>
@@ -558,6 +507,39 @@ const EVENT_BUS_NOTE = {
 } as const;
 const EVENT_BUS_DIFF_ZH = EVENT_BUS_DIFF(EVENT_BUS_NOTE.zh);
 const EVENT_BUS_DIFF_EN = EVENT_BUS_DIFF(EVENT_BUS_NOTE.en);
+
+/**
+ * A message quoting the patched bus's `addListener` shell (0.1.8, ADR 0078),
+ * built exactly as the viewer would stage it: the code piece that holds
+ * `addListener(`, its trailing blank lines dropped, the file's own language
+ * as the fence, the session language's header — so the bubble's quote card
+ * is the one a visitor's own pick would make, and its label opens the viewer
+ * on the same lines. What she answers may cite only these lines.
+ */
+function quoteAddListener(lang: "zh" | "en", typed: string): string {
+  const path = "packages/core/src/event-bus.ts";
+  const lines = eventBusAfterPatch(EVENT_BUS_NOTE[lang]).split("\n");
+  const at = lines.findIndex((l) => l.includes("addListener(")) + 1;
+  const piece = codePieces(lines).find((p) => p.from <= at && at <= p.to);
+  if (piece === undefined) throw new Error("no addListener piece to quote");
+  let to = piece.to;
+  while (to > piece.from && (lines[to - 1] ?? "").trim().length === 0) to -= 1;
+  const fence = viewerKindFor(path).language;
+  return composeQuotedMessage(
+    [
+      {
+        id: "demo-quote",
+        path,
+        from: piece.from,
+        to,
+        text: boundQuoteText(lines.slice(piece.from - 1, to).join("\n"), lang),
+        ...(fence !== undefined ? { fence } : {}),
+      },
+    ],
+    typed,
+    lang,
+  );
+}
 
 /** show_excerpt's STARTED row carries the path and range as one arg —
  *  the shape ADR 0050 parses into an anchored open, so the click lands on
@@ -601,7 +583,7 @@ const ZH: DemoContent = {
     "进度条还在跑最后的百分之二。你有一段非常短的窗口期——别寒暄，说正事。",
   openingVoiceMs: 6580,
   funnelFull:
-    "提醒一句：这是官网的橱窗。想让我和板砖真的动手，先把桌面版装回去——下载入口就在这页下面，GitHub 上也有全部源码。",
+    "提醒一句，小家伙：这里只是官网的橱窗。想让我和板砖真动手，先装桌面版——下载入口就在这页下面，源码全在 GitHub 上。",
   funnelShort: "我说过了。先装本体，再谈委托。",
   titleVisit: "参观登记",
   showTitle: "EventBus 回调大扫除",
@@ -620,9 +602,9 @@ const ZH: DemoContent = {
         title: "凌晨的三次误报",
         minutesAgo: 185,
         blocks: [
-          ask("黑塔女士，监控面板凌晨又误报了三次。我看了半天没看出规律……"),
+          ask("在吗？监控面板凌晨又误报了三次，我盯了半天也没看出规律……"),
           say(
-            "三次踩的是同一个阈值，还是三个不同的？——算了，你要是看得出来就不会来问我。\n@板砖，把凌晨那段告警捞出来。只读，别碰文件。",
+            "三次踩的是同一个阈值，还是三个不同的？——算了，你要是看得出来，也不会来找我。\n@板砖，把凌晨那段告警捞出来。只读，别碰文件。",
           ),
           op("Reading", '"sensor-0"'),
           op("Reading", ALERTS_EXCERPT_ARG),
@@ -639,7 +621,7 @@ const ZH: DemoContent = {
             "三次都是 sensor-07，三次都贴着阈值线蹭一下就退回去——dwell 全在半秒以内。这不是过热，是抖动。",
           ),
           say(
-            "阈值上调 5%，再加一道 2 秒的 dwell 门限。它下次再叫，就是真坏了，换掉。",
+            "阈值上调 5%，再加一道 2 秒的 dwell 门限。它下次再叫，就是真坏了——直接换掉，不用再来问我。",
           ),
         ],
       },
@@ -662,7 +644,7 @@ const ZH: DemoContent = {
         title: "运维发来的崩溃日志",
         minutesAgo: 168,
         blocks: [
-          ask("黑塔女士，运维说凌晨挂了，日志我这就发你。"),
+          ask("运维说服务凌晨挂了，日志我发你看看。"),
           say("发。"),
           attachmentRow({
             name: "crash-2026-08-02.log",
@@ -677,12 +659,12 @@ const ZH: DemoContent = {
               "2026-08-02T03:14:09Z INFO   supervisor  worker-3 restarted",
             clipped: true,
           }),
-          ask("四百多行，我看不出重点。"),
+          ask("四百多行……从哪看起啊？"),
           say(
-            "重点在前五行，剩下四百行是它反复重启的回声。\nheap out of memory，栈顶是 TelemetryBuffer.flush——缓冲区在定时器里刷，没刷动。",
+            "前五行。剩下四百行，都是它反复重启的回声。\nheap out of memory，栈顶是 TelemetryBuffer.flush——定时器里刷缓冲区，没刷动。",
           ),
           say(
-            "我读到的只到第一次重启为止。是泄漏还是一次性尖峰，得看后面还有没有第二次——要查，我让板砖把整份的 FATAL 摘出来。",
+            "我只读到第一次重启。是泄漏还是偶发的尖峰，得看后面还有没有第二次——想知道，我就让板砖把整份日志里的 FATAL 都摘出来。",
           ),
         ],
       },
@@ -693,13 +675,13 @@ const ZH: DemoContent = {
         minutesAgo: 158,
         blocks: [
           ask(
-            "黑塔女士。\n没事。就是……我三十个小时没合眼了，刚才盯着终端，突然想不起来自己在干嘛。",
+            "黑塔。\n没什么事……就是我三十个小时没合眼了，刚才盯着终端，突然想不起来自己在干嘛。",
           ),
-          say("收到了。"),
+          say("三十个小时。你当自己是我的人偶吗？"),
           say(
-            "我不安慰人——你知道的，我说不来那种话。\n但三十个小时之后你写出来的东西，明天我还得让板砖重跑一遍。这笔账很难看。",
+            "我不会安慰人，也懒得学。\n不过三十个小时之后写出来的东西，明天我还得让板砖从头重跑一遍——这笔账，怎么算都不划算。",
           ),
-          say("终端我不关。去睡。"),
+          say("终端我替你开着。去睡。"),
         ],
       },
       // Pictures ride a message (ADR 0048): the record order is user block
@@ -716,7 +698,7 @@ const ZH: DemoContent = {
         minutesAgo: 145,
         blocks: [
           ask(
-            "黑塔女士，阈值和 dwell 门限都按你说的改了。发你两张截图——昨晚的和今天下午的，改完到现在一次都没叫。这算是好了吗？",
+            "阈值和 dwell 门限都按你说的改了。截了两张图，昨晚的和今天下午的——改完到现在一次都没再报。这算修好了吧？",
           ),
           imageRow({
             ...PANEL_IMAGES.night,
@@ -729,10 +711,10 @@ const ZH: DemoContent = {
               "监控界面截图：同一条温度曲线多次接近但未触及标注为“42.0 THRESHOLD · DWELL 2s”的红色阈值线，计数为“ALERTS 0”。",
           }),
           say(
-            "图我收到了——准确说，我读的是它们的描述，像素是板砖的活。\n昨晚：三次越线，ALERTS 3。今天：曲线还是那副德行，贴着新阈值线底下抖，只是够不着了，ALERTS 0。",
+            "图收到了——准确地说，我读的是图的描述，像素归板砖管。\n昨晚：越线三次，ALERTS 3。今天：曲线还是那副德行，在新阈值线底下抖，只是够不着了，ALERTS 0。",
           ),
           say(
-            "所以别急着庆祝。门限吃掉的是告警，不是抖动——sensor-07 本身一根毛都没变。\n安静满两周再来跟我说「好了」；它要是隔着 2 秒的门限还能叫，那就不用修了，直接换。",
+            "所以别急着庆祝。门限吃掉的是告警，不是抖动——sensor-07 本身一点没变。\n安静满两周，再来跟我说「好了」。要是隔着 2 秒的门限它还能叫——那就别修了，直接换。",
           ),
         ],
       },
@@ -742,11 +724,11 @@ const ZH: DemoContent = {
         title: "先把话说清楚",
         minutesAgo: 132,
         blocks: [
-          ask("黑塔女士，EventBus 那边好像有点不对劲……你看着办？"),
-          say("「有点不对劲」，「你看着办」。一句话两个未定义词。"),
+          ask("黑塔女士，EventBus 那边好像有点不对劲……你帮我看着办呗？"),
+          say("「有点不对劲」，「看着办」。一句话，两个没定义的词。"),
           say("你是要我猜，还是要板砖猜？猜错了算谁的？"),
           say(
-            "重写一遍：哪个文件、什么症状、你要的结束条件是什么。写清楚了我再派它。",
+            "重说一遍：哪个文件，什么症状，做到什么程度算完。说清楚了，我再派它去。",
           ),
         ],
       },
@@ -759,20 +741,17 @@ const ZH: DemoContent = {
         minutesAgo: 120,
         blocks: [
           ask(
-            "packages/core/src/event-bus.ts。\n现在满地都是 addListener 回调，回调里再套回调，加一个事件类型要改六个地方。\n我想换成类型化的订阅——for await 那种。公开接口不能动，@herta/core 那包的测试要跑通。",
+            "那我重说：packages/core/src/event-bus.ts。\n现在到处都是 addListener 回调，回调里还套回调，加一个事件类型要改六个地方。\n想换成类型化订阅，for await 那种。公开接口不能动，@herta/core 的测试要能跑过。",
           ),
           say(
-            "瞧，这就叫需求：文件、症状、约束、验收条件，四样齐了。\n@板砖，先数清楚有多少处调用点，一处都别漏；改完跑 core 的测试。",
+            "瞧，这才叫需求：文件、症状、约束、验收条件，一样不缺。\n@板砖，先把调用点数清楚，一处都别漏；改完跑 core 的测试。",
           ),
-          todoRow(ZH_PLAN(0), true),
           op("Reading", '"addListener"'),
           op("Running", "rg -c addListener packages/core/src"),
           exitRow(0, CALL_SITES),
           say("六个文件，十七处。最脏的是 event-bus.ts 自己——九处。"),
-          todoRow(ZH_PLAN(1), false),
           patchPreview("packages/core/src/event-bus.ts", EVENT_BUS_DIFF_ZH),
           op("Writing", "packages/core/src/event-bus.ts"),
-          todoRow(ZH_PLAN(2), false),
           op("Running", "pnpm test --filter @herta/core"),
           testsRow("exit 0, 12.31s"),
           doneMarker({
@@ -784,13 +763,27 @@ const ZH: DemoContent = {
             files: ["packages/core/src/event-bus.ts"],
           }),
           say(
-            `清完了。event-bus.ts 换成类型化订阅，addListener 还在——只剩一层壳，签名一个字没动。+${EVENT_BUS_LINES.add} −${EVENT_BUS_LINES.del}，diff 在记录里，别听我转述。`,
+            `清完了。event-bus.ts 换成了类型化订阅；addListener 还在，只剩一层壳，签名一个字没动。+${EVENT_BUS_LINES.add} −${EVENT_BUS_LINES.del}，diff 在记录里——自己看，别听我转述。`,
           ),
           say(
-            "测试只跑了 @herta/core 这一包，exit 0。不是全量。你要全量，自己再开一条委托。",
+            "测试只跑了 @herta/core 这一包，exit 0。不是全量——要全量，自己再开一条委托。",
           ),
-          ask("好！谢谢黑塔女士。"),
-          say("嗯。"),
+          // He quotes the shell from the viewer (0.1.8). The four lines ride
+          // his message, so they are hers to read; nothing past them is.
+          ask(
+            quoteAddListener(
+              "zh",
+              "等下，这个 addListener 每调一次就多开一个 drain？那以前加上的监听还能取消吗？",
+            ),
+          ),
+          say(
+            "眼睛挺尖嘛。`void this.drain`——每调一次就起一个，promise 当场扔掉，方法本身也只返回 void。你手里什么都没拿到，自然取消不了。",
+          ),
+          say(
+            "drain 自己什么时候停，你圈的这四行里没写。要能退订，就用 subscribe；这层壳留着只为不动签名，别再往上挂新东西。",
+          ),
+          ask("不愧是黑塔女士。"),
+          say("知道就好。"),
         ],
       },
     ]),
@@ -803,7 +796,7 @@ const EN: DemoContent = {
     "The progress bar's still crawling through the last two percent. That gives you a very short window — skip the small talk, get to the point.",
   openingVoiceMs: null, // no EN voice clip — EN opens silent, paced by word
   funnelFull:
-    "One thing: this is the site's display case. If you want Brick and me to actually do the work, install the desktop build first. The download's further down this page; all the source is on GitHub.",
+    "One thing, little one: this is just the site's display case. If you want Brick and me to actually do the work, install the desktop build first — the download's further down this page, and all the source is on GitHub.",
   funnelShort:
     "I already told you. Install the real thing first, then we talk commissions.",
   titleVisit: "Visitor log",
@@ -817,7 +810,7 @@ const EN: DemoContent = {
   // The zh twin above carries the design notes; this is the same record in her
   // English register. System-row bodies are identical — their chrome is English
   // by contract and the GUI localizes from the digest, so an EN session shows
-  // Reading / Writing / Task list where zh shows 读取 / 写入 / 任务清单.
+  // Reading / Writing where zh shows 读取 / 写入.
   showcase: () =>
     makeShowcase([
       {
@@ -825,10 +818,10 @@ const EN: DemoContent = {
         minutesAgo: 185,
         blocks: [
           ask(
-            "Madam Herta, the monitor threw three more false alarms overnight. I stared at it for ages and couldn't find the pattern…",
+            "You around? The monitor threw three more false alarms overnight. I've stared at it forever and can't see a pattern…",
           ),
           say(
-            "Same threshold all three times, or three different ones? — never mind. If you could tell, you wouldn't be asking.\n@板砖, pull the overnight alerts. Read-only; don't touch anything.",
+            "Same threshold all three times, or three different ones? — never mind. If you could tell, you wouldn't have come to me.\n@板砖, pull the overnight alerts. Read-only; don't touch anything.",
           ),
           op("Reading", '"sensor-0"'),
           op("Reading", ALERTS_EXCERPT_ARG),
@@ -845,7 +838,7 @@ const EN: DemoContent = {
             "All three are sensor-07, all three scrape the line and fall straight back — every dwell under half a second. That isn't heat, it's jitter.",
           ),
           say(
-            "Raise the threshold 5% and put a 2-second dwell gate on it. If it cries again after that, it's genuinely broken — replace it.",
+            "Raise the threshold 5% and put a 2-second dwell gate on it. If it cries again after that, it's genuinely broken — replace it, and don't come asking me.",
           ),
         ],
       },
@@ -857,9 +850,7 @@ const EN: DemoContent = {
         title: "The crash log they sent over",
         minutesAgo: 168,
         blocks: [
-          ask(
-            "Madam Herta — ops says it died overnight. Sending you the log now.",
-          ),
+          ask("Ops says the service died overnight. Sending you the log."),
           say("Send it."),
           attachmentRow({
             name: "crash-2026-08-02.log",
@@ -874,9 +865,9 @@ const EN: DemoContent = {
               "2026-08-02T03:14:09Z INFO   supervisor  worker-3 restarted",
             clipped: true,
           }),
-          ask("Four hundred lines, and I can't tell what matters."),
+          ask("Four hundred lines… where do I even start?"),
           say(
-            "What matters is the first five lines. The other four hundred are the echo of it restarting.\nHeap out of memory, and the top of the stack is TelemetryBuffer.flush — the buffer flushes on a timer, and it couldn't.",
+            "The first five lines. The other four hundred are the echo of it restarting.\nHeap out of memory, and the top of the stack is TelemetryBuffer.flush — the buffer flushes on a timer, and it couldn't.",
           ),
           say(
             "I've only read as far as the first restart. Whether that's a leak or a one-off spike depends on there being a second one further down — if you want to know, I'll have Brick pull every FATAL out of the file.",
@@ -888,13 +879,13 @@ const EN: DemoContent = {
         minutesAgo: 158,
         blocks: [
           ask(
-            "Madam Herta.\nIt's nothing. I just… haven't slept in thirty hours, and I was staring at the terminal and forgot what I was doing.",
+            "Herta.\nIt's nothing. I just… haven't slept in thirty hours, and I was staring at the terminal and forgot what I was doing.",
           ),
-          say("Received."),
+          say("Thirty hours. What do you think you are, one of my puppets?"),
           say(
-            "I don't do comfort — you know that, I can't say those things convincingly.\nBut whatever you write after thirty hours awake, I'll have Brick redo tomorrow. That's an ugly ledger.",
+            "I don't do comfort, and I'm not about to learn.\nBut whatever you write after thirty hours awake, Brick redoes from scratch tomorrow — however you run those numbers, it's a loss.",
           ),
-          say("I'm leaving the terminal open. Go to sleep."),
+          say("I'll keep the terminal open for you. Go to sleep."),
         ],
       },
       // The picture twin — same stored paths (one pair of bundled assets),
@@ -905,7 +896,7 @@ const EN: DemoContent = {
         minutesAgo: 145,
         blocks: [
           ask(
-            "Madam Herta — threshold and dwell gate changed, exactly as you said. Two screenshots: last night, and this afternoon. Not a single alarm since the change. Does that mean it's fixed?",
+            "Threshold and dwell gate changed, just like you said. Two screenshots — last night and this afternoon. Not one alarm since. So that's fixed, right?",
           ),
           imageRow({
             ...PANEL_IMAGES.night,
@@ -939,7 +930,7 @@ const EN: DemoContent = {
             "Should I guess, or should Brick? And when the guess is wrong, whose is it?",
           ),
           say(
-            "Write it again: which file, what symptom, what your finish condition is. Say that much and I'll dispatch.",
+            "Say it again: which file, what symptom, and what counts as done. Then I'll send Brick.",
           ),
         ],
       },
@@ -948,22 +939,19 @@ const EN: DemoContent = {
         minutesAgo: 120,
         blocks: [
           ask(
-            "packages/core/src/event-bus.ts.\nIt's addListener callbacks everywhere, callbacks nested inside callbacks — adding one event type means editing six places.\nI want typed subscriptions instead — the for-await kind. The public interface can't move, and @herta/core's tests have to pass.",
+            "Again, then: packages/core/src/event-bus.ts.\nIt's addListener callbacks everywhere, callbacks nested inside callbacks — adding one event type means editing six places.\nI want typed subscriptions instead — the for-await kind. The public interface can't move, and @herta/core's tests have to pass.",
           ),
           say(
-            "There. That's a request: file, symptom, constraint, acceptance — all four.\n@板砖, count every call site first, don't miss one; run core's tests once the edit's in.",
+            "There — now that's a request: file, symptom, constraint, acceptance. Nothing missing.\n@板砖, count every call site first, don't miss one; run core's tests once the edit's in.",
           ),
-          todoRow(EN_PLAN(0), true),
           op("Reading", '"addListener"'),
           op("Running", "rg -c addListener packages/core/src"),
           exitRow(0, CALL_SITES),
           say(
             "Six files, seventeen sites. The filthiest one is event-bus.ts itself — nine.",
           ),
-          todoRow(EN_PLAN(1), false),
           patchPreview("packages/core/src/event-bus.ts", EVENT_BUS_DIFF_EN),
           op("Writing", "packages/core/src/event-bus.ts"),
-          todoRow(EN_PLAN(2), false),
           op("Running", "pnpm test --filter @herta/core"),
           testsRow("exit 0, 12.31s"),
           doneMarker({
@@ -980,8 +968,20 @@ const EN: DemoContent = {
           say(
             "Tests were @herta/core only, exit 0. Not the full suite. You want the full suite, open your own commission for it.",
           ),
-          ask("Got it — thank you, Madam Herta."),
-          say("Mm."),
+          ask(
+            quoteAddListener(
+              "en",
+              "Wait — so every call to addListener starts another drain? Can listeners added before ever be removed?",
+            ),
+          ),
+          say(
+            "Sharp eyes. `void this.drain` — each call starts one and throws the promise away on the spot, and the method itself returns only void. You're handed nothing, so of course nothing can be removed.",
+          ),
+          say(
+            "When drain itself stops isn't in the four lines you circled. If you need to unsubscribe, use subscribe; the shell stays only to keep the signature — don't hang anything new on it.",
+          ),
+          ask("That's Madam Herta for you."),
+          say("Good that you know."),
         ],
       },
     ]),
@@ -1081,13 +1081,17 @@ export function createDemoBridge(
   let showcaseTail: string | null = null;
   if (options.streamShowcaseTail === true) {
     // Walk back to the last herta block LONG enough to move the tide wave.
-    // The record now closes on a short exchange (`好！谢谢黑塔女士。` / `嗯。`),
-    // and streaming a two-character reply leaves the composer almost flat —
-    // the exact switched-off look this path exists to avoid. Blocks after the
+    // The record closes on a short exchange (`不愧是黑塔女士。` / `知道就好。`),
+    // and streaming a few characters leaves the composer almost flat — the
+    // exact switched-off look this path exists to avoid. Blocks after the
     // chosen one are dropped for the capture only; a poster is one frame.
+    // English spends about three times the characters on the same line, so
+    // its bar is higher: "Good that you know." passed 12 and the English
+    // posters ended on the pleasantry the Chinese ones skip (2026-10-14).
+    const minChars = lang === "en" ? 40 : 12;
     for (let i = showcase.record.length - 1; i >= 0; i -= 1) {
       const b = showcase.record[i];
-      if (b !== undefined && b.kind === "herta" && b.text.length >= 12) {
+      if (b !== undefined && b.kind === "herta" && b.text.length >= minChars) {
         showcaseTail = b.text;
         showcase.record.length = i;
         break;
@@ -1347,10 +1351,15 @@ export function createDemoBridge(
       if (sessionId === activeId) {
         record.emit({ kind: "reset", record: [...s.record] });
       }
-      return { ok: true, userText, editedFiles: false };
+      // The demo keeps no undo store (ADR 0074): nothing to take back.
+      return { ok: true, userText, editedFiles: false, undoable: false };
     },
 
     maybePlayEasterEgg: async () => {},
+
+    // The device card shows its scene — a picture of it on the site
+    // (src/demo-device-scene.tsx), not the flat device alone.
+    getDeviceScene: async () => true,
 
     listSessions: async () => {
       const list: SessionMetadata[] = [];
@@ -1515,6 +1524,22 @@ export function createDemoBridge(
     // REAL panel and its renderers. Text only: nothing the record names is
     // a picture or an Office file (the two screenshots ride the lightbox),
     // so the bytes read has nothing to serve and says so.
+    // The composer's @ list (ADR 0072 §2): the same files, in main's order
+    // — shallowest first, then by name — and, as main never offers it,
+    // nothing under Herta's own `.herta`.
+    listWorkspaceFiles: async (sessionId) =>
+      sessionId === SHOWCASE_ID
+        ? {
+            files: Object.keys(files)
+              .filter((p) => !p.startsWith(".herta/"))
+              .sort(
+                (a, b) =>
+                  a.split("/").length - b.split("/").length ||
+                  a.localeCompare(b),
+              ),
+            truncated: false,
+          }
+        : null,
     readWorkspaceFile: async (sessionId, path) => {
       const content = sessionId === SHOWCASE_ID ? files[path] : undefined;
       if (content === undefined) return { ok: false, reason: "not_found" };

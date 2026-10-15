@@ -7,10 +7,7 @@ import {
   createMockHertaBridge,
   type MockHertaBridge,
 } from "../../ipc/mock-bridge.js";
-import {
-  deviceScenePref,
-  resetDeviceScenePrefForTest,
-} from "../UtilityRail/device-scene/device-scene-prefs.js";
+import { resetDeviceScenePrefForTest } from "../UtilityRail/device-scene/device-scene-prefs.js";
 import { BanzhuanSettings } from "./BanzhuanSettings.js";
 
 const captionName = (c: HTMLElement): string | null =>
@@ -35,9 +32,9 @@ describe("BanzhuanSettings", () => {
 
     it("renders the explainer, the demo card, an idle caption, and a 5-state legend", () => {
       const { container, getByText } = renderPane();
-      // The intro prose (en locale; compacted 2026-08-03 so the pane stays
-      // inside the settings card's stable height floor).
-      expect(getByText(/The Brick handles the coding/)).toBeTruthy();
+      // The intro prose (en locale; in Herta's own hand since 2026-09-29, and
+      // compact so the pane stays inside the card's stable height floor).
+      expect(getByText(/I call it the Brick/)).toBeTruthy();
       expect(container.querySelector(".settings-bz-card")).toBeTruthy();
       // Caption shows the single locale word for the current state.
       expect(captionName(container)).toBe("Idle");
@@ -170,7 +167,7 @@ describe("BanzhuanSettings", () => {
       });
       const { queryByText } = renderPane(mock);
       await waitFor(() =>
-        expect(queryByText(/No bash was found on this machine/)).toBeTruthy(),
+        expect(queryByText(/No bash on this machine/)).toBeTruthy(),
       );
       // ADR 0044: the sentence names the remedy, not just the problem.
       expect(queryByText(/Install Git for Windows/)).toBeTruthy();
@@ -210,49 +207,21 @@ describe("BanzhuanSettings", () => {
     });
   });
 
-  describe("3D device row (ADR 0057)", () => {
+  describe("the 3D device (ADR 0057)", () => {
     afterEach(() => resetDeviceScenePrefForTest());
 
-    it("hides the row when the bridge lacks the surface (fakes / website demo)", () => {
-      renderPane(createMockHertaBridge());
+    it("has no row — the lit device is always on where the GPU allows it (owner 2026-10-01, §2.7 amended)", () => {
+      // Even on the desktop's bridge, which draws the scene.
+      const { container } = renderPane(
+        createMockHertaBridge({ deviceSceneResult: true }),
+      );
       expect(screen.queryByLabelText("3D device")).toBeNull();
+      expect(container.textContent).not.toContain("3D device");
     });
 
-    it("loads the persisted value, and a flip persists via the bridge and the shared pref", async () => {
-      const mock = createMockHertaBridge({ deviceSceneResult: false });
-      renderPane(mock);
-      const toggle = await screen.findByLabelText("3D device");
-      await waitFor(() =>
-        expect(toggle.getAttribute("aria-checked")).toBe("false"),
-      );
-      fireEvent.click(toggle);
-      expect(toggle.getAttribute("aria-checked")).toBe("true");
-      expect(deviceScenePref()).toBe(true);
-      await waitFor(() => expect(mock.calls.setDeviceScene).toEqual([true]));
-    });
-
-    it("a failed write snaps back and surfaces the error", async () => {
-      const mock = createMockHertaBridge({
-        deviceSceneResult: true,
-        failSetDeviceScene: true,
-      });
-      const { queryByText } = renderPane(mock);
-      const toggle = await screen.findByLabelText("3D device");
-      await waitFor(() =>
-        expect(toggle.getAttribute("aria-checked")).toBe("true"),
-      );
-      fireEvent.click(toggle);
-      await waitFor(() =>
-        expect(queryByText("Could not save — try again.")).toBeTruthy(),
-      );
-      expect(toggle.getAttribute("aria-checked")).toBe("true");
-      expect(deviceScenePref()).toBe(true);
-    });
-
-    it("the demo card below stays on the flat renders — one GPU scene per app", async () => {
+    it("the demo card below stays on the flat renders — one GPU scene per app", () => {
       const mock = createMockHertaBridge({ deviceSceneResult: true });
       const { container } = renderPane(mock);
-      await screen.findByLabelText("3D device");
       expect(
         container.querySelector(".settings-bz-card .device-scene-canvas"),
       ).toBeNull();
@@ -262,14 +231,43 @@ describe("BanzhuanSettings", () => {
     });
   });
 
-  it("has NO command-rule section — rules moved to the device card's ⋯ menu (owner 2026-08-04)", async () => {
-    const { container } = renderPane(
-      createMockHertaBridge({ commandRules: ["node src/index.mjs:*"] }),
-    );
-    await waitFor(() =>
-      expect(screen.getByLabelText("Thinking effort")).toBeTruthy(),
-    );
-    expect(container.querySelector(".settings-bz-rules")).toBeNull();
-    expect(screen.queryByText("node src/index.mjs:*")).toBeNull();
+  describe("PDF picture transcription row (2026-10-01)", () => {
+    it("hides the row when the bridge lacks the surface (fakes / website demo)", () => {
+      renderPane(createMockHertaBridge());
+      expect(screen.queryByLabelText("Transcribe PDF pictures")).toBeNull();
+    });
+
+    it("loads the stored value, and a flip persists through the bridge", async () => {
+      const mock = createMockHertaBridge({
+        pdfPictureTranscriptsResult: false,
+      });
+      renderPane(mock);
+      const toggle = await screen.findByLabelText("Transcribe PDF pictures");
+      await waitFor(() =>
+        expect(toggle.getAttribute("aria-checked")).toBe("false"),
+      );
+      fireEvent.click(toggle);
+      expect(toggle.getAttribute("aria-checked")).toBe("true");
+      await waitFor(() =>
+        expect(mock.calls.setPdfPictureTranscripts).toEqual([true]),
+      );
+    });
+
+    it("a failed write snaps back and says it could not save", async () => {
+      const mock = createMockHertaBridge({
+        pdfPictureTranscriptsResult: true,
+        failSetPdfPictureTranscripts: true,
+      });
+      const { queryByText } = renderPane(mock);
+      const toggle = await screen.findByLabelText("Transcribe PDF pictures");
+      await waitFor(() =>
+        expect(toggle.getAttribute("aria-checked")).toBe("true"),
+      );
+      fireEvent.click(toggle);
+      await waitFor(() =>
+        expect(queryByText("Could not save — try again.")).toBeTruthy(),
+      );
+      expect(toggle.getAttribute("aria-checked")).toBe("true");
+    });
   });
 });

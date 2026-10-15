@@ -1,6 +1,7 @@
-import { Fragment, memo, useRef } from "react";
+import { Fragment, memo, useEffect, useRef } from "react";
 import { useHertaBridge } from "../../context/HertaBridgeContext.js";
 import { useActiveSession } from "../../hooks/useActiveSession.js";
+import { useBackendThinking } from "../../hooks/useBackendThinking.js";
 import { useReducedMotion } from "../../hooks/useReducedMotion.js";
 import { useT } from "../../i18n/LocaleProvider.js";
 import { ConversationPinProvider } from "./ConversationPin.js";
@@ -8,6 +9,10 @@ import { GalaxyTravelRow } from "./GalaxyTravelRow.js";
 import { activityHasTerminalMarker } from "./group-record.js";
 import { MorphClone } from "./MorphClone.js";
 import { PendingActivity } from "./PendingActivity.js";
+import {
+  reportAttachProgress,
+  usePendingAttachRecord,
+} from "./pending-attach.js";
 import { RecapCompactRow } from "./RecapCompactRow.js";
 import { StreamingReply } from "./StreamingReply.js";
 import { SupervisorHoldRow } from "./SupervisorHoldRow.js";
@@ -30,6 +35,7 @@ import { useSessionEntrance } from "./useSessionEntrance.js";
 import { useSupervisorHold } from "./useSupervisorHold.js";
 import { useTopicJump } from "./useTopicJump.js";
 import { useTurnFollow } from "./useTurnFollow.js";
+import { useUndoTurn } from "./useUndoTurn.js";
 import { useWorkspaceRefs } from "./WorkspaceRefs.js";
 
 // The timing/threshold constants this component used to declare now live
@@ -81,6 +87,7 @@ export const Conversation = memo(function Conversation(): JSX.Element {
     turnFailedProviderCode,
     topics,
     lang,
+    undoable,
   } = useActiveSession();
   const { bridge, sessionStore } = useHertaBridge();
   const reduced = useReducedMotion();
@@ -118,6 +125,9 @@ export const Conversation = memo(function Conversation(): JSX.Element {
     flowRef,
     isReadingHistory: () => scroll.isReadingHistory(),
     takeLaunch: () => sessionStore.takeLaunch(),
+    record,
+    recordStart,
+    sessionId,
   });
   const incoming = useIncomingMorph({
     composerRef,
@@ -131,6 +141,8 @@ export const Conversation = memo(function Conversation(): JSX.Element {
     incomingClone: incoming.incomingClone,
     reduced,
   });
+  // The card's 撤销 (ADR 0074 §4).
+  const { handleUndo, undoBusy } = useUndoTurn(sessionStore);
   const handleRewind = useRewindTurn({
     bridge,
     sessionStore,
@@ -166,11 +178,18 @@ export const Conversation = memo(function Conversation(): JSX.Element {
     pendingJump,
     sessionId,
   });
+  // The attach in flight's placeholder rows (pending-attach.ts): the rows
+  // render it, and the pinned follow treats its arrival like any new row.
+  const shownRecord = usePendingAttachRecord(sessionId, record, recordStart);
+  useEffect(() => {
+    if (bridge.onAttachProgress === undefined) return undefined;
+    return bridge.onAttachProgress(reportAttachProgress);
+  }, [bridge]);
   useTurnFollow({
     scroll,
     isFlightArmed: outgoing.isFlightArmed,
     reduced,
-    record,
+    record: shownRecord,
     pendingUser,
     status,
     showInFlight: inFlight.showInFlight,
@@ -194,8 +213,11 @@ export const Conversation = memo(function Conversation(): JSX.Element {
     sessionStore,
     t,
   });
+  const backendThinking = useBackendThinking();
   const { items, rows } = useConversationRows({
-    record,
+    // The attach in flight shows as placeholder rows after the record's last
+    // block — where its real blocks will land (pending-attach.ts).
+    record: shownRecord,
     recordStart,
     lang,
     status,
@@ -203,8 +225,12 @@ export const Conversation = memo(function Conversation(): JSX.Element {
     backendStartedAt,
     backendInFlight,
     backendActive,
+    backendThinking,
     handleRewind,
     removeAttachmentFactory,
+    undoable,
+    undoBusy,
+    handleUndo,
   });
 
   // ── render ───────────────────────────────────────────────────────────────
@@ -284,7 +310,10 @@ export const Conversation = memo(function Conversation(): JSX.Element {
                   : {})}
               />
             )}
-            {outgoingClone !== null && pendingUser !== null && (
+            {/* Not gated on the echo: when the turn's real user block lands
+              mid-flight (a typed @板砖 — no router call heads its turn), the
+              clone flies on onto the real row (useOutgoingMorph). */}
+            {outgoingClone !== null && (
               <MorphClone
                 ref={cloneRef}
                 overlay={overlayRef}
@@ -320,15 +349,15 @@ export const Conversation = memo(function Conversation(): JSX.Element {
             streaming bubble; mutually exclusive with the in-flight rows
             (inFlightSettled excludes supervisorChecking, and a live stream
             excludes the galaxy anyway). */}
-            {showSupervisorHold && <SupervisorHoldRow />}
+            {showSupervisorHold && <SupervisorHoldRow lang={lang} />}
             {/* Both rows ride `inFlightPresent` — which carries the
             render-synchronous hide, the minimum-visible hold, AND the quiet
             exit fade; see the definitions for why those are one expression. */}
             {inFlightPresent && recapCompacting && (
-              <RecapCompactRow exiting={inFlightExitingVisible} />
+              <RecapCompactRow exiting={inFlightExitingVisible} lang={lang} />
             )}
             {inFlightPresent && !recapCompacting && (
-              <GalaxyTravelRow exiting={inFlightExitingVisible} />
+              <GalaxyTravelRow exiting={inFlightExitingVisible} lang={lang} />
             )}
             {/* Non-interrupt turn failure (slice 4): the reply was lost to a
             provider/connection error and nothing committed — say so instead
