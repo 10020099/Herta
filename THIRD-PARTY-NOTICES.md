@@ -22,14 +22,19 @@ Not listed here, because they travel separately:
 | Package | Version | License | Bundled into |
 |---|---|---|---|
 | @braintree/sanitize-url | 7.1.2 | MIT | renderer |
-| @iconify/utils | 3.1.4 | MIT | renderer |
+| @iconify/utils | 3.1.7 | MIT | renderer |
 | @mermaid-js/parser | 1.2.1 | MIT | renderer |
+| @modelcontextprotocol/sdk | 1.30.0 | MIT | main process |
 | @upsetjs/venn.js | 2.0.0 | MIT | renderer |
+| ajv | 8.20.0 | MIT | main process |
+| ajv-formats | 3.0.1 | MIT | main process |
 | basis_universal (KTX2 transcoder) | v1_50_0_2, rebuilt with -sDYNAMIC_EXECUTION=0 | Apache-2.0 | renderer assets (out/renderer/device-scene/basis/) |
 | builder-util-runtime | 9.7.0 | MIT | main process |
+| content-type | 1.0.5 | MIT | main process |
 | cose-base | 1.0.3 | MIT | renderer |
 | cose-base | 2.2.0 | MIT | renderer |
-| cytoscape | 3.34.2 | MIT | renderer |
+| cross-spawn | 7.0.6 | MIT | main process |
+| cytoscape | 3.34.3 | MIT | renderer |
 | cytoscape-cose-bilkent | 4.1.0 | MIT | renderer |
 | cytoscape-fcose | 2.2.0 | MIT | renderer |
 | d3-array | 2.12.1 | BSD-3-Clause | renderer |
@@ -57,11 +62,15 @@ Not listed here, because they travel separately:
 | dagre-d3-es | 7.0.14 | MIT | renderer |
 | dayjs | 1.11.23 | MIT | renderer |
 | debug | 4.4.3 | MIT | main process |
-| docx-preview | 0.4.0 | Apache-2.0 | renderer |
-| dompurify | 3.4.14 | (MPL-2.0 OR Apache-2.0) | renderer |
+| docx-preview | 0.4.1 | Apache-2.0 | renderer |
+| dompurify | 3.4.16 | (MPL-2.0 OR Apache-2.0) | renderer |
 | electron-updater | 6.8.9 | MIT | main process |
 | es-toolkit | 1.52.0 | MIT | renderer |
 | espeak-ng (linked into the neural-voice runtime) | sherpa-onnx fork, commit ed530aa1 | GPL-3.0-or-later | resources/tts-runtime/ (statically linked into sherpa-onnx-c-api; source at the URL above, built by sherpa-onnx 1.13.6's CMake tree) |
+| eventsource | 3.0.7 | MIT | main process |
+| eventsource-parser | 3.1.1 | MIT | main process |
+| fast-deep-equal | 3.1.3 | MIT | main process |
+| fast-uri | 3.1.3 | BSD-3-Clause | main process |
 | fastdom | 1.0.12 | MIT | renderer |
 | fflate | 0.8.3 | MIT | main process, renderer |
 | fs-extra | 10.1.0 | MIT | main process |
@@ -69,9 +78,11 @@ Not listed here, because they travel separately:
 | has-flag | 4.0.0 | MIT | main process |
 | highlight.js | 11.12.0 | BSD-3-Clause | renderer |
 | internmap | 2.0.3 | ISC | renderer |
+| isexe | 2.0.0 | ISC | main process |
 | js-yaml | 4.3.2 | MIT | main process |
+| json-schema-traverse | 1.0.0 | MIT | main process |
 | jsonfile | 6.2.1 | MIT | main process |
-| jszip | 3.10.1 | (MIT OR GPL-3.0-or-later) | renderer |
+| jszip | 3.10.2 | (MIT OR GPL-3.0-or-later) | renderer |
 | katex | 0.16.47 | MIT | renderer |
 | khroma | 2.1.0 | UNKNOWN | renderer |
 | layout-base | 1.0.2 | MIT | renderer |
@@ -81,18 +92,22 @@ Not listed here, because they travel separately:
 | lodash.escaperegexp | 4.1.2 | MIT | main process |
 | lodash.isequal | 4.5.0 | MIT | main process |
 | marked | 16.4.2 | MIT | renderer |
-| marked | 18.0.11 | MIT | renderer |
+| marked | 18.0.14 | MIT | renderer |
 | mermaid | 11.17.2 | MIT | renderer |
 | ms | 2.1.3 | MIT | main process |
 | onnxruntime (bundled by sherpa-onnx) | as bundled by sherpa-onnx 1.13.6 | MIT | resources/tts-runtime/ (native library) |
+| path-key | 3.1.1 | MIT | main process |
 | pdfjs-dist | 6.2.108 | Apache-2.0 | main process, renderer |
 | piper-phonemize (linked into the neural-voice runtime) | sherpa-onnx fork, commit f3ff95af | MIT | resources/tts-runtime/ (statically linked into sherpa-onnx-c-api) |
+| pkce-challenge | 5.0.1 | MIT | main process |
 | react | 18.3.1 | MIT | renderer |
 | react-dom | 18.3.1 | MIT | renderer |
 | roughjs | 4.6.6 | MIT | renderer |
 | sax | 1.6.0 | BlueOak-1.0.0 | main process |
 | scheduler | 0.23.2 | MIT | renderer |
 | semver | 7.7.4 | ISC | main process |
+| shebang-command | 2.0.0 | MIT | main process |
+| shebang-regex | 3.0.0 | MIT | main process |
 | sherpa-onnx (neural-voice runtime) | 1.13.6 | Apache-2.0 | resources/tts-runtime/ (native addon, utility process) |
 | stylis | 4.4.0 | MIT | renderer |
 | supports-color | 7.2.0 | MIT | main process |
@@ -100,6 +115,7 @@ Not listed here, because they travel separately:
 | ts-dedent | 2.3.0 | MIT | renderer |
 | universalify | 2.0.1 | MIT | main process |
 | uuid | 14.0.2 | MIT | renderer |
+| which | 2.0.2 | ISC | main process |
 | zod | 3.25.76 | MIT | main process |
 | zod-to-json-schema | 3.25.2 | ISC | main process |
 
@@ -134,7 +150,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### @iconify/utils 3.1.4 — MIT
+### @iconify/utils 3.1.7 — MIT
 
 - Author: Vjacheslav Trushkin
 - Source: https://github.com/iconify/iconify
@@ -194,6 +210,36 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+### @modelcontextprotocol/sdk 1.30.0 — MIT
+
+- Author: Anthropic, PBC (https://anthropic.com)
+- Source: https://github.com/modelcontextprotocol/typescript-sdk
+- Bundled into: main process
+
+```text
+MIT License
+
+Copyright (c) 2024 Anthropic, PBC
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ### @upsetjs/venn.js 2.0.0 — MIT
 
 - Author: Ben Frederickson
@@ -205,6 +251,66 @@ MIT License
 
 Copyright (c) 2013 Ben Frederickson
 Copyright (c) 2021 Samuel Gratzl
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### ajv 8.20.0 — MIT
+
+- Author: Evgeny Poberezkin
+- Source: https://github.com/ajv-validator/ajv
+- Bundled into: main process
+
+```text
+The MIT License (MIT)
+
+Copyright (c) 2015-2021 Evgeny Poberezkin
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### ajv-formats 3.0.1 — MIT
+
+- Author: Evgeny Poberezkin
+- Source: https://github.com/ajv-validator/ajv-formats
+- Bundled into: main process
+
+```text
+MIT License
+
+Copyright (c) 2020 Evgeny Poberezkin
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -449,6 +555,37 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+### content-type 1.0.5 — MIT
+
+- Author: Douglas Christopher Wilson <doug@somethingdoug.com>
+- Source: https://github.com/jshttp/content-type
+- Bundled into: main process
+
+```text
+(The MIT License)
+
+Copyright (c) 2015 Douglas Christopher Wilson
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+'Software'), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
 ### cose-base 1.0.3 — MIT
 
 - Source: https://github.com/iVis-at-Bilkent/cose-base
@@ -507,7 +644,37 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### cytoscape 3.34.2 — MIT
+### cross-spawn 7.0.6 — MIT
+
+- Author: André Cruz <andre@moxy.studio>
+- Source: git@github.com:moxystudio/node-cross-spawn
+- Bundled into: main process
+
+```text
+The MIT License (MIT)
+
+Copyright (c) 2018 Made With MOXY Lda <hello@moxy.studio>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
+### cytoscape 3.34.3 — MIT
 
 - Source: https://github.com/cytoscape/cytoscape.js
 - Bundled into: renderer
@@ -1248,7 +1415,7 @@ WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN 
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### docx-preview 0.4.0 — Apache-2.0
+### docx-preview 0.4.1 — Apache-2.0
 
 - Author: Volodymyr Baydalka
 - Source: https://github.com/VolodymyrBaydalka/docxjs
@@ -1458,7 +1625,7 @@ Apache License
    limitations under the License.
 ```
 
-### dompurify 3.4.14 — (MPL-2.0 OR Apache-2.0)
+### dompurify 3.4.16 — (MPL-2.0 OR Apache-2.0)
 
 - Author: Dr.-Ing. Mario Heiderich, Cure53 <mario@cure53.de> (https://cure53.de/)
 - Source: https://github.com/cure53/DOMPurify
@@ -2479,6 +2646,136 @@ Public License instead of this License.  But first, please read
 <http://www.gnu.org/philosophy/why-not-lgpl.html>.
 ```
 
+### eventsource 3.0.7 — MIT
+
+- Author: Espen Hovlandsdal <espen@hovlandsdal.com>
+- Source: https://git@github.com/EventSource/eventsource
+- Bundled into: main process
+
+```text
+The MIT License
+
+Copyright (c) EventSource GitHub organisation
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
+### eventsource-parser 3.1.1 — MIT
+
+- Author: Espen Hovlandsdal <espen@hovlandsdal.com>
+- Source: https://github.com/rexxars/eventsource-parser
+- Bundled into: main process
+
+```text
+MIT License
+
+Copyright (c) 2026 Espen Hovlandsdal <espen@hovlandsdal.com>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### fast-deep-equal 3.1.3 — MIT
+
+- Author: Evgeny Poberezkin
+- Source: https://github.com/epoberezkin/fast-deep-equal
+- Bundled into: main process
+
+```text
+MIT License
+
+Copyright (c) 2017 Evgeny Poberezkin
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### fast-uri 3.1.3 — BSD-3-Clause
+
+- Author: Vincent Le Goff <vince.legoff@gmail.com> (https://github.com/zekth)
+- Source: https://github.com/fastify/fast-uri
+- Bundled into: main process
+
+```text
+Copyright (c) 2011-2021, Gary Court until https://github.com/garycourt/uri-js/commit/a1acf730b4bba3f1097c9f52e7d9d3aba8cdcaae
+Copyright (c) 2021-present The Fastify team <https://github.com/fastify/fastify#team>
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+    * Redistributions of source code must retain the above copyright
+      notice, this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above copyright
+      notice, this list of conditions and the following disclaimer in the
+      documentation and/or other materials provided with the distribution.
+    * The names of any contributors may not be used to endorse or promote
+      products derived from this software without specific prior written
+      permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS AND CONTRIBUTORS BE LIABLE FOR ANY
+DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+                                  *   *   *
+
+The complete list of contributors can be found at:
+- https://github.com/garycourt/uri-js/graphs/contributors
+```
+
 ### fastdom 1.0.12 — MIT
 
 - Author: Wilson Page
@@ -2662,6 +2959,30 @@ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 ```
 
+### isexe 2.0.0 — ISC
+
+- Author: Isaac Z. Schlueter <i@izs.me> (http://blog.izs.me/)
+- Source: https://github.com/isaacs/isexe
+- Bundled into: main process
+
+```text
+The ISC License
+
+Copyright (c) Isaac Z. Schlueter and Contributors
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR
+IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+```
+
 ### js-yaml 4.3.2 — MIT
 
 - Author: Vladimir Zapparov <dervus.grim@gmail.com>
@@ -2692,6 +3013,36 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
+### json-schema-traverse 1.0.0 — MIT
+
+- Author: Evgeny Poberezkin
+- Source: https://github.com/epoberezkin/json-schema-traverse
+- Bundled into: main process
+
+```text
+MIT License
+
+Copyright (c) 2017 Evgeny Poberezkin
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ### jsonfile 6.2.1 — MIT
 
 - Author: JP Richardson <jprichardson@gmail.com>
@@ -2716,7 +3067,7 @@ OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHE
  ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### jszip 3.10.1 — (MIT OR GPL-3.0-or-later)
+### jszip 3.10.2 — (MIT OR GPL-3.0-or-later)
 
 - Author: Stuart Knightley <stuart@stuartk.com>
 - Source: https://github.com/Stuk/jszip
@@ -3740,7 +4091,7 @@ Redistribution and use in source and binary forms, with or without modification,
 This software is provided by the copyright holders and contributors “as is” and any express or implied warranties, including, but not limited to, the implied warranties of merchantability and fitness for a particular purpose are disclaimed. In no event shall the copyright owner or contributors be liable for any direct, indirect, incidental, special, exemplary, or consequential damages (including, but not limited to, procurement of substitute goods or services; loss of use, data, or profits; or business interruption) however caused and on any theory of liability, whether in contract, strict liability, or tort (including negligence or otherwise) arising in any way out of the use of this software, even if advised of the possibility of such damage.
 ```
 
-### marked 18.0.11 — MIT
+### marked 18.0.14 — MIT
 
 - Author: Christopher Jeffrey
 - Source: https://github.com/markedjs/marked
@@ -3885,6 +4236,24 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+```
+
+### path-key 3.1.1 — MIT
+
+- Author: Sindre Sorhus
+- Source: https://github.com/sindresorhus/path-key
+- Bundled into: main process
+
+```text
+MIT License
+
+Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (sindresorhus.com)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
 ### pdfjs-dist 6.2.108 — Apache-2.0
@@ -4111,6 +4480,36 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+### pkce-challenge 5.0.1 — MIT
+
+- Author: crouchcd
+- Source: https://github.com/crouchcd/pkce-challenge
+- Bundled into: main process
+
+```text
+MIT License
+
+Copyright (c) 2019
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ### react 18.3.1 — MIT
 
 - Source: https://github.com/facebook/react
@@ -4314,6 +4713,42 @@ ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
 WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
 ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR
 IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+```
+
+### shebang-command 2.0.0 — MIT
+
+- Author: Kevin Mårtensson
+- Source: https://github.com/kevva/shebang-command
+- Bundled into: main process
+
+```text
+MIT License
+
+Copyright (c) Kevin Mårtensson <kevinmartensson@gmail.com> (github.com/kevva)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
+### shebang-regex 3.0.0 — MIT
+
+- Author: Sindre Sorhus
+- Source: https://github.com/sindresorhus/shebang-regex
+- Bundled into: main process
+
+```text
+MIT License
+
+Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (sindresorhus.com)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
 ### sherpa-onnx (neural-voice runtime) 1.13.6 — Apache-2.0
@@ -4667,6 +5102,30 @@ Permission is hereby granted, free of charge, to any person obtaining a copy of 
 The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
+### which 2.0.2 — ISC
+
+- Author: Isaac Z. Schlueter <i@izs.me> (http://blog.izs.me)
+- Source: https://github.com/isaacs/node-which
+- Bundled into: main process
+
+```text
+The ISC License
+
+Copyright (c) Isaac Z. Schlueter and Contributors
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR
+IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
 ### zod 3.25.76 — MIT
