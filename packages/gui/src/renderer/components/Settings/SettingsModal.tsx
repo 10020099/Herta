@@ -2,10 +2,18 @@ import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useHertaBridge } from "../../context/HertaBridgeContext.js";
 import type { MessageKey } from "../../i18n/keys.js";
 import { useT } from "../../i18n/LocaleProvider.js";
-import { OVERLAY_Z, useModalOverlay } from "../../lib/overlay-stack.js";
+import {
+  OVERLAY_Z,
+  topOverlay,
+  useModalOverlay,
+} from "../../lib/overlay-stack.js";
+import { runShortcut } from "../../lib/shortcut-registry.js";
+import { KeyCaps, useMacKeys } from "../common/KeyCaps.js";
+import { FlowIcon } from "../Flow/FlowPanel.js";
 import { BanzhuanSettings } from "./BanzhuanSettings.js";
 import { ContextSettings } from "./ContextSettings.js";
 import { DreamSettings } from "./DreamSettings.js";
+import { FlowSettings } from "./FlowSettings.js";
 import { LanguageSettings } from "./LanguageSettings.js";
 import { McpSettings } from "./McpSettings.js";
 import { ProjectRulesSettings } from "./ProjectRulesSettings.js";
@@ -237,6 +245,13 @@ const GROUPS = [
         Pane: DreamSettings,
         rows: false,
       },
+      {
+        key: "flow",
+        labelKey: "nav.flow" satisfies MessageKey,
+        Icon: FlowIcon,
+        Pane: FlowSettings,
+        rows: true,
+      },
     ],
   },
   {
@@ -385,6 +400,11 @@ export function SettingsModal({
   // closing Settings can never also feed the keypress to the approval panel
   // (which treats Escape as DENY) behind the backdrop.
   const isTop = useModalOverlay("settings", open, OVERLAY_Z.settings);
+  const mac = useMacKeys();
+  /** Whether Settings was the topmost overlay when the current press began.
+   *  A ref, not the effect's own variable: the press that closes a dialog
+   *  above re-runs the effect mid-press, and the answer must survive it. */
+  const pressOnTop = useRef(true);
 
   // Escape (close) + Tab (focus trap) + outside-click close, only while open.
   useEffect(() => {
@@ -426,14 +446,27 @@ export function SettingsModal({
       // they are the only thing clickable over an open modal — by design —
       // and minimizing/maximizing the window read as a dismiss-click.
       if ((e.target as Element | null)?.closest?.(".window-controls")) return;
+      // A dialog above Settings (the cheat sheet its nav foot opens) owns
+      // its own clicks: a press there — inside it, or on its backdrop, which
+      // closes it — is not a dismiss of Settings. Decided by who was on top
+      // when the press BEGAN (`onPress`, capture phase): the sheet's close
+      // lands in React before the press reaches the document, so by then
+      // Settings is on top again and the backdrop press read as outside it
+      // (owner 2026-10-21: both closed).
+      if (!pressOnTop.current) return;
       if (cardRef.current && !cardRef.current.contains(e.target as Node)) {
         onClose();
       }
     };
+    const onPress = (): void => {
+      pressOnTop.current = topOverlay() === "settings";
+    };
     document.addEventListener("keydown", onKey);
+    window.addEventListener("mousedown", onPress, { capture: true });
     document.addEventListener("mousedown", onDown);
     return () => {
       document.removeEventListener("keydown", onKey);
+      window.removeEventListener("mousedown", onPress, { capture: true });
       document.removeEventListener("mousedown", onDown);
     };
   }, [open, onClose, isTop]);
@@ -451,24 +484,42 @@ export function SettingsModal({
         tabIndex={-1}
       >
         <nav className="settings-nav" aria-label={t("settings.sectionsAria")}>
-          <p className="settings-nav-eyebrow">{t("settings.eyebrow")}</p>
-          {GROUPS.map((g) => (
-            <Fragment key={g.labelKey}>
-              <p className="settings-nav-group-label">{t(g.labelKey)}</p>
-              {g.items.map((s) => (
-                <button
-                  key={s.key}
-                  type="button"
-                  className={`settings-nav-item${section === s.key ? " is-active" : ""}`}
-                  aria-current={section === s.key}
-                  onClick={() => setSection(s.key)}
-                >
-                  <s.Icon />
-                  <span>{t(s.labelKey)}</span>
-                </button>
-              ))}
-            </Fragment>
-          ))}
+          {/* The list keeps its block layout (its labels' margins collapse as
+              before); the nav around it is a column, so the shortcuts row
+              below rests at its foot. */}
+          <div className="settings-nav-list">
+            <p className="settings-nav-eyebrow">{t("settings.eyebrow")}</p>
+            {GROUPS.map((g) => (
+              <Fragment key={g.labelKey}>
+                <p className="settings-nav-group-label">{t(g.labelKey)}</p>
+                {g.items.map((s) => (
+                  <button
+                    key={s.key}
+                    type="button"
+                    className={`settings-nav-item${section === s.key ? " is-active" : ""}`}
+                    aria-current={section === s.key}
+                    onClick={() => setSection(s.key)}
+                  >
+                    <s.Icon />
+                    <span>{t(s.labelKey)}</span>
+                  </button>
+                ))}
+              </Fragment>
+            ))}
+          </div>
+          {/* Where the cheat sheet can be found (owner 2026-10-21, option A of
+              the mockup): a quiet row at the nav's foot, seen from every
+              section; a press opens the sheet over Settings (ADR 0082
+              amendment 2026-10-21). */}
+          <button
+            type="button"
+            className="settings-nav-foot"
+            aria-keyshortcuts={mac ? "Meta+/" : "Control+/"}
+            onClick={() => runShortcut("showShortcuts")}
+          >
+            <span>{t("settings.shortcuts")}</span>
+            <KeyCaps id="showShortcuts" decorative />
+          </button>
         </nav>
         <div className={`settings-content${active.rows ? " has-rows" : ""}`}>
           <button

@@ -1,3 +1,5 @@
+import { browserOpArg } from "@herta/core/browser-host";
+import { serverOpArg } from "@herta/core/server-host";
 import { useEffect, useMemo } from "react";
 import { opVerbOf } from "../../../shared/op-verb.js";
 import { useApprovalPending } from "../../hooks/useApprovalPending.js";
@@ -16,6 +18,7 @@ import {
   type TraceFocus,
   type TraceOp,
   type TraceScope,
+  type TraceSteer,
   traceScope,
 } from "../Workspace/trace-context.js";
 import {
@@ -31,6 +34,15 @@ const TRACE_UNMOUNT_SLACK_MS = 120;
 /** A run whose first call is being written before any of its rows landed:
  *  read as a first dispatch is, with nothing in the record yet. */
 const FRESH_DISPATCH: TraceScope = { kind: "absent" };
+
+/** What the card holds of a run: its ops, and the steers 板砖 took. */
+interface HeldRun {
+  readonly ops: readonly TraceOp[];
+  readonly steers: readonly TraceSteer[];
+}
+
+/** A run whose rows have not landed yet. */
+const NO_ROWS: HeldRun = { ops: [], steers: [] };
 
 const NO_PENDING: ReturnType<typeof pendingSteps> = {
   steps: [],
@@ -69,6 +81,7 @@ export function stepOf(
   const verb = opVerbOf(
     view.tool,
     view.tool === "str_replace_editor" && !view.streams,
+    view.summary,
   );
   if (verb === null) return null;
   const status: PendingOp["status"] = !view.done
@@ -83,7 +96,11 @@ export function stepOf(
         ? view.summary
             .replace(/^(view|create|str_replace|insert)\s*/, "")
             .trim()
-        : view.summary.trim()
+        : view.tool.startsWith("browser_")
+          ? browserOpArg(view.tool, view.summary)
+          : view.tool === "dev_server"
+            ? serverOpArg(view.summary)
+            : view.summary.trim()
       : verb === "Running"
         ? withoutWorkspaceCd(view.commandLine ?? "", workspace)
         : workspaceRelative(view.path ?? "", workspace);
@@ -216,7 +233,7 @@ export function useTraceCard(): TraceCardState {
     ? (liveSnapshot.views.find((v) => v.id === liveSnapshot.focus) ?? null)
     : null;
 
-  const [ops, setOps] = useSessionScoped<readonly TraceOp[] | null>(null);
+  const [held, setHeld] = useSessionScoped<HeldRun | null>(null);
   /** The dispatch's marker landed: the held view shows it finished. */
   const [ended, setEnded] = useSessionScoped(false);
   const [open, setOpen] = useSessionScoped(false);
@@ -230,7 +247,7 @@ export function useTraceCard(): TraceCardState {
     if (scope.kind === "trace" || hasPending) {
       retract.clear();
       unmount.clear();
-      setOps(scope.kind === "trace" ? scope.ops : []);
+      setHeld(scope.kind === "trace" ? scope : NO_ROWS);
       setEnded(false);
       setOpen(true);
       showing.current = true;
@@ -242,14 +259,23 @@ export function useTraceCard(): TraceCardState {
     // nothing is in flight anymore — and keeps the run as the record has it.
     if (scope.kind === "ended") {
       setEnded(true);
-      if (scope.ops.length > 0) setOps(scope.ops);
+      if (scope.ops.length > 0) setHeld(scope);
     }
     retract.arm(() => {
       showing.current = false;
       setOpen(false);
-      unmount.arm(() => setOps(null), CARD_SLIDE_MS + TRACE_UNMOUNT_SLACK_MS);
+      unmount.arm(() => setHeld(null), CARD_SLIDE_MS + TRACE_UNMOUNT_SLACK_MS);
     }, CARD_HOLD_MS);
-  }, [scope, hasPending, retract, unmount, setOps, setEnded, setOpen, showing]);
+  }, [
+    scope,
+    hasPending,
+    retract,
+    unmount,
+    setHeld,
+    setEnded,
+    setOpen,
+    showing,
+  ]);
 
   // The record as it is NOW while it has the dispatch in view — the live
   // one, or the one whose marker just landed — not the state copy, which
@@ -258,22 +284,23 @@ export function useTraceCard(): TraceCardState {
   // the marker, the copy drew a step long done in flight again). The copy
   // is what the held view keeps once the scope has moved on.
   const isEnded = scope.kind === "ended" || (scope.kind !== "trace" && ended);
-  const current =
-    ops === null
+  const current: HeldRun | null =
+    held === null
       ? null
       : scope.kind === "trace"
-        ? scope.ops
+        ? scope
         : scope.kind === "ended" && scope.ops.length > 0
-          ? scope.ops
-          : ops;
+          ? scope
+          : held;
   const trace = useMemo(
     () =>
       current === null
         ? null
-        : buildTrace(current, {
+        : buildTrace(current.ops, {
             pending: isEnded ? [] : pending,
             focus: isEnded ? null : focusStep,
             settled: isEnded,
+            steers: current.steers,
           }),
     [current, pending, focusStep, isEnded],
   );

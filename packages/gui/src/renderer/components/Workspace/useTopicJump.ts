@@ -1,12 +1,12 @@
 // Topic-rail jump / jump-to-index: land on a topic's anchoring user block
-// (paging older history in first when the anchor is outside the loaded
-// window), and the search-result landing that reuses it via the store's
-// pending jump. Extracted from Conversation.tsx on 2026-09-03 (owner's
+// (bringing it into the window first when it is outside: the blocks between
+// when it is near, a window of its own when it is far), and the
+// search-result landing that reuses it via the store's pending jump. Extracted from Conversation.tsx on 2026-09-03 (owner's
 // request: the file hosted five state machines). Effect: consume the pending
 // jump once the requested session is on screen.
 
 import { useCallback, useEffect } from "react";
-import type { SessionStore } from "../../store/session-store.js";
+import { type SessionStore, shownWindow } from "../../store/session-store.js";
 import type { ConversationScroll } from "./useConversationScroll.js";
 
 export function useTopicJump(opts: {
@@ -19,10 +19,15 @@ export function useTopicJump(opts: {
   const { scroll, sessionStore, reduced, pendingJump, sessionId } = opts;
 
   // ── Topic-rail jump (2026-07-12) ─────────────────────────────────────────
-  // Jump to a topic's anchoring user block. The anchor may be OLDER than the
-  // loaded window — page history in first (bounded; bails if a fetch makes
-  // no progress). Unpins up front so the prepends' append-follow effect can't
-  // yank the view to the bottom mid-jump; the jump chip is the way back down.
+  // Jump to a topic's anchoring user block. The anchor may be outside the
+  // loaded window: the store asks main for it in one call (`jumpTo`), and
+  // main answers the blocks between when that is within a window's weight,
+  // or a window around the anchor when it is not (owner 2026-11-12). Paged,
+  // a chat-heavy session took dozens of round trips (review 2026-11-05); in
+  // one slice however far, the first topic of a 6 400-turn session was a
+  // 38 MB message (review 2026-11-10, second pass). Bails if nothing
+  // arrives. Unpins up front so the append-follow effect can't yank the view
+  // to the bottom mid-jump; the chip is the way back.
   // The engine's intents and its scroll anchor are stable (useCallback with
   // fixed deps / a ref), so listing them keeps `jumpToTopic` as stable as
   // before while satisfying the exhaustive-deps rule.
@@ -35,22 +40,22 @@ export function useTopicJump(opts: {
         // switch mid-jump they acted on the NEW session: the loop paged B's
         // history (visible jank on arrival) and the poll smooth-scrolled B to
         // an arbitrary older message, fighting the entrance effect that had
-        // just pinned it. Captured identity + re-check after every await —
+        // just pinned it. Captured identity + re-check after the await —
         // the pattern handleRewind already uses.
         const jumpSessionId = sessionStore.getSnapshot().sessionId;
         releasePin();
-        let guard = 0;
-        while (
-          sessionStore.getSnapshot().recordStart > anchorIndex &&
-          guard < 60
+        const shown = shownWindow(sessionStore.getSnapshot());
+        // A window shown in the old one's place has nothing to glide
+        // across: the row is simply where the reader now is.
+        let swapped = false;
+        if (
+          anchorIndex < shown.start ||
+          anchorIndex >= shown.start + shown.record.length
         ) {
-          guard += 1;
-          const before = sessionStore.getSnapshot().recordStart;
-          await sessionStore.loadOlderBlocks(
-            Math.min(500, before - anchorIndex),
-          );
+          const how = await sessionStore.jumpTo(anchorIndex);
           if (sessionStore.getSnapshot().sessionId !== jumpSessionId) return;
-          if (sessionStore.getSnapshot().recordStart >= before) return; // no progress — bail
+          if (how === null) return;
+          swapped = how === "replaced";
         }
         // Scroll once the anchor row exists: immediately when it is already
         // in the DOM (the common in-window case), else poll briefly for the
@@ -70,7 +75,7 @@ export function useTopicJump(opts: {
           if (el !== null && el !== undefined) {
             el.scrollIntoView({
               block: "start",
-              behavior: reduced ? "auto" : "smooth",
+              behavior: reduced || swapped ? "auto" : "smooth",
             });
             return;
           }
@@ -87,7 +92,7 @@ export function useTopicJump(opts: {
   // Search-result landing (2026-07-27): a sidebar card that matched by CONTENT
   // asks, via the store, to land on the matched turn instead of the latest —
   // the search knew the moment and the open used to throw it away. Reuses the
-  // topic jump wholesale: it already pages older blocks in, waits for the row
+  // topic jump wholesale: it already brings older blocks in, waits for the row
   // to commit, and bails on a session switch. Consumed once, then cleared, so
   // a later record change cannot re-fire it.
   useEffect(() => {

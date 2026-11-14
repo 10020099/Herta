@@ -2,7 +2,8 @@ import { forwardRef, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { attachmentImageUrl } from "../../../shared/attachment-image.js";
 import { renderBanzhuanText } from "../../lib/banzhuan-text.js";
-import type { UserImageView } from "./UserBubble.js";
+import { type MessagePick, renderMentionText } from "../../lib/mention-text.js";
+import { UserBubbleBody, type UserImageView } from "./UserBubble.js";
 
 export interface MorphCloneProps {
   readonly overlay: RefObject<HTMLDivElement>;
@@ -22,6 +23,10 @@ export interface MorphCloneProps {
    *  like the one it swaps for (a max-content strip laid three pictures in
    *  one oversized line while the row wrapped them into two). */
   readonly imagesWidthPx?: number;
+  /** Mentioned paths, drawn as chips like the row it lands on. */
+  readonly mentions?: readonly string[];
+  /** Picked page elements, drawn as chips like the row it lands on. */
+  readonly picks?: readonly MessagePick[];
 }
 
 /** A floating bubble copy rendered into the workspace morph overlay,
@@ -67,9 +72,29 @@ export const MorphClone = forwardRef<HTMLDivElement, MorphCloneProps>(
             ))}
           </div>
         )}
-        <div className="message-text">
-          {renderBanzhuanText(props.text, "bubble", props.lang)}
-        </div>
+        {props.variant === "user" ? (
+          // The landed bubble's own body: its quotes as cards, not as the
+          // header-and-fence text the message carries.
+          <UserBubbleBody
+            text={props.text}
+            lang={props.lang}
+            mentions={props.mentions}
+            picks={props.picks}
+            inert
+          />
+        ) : (
+          <div className="message-text">
+            {renderMentionText(
+              props.text,
+              props.mentions,
+              (segment) => renderBanzhuanText(segment, "bubble", props.lang),
+              undefined,
+              props.picks !== undefined
+                ? { list: props.picks, lang: props.lang }
+                : undefined,
+            )}
+          </div>
+        )}
       </div>,
       props.overlay.current,
     );

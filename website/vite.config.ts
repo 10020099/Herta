@@ -68,6 +68,28 @@ export default defineConfig({
           "src/assets/herta-station-icon-night.webp",
         ),
       },
+      // Flow's avatar (ADR 0084) is a 192² 47 KB PNG in the app, shown at
+      // 32 CSS px under each post; a 96² WebP twin (2 KB) at the import.
+      {
+        find: /^.*\/assets\/herta-flow-avatar\.png$/,
+        replacement: resolve(__dirname, "src/assets/herta-flow-avatar.webp"),
+      },
+      // The Trailblazer's two (ADR 0085), the same: 192² PNGs in the app, 18
+      // CSS px on a steer row and 32 in Settings, 96² WebP twins here.
+      {
+        find: /^.*\/assets\/trailblazer-avatar-female\.png$/,
+        replacement: resolve(
+          __dirname,
+          "src/assets/trailblazer-avatar-female.webp",
+        ),
+      },
+      {
+        find: /^.*\/assets\/trailblazer-avatar-male\.png$/,
+        replacement: resolve(
+          __dirname,
+          "src/assets/trailblazer-avatar-male.webp",
+        ),
+      },
       // No 3D on the site (owner 2026-09-10): the real scene's import alone
       // emitted the three.js chunk and the Basis transcoder (~1.7 MB) into
       // every deploy. A stub takes the import and shows a PICTURE of the

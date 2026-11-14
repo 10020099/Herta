@@ -236,6 +236,51 @@ describe("NarrativeRenderer — EN system-block localization", () => {
     );
   });
 
+  // Owner 2026-11-13: the last test run decides how the roll-up reads.
+  it("recomposes a run that went red, was fixed and went green as passed", () => {
+    const { out, r } = mkEn();
+    r.update([
+      {
+        kind: "system",
+        label: "差分协处理器",
+        body: "完成 · 1 个文件 · 测试通过（此前失败 1 次）",
+        role: "done-marker",
+        markerSummary: {
+          kind: "done",
+          state: "completed",
+          fileCount: 1,
+          tests: { passed: 1, failed: 1, last: "passed" },
+          riskCount: 0,
+        },
+      },
+    ]);
+    expect(out.full()).toBe(
+      "→ Coprocessor\n  Done · 1 file · tests passed (1 failed run before)\n",
+    );
+  });
+
+  it("recomposes a run whose last test run failed as failed", () => {
+    const { out, r } = mkEn();
+    r.update([
+      {
+        kind: "system",
+        label: "差分协处理器",
+        body: "部分完成 · 测试失败（3 次中 2 次）",
+        role: "done-marker",
+        markerSummary: {
+          kind: "done",
+          state: "partial",
+          fileCount: 0,
+          tests: { passed: 1, failed: 2, last: "failed" },
+          riskCount: 0,
+        },
+      },
+    ]);
+    expect(out.full()).toBe(
+      "→ Coprocessor\n  Partial · tests failed (2 of 3 runs)\n",
+    );
+  });
+
   it("localizes the noop-marker body", () => {
     const { out, r } = mkEn();
     r.update([
@@ -1852,7 +1897,9 @@ describe("NarrativeRenderer — EN word-pacing + Brick alias (lang 'en')", () =>
     );
   });
 
-  it("keeps a backticked `@板砖` quotation verbatim in an EN committed block", () => {
+  // It printed the wire token until the owner's report of 2026-11-13: a
+  // dispatch past the budget is committed quoted, and read `@板砖` in English.
+  it("a backticked `@板砖` stays a quotation and reads `@Brick` in an EN committed block", () => {
     const { out, r } = mkEn(false);
     r.update([
       {
@@ -1861,7 +1908,9 @@ describe("NarrativeRenderer — EN word-pacing + Brick alias (lang 'en')", () =>
         text: "the token is `@板砖`, but say @板砖 to use it",
       },
     ]);
-    expect(out.full()).toBe("the token is `@板砖`, but say @Brick to use it\n");
+    expect(out.full()).toBe(
+      "the token is `@Brick`, but say @Brick to use it\n",
+    );
   });
 
   it("slow-stream keeps a fenced 板砖 verbatim (aliased ONCE before the split)", async () => {
@@ -2035,6 +2084,32 @@ describe("NarrativeRenderer — a beat is paced like the reply on a TTY (owner 2
     second.r.streamHertaToken("半句");
     second.r.cancelStream();
     expect(second.out.full()).toBe("半句\n");
+  });
+
+  it("past the desktop's 18 s ceiling the rest lands at once (release review 2026-10-13)", async () => {
+    // With the supervisor off the whole reply rides this lane, and nothing
+    // sped its end: 1 500 characters took about 150 s.
+    const { out, r } = mkTty();
+    const LONG = "慢".repeat(600);
+    fireBeat(r, LONG, recordWith(LONG).slice(0, 2));
+    let done = false;
+    void r.settled().then(() => {
+      done = true;
+    });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(done).toBe(false);
+    await vi.advanceTimersByTimeAsync(9_000);
+    expect(done).toBe(true);
+    expect(out.full()).toBe(`${LONG}\n→ 差分协处理器\n  Running node --test\n`);
+  });
+
+  it("landReveal lands a reveal still running, for the REPL's Ctrl+C", async () => {
+    const { out, r } = mkTty();
+    fireBeat(r, BEAT, recordWith(BEAT).slice(0, 2));
+    await vi.advanceTimersByTimeAsync(TICK * 2);
+    r.landReveal();
+    expect(out.full()).toBe(`${BEAT}\n→ 差分协处理器\n  Running node --test\n`);
+    await r.settled();
   });
 
   it("non-TTY output keeps the raw writes", () => {

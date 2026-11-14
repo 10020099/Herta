@@ -4,7 +4,7 @@
  * Full @板砖 dispatch path:
  *   submitText("写一行到 a.ts")
  *     → actor emits herta block containing @板砖
- *     → backend bridge fires → backend calls write_new_file
+ *     → backend bridge fires → backend calls the editor's create
  *     → RulePermissionEngine.check() → OverlayAskResolver.present() suspends
  *     → OverlayEvent { kind: "pending" } emitted
  *     → test resolves allow → backend writes a.ts
@@ -13,9 +13,10 @@
  *
  * Assertions:
  *   - Record sequence: user block, herta(thought), herta(@板砖) block, system
- *     blocks (差分协处理器 + 系统), herta(beat), herta(thought), herta(verdict)
- *     block — every main-loop speech is preceded by its thought (the
- *     always-think rhythm, 2026-09-03).
+ *     blocks (系统 + 差分协处理器), herta(thought), herta(verdict) block —
+ *     every main-loop speech is preceded by its thought (the always-think
+ *     rhythm, 2026-09-03). No beat: a diff is progress, not a checkpoint
+ *     (ADR 0085 step 4).
  *   - Exactly one OverlayEvent pending + one resolved.
  *   - TurnLifecycle started then finished (no failed).
  *   - JSONL on disk: header + one line per block committed by submitText.
@@ -28,10 +29,17 @@
  *   - Each block is emitted exactly once — no double-emission window.
  */
 
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readUndoIndex, undoSegments, undoStoreDir } from "@herta/core";
+import { findBash } from "@herta/tools";
 import { describe, expect, it } from "vitest";
 import { SessionImpl } from "./session.js";
 import {
@@ -58,7 +66,7 @@ function throwingCompletionProvider(): {
 }
 
 function mkConfig(): AppServerConfig {
-  const root = mkdtempSync(join(tmpdir(), "herta-e2e-test-"));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "herta-e2e-test-")));
   return {
     workspaceRoot: root,
     transcriptDir: join(root, ".herta", "transcript", "v2"),
@@ -77,15 +85,15 @@ function mkConfig(): AppServerConfig {
 /**
  * Build a fully-wired SessionImpl for the e2e test.
  *
- * Actor (completion) provider — three scripted speeches; the thought prompt
+ * Actor (completion) provider — two scripted speeches; the thought prompt
  * ahead of each main-loop speech is auto-answered by the stub:
  *   Speech 1: Herta's first speech contains @板砖, triggering the bridge.
- *   Speech 2: the in-turn beat the bridge fires on patch.preview.
- *   Speech 3: After the bridge completes, Herta emits a verdict.
+ *   Speech 2: After the bridge completes, Herta emits a verdict. The patch
+ *             preview earns no beat (ADR 0085 step 4: checkpoints only).
  *
  * Backend (chat) provider — two scripted turns:
- *   Turn 1: write_new_file tool call for a.ts. This hits the
- *           RulePermissionEngine (registerWriteNewFileRule is set up by
+ *   Turn 1: the editor's `create` for a.ts. This hits the
+ *           RulePermissionEngine (the editor's rule is set up by
  *           SessionImpl.create), which emits patch.preview on the bus and
  *           returns kind:"ask". The OverlayAskResolver suspends until the
  *           test calls resolveApproval.
@@ -121,14 +129,9 @@ async function mkE2eSession(
   // Actor: completion provider. The prompt forces the surface (`（我 想）` for
   // the thought phase, `（我 说）` for the speech), so a script is just the
   // body plus its close tag. @板砖 inside the first speech body triggers
-  // invokeBanzhuanBridge. The second script is the beat fired by the
-  // BeatPolicy when it sees the patch.preview event. The third is the verdict.
-  //
-  // Beat ordering (per BeatPolicy rules): the write_new_file permission rule
-  // emits patch.preview on the bus before returning kind:"ask". The drain
-  // task in invokeBanzhuanBridge picks this up and fires a beat via
-  // makeFireBeat (a speech-surface prompt, no thought). After the bridge
-  // completes, the main loop thinks again and speaks the verdict.
+  // invokeBanzhuanBridge. The second is the verdict: the editor's
+  // rule's patch.preview is progress, and earns no beat (ADR 0085 step 4).
+  // After the bridge completes, the main loop thinks again and speaks it.
   const actorStub = stubCompletionProvider([
     {
       // Speech 1: Herta delegates to 板砖.
@@ -136,20 +139,14 @@ async function mkE2eSession(
       stopReason: "stop",
     },
     {
-      // Speech 2: In-turn beat triggered by patch.preview event.
-      // Beats are always speech surface. Short one-liner reaction.
-      deltas: ["一行代码，看起来没问题。（/我 说）"],
-      stopReason: "stop",
-    },
-    {
-      // Speech 3: Main loop verdict after bridge completes.
+      // Speech 2: Main loop verdict after bridge completes.
       deltas: ["写完了，一行加进去了。（/我 说）"],
       stopReason: "stop",
     },
   ]);
 
   // Backend: chat provider.
-  // Turn 1: model calls write_new_file. The permission rule fires (ask),
+  // Turn 1: model calls the editor's create. The permission rule fires (ask),
   //         bridge suspends at OverlayAskResolver.present().
   // Turn 2: after approval, model says done.
   const backendStub = stubChatProvider([
@@ -159,8 +156,12 @@ async function mkE2eSession(
           type: "tool-call-request",
           call: (opts.backendCall as never) ?? {
             id: "wf1",
-            tool: "write_new_file",
-            input: { path: "a.ts", content: "export const a = 1;\n" },
+            tool: "str_replace_editor",
+            input: {
+              command: "create",
+              path: join(cfg.workspaceRoot, "a.ts"),
+              file_text: "export const a = 1;\n",
+            },
           },
         },
         { type: "finish", reason: "tool_calls" },
@@ -352,7 +353,7 @@ describe("failed turn — record re-alignment (audit 2026-07-24, H1)", () => {
 
 describe("@herta/app-server — the dispatch's writes reach the session's undo store (ADR 0074 §1)", () => {
   it(
-    "the scripted write_new_file is kept under a segment named by the record length at dispatch",
+    "the scripted create is kept under a segment named by the record length at dispatch",
     async () => {
       const cfg = mkConfig();
       const { session, cleanup } = await mkE2eSession(cfg);
@@ -673,12 +674,11 @@ describe("@herta/app-server — end-to-end scripted turn", () => {
       // Each block in result.record is emitted exactly once via
       // BusActorStreamingSink.flushBlocks in canonical order.
       //
-      // The actor speaks 3 times per turn (the two main-loop speeches are each
-      // preceded by an auto-answered thought; the beat has none):
+      // The actor speaks twice per turn, each speech preceded by an
+      // auto-answered thought — no beat on the diff (ADR 0085 step 4):
       //   Speech 1: @板砖 dispatch
-      //   Speech 2: in-turn beat (triggered by patch.preview BeatPolicy rule)
-      //   Speech 3: verdict
-      // So we wait for 3 herta SPEECH blocks in the record stream.
+      //   Speech 2: verdict
+      // So we wait for 2 herta SPEECH blocks in the record stream.
       const isSpeechEvent = (e: RecordEvent): boolean =>
         e.kind === "block" &&
         e.block.kind === "herta" &&
@@ -688,12 +688,12 @@ describe("@herta/app-server — end-to-end scripted turn", () => {
       const recordConsumer = (async () => {
         for await (const ev of session.subscribeRecord()) {
           recordEvents.push(ev);
-          // Verdict is the third herta speech block in the stream
-          // (dispatch + beat + verdict); thought blocks stream too but do
-          // not count toward it.
+          // Verdict is the second herta speech block in the stream
+          // (dispatch + verdict); thought blocks stream too but do not count
+          // toward it.
           if (
             isSpeechEvent(ev) &&
-            recordEvents.filter(isSpeechEvent).length >= 3
+            recordEvents.filter(isSpeechEvent).length >= 2
           ) {
             verdictSeen = true;
             break;
@@ -759,16 +759,16 @@ describe("@herta/app-server — end-to-end scripted turn", () => {
       // projected exactly once, in canonical order, by BusActorStreamingSink
       // .flushBlocks during the turn. Canonical order for this scripted turn:
       //   user → herta(thought) → herta(@板砖) → 系统(patch preview)
-      //        → 差分协处理器(Writing) → herta(beat) → 差分协处理器(done-marker)
+      //        → 差分协处理器(Writing) → 差分协处理器(done-marker)
       //        → herta(thought) → herta(verdict)
       const blockEvents = recordEvents.filter(
         (e): e is Extract<RecordEvent, { kind: "block" }> => e.kind === "block",
       );
       const blocks = blockEvents.map((e) => e.block);
 
-      // Exactly 9 blocks in the stream — canonical order, no duplicates.
-      // (1 user + 2 thoughts + 3 speeches + 3 system.)
-      expect(blocks).toHaveLength(9);
+      // Exactly 8 blocks in the stream — canonical order, no duplicates.
+      // (1 user + 2 thoughts + 2 speeches + 3 system.)
+      expect(blocks).toHaveLength(8);
 
       const userBlocks = blocks.filter((b) => b.kind === "user");
       const thoughtBlocks = blocks.filter(
@@ -780,7 +780,7 @@ describe("@herta/app-server — end-to-end scripted turn", () => {
       const systemBlocks = blocks.filter((b) => b.kind === "system");
       expect(userBlocks).toHaveLength(1);
       expect(thoughtBlocks).toHaveLength(2);
-      expect(speechBlocks).toHaveLength(3);
+      expect(speechBlocks).toHaveLength(2);
       expect(systemBlocks).toHaveLength(3);
 
       // Dispatch block: first speech block, contains @板砖.
@@ -853,10 +853,10 @@ describe("@herta/app-server — end-to-end scripted turn", () => {
 
       // ── JSONL on disk ────────────────────────────────────────────────────
       // The JSONL is written by the driver (persister.appendBlock) as each
-      // block is appended during the turn — 9 blocks total:
+      // block is appended during the turn — 8 blocks total:
       // user + herta(thought) + herta(@板砖) + system(系统/patch-preview) +
-      // system(差分协处理器/Writing) + herta(beat) +
-      // system(差分协处理器/done-marker) + herta(thought) + herta(verdict).
+      // system(差分协处理器/Writing) + system(差分协处理器/done-marker) +
+      // herta(thought) + herta(verdict).
       // The done-marker is appended by invokeBanzhuanBridge at the end of the
       // backend run (after drainTask, before the actor's post-bridge verdict)
       // and is persisted like any other system block. The file also has a
@@ -871,7 +871,7 @@ describe("@herta/app-server — end-to-end scripted turn", () => {
       const blockLines = jsonlLines.filter(
         (l) => (JSON.parse(l) as { _kind?: string })._kind === undefined,
       );
-      expect(blockLines).toHaveLength(9);
+      expect(blockLines).toHaveLength(8);
       expect(
         jsonlLines.filter(
           (l) => (JSON.parse(l) as { _kind?: string })._kind === "turn_end",
@@ -901,23 +901,15 @@ describe("@herta/app-server — end-to-end scripted turn", () => {
 
       // Canonical block ordering for this scenario:
       //   user → herta(thought) → herta(@板砖) → 系统(patch preview) →
-      //   差分协处理器(Writing) → herta(beat) → 差分协处理器(done-marker) →
+      //   差分协处理器(Writing) → 差分协处理器(done-marker) →
       //   herta(thought) → herta(verdict)
-      // The 系统 patch preview fires BEFORE the write_new_file permission
-      // resolves (the rule emits patch.preview as part of its ask phase), and
-      // the BeatPolicy classifies patch.preview as a beat trigger. But the beat
-      // is DEFERRED past the permission prompt (the bridge's two-phase drain
-      // never streams a beat while a permission is pending), so it fires only
-      // after the user approves and the tool runs — i.e. AFTER the 差分协处理器
-      // Writing block, not before it. This is the fix for the beat/prompt
-      // ordering bug: pre-fix the beat landed before Writing (and raced the
-      // [y/a/N] prompt on stdout in the CLI).
-      //
-      // The 差分协处理器 done-marker is appended by invokeBanzhuanBridge at the
-      // END of the backend run (after drainTask drains the deferred beat),
-      // BEFORE the actor's post-bridge loop thinks again and emits the verdict
-      // herta block — so it lands between the beat and the verdict's thought
-      // (index 6), not at the tail.
+      // The 系统 patch preview lands BEFORE the write's permission
+      // resolves (the rule emits patch.preview as part of its ask phase). It
+      // earns no beat (ADR 0085 step 4: a diff is progress, not a checkpoint),
+      // so nothing of hers lands while the approval waits. The done-marker
+      // is appended by invokeBanzhuanBridge at the END of the backend run,
+      // BEFORE the actor's post-bridge loop thinks again and speaks the
+      // verdict.
       const recordKinds = sessionRecord.map((b) => ({
         kind: b.kind,
         label: b.kind === "system" ? b.label : undefined,
@@ -939,7 +931,6 @@ describe("@herta/app-server — end-to-end scripted turn", () => {
         herta("speech"),
         system("系统"),
         system("差分协处理器"),
-        herta("speech"),
         system("差分协处理器"),
         herta("thought"),
         herta("speech"),
@@ -968,7 +959,10 @@ describe("@herta/app-server — end-to-end scripted turn", () => {
 });
 
 describe("@herta/app-server — the automatic reviewer reads this turn's message (ADR 0075)", () => {
-  it(
+  // The one test here that runs a command, so the one that needs a real
+  // bash on the machine (ADR 0086). The others only write, and the editor
+  // starts no shell.
+  it.skipIf(findBash() === null)(
     "an opted-in workspace's command is reviewed with the message the turn answers, and settles with no card",
     async () => {
       const cfg = mkConfig();
@@ -996,8 +990,8 @@ describe("@herta/app-server — the automatic reviewer reads this turn's message
       const { session, cleanup } = await mkE2eSession(cfg, {
         backendCall: {
           id: "rc1",
-          tool: "run_command",
-          input: { argv: ["node", "-e", "console.log(6*7)"] },
+          tool: "bash",
+          input: { command: "node -e 'console.log(6*7)'" },
         },
         review,
       });

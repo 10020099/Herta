@@ -1,24 +1,32 @@
 // The in-turn beat firer (`makeFireBeat`) — one factory shared by the
 // user-typed `@板砖` pre-empt and the main loop's Herta-`@板砖` dispatch.
 // Extracted from actor-turn.ts on 2026-09-03 (owner's request: the file had
-// grown to 3,200 lines); bodies and comments are verbatim.
+// grown to 3,200 lines); bodies and comments are verbatim. Her answer to talk
+// during a run (`makeFireAnswer`, ADR 0085 step 3) streams the same way.
 
 import { selectBeatHint } from "./actor-hints.js";
 import { type ActorPrompt, serializeActorPrompt } from "./actor-prompt.js";
 import type { ActorTurnDeps } from "./actor-turn-deps.js";
+import { judgeTriggerAndNeutralize } from "./actor-turn-judges.js";
 import { resolveHints } from "./actor-turn-prompts.js";
 import {
   firstStopIndexAtLineStart,
+  MAX_SPEECH_CONTINUATIONS,
   STOP_CLOSER_USER,
   STOP_OPENER_USER,
   STOP_PAGE_HEADING,
   STOP_PAGE_RULE,
   safeEmitBoundaryAtLineStart,
 } from "./actor-turn-stream.js";
-import type { BeatFirer } from "./backend-bridge.js";
+import type { AnswerFirer, BeatFirer } from "./backend-bridge.js";
 import { isPlaceholderOnly, stripHintScaffolding } from "./block-shape.js";
 import { sanitizeActorText } from "./escape.js";
-import { neutralizeBanzhuanTrigger } from "./parse.js";
+import {
+  banzhuanSentences,
+  neutralizeBanzhuanTrigger,
+  parseHertaBlock,
+  withoutBanzhuanSentences,
+} from "./parse.js";
 import { FORCED_SPEECH_OPEN_TAG, STOP_SPEECH_CLOSE } from "./thought-hint.js";
 
 /**
@@ -89,25 +97,179 @@ export function makeFireBeat(
     const beatPrompt = serializeActorPrompt(beatDoc);
     deps.onPrompt?.("beat", beatPrompt);
     deps.onCompletionPrompt?.(beatPrompt);
+    const text = await streamInRunSpeech(deps, beatPrompt, abortSignal, 220);
+    if (text === null) return null;
+    // Slice 6: beats bypass the supervisor BY DESIGN (a full pass mid-run
+    // costs a round-trip exactly where latency shows), so the deterministic
+    // guards do the work instead:
+    //   - sanitizeActorText neutralizes forged evidence labels / cross-role
+    //     delimiters and strips control/bidi chars (the beat lane previously
+    //     applied ZERO sanitization — the last unguarded path into the
+    //     durable record);
+    //   - neutralizeBanzhuanTrigger: a beat must NEVER carry a live dispatch
+    //     token — the bridge only fires from main-loop speech, but a live
+    //     @板砖 in a committed beat renders a dispatch chip for a run that
+    //     never happened and teaches tomorrow's prompts the wrong pattern.
+    // The live beat display may briefly show the pre-neutralized token; the
+    // commit settles it — same accepted one-char settle as the main loop's
+    // cap-suppressed trigger.
+    return {
+      kind: "herta",
+      surface: "speech",
+      text: neutralizeBanzhuanTrigger(
+        sanitizeActorText(text, { role: "speech" }),
+      ),
+    };
+  };
+}
 
-    let beatBuffered = "";
-    let beatEmittedTail = 0;
-    let beginCalled = false; // deferred until first emit
-    const beatStops = [
-      STOP_SPEECH_CLOSE,
-      STOP_OPENER_USER,
-      STOP_CLOSER_USER,
-      // A beat can turn the page too (ADR 0070); its token cap only bounds
-      // how much of the page it writes.
-      STOP_PAGE_HEADING,
-      STOP_PAGE_RULE,
-    ] as const;
+/**
+ * Her answer to talk while 板砖 works (ADR 0085 step 3): one completion over
+ * the record as it stands — the run in its live form, the talk after it —
+ * streamed like a beat, committed as a `duringRun` speech. Its hint is its
+ * own (`beat_talk`, step 5): under the speech hint, which asks for a thought
+ * the answer does not have, the lab's answers passed work on without @板砖
+ * and once made up a fact.
+ *
+ * Her live `@板砖` in it is a steer, not a dispatch (§4): the trigger recheck
+ * gates a rhetorical one exactly as it gates the main loop's, and one nobody
+ * asked for (2026-11-06), and takes the sentence out when it refuses. A real
+ * one hands 板砖 the sentences that carry it (owner 2026-11-04: the sentence,
+ * not the reply). The token stays live in her text — she did call 板砖 — and
+ * the block names what reached it.
+ */
+export function makeFireAnswer(
+  deps: ActorTurnDeps,
+  priorTurnLength: number,
+  recap: string | undefined,
+  recapBoundaryIndex: number,
+): AnswerFirer {
+  return async (currentRecord, abortSignal, canSteer) => {
+    const answerDoc: ActorPrompt = {
+      staticPrefix: deps.staticPrefix,
+      record: currentRecord,
+      priorTurnLength,
+      attachedMetaThink: deps.attachedMetaThink,
+      metaThinkSurface: "speech",
+      formatHint: selectBeatHint(resolveHints(deps), "talk"),
+      openTag: FORCED_SPEECH_OPEN_TAG,
+      // Her view of a live run with talk after it is the live form
+      // (`run-grouping.ts`); the beat's fresh-window treatment covers the
+      // rest exactly as for a beat.
+      verbatimSinceLastDispatch: true,
+      ...(recap !== undefined ? { recap } : {}),
+      recapBoundaryIndex,
+      lang: deps.lang ?? "zh",
+    };
+    const prompt = serializeActorPrompt(answerDoc);
+    // The beat's dump lane: an in-run completion, told apart by its prompt.
+    deps.onPrompt?.("beat", prompt);
+    deps.onCompletionPrompt?.(prompt);
+    // A reply, so one cut at its cap is continued as her speech is (owner
+    // 2026-11-12); a beat is not.
+    const raw = await streamInRunSpeech(
+      deps,
+      prompt,
+      abortSignal,
+      600,
+      MAX_SPEECH_CONTINUATIONS,
+    );
+    if (raw === null) return null;
+    let text = sanitizeActorText(raw, { role: "speech" });
+    let steered = "";
+    if (parseHertaBlock(text).hasBanzhuanTrigger) {
+      // Only a run that can still take a steer, and only a call the recheck
+      // lets stand; anything else is a mention.
+      // With no supervisor the call stands as written, as a main-loop
+      // dispatch does: the toggle is the main loop's own test.
+      const supervisorProvider = deps.supervisorProvider;
+      const supervised =
+        supervisorProvider !== undefined &&
+        deps.supervisorReference !== undefined &&
+        deps.supervisorReference.length > 0;
+      let judged = { text };
+      if (!canSteer()) {
+        judged = { text: neutralizeBanzhuanTrigger(text) };
+      } else if (supervised) {
+        try {
+          judged = await judgeTriggerAndNeutralize({
+            deps,
+            supervisorProvider,
+            signal: abortSignal,
+            record: currentRecord,
+            candidate: text,
+            thought: undefined,
+            duringRun: true,
+          });
+          // Refused: the sentence goes, not just the token. It is addressed
+          // to 板砖, so as a mention it would stand on his screen as an
+          // instruction nobody received. An answer that was only that
+          // sentence keeps it as the mention: she has to answer something.
+          if (judged.text !== text) {
+            const rest = withoutBanzhuanSentences(text);
+            if (rest.length > 0) judged = { text: rest };
+          }
+        } catch (err) {
+          // Stopped during the recheck, with the answer already on screen
+          // and its stream closed: it stands, screen == record, as a mention
+          // (review 2026-11-05). The recheck fails soft on everything else.
+          if (!abortSignal.aborted) throw err;
+          judged = { text: neutralizeBanzhuanTrigger(text) };
+        }
+      }
+      text = sanitizeActorText(judged.text, { role: "speech" });
+      // The run may have ended while the recheck ran.
+      if (canSteer()) steered = banzhuanSentences(text);
+      else text = neutralizeBanzhuanTrigger(text);
+    }
+    return {
+      kind: "herta",
+      surface: "speech",
+      text,
+      duringRun: true,
+      ...(steered.length > 0 ? { steered } : {}),
+    };
+  };
+}
 
-    try {
+/**
+ * One in-run speech, streamed: a beat's or an answer's. Returns the text to
+ * commit (trimmed, or raw when trimming would empty what was already shown),
+ * or null when nothing should be committed. Every stream it opens it closes.
+ *
+ * `continuations`: how many times a speech cut at `maxTokens` is written on
+ * from its last character — the block so far goes onto the end of the prompt
+ * and the next completion continues it, as the main loop does for her speech
+ * (`MAX_SPEECH_CONTINUATIONS`). Zero for a beat.
+ */
+async function streamInRunSpeech(
+  deps: ActorTurnDeps,
+  beatPrompt: string,
+  abortSignal: AbortSignal,
+  maxTokens: number,
+  continuations = 0,
+): Promise<string | null> {
+  let beatBuffered = "";
+  let beatEmittedTail = 0;
+  let beginCalled = false; // deferred until first emit
+  const beatStops = [
+    STOP_SPEECH_CLOSE,
+    STOP_OPENER_USER,
+    STOP_CLOSER_USER,
+    // A beat can turn the page too (ADR 0070); its token cap only bounds
+    // how much of the page it writes.
+    STOP_PAGE_HEADING,
+    STOP_PAGE_RULE,
+  ] as const;
+
+  try {
+    for (let pass = 0; ; pass += 1) {
+      let cutAtCap = false;
       for await (const ev of deps.provider.streamCompletion(
         {
           model: deps.model,
-          prompt: beatPrompt,
+          // On a later pass the speech so far is the end of the prompt.
+          prompt: `${beatPrompt}${beatBuffered}`,
           // Beats are short reactive utterances; they don't carry
           // inline tool calls in practice. If a beat ever DID emit one
           // we'd lack the parallel-supervisor coordination that the
@@ -128,7 +290,8 @@ export function makeFireBeat(
           // History: 60 was too tight (truncated the marker), then 100. Kept as
           // a guard so a misbehaving beat can't run to DeepSeek's ~4096 default
           // mid-backend-work — beats stay short by design, not just by hint.
-          maxTokens: 220,
+          // An answer to talk is a reply, not a reaction: 600.
+          maxTokens,
         },
         abortSignal,
       )) {
@@ -155,139 +318,133 @@ export function makeFireBeat(
               beatEmittedTail = safeEnd;
             }
           }
+          // A continuation that has closed the block is done: the provider
+          // stops at a marker it writes whole, and cannot see one whose start
+          // was in the prompt.
+          if (
+            pass > 0 &&
+            firstStopIndexAtLineStart(beatBuffered, beatStops) <
+              beatBuffered.length
+          ) {
+            break;
+          }
         } else if (ev.type === "finish") {
+          cutAtCap = ev.reason === "length";
           break;
         }
       }
-    } catch (err) {
-      // Beat stream died mid-flight (interrupt, provider error). If nothing
-      // reached the sink the beat can be dropped cleanly — rethrow and let
-      // the bridge's fire-loop catch handle it (drop / abort-clear). But if
-      // tokens WERE emitted the stream MUST settle here: begin-without-end
-      // leaks streamingSurface across turns (wrong flush offsets), while
-      // end-without-a-committed-block desyncs the sink cursor from the
-      // record (endHertaStream claims a record position, per the sink
-      // contract). So salvage: end the stream and commit exactly the text
-      // already on screen as the beat block — screen == record, the same
-      // convergence rule the interrupt path applies to backend blocks
-      // (hang audit 2026-07-09, M1).
-      if (!beginCalled) throw err;
-      deps.sink?.endHertaStream();
-      const salvaged = beatBuffered.slice(0, beatEmittedTail);
-      deps.onPrompt?.(
-        "beat-out",
-        `${beatPrompt}${salvaged}[salvaged: ${String(err)}]`,
-      );
-      const trimmedSalvage = salvaged.trim();
-      return {
-        kind: "herta",
-        surface: "speech",
-        text: neutralizeBanzhuanTrigger(
-          sanitizeActorText(
-            trimmedSalvage.length > 0 ? trimmedSalvage : salvaged,
-            { role: "speech" },
-          ),
-        ),
-      };
-    }
-
-    // Cut exactly at the FIRST complete stop marker when one exists
-    // (matching the live emit cap — see consumePhaseTwoStream; prose ending
-    // in `（` right before the marker survives), else strip a DANGLING
-    // partial prefix (a trailing `（/` from a beat truncated mid-marker —
-    // still possible even at `maxTokens: 220`; the `.trim()` at commit
-    // removes only whitespace, not the leaked prefix).
-    const beatStopIdx = firstStopIndexAtLineStart(beatBuffered, beatStops);
-    let beatText =
-      beatStopIdx < beatBuffered.length
-        ? beatBuffered.slice(0, beatStopIdx)
-        : beatBuffered.slice(
-            0,
-            safeEmitBoundaryAtLineStart(beatBuffered, beatStops),
-          );
-    deps.onPrompt?.("beat-out", `${beatPrompt}${beatText}`);
-
-    // Beats carry bracketed hints too (beat_verification / beat_patch_preview
-    // / beat_tool_fail), so the same echo is possible here. Repair before the
-    // slot check below, for the same ordering reason as runPhaseTwo — but
-    // ONLY while nothing has streamed (review 2026-08-12): `beatEmittedTail`
-    // indexes into the RAW text, so shortening beatText after live emission
-    // would make the tail-flush below slice the wrong substring (or skip a
-    // tail it still owes) and desync screen from record — the exact
-    // invariant the `!beginCalled` guard on the slot check protects. An
-    // echoing beat that already streamed keeps today's behaviour: committed
-    // exactly as shown, brackets and all — screen == record wins.
-    // (beginCalled === false implies beatEmittedTail === 0: the streaming
-    // loop sets beginCalled before its first emit.)
-    if (!beginCalled) beatText = stripHintScaffolding(beatText);
-
-    // Slot-only beat (2026-08-12). This lane bypasses the supervisor BY
-    // DESIGN (see the commit comment below), so the deterministic guards are
-    // the only thing standing between a degenerate completion and the record
-    // — exactly the argument that already justifies sanitize and trigger
-    // neutralization here.
-    //
-    // Guarded on `!beginCalled`: beats stream LIVE, so once tokens have
-    // reached the sink the cursor has advanced and a block MUST be committed
-    // at that position — dropping it then would desync screen from record,
-    // which is the worse bug the salvage path above exists to prevent. When
-    // nothing has been emitted yet (the safe-emit gate held the whole short
-    // beat, the common case) the beat can be dropped cleanly, same as the
-    // empty case below.
-    if (!beginCalled && isPlaceholderOnly(beatText)) {
-      return null;
-    }
-
-    if (deps.sink !== undefined && beatEmittedTail < beatText.length) {
-      // Flush any tail that wasn't emitted during the streaming loop.
-      if (!beginCalled) {
-        deps.sink.beginHertaStream("speech");
-        beginCalled = true;
+      if (!cutAtCap || pass >= continuations) break;
+      // Closed already: the cap caught only what a provider wrote past it.
+      if (
+        firstStopIndexAtLineStart(beatBuffered, beatStops) < beatBuffered.length
+      ) {
+        break;
       }
-      deps.sink.streamHertaToken(beatText.slice(beatEmittedTail));
+      // A marker the cap cut in half is written again from its start, so the
+      // provider sees it whole and stops there. None of it was on screen: the
+      // emit above never passes this boundary.
+      beatBuffered = beatBuffered.slice(
+        0,
+        safeEmitBoundaryAtLineStart(beatBuffered, beatStops),
+      );
     }
+  } catch (err) {
+    // Beat stream died mid-flight (interrupt, provider error). If nothing
+    // reached the sink the beat can be dropped cleanly — rethrow and let
+    // the bridge's fire-loop catch handle it (drop / abort-clear). But if
+    // tokens WERE emitted the stream MUST settle here: begin-without-end
+    // leaks streamingSurface across turns (wrong flush offsets), while
+    // end-without-a-committed-block desyncs the sink cursor from the
+    // record (endHertaStream claims a record position, per the sink
+    // contract). So salvage: end the stream and commit exactly the text
+    // already on screen as the beat block — screen == record, the same
+    // convergence rule the interrupt path applies to backend blocks
+    // (hang audit 2026-07-09, M1).
+    if (!beginCalled) throw err;
+    deps.sink?.endHertaStream();
+    const salvaged = beatBuffered.slice(0, beatEmittedTail);
+    deps.onPrompt?.(
+      "beat-out",
+      `${beatPrompt}${salvaged}[salvaged: ${String(err)}]`,
+    );
+    const trimmedSalvage = salvaged.trim();
+    return trimmedSalvage.length > 0 ? trimmedSalvage : salvaged;
+  }
 
-    if (beatText.length === 0) {
-      // The provider emitted only the stop sequence (or nothing at all).
-      // beginHertaStream was never called → nothing to balance.
-      // streamingSurface stays clean; cursor is not advanced. Safe null return.
-      return null;
+  // Cut exactly at the FIRST complete stop marker when one exists
+  // (matching the live emit cap — see consumePhaseTwoStream; prose ending
+  // in `（` right before the marker survives), else strip a DANGLING
+  // partial prefix (a trailing `（/` from a beat truncated mid-marker —
+  // still possible even at `maxTokens: 220`; the `.trim()` at commit
+  // removes only whitespace, not the leaked prefix).
+  const beatStopIdx = firstStopIndexAtLineStart(beatBuffered, beatStops);
+  let beatText =
+    beatStopIdx < beatBuffered.length
+      ? beatBuffered.slice(0, beatStopIdx)
+      : beatBuffered.slice(
+          0,
+          safeEmitBoundaryAtLineStart(beatBuffered, beatStops),
+        );
+  deps.onPrompt?.("beat-out", `${beatPrompt}${beatText}`);
+
+  // Beats carry bracketed hints too (beat_verification / beat_tool_fail),
+  // so the same echo is possible here. Repair before the
+  // slot check below, for the same ordering reason as runPhaseTwo — but
+  // ONLY while nothing has streamed (review 2026-08-12): `beatEmittedTail`
+  // indexes into the RAW text, so shortening beatText after live emission
+  // would make the tail-flush below slice the wrong substring (or skip a
+  // tail it still owes) and desync screen from record — the exact
+  // invariant the `!beginCalled` guard on the slot check protects. An
+  // echoing beat that already streamed keeps today's behaviour: committed
+  // exactly as shown, brackets and all — screen == record wins.
+  // (beginCalled === false implies beatEmittedTail === 0: the streaming
+  // loop sets beginCalled before its first emit.)
+  if (!beginCalled) beatText = stripHintScaffolding(beatText);
+
+  // Slot-only beat (2026-08-12). This lane bypasses the supervisor BY
+  // DESIGN (see the commit comment below), so the deterministic guards are
+  // the only thing standing between a degenerate completion and the record
+  // — exactly the argument that already justifies sanitize and trigger
+  // neutralization here.
+  //
+  // Guarded on `!beginCalled`: beats stream LIVE, so once tokens have
+  // reached the sink the cursor has advanced and a block MUST be committed
+  // at that position — dropping it then would desync screen from record,
+  // which is the worse bug the salvage path above exists to prevent. When
+  // nothing has been emitted yet (the safe-emit gate held the whole short
+  // beat, the common case) the beat can be dropped cleanly, same as the
+  // empty case below.
+  if (!beginCalled && isPlaceholderOnly(beatText)) {
+    return null;
+  }
+
+  if (deps.sink !== undefined && beatEmittedTail < beatText.length) {
+    // Flush any tail that wasn't emitted during the streaming loop.
+    if (!beginCalled) {
+      deps.sink.beginHertaStream("speech");
+      beginCalled = true;
     }
+    deps.sink.streamHertaToken(beatText.slice(beatEmittedTail));
+  }
 
-    // Something WAS streamed. We MUST call endHertaStream to reconcile
-    // the renderer's cursor + clear its streaming flag — otherwise
-    // subsequent flushBlocks calls render at the wrong offset and
-    // streamingSurface leaks across turns.
-    if (beginCalled) deps.sink?.endHertaStream();
+  if (beatText.length === 0) {
+    // The provider emitted only the stop sequence (or nothing at all).
+    // beginHertaStream was never called → nothing to balance.
+    // streamingSurface stays clean; cursor is not advanced. Safe null return.
+    return null;
+  }
 
-    // For the committed block, prefer the trimmed text (cleaner JSONL
-    // entries + cleaner rendered output). Fall back to raw beatText
-    // if trim() emptied it — the cursor was already advanced, so a
-    // block MUST be committed at that position.
-    //
-    // Slice 6: beats bypass the supervisor BY DESIGN (a full pass mid-run
-    // costs a round-trip exactly where latency shows), so the deterministic
-    // guards do the work instead:
-    //   - sanitizeActorText neutralizes forged evidence labels / cross-role
-    //     delimiters and strips control/bidi chars (the beat lane previously
-    //     applied ZERO sanitization — the last unguarded path into the
-    //     durable record);
-    //   - neutralizeBanzhuanTrigger: a beat must NEVER carry a live dispatch
-    //     token — the bridge only fires from main-loop speech, but a live
-    //     @板砖 in a committed beat renders a dispatch chip for a run that
-    //     never happened and teaches tomorrow's prompts the wrong pattern.
-    // The live beat display may briefly show the pre-neutralized token; the
-    // commit settles it — same accepted one-char settle as the main loop's
-    // cap-suppressed trigger.
-    const trimmed = beatText.trim();
-    return {
-      kind: "herta",
-      surface: "speech",
-      text: neutralizeBanzhuanTrigger(
-        sanitizeActorText(trimmed.length > 0 ? trimmed : beatText, {
-          role: "speech",
-        }),
-      ),
-    };
-  };
+  // Something WAS streamed. We MUST call endHertaStream to reconcile
+  // the renderer's cursor + clear its streaming flag — otherwise
+  // subsequent flushBlocks calls render at the wrong offset and
+  // streamingSurface leaks across turns.
+  if (beginCalled) deps.sink?.endHertaStream();
+
+  // For the committed block, prefer the trimmed text (cleaner JSONL
+  // entries + cleaner rendered output). Fall back to raw beatText
+  // if trim() emptied it — the cursor was already advanced, so a
+  // block MUST be committed at that position. The caller applies the
+  // deterministic guards (sanitize; the trigger rule of its lane).
+  const trimmed = beatText.trim();
+  return trimmed.length > 0 ? trimmed : beatText;
 }

@@ -1,12 +1,11 @@
-import { Fragment, memo, useEffect, useRef } from "react";
+import { Fragment, memo, useEffect, useMemo, useRef } from "react";
 import { useHertaBridge } from "../../context/HertaBridgeContext.js";
 import { useActiveSession } from "../../hooks/useActiveSession.js";
-import { useBackendThinking } from "../../hooks/useBackendThinking.js";
 import { useReducedMotion } from "../../hooks/useReducedMotion.js";
 import { useT } from "../../i18n/LocaleProvider.js";
 import { ConversationPinProvider } from "./ConversationPin.js";
 import { GalaxyTravelRow } from "./GalaxyTravelRow.js";
-import { activityHasTerminalMarker } from "./group-record.js";
+import { liveEndView } from "./live-end.js";
 import { MorphClone } from "./MorphClone.js";
 import { PendingActivity } from "./PendingActivity.js";
 import {
@@ -51,11 +50,7 @@ export {
   IN_FLIGHT_EXIT_MS,
   IN_FLIGHT_MIN_VISIBLE_MS,
 } from "./useInFlightIndicator.js";
-export {
-  UNPINNED_TRIM_AT,
-  UNPINNED_TRIM_KEEP_TAIL,
-  UNPINNED_TRIM_MIN,
-} from "./useRecordWindow.js";
+export { UNPINNED_TRIM_AT, UNPINNED_TRIM_MIN } from "./useRecordWindow.js";
 export { SUPERVISOR_HINT_DELAY_MS } from "./useSupervisorHold.js";
 
 // memo (user profile 2026-07-12): Conversation takes no props, so every
@@ -64,20 +59,30 @@ export { SUPERVISOR_HINT_DELAY_MS } from "./useSupervisorHold.js";
 // row tree for nothing. Store updates still flow via useActiveSession.
 export const Conversation = memo(function Conversation(): JSX.Element {
   const t = useT();
+  const session = useActiveSession();
+  // The window on screen: the trailing one, or after a far jump a window of
+  // history (the store's `away`), shown in its place while the trailing one
+  // goes on following the live end underneath. A window of history shows
+  // history only: the turn in flight is read as idle here until the reader
+  // is back at the latest (live-end.ts).
+  const recordLive = session.away === null;
+  const record = session.away?.record ?? session.record;
+  const recordStart = session.away?.start ?? session.recordStart;
+  const { latestLandings } = session;
   const {
-    record,
-    recordStart,
     status,
     streamingText,
     retryText,
     pendingUser,
     pendingUserImages,
+    pendingUserMentions,
+    pendingUserPicks,
+    pendingTalk,
     retracting,
     retractKeepLen,
     turnStartedAt,
     backendStartedAt,
     backendActive,
-    backendInFlight,
     recapCompacting,
     supervisorChecking,
     sessionId,
@@ -88,7 +93,7 @@ export const Conversation = memo(function Conversation(): JSX.Element {
     topics,
     lang,
     undoable,
-  } = useActiveSession();
+  } = liveEndView(session, recordLive);
   const { bridge, sessionStore } = useHertaBridge();
   const reduced = useReducedMotion();
   // No clock here: adaptive timestamps ("just now" → "N min ago") refresh via
@@ -170,7 +175,13 @@ export const Conversation = memo(function Conversation(): JSX.Element {
     overlayRef,
   });
   const supervisor = useSupervisorHold({ supervisorChecking, scroll });
-  const jumpChip = useJumpChip({ scroll, record, recordStart, sessionId });
+  const jumpChip = useJumpChip({
+    scroll,
+    record,
+    recordStart,
+    sessionId,
+    away: !recordLive,
+  });
   const jumpToTopic = useTopicJump({
     scroll,
     sessionStore,
@@ -180,17 +191,38 @@ export const Conversation = memo(function Conversation(): JSX.Element {
   });
   // The attach in flight's placeholder rows (pending-attach.ts): the rows
   // render it, and the pinned follow treats its arrival like any new row.
-  const shownRecord = usePendingAttachRecord(sessionId, record, recordStart);
+  const withPendingAttach = usePendingAttachRecord(
+    sessionId,
+    record,
+    recordStart,
+  );
+  // Its real blocks will land at the live end, not under a window of history.
+  const shownRecord = recordLive ? withPendingAttach : record;
   useEffect(() => {
     if (bridge.onAttachProgress === undefined) return undefined;
     return bridge.onAttachProgress(reportAttachProgress);
   }, [bridge]);
+  // Sending disables the textarea for the turn, and the focus fell to
+  // nothing (ADR 0082 §11). It lands here instead: the arrows and PgUp/PgDn
+  // scroll the conversation, Escape still stops, Tab goes on from here, and
+  // the composer takes the caret back when it can (its `caretIsFree`).
+  const idle = status === "idle";
+  useEffect(() => {
+    if (idle) return undefined;
+    const frame = requestAnimationFrame(() => {
+      const active = document.activeElement;
+      if (active === null || active === document.body)
+        scroll.scrollRef.current?.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [idle]);
   useTurnFollow({
     scroll,
     isFlightArmed: outgoing.isFlightArmed,
     reduced,
     record: shownRecord,
     pendingUser,
+    pendingTalk,
     status,
     showInFlight: inFlight.showInFlight,
     inFlightExiting: inFlight.inFlightExiting,
@@ -199,12 +231,13 @@ export const Conversation = memo(function Conversation(): JSX.Element {
     backendActive,
     recapCompacting,
   });
-  const { loadEarlier } = useRecordWindow({
+  const { loadEarlier, loadLater, backToLatest } = useRecordWindow({
     scroll,
     sessionStore,
     record,
     recordStart,
     sessionId,
+    latestLandings,
   });
   useSessionEntrance({ scroll, sessionId, reduced, sessionStore });
   const removeAttachmentFactory = useRemoveAttachment({
@@ -213,24 +246,31 @@ export const Conversation = memo(function Conversation(): JSX.Element {
     sessionStore,
     t,
   });
-  const backendThinking = useBackendThinking();
-  const { items, rows } = useConversationRows({
+  // A web row's URL to the OS browser (ADR 0080 §5); main checks it against
+  // this session's own record. Stable per session, like the removal factory.
+  const openWebPage = useMemo(() => {
+    const open = bridge.openWebPage;
+    if (sessionId === null || open === undefined) return undefined;
+    return (url: string): void => {
+      void open(sessionId, url);
+    };
+  }, [sessionId, bridge]);
+  const { rows, runLive } = useConversationRows({
     // The attach in flight shows as placeholder rows after the record's last
     // block — where its real blocks will land (pending-attach.ts).
     record: shownRecord,
     recordStart,
     lang,
     status,
-    turnStartedAt,
     backendStartedAt,
-    backendInFlight,
     backendActive,
-    backendThinking,
     handleRewind,
     removeAttachmentFactory,
+    openWebPage,
     undoable,
     undoBusy,
     handleUndo,
+    atLive: recordLive,
   });
 
   // ── render ───────────────────────────────────────────────────────────────
@@ -260,6 +300,7 @@ export const Conversation = memo(function Conversation(): JSX.Element {
             scroll.fog.bottom ? " has-fog-bottom" : ""
           }`}
           ref={scroll.scrollRef}
+          tabIndex={-1}
         >
           {/* Centered readable column (user feedback 2026-07-06): with the left
             sidebar hidden the pane widens and fixed-width bubbles hugging the
@@ -283,7 +324,7 @@ export const Conversation = memo(function Conversation(): JSX.Element {
                 className="load-earlier"
                 onClick={loadEarlier}
               >
-                {t("workspace.loadEarlier", { n: recordStart })}
+                {t("workspace.loadEarlier")}
               </button>
             )}
             {/* Rows are keyed by record index, which COLLIDES across sessions —
@@ -294,6 +335,18 @@ export const Conversation = memo(function Conversation(): JSX.Element {
             row set per session; within one session, indices are stable
             (append-only record). */}
             <Fragment key={sessionId ?? "none"}>{rows}</Fragment>
+            {/* Load-later paging: after a far jump the window ends before the
+              live end, and the conversation goes on main-side. The mirror of
+              load-earlier; the chip below goes straight to the latest. */}
+            {!recordLive && (
+              <button
+                type="button"
+                className="load-earlier load-later"
+                onClick={loadLater}
+              >
+                {t("workspace.loadLater")}
+              </button>
+            )}
             {pendingUser !== null && (
               <UserBubble
                 text={pendingUser}
@@ -304,12 +357,28 @@ export const Conversation = memo(function Conversation(): JSX.Element {
                 // minute), so the label stays stable.
                 at={pendingUserAt}
                 hidden={hidePendingUser}
+                {...(pendingUserMentions !== null
+                  ? { mentions: pendingUserMentions }
+                  : {})}
+                {...(pendingUserPicks !== null
+                  ? { picks: pendingUserPicks }
+                  : {})}
                 bubbleRef={pendingUserBubbleRef}
                 {...(pendingEchoImages.length > 0
                   ? { images: pendingEchoImages }
                   : {})}
               />
             )}
+            {pendingTalk.map((p) => (
+              <UserBubble
+                key={`${p.at}|${p.text}`}
+                text={p.text}
+                lang={lang}
+                at={p.at}
+                {...(p.mentions !== null ? { mentions: p.mentions } : {})}
+                {...(p.picks !== null ? { picks: p.picks } : {})}
+              />
+            ))}
             {/* Not gated on the echo: when the turn's real user block lands
               mid-flight (a typed @板砖 — no router call heads its turn), the
               clone flies on onto the real row (useOutgoingMorph). */}
@@ -320,6 +389,12 @@ export const Conversation = memo(function Conversation(): JSX.Element {
                 variant="user"
                 text={outgoingClone.text}
                 lang={lang}
+                {...(pendingUserMentions !== null
+                  ? { mentions: pendingUserMentions }
+                  : {})}
+                {...(pendingUserPicks !== null
+                  ? { picks: pendingUserPicks }
+                  : {})}
                 {...(outgoingClone.images.length > 0
                   ? { images: outgoingClone.images }
                   : {})}
@@ -378,7 +453,8 @@ export const Conversation = memo(function Conversation(): JSX.Element {
             {/* The 处理中… backend placeholder sits at the BOTTOM of the flow —
           backend work happens after Herta speaks the @板砖 delegation, so it
           must appear below her reply (record block or still-streaming bubble),
-          never above it. Hidden once the real activity group is active. Also
+          never above it. Hidden once the run's own row is live (ADR 0085 §6:
+          it sits under her dispatching bubble, her beats below it). Also
           deferred while the in-flight row is still holding its minimum OR
           fading out — that row renders ABOVE this slot, so mounting under it
           shoved this row down and let it slide back up when the row left;
@@ -391,21 +467,13 @@ export const Conversation = memo(function Conversation(): JSX.Element {
               // settles does not put 处理中 under a bubble in flight, only to
               // yield to the row a moment later.
               !sendArmed &&
-              (() => {
-                const last = items[items.length - 1];
-                const lastIsActive =
-                  last !== undefined &&
-                  last.kind === "activity" &&
-                  status !== "idle" &&
-                  !activityHasTerminalMarker(last.blocks);
-                return lastIsActive ? null : (
-                  <PendingActivity
-                    turnStartedAt={turnStartedAt}
-                    backendStartedAt={backendStartedAt}
-                    lang={lang}
-                  />
-                );
-              })()}
+              !runLive && (
+                <PendingActivity
+                  turnStartedAt={turnStartedAt}
+                  backendStartedAt={backendStartedAt}
+                  lang={lang}
+                />
+              )}
             {/* Turn headroom: empty room reserved under the newest turn so
               the answer fills a region instead of crawling along the bottom
               edge. Height is written imperatively (turn-headroom.ts); it is
@@ -421,7 +489,9 @@ export const Conversation = memo(function Conversation(): JSX.Element {
         {/* Jump-to-latest chip: new content arrived below a reader who scrolled
           up (pinned autoscroll correctly stays off; this is the one-click way
           back). Floats over the bottom scroll.fog; hidden the moment the reader is
-          back at the bottom — by click or by scrolling there themselves. */}
+          back at the bottom — by click or by scrolling there themselves.
+          While the window stands away from the live end (a far jump) it is
+          up the whole time and says where it goes: back to the latest. */}
         {/* Topic guide rail: one tick per topic on the left edge; hover swells
           the neighborhood + raises the topic card, click jumps (paging older
           history in if the anchor is outside the loaded window). Keyed by
@@ -438,12 +508,14 @@ export const Conversation = memo(function Conversation(): JSX.Element {
           <button
             type="button"
             className={`jump-to-latest${jumpChip.open ? " is-open" : ""}`}
-            onClick={scroll.jumpToLatest}
+            onClick={recordLive ? scroll.jumpToLatest : backToLatest}
           >
             <span className="jump-to-latest__arrow" aria-hidden="true">
               ↓
             </span>
-            {t("workspace.jumpToLatest")}
+            {t(
+              recordLive ? "workspace.jumpToLatest" : "workspace.backToLatest",
+            )}
           </button>
         )}
       </div>

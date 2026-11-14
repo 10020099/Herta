@@ -582,6 +582,22 @@ describe("stepDisplayBody — attachment rows, incl. PDF / Word (ADR 0038)", () 
   });
 });
 
+describe("stepDisplayDetail — the receipts a marker leaves out (live run 2026-11-06)", () => {
+  it("says how many, in the session's language", () => {
+    const block: SystemBlock = {
+      kind: "system",
+      label: "差分协处理器",
+      body: "完成",
+      evidenceDetail: "↳ 依据: ran `a`",
+      evidence: [{ kind: "evidence", items: ["ran `a`"], earlier: 3 }],
+    };
+    const of = (catalog: Record<MessageKey, string>) =>
+      stepDisplayDetail(block, (key) => catalog[key]);
+    expect(of(en)).toBe("↳ findings: (3 earlier not listed) ran `a`");
+    expect(of(zh)).toBe("↳ 依据: （此前 3 步未列出） ran `a`");
+  });
+});
+
 describe("stepDisplayDetail — the evidence pane localizes (2026-08-01)", () => {
   /** A block whose canonical detail is the Chinese the bridge composes, with
    *  the structured mirror alongside it — exactly what projectBackendEvent
@@ -826,5 +842,252 @@ describe("latestOpStep", () => {
       sys("↳ exit 1 · 0 lines", { kind: "text", text: "↳ exit 1 · 0 lines" }),
     ];
     expect(latestOpStep(steps)?.body).toBe("↳ exit 1 · 0 lines");
+  });
+});
+
+describe("web rows (ADR 0080)", () => {
+  const T = (key: MessageKey): string => zh[key] ?? key;
+  const TE = (key: MessageKey): string => en[key] ?? key;
+  const search: SystemBlock = {
+    kind: "system",
+    label: "差分协处理器",
+    body: "↳ web results: 2",
+    digest: {
+      kind: "web-search",
+      query: "vitest update",
+      results: [
+        { title: "update | Vitest", site: "Vitest" },
+        { title: "Snapshot", site: "example.com" },
+      ],
+    },
+    evidenceDetail:
+      "↳ 网页结果:\n- update | Vitest（Vitest）\n- Snapshot（example.com）",
+    evidence: [
+      {
+        kind: "web-results",
+        items: [
+          {
+            title: "update | Vitest",
+            site: "Vitest",
+            url: "https://vitest.dev/config/update",
+          },
+          {
+            title: "Snapshot",
+            site: "example.com",
+            url: "https://example.com/snap",
+          },
+        ],
+      },
+    ],
+  };
+  const page: SystemBlock = {
+    kind: "system",
+    label: "差分协处理器",
+    body: '↳ page nodejs.org: "File system" · 189634 chars',
+    digest: {
+      kind: "web-fetch",
+      url: "https://nodejs.org/api/fs.html",
+      host: "nodejs.org",
+      title: "File system",
+      path: ".herta/web/nodejs.org-0123abcd.md",
+      chars: 189634,
+    },
+    evidence: [
+      {
+        kind: "web-page",
+        url: "https://nodejs.org/api/fs.html",
+        title: "File system",
+        path: ".herta/web/nodejs.org-0123abcd.md",
+        text: "# File system",
+      },
+    ],
+  };
+  const op = (
+    verb: "Searching the web" | "Reading web page",
+    arg: string,
+  ): SystemBlock => ({
+    kind: "system",
+    label: "差分协处理器",
+    body: `${verb} ${arg}`,
+    digest: { kind: "op", verb, arg },
+  });
+
+  it("names the steps in the session's language", () => {
+    expect(stepDisplayBody(op("Searching the web", "vitest update"), T)).toBe(
+      "搜索网页 vitest update",
+    );
+    expect(
+      stepDisplayBody(op("Reading web page", "https://nodejs.org/x"), TE),
+    ).toBe("Reading web page https://nodejs.org/x");
+  });
+
+  it("states a search's count and a page's site, title and size", () => {
+    expect(stepDisplayBody(search, T)).toBe("↳ 2 条结果");
+    expect(
+      stepDisplayBody(
+        {
+          ...search,
+          digest: { ...search.digest, results: [] } as SystemBlock["digest"],
+        },
+        T,
+      ),
+    ).toBe("↳ 没有搜到结果");
+    expect(stepDisplayBody(page, T)).toBe(
+      `↳ 网页 nodejs.org · File system · ${(189634).toLocaleString()} 字`,
+    );
+  });
+
+  it("lists each result's URL in the detail pane, where the row makes it a link", () => {
+    expect(stepDisplayDetail(search, TE)).toBe(
+      "↳ web results:\n- update | Vitest（Vitest）\n  https://vitest.dev/config/update\n- Snapshot（example.com）\n  https://example.com/snap",
+    );
+    expect(stepDisplayDetail(page, T)).toBe(
+      "↳ 网页 File system\nhttps://nodejs.org/api/fs.html\n# File system",
+    );
+  });
+});
+
+describe("stepDisplayBody — the page steps (ADR 0083 §10)", () => {
+  const tz = (key: MessageKey): string => zh[key];
+  const te = (key: MessageKey): string => en[key];
+
+  it("names each step's verb in the user's language", () => {
+    const op = sys("Clicking", { kind: "op", verb: "Clicking", arg: "" });
+    expect(stepDisplayBody(op, tz)).toBe("点击");
+    expect(stepDisplayBody(op, te)).toBe("Clicking");
+    const open = sys("Opening page localhost:5173/login", {
+      kind: "op",
+      verb: "Opening page",
+      arg: "localhost:5173/login",
+    });
+    expect(stepDisplayBody(open, tz)).toBe("打开页面 localhost:5173/login");
+  });
+
+  it("localizes the chrome, keeps the page's words verbatim", () => {
+    const opened = sys("↳ opened …", {
+      kind: "page-open",
+      route: "localhost:5173/login",
+      title: "Vite + React",
+      status: 500,
+      errors: 2,
+    });
+    expect(stepDisplayBody(opened, tz)).toBe(
+      "↳ localhost:5173/login · Vite + React · HTTP 500 · 2 个控制台错误",
+    );
+    const typed = sys("↳ typed …", {
+      kind: "page-act",
+      action: "type",
+      route: "localhost:5173/login",
+      title: "",
+      navigated: false,
+      target: 'textbox "Password"',
+      typed: "••••••",
+      password: true,
+      submit: true,
+      errors: 0,
+    });
+    expect(stepDisplayBody(typed, tz)).toBe(
+      '↳ 在 textbox "Password" 输入了 "••••••"，并按下回车',
+    );
+    expect(stepDisplayBody(typed, te)).toBe(
+      '↳ Typed "••••••" into textbox "Password", then pressed Enter',
+    );
+    const network = sys("↳ network …", {
+      kind: "page-read",
+      mode: "network",
+      route: "localhost:5173/login",
+      title: "",
+      count: 24,
+      truncated: false,
+      failures: 1,
+    });
+    expect(stepDisplayBody(network, te)).toBe("↳ 24 requests · 1 failed");
+    const shot = sys("↳ screenshot …", {
+      kind: "page-shot",
+      route: "localhost:5173",
+      path: ".herta/browser/s/shot-1.png",
+      width: 375,
+      height: 812,
+      region: false,
+    });
+    expect(stepDisplayBody(shot, tz)).toBe("↳ localhost:5173 · 375×812");
+  });
+
+  it("the detail pane counts what the bound left out", () => {
+    const b: SystemBlock = {
+      ...sys("↳ 3 elements on localhost:5173"),
+      evidence: [
+        { kind: "page", mode: "tree", text: 'button "Sign in"', omitted: 4 },
+      ],
+    };
+    expect(stepDisplayDetail(b, tz)).toBe(
+      '↳ 页面元素:\nbutton "Sign in"\n（另有 4 个未列出）',
+    );
+  });
+});
+
+describe("stepDisplayBody — the launcher (ADR 0083 §5)", () => {
+  const tz = (key: MessageKey): string => zh[key];
+  const te = (key: MessageKey): string => en[key];
+
+  it("names the server and where it answers; who started it when it was you", () => {
+    expect(
+      stepDisplayBody(
+        sys("Starting dev server web", {
+          kind: "op",
+          verb: "Starting dev server",
+          arg: "web",
+        }),
+        tz,
+      ),
+    ).toBe("启动开发服务器 web");
+    const ready = sys("↳ dev server web: ready at localhost:5173", {
+      kind: "server",
+      action: "start",
+      by: "banzhuan",
+      name: "web",
+      command: "npm run dev",
+      route: "localhost:5173",
+      already: false,
+    });
+    expect(stepDisplayBody(ready, tz)).toBe(
+      "↳ 开发服务器 web · 已就绪 · localhost:5173",
+    );
+    const yours = sys("开拓者启动了开发服务器 web", {
+      kind: "server",
+      action: "start",
+      by: "trailblazer",
+      name: "web",
+      command: "npm run dev",
+      route: "localhost:5173",
+      already: false,
+    });
+    expect(stepDisplayBody(yours, te)).toBe(
+      "dev server web · started by you · localhost:5173",
+    );
+    const reaped = sys("上次应用退出时…", {
+      kind: "server",
+      action: "reaped",
+      names: ["web", "api"],
+    });
+    expect(stepDisplayBody(reaped, te)).toBe(
+      "Dev servers left running at the last exit were stopped: web, api",
+    );
+    // What the Trailblazer did stands alone in the chat: no ↳ (owner
+    // 2026-11-05). 板砖's own stop answers the step above it.
+    const stop = (by: "trailblazer" | "banzhuan") =>
+      sys("stopped", {
+        kind: "server",
+        action: "stop",
+        by,
+        name: "web",
+        wasRunning: true,
+      });
+    expect(stepDisplayBody(stop("trailblazer"), tz)).toBe(
+      "开发服务器 web · 由你停止",
+    );
+    expect(stepDisplayBody(stop("banzhuan"), tz)).toBe(
+      "↳ 开发服务器 web · 已停止",
+    );
   });
 });

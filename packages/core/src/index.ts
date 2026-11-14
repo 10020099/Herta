@@ -6,16 +6,15 @@ export {
 } from "./approval-policy.js";
 export {
   type AtomicWriteOptions,
+  renameWithRetry,
   writeFileAtomic,
   writeFileAtomicSync,
 } from "./atomic-write.js";
 export {
-  BACKEND_EXECUTION_CONTRACT,
-  BACKEND_EXECUTION_CONTRACT_EN,
+  BACKEND_CONTRACT,
   type BackendBuildInput,
   BackendContextBuilder,
   type BackendContextBuilderDeps,
-  type BackendContract,
   darwinBackendHostNote,
   minimalBackendContract,
   type RepoContextDirtyFile,
@@ -24,7 +23,6 @@ export {
   type RepoRecentCommit,
   renderRepoContext,
   serializeUserHistory,
-  windowsBackendHostNote,
 } from "./backend/backend-context-builder.js";
 export {
   type BackendTurnDeps,
@@ -127,6 +125,26 @@ export {
 } from "./backend/undo-store.js";
 export { ExecutionReportBuilder } from "./bridge/report-builder.js";
 export type * from "./bridge/types.js";
+export {
+  type BrowserFailure,
+  type BrowserHost,
+  BrowserHostError,
+  type BrowserOpVerb,
+  browserOpArg,
+  browserOpVerb,
+  isBrowserOpVerb,
+  isLoopbackHost,
+  isLoopbackUrl,
+  type PageActed,
+  type PageAction,
+  type PageElements,
+  type PageNavigated,
+  type PageNavigation,
+  type PageRead,
+  type PageReadRequest,
+  type PageShot,
+  type PageView,
+} from "./browser-host.js";
 export { abortError, errorMessage, isAbortError } from "./errors.js";
 export type { EventBus } from "./event-bus.js";
 export { InMemoryEventBus, publishWithLayer } from "./event-bus.js";
@@ -141,8 +159,15 @@ export type {
   MemoryKind,
   MemoryManager,
   MemoryQuery,
+  MemoryReplaceOutcome,
 } from "./memory-manager.js";
-export { MEMORY_KINDS, NoopMemoryManager } from "./memory-manager.js";
+export {
+  MEMORY_HANDLE_LENGTH,
+  MEMORY_KINDS,
+  memoryHandle,
+  NoopMemoryManager,
+  normalizeMemoryHandle,
+} from "./memory-manager.js";
 export {
   isPathInside,
   isPathInsideWith,
@@ -170,11 +195,28 @@ export {
 } from "./permission-engine.js";
 export {
   binaryBasename,
+  EXEC_WRAPPER_PROGRAMS,
+  packageExecCommand,
   pinnedScript,
   RUNS_ITS_ARGUMENTS,
   SCRIPT_INTERPRETERS,
 } from "./program-identity.js";
 export { ReadLedger, type ReadLedgerEntry } from "./read-ledger.js";
+export {
+  isServerOpVerb,
+  type LaunchEntry,
+  type ServerFailure,
+  type ServerHost,
+  ServerHostError,
+  type ServerLogs,
+  type ServerOpVerb,
+  type ServerStarted,
+  type ServerStarter,
+  type ServerState,
+  type ServerStatus,
+  serverOpArg,
+  serverOpVerb,
+} from "./server-host.js";
 export {
   isCacheableProgram,
   permissionCacheScope,
@@ -185,6 +227,15 @@ export {
   deleteSessionFiles,
   recapCachePath,
 } from "./session-io/delete-session-files.js";
+export {
+  EVIDENCE_CONFIRM_MS,
+  EVIDENCE_KEEP_DAYS,
+  removeSessionEvidence,
+  sessionWorkspaces,
+  sweepEvidence,
+  sweepEvidenceSoon,
+} from "./session-io/evidence-retention.js";
+export { importLegacyReviewChoices } from "./session-io/import-review-choices.js";
 export {
   type ListSessionsOpts,
   listSessionHeaders,
@@ -215,9 +266,11 @@ export {
 export {
   defaultWorkspaceFor,
   dreamDirFor,
+  harnessHomeDir,
   narrativeDirFor,
   narrativeDirName,
   resolveEffectiveWorkspace,
+  reviewChoicesFileFor,
   trailblazerNotesFileName,
   workspacesBaseDir,
 } from "./session-io/workspace-paths.js";
@@ -225,22 +278,32 @@ export {
   aliasBanzhuanDisplay,
   aliasBanzhuanPlain,
   aliasBrickInput,
+  aliasQuotedTrigger,
   BRICK_INPUT_MENTION,
   dealiasBrickDraft,
   INLINE_CODE_SPAN,
   mapOutsideInlineSpans,
+  mapOutsideQuotation,
+  quotationRanges,
 } from "./text/banzhuan-alias.js";
 export { countDiffLines, countDiffLinesFor } from "./text/diff-lines.js";
 export { estimatePromptTokens } from "./text/estimate-prompt-tokens.js";
 export {
   composeMarkerSummary,
   type MarkerSummaryLabels,
+  type TestRollup,
+  testRollup,
 } from "./text/marker-summary.js";
+export {
+  namePickedElements,
+  pageElementWords,
+} from "./text/page-element.js";
 export {
   type PageMarkerLang,
   pageMarkerLine,
   pageMarkerShape,
 } from "./text/page-marker.js";
+export { nameQuotedPages, quotedPageUrls } from "./text/quoted-pages.js";
 export {
   repoPathInsideWorkspace,
   workspaceRelativeRepoPath,
@@ -262,6 +325,7 @@ export {
   type EvidenceSection,
   type HertaBlock,
   isSystemBlockLabel,
+  type PickedElement,
   SYSTEM_BLOCK_LABELS,
   type SystemBlock,
   type SystemBlockDigest,
@@ -279,8 +343,23 @@ export {
   type BackendRunNote,
   type ReviewNote,
   reportUsageNote,
+  type SupervisorNote,
   setUsageNoteSink,
   type UsageNote,
   type UsageNoteSink,
+  type WebNote,
 } from "./usage-note.js";
-export { WorkspacePermissions } from "./workspace-permissions.js";
+export {
+  type WebClient,
+  WebClientError,
+  type WebFailure,
+  type WebPage,
+  type WebSearchHit,
+} from "./web-client.js";
+export {
+  importLegacyChoices,
+  legacyChoicesImported,
+  readLegacyChoice,
+  WorkspacePermissions,
+  workspaceKey,
+} from "./workspace-permissions.js";

@@ -66,21 +66,6 @@ export function normalizeModelChoice(v: unknown): ModelChoice | undefined {
   return undefined;
 }
 
-/** Which model-facing tool contract 板砖 runs (ADR 0040, 2026-08-17).
- *  `standard` = the 15-tool set + the long execution contract; `minimal` = the
- *  DeepSeek-trained shape (persistent `bash` + `str_replace_editor` + the
- *  two record channels) with the short 板砖 prompt — same reliability in the
- *  lab, ~½ the prompt tokens, ~⅒ the cache-miss tokens. Needs a bash on this
- *  machine (Git for Windows ships one); without one the app falls back to
- *  `standard` and says so at session start. */
-export type BackendContractChoice = "standard" | "minimal";
-
-const BACKEND_CONTRACT_VALUES: readonly string[] = ["standard", "minimal"];
-
-export function isBackendContract(v: unknown): v is BackendContractChoice {
-  return typeof v === "string" && BACKEND_CONTRACT_VALUES.includes(v);
-}
-
 /** Five automatic-compaction thresholds for the actor's 1M-token window. */
 export type CompactionLevelChoice =
   | "minimal"
@@ -107,8 +92,8 @@ export interface AppSettings {
   readonly dream?: { readonly enabled?: boolean };
   readonly backend?: {
     readonly thinking?: BackendThinking;
-    /** Settings → 差分协处理器 → 工具契约. Absent = standard. Restart-to-apply. */
-    readonly contract?: BackendContractChoice;
+    // A file written before ADR 0086 may still carry `contract` here (the
+    // retired tool-set choice). Nothing reads it.
   };
   /** Per-stage model choice (Settings → DeepSeek → 模型). `actor` drives the
    *  narrative actor (speech / thought / beats, completion mode); `backend`
@@ -127,6 +112,34 @@ export interface AppSettings {
   };
   /** Active provider type. Default "deepseek". */
   readonly activeProvider?: string;
+}
+
+/**
+ * The models and 板砖's effort the app runs with (ADR 0081): an env override
+ * (the dev/lab knob) over Settings over the built-in default. One resolver
+ * for the bootstrap and the live apply, so a change in Settings and a fresh
+ * start can never disagree.
+ */
+export function effectiveModels(
+  settings: AppSettings,
+  env: NodeJS.ProcessEnv = process.env,
+): {
+  readonly actorModel: string;
+  readonly backendModel: string;
+  readonly thinking: BackendThinking;
+} {
+  const thinking = settings.backend?.thinking;
+  return {
+    actorModel:
+      env.HERTA_ACTOR_MODEL ??
+      normalizeModelChoice(settings.models?.actor) ??
+      "deepseek-v4-pro",
+    backendModel:
+      env.HERTA_BACKEND_MODEL ??
+      normalizeModelChoice(settings.models?.backend) ??
+      "deepseek-flash",
+    thinking: isBackendThinking(thinking) ? thinking : "high",
+  };
 }
 
 /**
@@ -208,37 +221,37 @@ export function readAppSettingsSync(workspaceRoot: string): AppSettings {
   }
 }
 
-/** Write settings (synchronous, best-effort). Used by setActiveProvider IPC handler. */
-export function updateAppSettings(
-  workspaceRoot: string,
-  partial: Partial<AppSettings>,
-): void {
-  try {
-    const path = settingsPath(workspaceRoot);
-    let current: AppSettings = {};
-    if (existsSync(path)) {
-      try {
-        const raw = readFileSync(path, "utf-8");
-        const parsed = JSON.parse(raw);
-        if (typeof parsed === "object" && parsed !== null) current = parsed;
-      } catch {
-        // ignore
-      }
-    }
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(
-      path,
-      `${JSON.stringify({ ...current, ...partial }, null, 2)}\n`,
-      "utf-8",
-    );
-  } catch {
-    // Best-effort: a failed settings write must not crash the app.
-  }
-}
-
 /** Write the settings file, creating `.herta/` if needed. Temp + rename so a
  *  crash mid-write can't tear the file into "all defaults" (audit 2026-07-13
  *  T3.9, same fix as app-global-settings). */
+const updates = new Map<string, Promise<unknown>>();
+
+/**
+ * Read, change and write a workspace's settings as one step, queued per
+ * file. Two Settings saves in flight each read the file before the other
+ * wrote it, and the later write dropped the earlier's change: a model pick
+ * and then an effort pick left the running app on the new model and the
+ * next launch on the old one (release review 2026-10-22). Resolves to what
+ * was written.
+ */
+export function updateAppSettings(
+  workspaceRoot: string,
+  change: (current: AppSettings) => AppSettings,
+): Promise<AppSettings> {
+  const key = settingsPath(workspaceRoot);
+  const run = (updates.get(key) ?? Promise.resolve()).then(async () => {
+    const next = change(await readAppSettings(workspaceRoot));
+    await writeAppSettings(workspaceRoot, next);
+    return next;
+  });
+  const tail = run.catch(() => undefined);
+  updates.set(key, tail);
+  void tail.then(() => {
+    if (updates.get(key) === tail) updates.delete(key);
+  });
+  return run;
+}
+
 export async function writeAppSettings(
   workspaceRoot: string,
   settings: AppSettings,

@@ -78,7 +78,7 @@ export const FINAL_RETRY_BODY_SEED = "……";
  */
 const PHASE_TWO_THOUGHT_HINT_TEXT: Record<PromptLang, string> = {
   zh: "〔接下来是我针对这一回的具体思考，必须以（我 想）开始，以（/我 想）结束。写完 `（/我 想）` 就停笔——不要在同一段里继续写 `（我 说）` 那段说话内容，说话是另一段单独写出来的，不要塞进这里。注意：紧贴在开拓者这句话上面的那段我先写下的旁注，是关于「我这一档该怎么想」的提示，不是我已经想好的话；这一段我要针对开拓者刚刚那句话的具体内容，写一段当下的、新的思考，不要照抄上面那段旁注的句子，也不要把它的方法论原样复述一遍〕",
-  en: "〔What follows is my thinking. Must start with （我 想） and end with （/我 想）. Stop after writing `（/我 想）` — do not chain `（我 说）` onto the same block; the spoken part gets its own block. The side-note pasted above is only a directional hint, not a conclusion I've already reached; this block has to think fresh about what they just said — don't copy the side-note, and don't parrot the hint back as thought.〕",
+  en: "〔What follows is my thinking. Must start with （我 想） and end with （/我 想）. Stop after writing `（/我 想）` — do not chain `（我 说）` onto the same block; the spoken part gets its own block. The side-note pasted above is only a directional hint, not a conclusion I've already reached; this block has to think fresh about the newest thing in the record: what they just said, or what 板砖 just handed back. If they said nothing new, think about the result, and never imagine a line they didn't say. Don't copy the side-note, and don't parrot the hint back as thought.〕",
 };
 
 export const PHASE_TWO_THOUGHT_HINT = PHASE_TWO_THOUGHT_HINT_TEXT.zh;
@@ -375,13 +375,6 @@ const BEAT_NO_BANZHUAN_CLAUSE_TEXT: Record<PromptLang, string> = {
 
 export const BEAT_NO_BANZHUAN_CLAUSE = BEAT_NO_BANZHUAN_CLAUSE_TEXT.zh;
 
-const BEAT_HINT_PATCH_PREVIEW_TEXT: Record<PromptLang, string> = {
-  zh: `〔板砖刚把补丁亮在记录上方了。现在我说一句话点评：看 diff 的形状是不是干净 / 哪里值得提一嘴 / 有没有可疑的地方。不复述代码（开拓者自己能看见），不解释 diff 在做什么。短促、带判断。${BEAT_NO_BANZHUAN_CLAUSE_TEXT.zh}必须以（我 说）开始，以（/我 说）结束。〕`,
-  en: `〔板砖 just laid its patch out above in the record. Toss out one line: is the diff's shape clean or messy? Which part deserves a mention, which part looks off. Don't recite the code (the Trailblazer can see it), don't explain what the diff does. Short, with a verdict. ${BEAT_NO_BANZHUAN_CLAUSE_TEXT.en} Must start with （我 说） and end with （/我 说）.〕`,
-};
-
-export const BEAT_HINT_PATCH_PREVIEW = BEAT_HINT_PATCH_PREVIEW_TEXT.zh;
-
 const BEAT_HINT_VERIFICATION_FINISHED_TEXT: Record<PromptLang, string> = {
   zh: `〔板砖刚跑完了一步验证（测试 / 编译 / lint）。结果就在记录上方。现在我说一句话：过了就点一下，挂了就指出哪里挂了 / 可疑。不复述全部输出，不读 stack trace。短促、冷静。${BEAT_NO_BANZHUAN_CLAUSE_TEXT.zh}必须以（我 说）开始，以（/我 说）结束。〕`,
   en: `〔板砖 just finished a verification step (tests / compile / lint). The result is right above in the record. One line from me: if it passed, a quick nod; if it failed, point at where it blew up or what looks suspicious. Don't recite the full output, don't read the stack trace. Short, cool. ${BEAT_NO_BANZHUAN_CLAUSE_TEXT.en} Must start with （我 说） and end with （/我 说）.〕`,
@@ -398,20 +391,18 @@ const BEAT_HINT_TOOL_FAIL_TEXT: Record<PromptLang, string> = {
 export const BEAT_HINT_TOOL_FAIL = BEAT_HINT_TOOL_FAIL_TEXT.zh;
 
 /**
- * The steer beat (ADR 0063 §1.4, hint 2026-09-16): the user cut in while
- * 板砖 works. Without its own hint the beat fell through to the generic
- * speech hint, and Herta could promise on 板砖's behalf or narrate as if
- * she had relayed the message herself. This one keeps her to what is
- * true: 板砖 reads the line at its next step; she heard it, and may have a
- * take on it. Written in her own voice like every hint — how she carries
- * herself, not an order handed to her (owner 2026-09-16).
+ * Her answer to talk while 板砖 works (ADR 0085 step 5, owner 2026-11-04:
+ * "Its own hint"). Under the speech hint, which asks for a thought her
+ * answer does not have, the lab's answers passed work on without @板砖 — so
+ * no steer reached the run — and once made up a time the record did not
+ * hold. No `{{no_banzhuan}}` clause: her @板砖 here is a steer (§4).
  */
-const BEAT_HINT_STEER_TEXT: Record<PromptLang, string> = {
-  zh: `〔开拓者刚插了一句进来，就在上面。板砖手里的活没停，这条插入的消息它下一步就能收到——不用我转达，也不需要我替它处理。我也简单附和一下他，如果他插的这句话有值得说的，就说我的看法。一句。不复述原话，不装作已经做完。${BEAT_NO_BANZHUAN_CLAUSE_TEXT.zh}必须以（我 说）开始，以（/我 说）结束。〕`,
-  en: `〔The Trailblazer just cut in — the line is right above. 板砖 hasn't stopped; it receives that inserted message at its next step — I don't relay it, and I don't need to handle it for it. I give them a brief word back too; if what they cut in with deserves a take, my take. One line. Don't repeat their words back, don't pretend it's already done. ${BEAT_NO_BANZHUAN_CLAUSE_TEXT.en} Must start with （我 说） and end with （/我 说）.〕`,
+const BEAT_HINT_TALK_TEXT: Record<PromptLang, string> = {
+  zh: "〔板砖还在跑，他在这当口跟我说话。下面是我回他的话，必须以（我 说）开始，以（/我 说）结束，只这一段。只回他刚说的那几句：记录里有的照记录说，记录里没有的就说不知道，别编。板砖跑到哪说到哪，没跑完不下结论。他要板砖改做什么、多做什么，就在这段话里另起一句，用 @板砖 开头，把那件事交代给它，它跑着也收得到；没有这一句，话到不了它那儿。怎么叫它是我的事，别讲给他听，这一句以外也别写 @板砖。短，像平常说话。〕",
+  en: "〔板砖 is still running, and they're talking to me in the middle of it. What follows is my reply; it must start with （我 说） and end with （/我 说）, one block only. Answer only what they just said: what the record holds, say as the record has it; what it doesn't, say I don't know — no making things up. Say how far 板砖 has got, and give no verdict before it's done. If they want 板砖 to change course or do something more, give it one sentence inside this reply that starts with @板砖 and hands it that one thing — it gets it while it runs; without that sentence the words never reach it. How I call it is my business: don't explain it to them, and don't write @板砖 anywhere else. Every word in English: the markers and @板砖 are the only Chinese it carries. Short, the way I normally talk.〕",
 };
 
-export const BEAT_HINT_STEER = BEAT_HINT_STEER_TEXT.zh;
+export const BEAT_HINT_TALK = BEAT_HINT_TALK_TEXT.zh;
 
 /**
  * The full set of language-selectable actor hint texts (EN interaction
@@ -432,10 +423,9 @@ export interface ActorHintTexts {
   /** The thought-lane SLOT ladder — same split, same reason (2026-08-12). */
   readonly thoughtSlotRetry: readonly [string, string, string];
   readonly beatNoBanzhuanClause: string;
-  readonly beatPatchPreview: string;
   readonly beatVerification: string;
   readonly beatToolFail: string;
-  readonly beatSteer: string;
+  readonly beatTalk: string;
 }
 
 export function actorHintTexts(lang: PromptLang = "zh"): ActorHintTexts {
@@ -463,9 +453,8 @@ export function actorHintTexts(lang: PromptLang = "zh"): ActorHintTexts {
       PHASE_TWO_THOUGHT_SLOT_RETRY_HINT_3_TEXT[lang],
     ],
     beatNoBanzhuanClause: BEAT_NO_BANZHUAN_CLAUSE_TEXT[lang],
-    beatPatchPreview: BEAT_HINT_PATCH_PREVIEW_TEXT[lang],
     beatVerification: BEAT_HINT_VERIFICATION_FINISHED_TEXT[lang],
     beatToolFail: BEAT_HINT_TOOL_FAIL_TEXT[lang],
-    beatSteer: BEAT_HINT_STEER_TEXT[lang],
+    beatTalk: BEAT_HINT_TALK_TEXT[lang],
   };
 }

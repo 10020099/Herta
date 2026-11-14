@@ -18,10 +18,22 @@ import {
   type SessionMetadata,
   type SpeechSynthesizer,
   type SteerTextResult,
+  type TalkTextResult,
   type UndoTarget,
   type UndoTurnEditsResult,
 } from "@herta/app-server";
-import { errorMessage } from "@herta/core";
+import {
+  type BrowserHost,
+  errorMessage,
+  type PickedElement,
+  type ServerHost,
+} from "@herta/core";
+import {
+  jumpRange,
+  pageEnd,
+  pageStart,
+  RECORD_WINDOW_WEIGHT,
+} from "@herta/core/record-window";
 import {
   canonicalWorkspaceRoot,
   isGitReadTimeout,
@@ -45,6 +57,7 @@ import type {
   SessionSnapshot,
 } from "../renderer/ipc/bridge-types.js";
 import { slimAgentEventForRenderer } from "../shared/agent-event-wire.js";
+import { isRecordedWebUrl } from "../shared/links.js";
 import { createLiveToolFeed } from "../shared/live-tool-feed.js";
 import type { VoiceEngine } from "./app-global-settings.js";
 import {
@@ -60,7 +73,6 @@ import {
 } from "./app-global-settings.js";
 import {
   dreamEnabled,
-  isBackendContract,
   isBackendThinking,
   isCompactionLevel,
   normalizeModelChoice,
@@ -73,6 +85,7 @@ import {
   watchAttention,
 } from "./attention.js";
 import { createElectronAttentionHost } from "./attention-electron.js";
+import { createFlowHost, flowDirFor } from "./flow-host.js";
 import { installMode } from "./install-mode.js";
 import {
   type ProviderConfig,
@@ -81,6 +94,7 @@ import {
   readMiniMaxPlanKeyPlain,
   readProviderConfig,
 } from "./key-store.js";
+import { runsWhenOpened } from "./open-guard.js";
 import {
   readWorkspaceBytesBounded,
   readWorkspaceFileBounded,
@@ -195,10 +209,12 @@ export function findProjectRoot(start: string): string | undefined {
 const USER_ACTION_CHANNELS: ReadonlySet<string> = new Set([
   CMD.interrupt,
   CMD.steerText,
+  CMD.talkText,
   CMD.rewindLastTurn,
   CMD.undoLastTurnEdits,
   CMD.search,
   CMD.recordSlice,
+  CMD.recordWindow,
   CMD.deleteSession,
   CMD.renameSession,
   CMD.saveSessionExport,
@@ -210,6 +226,8 @@ const USER_ACTION_CHANNELS: ReadonlySet<string> = new Set([
   CMD.pickAttachments,
   CMD.attachFiles,
   CMD.removeAttachment,
+  CMD.serversStart,
+  CMD.serversStop,
   CMD.stageImages,
   CMD.unstageImage,
   CMD.readWorkspaceFile,
@@ -439,18 +457,6 @@ export async function buildConfig(
     // isBackendThinking guards a hand-edited settings.json: an off-enum value
     // falls back to the default instead of reaching the API.
     thinking: isBackendThinking(backendThinking) ? backendThinking : "high",
-    // 板砖's tool contract (ADR 0040): env (dev/lab knob) > Settings →
-    // 差分协处理器 → 工具契约 > MINIMAL (owner default flip 2026-08-17,
-    // after the permission lab + card fixes — ~½ prompt tokens, ~⅒
-    // cache-miss, same outcomes). Session.create verifies a bash exists
-    // before honoring `minimal` and falls back to standard otherwise.
-    backendContract:
-      process.env.HERTA_BACKEND_CONTRACT === "minimal" ||
-      process.env.HERTA_BACKEND_CONTRACT === "standard"
-        ? process.env.HERTA_BACKEND_CONTRACT
-        : isBackendContract(settings.backend?.contract)
-          ? settings.backend.contract
-          : "minimal",
     // Five automatic-compaction strategies. Hand-edited / old settings fall
     // back to the balanced default: standard (600K of the 1M actor window).
     compactionLevel: isCompactionLevel(settings.compaction?.level)
@@ -459,10 +465,72 @@ export async function buildConfig(
   };
 }
 
+/** A page of older blocks, for `session:recordSlice`: from what the chat was
+ *  sent, stamps included. Exported for testing. */
+export function recordPage(
+  s: Session,
+  before: number,
+  count: number,
+): { readonly start: number; readonly blocks: Session["record"] } {
+  const record = s.shownRecord ?? s.record;
+  const end = Math.min(before, record.length);
+  const start = pageStart(record, count, end);
+  return { start, blocks: record.slice(start, end) };
+}
+
+/**
+ * A window of the record that is not a page of older blocks, for
+ * `session:recordWindow` (owner 2026-11-12): what a jump brings, or a page
+ * of later blocks for a chat that shows a window of history. From what the
+ * chat was sent, like `recordPage`. `req` crossed an IPC boundary: anything
+ * that is not one of the two requests, or names no block of this record, is
+ * answered with nothing. Exported for testing.
+ */
+export function recordWindowFor(
+  s: Session,
+  req: unknown,
+): { readonly start: number; readonly blocks: Session["record"] } {
+  const none = { start: 0, blocks: [] };
+  if (typeof req !== "object" || req === null) return none;
+  const r = req as Record<string, unknown>;
+  const record = s.shownRecord ?? s.record;
+  if (r.kind === "later") {
+    const after = r.after;
+    const count = r.count;
+    if (
+      typeof after !== "number" ||
+      typeof count !== "number" ||
+      !Number.isInteger(after) ||
+      !Number.isInteger(count) ||
+      after < 0 ||
+      after >= record.length ||
+      count <= 0
+    ) {
+      return none;
+    }
+    const end = pageEnd(record, Math.min(count, RECORD_WINDOW_WEIGHT), after);
+    return { start: after, blocks: record.slice(after, end) };
+  }
+  if (r.kind === "jump") {
+    const { start, end, to } = r;
+    if (
+      typeof start !== "number" ||
+      typeof end !== "number" ||
+      typeof to !== "number"
+    ) {
+      return none;
+    }
+    const range = jumpRange(record, { start, end }, to);
+    if (range === null) return none;
+    return { start: range.start, blocks: record.slice(range.start, range.end) };
+  }
+  return none;
+}
+
 /** The `session:reset` payload for a session. Exported for testing. */
 export function snapshot(s: Session): SessionSnapshot {
   // Long-session windowing (2026-07-12): the reset snapshot carries only the
-  // trailing RECORD_TAIL_BLOCKS window — a 10MB session no longer crosses IPC
+  // trailing window (`recordTail`) — a 10MB session no longer crosses IPC
   // in one message or mounts thousands of renderer rows. `recordStart` is the
   // absolute index the window begins at; older blocks page in on demand via
   // CMD.recordSlice below.
@@ -698,7 +766,23 @@ export interface SessionService {
 }
 
 /** The main-side hooks the Settings rows fire (see settings-ipc.ts). */
-export type SessionServiceHooks = SettingsHooks;
+export type SessionServiceHooks = SettingsHooks & {
+  /** The window's browser pages (ADR 0083): each session gets its page's
+   *  driver for 板砖's steps, and a deleted session's page closes. */
+  readonly browser?: {
+    driverFor(sessionId: string): BrowserHost;
+    closeSession(sessionId: string): void;
+  };
+  /** The window's dev servers (ADR 0083 §5): each session's launcher, for
+   *  dev_server; a deleted session's servers stop. */
+  readonly servers?: {
+    forSession(sessionId: string): ServerHost;
+    closeSession(sessionId: string): void;
+    attachJournal(
+      journal: ReturnType<NonNullable<SessionHost["serverJournal"]>> | null,
+    ): void;
+  };
+};
 
 /** Wires the SessionHost + ipcMain handlers to a single window's webContents.
  *  Single-window assumption for Slice 4. */
@@ -775,6 +859,28 @@ export function createSessionService(
     locale: () => uiLocale,
   });
 
+  // Flow (ADR 0084): one issue a day for the app, the same from every
+  // session. It reads the host only for whether a turn is in flight, the
+  // recent workspaces and Herta's model; its settings are per user.
+  const flowUserData = app.getPath("userData");
+  const flow = createFlowHost({
+    dir: flowDirFor(flowUserData),
+    host: () => host,
+    apiKey: () => readDeepSeekKeyPlain() ?? "",
+    // The same dev-only override the sessions get, never in a packaged build.
+    ...(!installMode().installed &&
+    process.env.HERTA_DEEPSEEK_BASE_URL !== undefined &&
+    process.env.HERTA_DEEPSEEK_BASE_URL !== ""
+      ? { baseUrl: process.env.HERTA_DEEPSEEK_BASE_URL }
+      : {}),
+    lang: () => uiLocale,
+    readSettings: async () => (await readGlobalSettings(flowUserData)).flow,
+    writeSettings: (next) =>
+      updateGlobalSettings(flowUserData, (cur) => ({ ...cur, flow: next })),
+    send,
+    openExternal: (url) => shell.openExternal(url),
+  });
+
   // Interaction language (slice 4): resolved FRESH here per activation (like
   // getTheme reads per call) — stored choice, else follow the UI locale.
   // Threaded into the host so the session builds its static prefix, openings,
@@ -843,7 +949,19 @@ export function createSessionService(
     handlersRegistered = true;
     handle(
       CMD.submitText,
-      async (_e, text: string, stagedImageIds?: readonly string[]) => {
+      async (
+        _e,
+        text: string,
+        stagedImageIds?: readonly string[],
+        rawMentions?: unknown,
+        rawPicks?: unknown,
+      ) => {
+        // The `@` mentions (ADR 0072 amendment 2026-10-20): strings only —
+        // the session keeps the ones the text still holds.
+        const mentions = Array.isArray(rawMentions)
+          ? rawMentions.filter((m): m is string => typeof m === "string")
+          : [];
+        const picks = pickedElements(rawPicks);
         // Length only — chat content must not land in terminal/log capture
         // (audit 2026-07-13 T1.5; mirrors the repo's memory discipline). The
         // staged COUNT is safe for the same reason a file count is.
@@ -861,12 +979,13 @@ export function createSessionService(
         }
         try {
           const before = active.record.length;
-          const result = await active.submitText(
-            text,
-            stagedImageIds !== undefined && stagedImageIds.length > 0
+          const result = await active.submitText(text, {
+            ...(stagedImageIds !== undefined && stagedImageIds.length > 0
               ? { stagedImageIds }
-              : {},
-          );
+              : {}),
+            ...(mentions.length > 0 ? { mentions } : {}),
+            ...(picks.length > 0 ? { picks } : {}),
+          });
           if ("needsKey" in result) {
             console.log("[herta] submitText deferred — no DeepSeek key set");
           } else {
@@ -892,8 +1011,33 @@ export function createSessionService(
     // keeps the text and sends it as the next turn.
     handle(
       CMD.steerText,
-      async (_e, text: string): Promise<SteerTextResult> =>
-        (await host?.activeSession?.steerText?.(text)) ?? { queued: true },
+      async (_e, text: string, rawPicks?: unknown): Promise<SteerTextResult> =>
+        (await host?.activeSession?.steerText?.(
+          text,
+          pickedElements(rawPicks),
+        )) ?? { queued: true },
+    );
+    // A message to Herta while 板砖 works (ADR 0085 step 3). The same
+    // honest `queued` without a session that can take it.
+    handle(
+      CMD.talkText,
+      async (
+        _e,
+        text: string,
+        rawMentions?: unknown,
+        rawPicks?: unknown,
+      ): Promise<TalkTextResult> => {
+        const mentions = Array.isArray(rawMentions)
+          ? rawMentions.filter((m): m is string => typeof m === "string")
+          : [];
+        const picks = pickedElements(rawPicks);
+        return (
+          (await host?.activeSession?.talkText?.(text, {
+            ...(mentions.length > 0 ? { mentions } : {}),
+            ...(picks.length > 0 ? { picks } : {}),
+          })) ?? { queued: true }
+        );
+      },
     );
     // 继续 (ADR 0071 §1.4). No session, or one that cannot continue: there
     // is nothing to continue, and the renderer drops its strip.
@@ -930,6 +1074,35 @@ export function createSessionService(
         target,
       ),
     );
+    // The new-tab page's launcher (ADR 0083 §4–§5), for the session the
+    // window shows.
+    const activeFor = (sessionId: unknown) => {
+      const active = host?.activeSession ?? null;
+      return active !== null && active.sessionId === sessionId ? active : null;
+    };
+    handle(
+      CMD.serversList,
+      async (_e, sessionId?: unknown) =>
+        (await activeFor(sessionId)?.listServers?.()) ?? {
+          ok: false as const,
+          reason: "no_launcher" as const,
+        },
+    );
+    handle(
+      CMD.serversStart,
+      async (_e, sessionId?: unknown, name?: unknown, confirmed?: unknown) =>
+        typeof name === "string"
+          ? ((await activeFor(sessionId)?.startServer?.(
+              name,
+              typeof confirmed === "string" ? { confirmed } : {},
+            )) ?? { ok: false as const, reason: "no_launcher" as const })
+          : { ok: false as const, reason: "no_entry" as const },
+    );
+    handle(CMD.serversStop, async (_e, sessionId?: unknown, name?: unknown) =>
+      typeof name === "string"
+        ? ((await activeFor(sessionId)?.stopServer?.(name)) ?? { ok: false })
+        : { ok: false },
+    );
     handle(CMD.maybePlayEasterEgg, () => {
       // Fire-and-forget GUI flourish: a successful 板砖-card lift may play the
       // easter-egg clip. The session owns the 50% roll + per-session hourly
@@ -957,10 +1130,12 @@ export function createSessionService(
     );
     // Long-session windowing: page OLDER record blocks into the renderer's
     // window. `before` is the absolute index the renderer's window currently
-    // starts at; the slice returns up to `count` blocks ending there, with
-    // the absolute index it starts at. Session-bound like every stateful
-    // command; a mismatch (switch racing the invoke) returns an empty slice
-    // the store drops by its own staleness guard anyway.
+    // starts at; `count` is a weight (`@herta/core/record-window`), and the
+    // slice returns that much ending there, back to a message that opens a
+    // turn, with the absolute index it starts at.
+    // Session-bound like every stateful command; a mismatch (switch racing
+    // the invoke) returns an empty slice the store drops by its own staleness
+    // guard anyway.
     handle(
       CMD.recordSlice,
       (_e, sessionId: string, before: number, count: number) => {
@@ -975,12 +1150,18 @@ export function createSessionService(
         ) {
           return { start: 0, blocks: [] };
         }
-        const record = active.record;
-        const end = Math.min(before, record.length);
-        const start = Math.max(0, end - Math.min(count, 500));
-        return { start, blocks: record.slice(start, end) };
+        return recordPage(active, before, count);
       },
     );
+    // A jump's window or a page of later blocks (owner 2026-11-12): see
+    // `recordWindowFor`. Session-bound the same way.
+    handle(CMD.recordWindow, (_e, sessionId: string, req: unknown) => {
+      const active = host?.activeSession ?? null;
+      if (active === null || active.sessionId !== sessionId) {
+        return { start: 0, blocks: [] };
+      }
+      return recordWindowFor(active, req);
+    });
     handle(CMD.open, async (_e, id: string) => {
       // Id shape gate BEFORE the transcript-path join in the host (audit
       // 2026-07-13 T1.2): a traversal id must never reach readSessionFile.
@@ -999,7 +1180,12 @@ export function createSessionService(
     handle(CMD.deleteSession, async (_e, id: string) => {
       // Same id gate as CMD.open — deleteSession feeds rmSync path joins.
       if (!isSafeSessionId(id)) return { ok: false, wasActive: false };
-      return activation.deleteAndReconcile(id);
+      const result = await activation.deleteAndReconcile(id);
+      if (result.ok) {
+        hooks.browser?.closeSession(id);
+        hooks.servers?.closeSession(id);
+      }
+      return result;
     });
     // Rename and export (ADR 0072 §3), from the sidebar's session menu —
     // any session, open or not. Same id gate: both join transcript paths.
@@ -1296,9 +1482,37 @@ export function createSessionService(
         ? { ok: false as const, reason: "not_found" as const }
         : { ok: true as const, branches };
     });
+    // A web page the session's record names (ADR 0080 §5): opened in the OS
+    // browser only when it appears in THIS session's web rows — the
+    // renderer is not trusted with an "open any URL" door.
+    handle(CMD.openWebPage, async (_e, sessionId: string, url: unknown) => {
+      const s = host?.activeSession ?? null;
+      if (s === null || s.sessionId !== sessionId) return false;
+      if (typeof url !== "string" || !isRecordedWebUrl(url, s.record))
+        return false;
+      await shell.openExternal(url);
+      return true;
+    });
+    // A file chip's 在资源管理器中显示 (ADR 0072 amendment 2026-10-20): the
+    // same jail as the viewer's 打开 — an outside-resolving name never
+    // reaches the shell.
+    handle(
+      CMD.revealWorkspaceFile,
+      async (_e, sessionId: string, path: string) => {
+        const s = host?.activeSession ?? null;
+        if (s === null || s.sessionId !== sessionId) return false;
+        const r = await resolveInsideWorkspace(s.backendWorkspace, path);
+        if (r.kind !== "ok") return false;
+        shell.showItemInFolder(r.abs);
+        return true;
+      },
+    );
     // The viewer's 打开: hand the jailed path to the OS default app. The
     // same resolution as the read — an outside-resolving name never
-    // reaches shell.openPath.
+    // reaches shell.openPath. Nor does a file the OS would RUN when opened
+    // (a program, a script, a shortcut): that one is shown in its folder
+    // instead, so a file 板砖 wrote is never one click from running with
+    // nothing asked (`open-guard.ts`, review 2026-11-10).
     handle(
       CMD.openWorkspaceFile,
       async (_e, sessionId: string, path: string) => {
@@ -1306,6 +1520,10 @@ export function createSessionService(
         if (s === null || s.sessionId !== sessionId) return false;
         const r = await resolveInsideWorkspace(s.backendWorkspace, path);
         if (r.kind !== "ok") return false;
+        if (await runsWhenOpened(r.abs)) {
+          shell.showItemInFolder(r.abs);
+          return true;
+        }
         return (await shell.openPath(r.abs)) === "";
       },
     );
@@ -1394,6 +1612,7 @@ export function createSessionService(
         },
       },
     });
+    flow.register(handle);
   }
   registerHandlers();
 
@@ -1635,6 +1854,17 @@ export function createSessionService(
       );
       // And the composer-prediction switch (2026-10-10), before any turn.
       host.setComposerPredictions(composerPredictionsEnabled(startupSettings));
+      // The window's browser pages (ADR 0083), for 板砖's page steps.
+      const browser = hooks.browser;
+      host.setBrowserProvider?.(
+        browser !== undefined ? (sid) => browser.driverFor(sid) : null,
+      );
+      // And its dev servers (ADR 0083 §5), journaled for the next launch.
+      const servers = hooks.servers;
+      servers?.attachJournal(host.serverJournal?.() ?? null);
+      host.setServerProvider?.(
+        servers !== undefined ? (sid) => servers.forSession(sid) : null,
+      );
       // Launch lands on the connect screen (接入黑塔空间站) rather than
       // auto-resuming the latest session: the user explicitly opens one from the
       // sidebar or starts a new one from the connect button (user 2026-06-20).
@@ -1649,6 +1879,8 @@ export function createSessionService(
       // it reads is empty unless a run was cut off, so this costs a file read;
       // the process query it may spawn runs off this thread.
       void host.reapOrphanedProcesses();
+      // Flow's clock (ADR 0084 §6): its first tick a minute from now.
+      void flow.start().catch(() => undefined);
     } catch (err) {
       console.error("[herta] session bootstrap failed:", err);
       host = null;
@@ -1669,6 +1901,8 @@ export function createSessionService(
       ownedChannels.length = 0;
       handlersRegistered = false;
     }
+    // Flow's run in flight stops first: it reads the host.
+    await flow.dispose().catch(() => undefined);
     await host?.closeActiveSession();
     host?.dispose();
     host = null;
@@ -1803,4 +2037,24 @@ export function mainNavigationBlock(
     return "turn-in-flight";
   }
   return null;
+}
+
+/** Elements picked on the page, as the renderer sent them (ADR 0083 §4):
+ *  objects with a string line, element and route, nothing else kept. The
+ *  session keeps the ones its text still holds. */
+function pickedElements(raw: unknown): PickedElement[] {
+  if (!Array.isArray(raw)) return [];
+  const out: PickedElement[] = [];
+  for (const p of raw.slice(0, 20)) {
+    if (typeof p !== "object" || p === null) continue;
+    const { line, element, route } = p as Record<string, unknown>;
+    if (
+      typeof line === "string" &&
+      typeof element === "string" &&
+      typeof route === "string" &&
+      line.length > 0
+    )
+      out.push({ line, element, route });
+  }
+  return out;
 }

@@ -21,7 +21,14 @@ export interface ToolCallRequest {
    * A call carrying this MUST NOT be executed and MUST NOT be sent to the
    * permission engine — there is no parsed input to check.
    */
-  malformedArgs?: { raw: string; parseError: string };
+  malformedArgs?: {
+    raw: string;
+    parseError: string;
+    /** The arguments stop where the turn hit its output limit (review
+     *  2026-11-10): the model is told to write smaller pieces, not to fix
+     *  its escaping. */
+    truncated?: true;
+  };
 }
 
 export interface ToolResult<O = unknown> {
@@ -86,7 +93,8 @@ export interface ToolContext {
   signal: AbortSignal;
   workspaceRoot: string;
   reads: ReadLedger;
-  /** Per-brief managed background commands (ADR 0025 slice 4). */
+  /** The processes kept for this brief and ended with it: bash's shell
+   *  (ADR 0040). */
   bg: BackgroundHost;
   bus: EventBus<AgentEvent>;
   memory: MemoryManager;

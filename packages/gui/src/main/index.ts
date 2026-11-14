@@ -1,6 +1,10 @@
 import { join } from "node:path";
 import { isatty } from "node:tty";
-import { pathToFileURL } from "node:url";
+import {
+  setDocumentExtractor,
+  workerDocumentExtractor,
+} from "@herta/app-server/document-worker";
+import { registerHostHelperPids } from "@herta/tools";
 import {
   app,
   BrowserWindow,
@@ -25,26 +29,40 @@ import {
 } from "./app-global-settings.js";
 import { appMenuTemplate } from "./app-menu.js";
 import {
+  APP_INDEX_URL,
+  isAppDocumentUrl,
+  registerAppProtocol,
+} from "./app-protocol.js";
+import {
   registerAssetProtocol,
-  registerAssetScheme,
   resolveDeviceSceneRoot,
 } from "./asset-protocol.js";
+import { registerAttachmentProtocol } from "./attachment-protocol.js";
 import {
-  registerAttachmentProtocol,
-  registerAttachmentScheme,
-} from "./attachment-protocol.js";
+  chromiumSandboxOff,
+  PageHost,
+  pageSession,
+  registerPageHandlers,
+} from "./browser/page-host.js";
+import { ServerRegistry } from "./browser/server-registry.js";
 import { buildCsp } from "./csp.js";
+import createDocumentWorker from "./document-worker?nodeWorker";
+import { flowDirFor } from "./flow-host.js";
+import { registerFlowProtocol } from "./flow-protocol.js";
 import { hideToTray } from "./hide-to-tray.js";
 import { installMode } from "./install-mode.js";
 import { applyLoginPath, launchLocaleEnv } from "./login-path.js";
 import { installChromiumFetch } from "./net-transport.js";
 import {
   QUIT_HOLD_MS,
+  QuitHold,
   quitDisposals,
   quitsWhenAllWindowsClosed,
 } from "./quit-policy.js";
+import { moveRendererStorage } from "./renderer-origin-move.js";
 import { rendererPermissionAllowed } from "./renderer-permissions.js";
 import { shouldReloadAfterCrash } from "./renderer-recovery.js";
+import { registerPrivilegedSchemes } from "./schemes.js";
 import {
   appWorkspaceRoot,
   createSessionService,
@@ -57,20 +75,23 @@ import {
   type UpdateService,
 } from "./update-service.js";
 import { resolveVoiceRoot } from "./voice-path.js";
-import {
-  registerVoiceProtocol,
-  registerVoiceScheme,
-} from "./voice-protocol.js";
+import { registerVoiceProtocol } from "./voice-protocol.js";
 import { applyWindowsPath } from "./win-path.js";
 import { captureWindowState, restoreWindowBounds } from "./window-state.js";
 
 // Privileged-scheme registration MUST happen before app ready (Electron
-// requirement), so the `herta-voice` audio scheme, the `herta-attachment`
-// image scheme (ADR 0048) and the `herta-asset` scene-asset scheme (ADR
-// 0057) are declared at module load.
-registerVoiceScheme();
-registerAttachmentScheme();
-registerAssetScheme();
+// requirement), and in ONE call (`schemes.ts`): the interface's own scheme,
+// the `herta-voice` audio scheme, the `herta-attachment` image scheme (ADR
+// 0048), the `herta-asset` scene-asset scheme (ADR 0057) and Flow's picture
+// scheme (ADR 0084 §8).
+registerPrivilegedSchemes();
+
+// Documents are read on a thread of their own (owner 2026-10-16): pdfjs
+// decoded a page's every picture in one stretch of the main process — 3.1 s
+// for a page of 40 photos — freezing the window and every IPC. Started on
+// the first attach; ended at quit.
+const documentReader = workerDocumentExtractor(() => createDocumentWorker());
+setDocumentExtractor(documentReader.extract);
 
 /**
  * The dev-server URL — ONLY in a non-packaged build (audit 2026-08-05, S2).
@@ -111,12 +132,6 @@ function isDevRendererUrl(url: string): boolean {
   }
 }
 
-/** The packaged renderer's own file:// URL — the ONLY file navigation the
- *  main window may perform (will-navigate pin, audit 2026-07-10 §6). */
-const appFileUrlExact = pathToFileURL(
-  join(__dirname, "../renderer/index.html"),
-).href;
-
 // Global navigation posture (audit T3.7): the same guards are attached to
 // the main window at creation, but per-window wiring means any FUTURE
 // webContents — a second window, a webview, anything a later feature adds —
@@ -125,14 +140,16 @@ const appFileUrlExact = pathToFileURL(
 // navigation pinned to the app's own URL. A surface that genuinely needs
 // more must opt in explicitly where it is created.
 app.on("web-contents-created", (_event, contents) => {
+  // The browser page (ADR 0083 §8) is the one surface that opts out here:
+  // it may go to any http(s) address, and guards itself where it is made.
+  if (contents.session === pageSession()) return;
   contents.setWindowOpenHandler(() => ({ action: "deny" }));
   contents.on("will-navigate", (event, url) => {
     // Same gated constant + origin compare as the main window's handler:
     // re-reading process.env here would leave navigation attacker-controlled
     // even with the LOAD gated (audit S2), and `startsWith` would accept
     // `http://localhost:5173.evil.com` (audit BL21).
-    const allowed =
-      isDevRendererUrl(url) || url.split(/[?#]/, 1)[0] === appFileUrlExact;
+    const allowed = isDevRendererUrl(url) || isAppDocumentUrl(url);
     if (!allowed) event.preventDefault();
   });
 });
@@ -310,6 +327,14 @@ function createWindow(): BrowserWindow {
     // macOS "hidden" still yields the native inset traffic lights and the
     // renderer skips its custom buttons.
     titleBarStyle: "hidden",
+    // macOS only: the lights on the top bar's middle line. Left at the OS
+    // inset they sat at y 8–24, centred 10px above the bar's icons, which
+    // are centred in its 52px (`--topbar-h`; owner 2026-10-24). Electron
+    // lays the buttons one point up and left of the point given (measured:
+    // {8, 18} put the close button at 7,17), so this puts it at 8,18 —
+    // centred at 26, and at the OS's own x, so the 86px the bar keeps for
+    // the lights (`.app.is-mac .topbar`) still holds.
+    trafficLightPosition: { x: 9, y: 19 },
     // Window/taskbar icon (user 2026-07-06): the rounded Herta icon, bundled
     // from resources/ (reference_UX_design/ never ships). The future
     // installer icon comes from the same file via the packager config.
@@ -357,19 +382,21 @@ function createWindow(): BrowserWindow {
   // spawn an unconfigured child window (no preload, inherited privileges).
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   win.webContents.on("will-navigate", (event, url) => {
-    // Pinned to the app's OWN index.html, not any file:// URL (audit
-    // 2026-07-10 §6): the broad scheme match would have let a crafted
-    // anchor navigate this privileged window to an arbitrary local file.
+    // Pinned to the app's OWN document (audit 2026-07-10 §6): a broad
+    // scheme match would have let a crafted anchor navigate this privileged
+    // window somewhere else. Since 2026-11-12 that document is on the app's
+    // scheme (`app-protocol.ts`), not a file:// URL.
     // Unexploitable today (bubbles render no anchors) — defense-in-depth.
-    const allowed =
-      isDevRendererUrl(url) || url.split(/[?#]/, 1)[0] === appFileUrlExact;
+    const allowed = isDevRendererUrl(url) || isAppDocumentUrl(url);
     if (!allowed) event.preventDefault();
   });
 
   if (devRendererUrl !== undefined) {
     void win.loadURL(devRendererUrl);
   } else {
-    void win.loadFile(join(__dirname, "../renderer/index.html"));
+    // The built interface, from its own scheme (owner 2026-11-12): on a
+    // file:// page the content policy's 'self' meant every file on the disk.
+    void win.loadURL(APP_INDEX_URL);
   }
 
   // Own the SessionHost for this window's renderer. start() on
@@ -378,7 +405,45 @@ function createWindow(): BrowserWindow {
   // `before-quit` can hold app exit until the session flushes (a window close
   // mid-stream raced `app.quit()` against the async closeActiveSession —
   // persistence inside it could be truncated).
+  // To the renderer while the window is there. The pages and servers below
+  // can call back after it closed (a page's own events, a server's exit as
+  // the window stops it), and every getter on a destroyed window throws,
+  // `webContents` included — so the window is asked first (Mac check,
+  // 2026-10-24).
+  const toRenderer = (channel: string, ...args: unknown[]): void => {
+    if (!win.isDestroyed() && !win.webContents.isDestroyed())
+      win.webContents.send(channel, ...args);
+  };
+  // The browser pages of this window (ADR 0083): main owns them, and the
+  // session service hands each session its page for 板砖's steps.
+  const pages = new PageHost(
+    win,
+    {
+      state: (state) => toRenderer(EVT.pageState, state),
+      command: (id) => toRenderer(EVT.pageCommand, id),
+      opened: (sessionId) => toRenderer(EVT.pageOpen, sessionId),
+      picked: (sessionId, pick) =>
+        toRenderer(EVT.pagePicked, { sessionId, pick }),
+    },
+    process.platform === "darwin",
+    // Review H2 (owner 2026-11-03): where Chromium's sandbox is off, an
+    // outside page opens in the system browser instead of the page.
+    chromiumSandboxOff(
+      process.argv,
+      (name) => app.commandLine.hasSwitch(name),
+      process.env,
+    ),
+  );
+  registerPageHandlers(pages);
+  // The window's dev servers (ADR 0083 §5): one launcher per session; a
+  // server that answers opens the page tab when the page is not elsewhere.
+  const servers = new ServerRegistry({
+    ready: (sessionId, url) => pages.openOn(sessionId, url),
+    changed: (sessionId) => toRenderer(EVT.serversChanged, sessionId),
+  });
   const service = createSessionService(win.webContents, win, {
+    browser: pages,
+    servers,
     // Settings → Language: the tray tooltip is OS-rendered on hover, so it
     // must be re-pushed when the locale changes (user 2026-07-04 — it stayed
     // 黑塔 after switching to English until restart). The menu labels need the
@@ -455,12 +520,18 @@ function createWindow(): BrowserWindow {
       tray?.refreshMenu();
     }
   });
+
   win.on("closed", () => {
     if (mainWindow === win) {
       mainWindow = null;
       mainService = null;
     }
-    pendingDispose = service.dispose().catch(() => undefined);
+    pages.dispose();
+    // The servers stop with the window, before the app may exit.
+    pendingDispose = Promise.all([service.dispose(), servers.dispose()]).then(
+      () => undefined,
+      () => undefined,
+    );
   });
 
   // Maximize-state → renderer (drives the custom max/restore glyph).
@@ -574,6 +645,21 @@ function openSettingsFromMenu(): void {
   if (!win.webContents.isDestroyed()) win.webContents.send(EVT.openSettings);
 }
 
+/** The application menu's Close (Ctrl/⌘+W, ADR 0082 §2): the renderer
+ *  decides — the viewer's tab when the viewer is open, the window otherwise
+ *  (through `windowClose`, the close-to-tray path). A renderer that cannot
+ *  answer (gone, crashed) leaves the window to close here. */
+function closeRequestedFromMenu(): void {
+  const win = mainWindow;
+  if (win === null || win.isDestroyed()) return;
+  const wc = win.webContents;
+  if (wc.isDestroyed() || wc.isCrashed()) {
+    win.close();
+    return;
+  }
+  wc.send(EVT.closeRequested);
+}
+
 /** The most recent window's in-flight dispose — awaited by before-quit. */
 let pendingDispose: Promise<void> | null = null;
 
@@ -588,6 +674,10 @@ void app
     const s = await readGlobalSettings(app.getPath("userData")).catch(
       () => ({}) as Awaited<ReturnType<typeof readGlobalSettings>>,
     );
+    // A kill aimed at the app is blocked (2026-11-04): Electron's renderers,
+    // GPU and utility processes are the app too, and a kill of one by pid
+    // blanks the window. Listed only when a command line kills something.
+    registerHostHelperPids(() => app.getAppMetrics().map((m) => m.pid));
     // Deny every renderer permission but one (audit BL22; the exception and
     // its reason in renderer-permissions.ts). Electron grants them by default,
     // and a deny by default means a future dependency cannot quietly acquire
@@ -610,10 +700,17 @@ void app
     // send a transcript.
     {
       const csp = buildCsp({
-        isPackaged: installMode().installed,
+        // The strict policy wherever the BUILT interface is what loads, an
+        // unpackaged run of the build included: only the dev server needs
+        // the relaxed one (2026-11-12). A run of the build used to get the
+        // dev policy, so nothing short of an installer exercised the strict.
+        isPackaged: installMode().installed || devRendererUrl === undefined,
         indexHtmlPath: join(__dirname, "../renderer/index.html"),
         ...(devRendererUrl !== undefined ? { devOrigin: devRendererUrl } : {}),
       });
+      // The interface's own scheme, with the policy on every document it
+      // serves (`app-protocol.ts`).
+      registerAppProtocol(join(__dirname, "../renderer"), csp);
       session.defaultSession.webRequest.onHeadersReceived((details, done) => {
         // Documents only. Every request on this session passes through here,
         // including the DeepSeek calls that installChromiumFetch() below routes
@@ -692,6 +789,9 @@ void app
     registerAttachmentProtocol(
       () => mainService?.backendWorkspace() ?? appWorkspaceRoot(),
     );
+    // Serve Flow's kept pictures over herta-flow:// (ADR 0084 §8): an issue
+    // id and a card's file name, nothing that names a path.
+    registerFlowProtocol(flowDirFor(app.getPath("userData")));
     // Serve the 3D device card's bundled assets over herta-asset:// (ADR 0057):
     // Vite copies src/renderer/public into out/renderer, which is what the
     // package carries; an `electron-vite dev` run never populates that copy,
@@ -705,17 +805,27 @@ void app
     // The packaged app's menu drops reload and the developer tools: the
     // frameless window shows no menu, but the default one's shortcuts were
     // live (app-menu.ts). Set before the window so no frame ever has them.
-    {
-      const template = appMenuTemplate({
-        platform: process.platform,
-        isPackaged: installMode().installed,
-        onOpenSettings: openSettingsFromMenu,
-      });
-      if (template !== null) {
-        Menu.setApplicationMenu(Menu.buildFromTemplate(template));
-      }
-    }
+    // It carries Settings… and Close on every platform (ADR 0082 §2).
+    Menu.setApplicationMenu(
+      Menu.buildFromTemplate(
+        appMenuTemplate({
+          platform: process.platform,
+          isPackaged: installMode().installed,
+          onOpenSettings: openSettingsFromMenu,
+          onCloseRequested: closeRequestedFromMenu,
+        }),
+      ),
+    );
+    // What the interface kept under its old file:// origin, carried to the
+    // new one before the first frame reads it (once; a few ms afterwards).
+    // Its hidden window is closed only once the real one exists: before
+    // that it is the last window, and closing the last window quits.
+    const closeStorageMove =
+      devRendererUrl === undefined
+        ? await moveRendererStorage(app.getPath("userData"))
+        : (): void => undefined;
     const firstWindow = createWindow();
+    closeStorageMove();
     // The auto-updater and the tray wait for the renderer's first load
     // (cold-start trace, 2026-09-24): run right after createWindow they held
     // this thread ~100 ms — the electron-updater chunk's compile and require
@@ -850,14 +960,25 @@ app.on("window-all-closed", () => {
 
 // Hold quit until the closing session's dispose settles (bounded — a hung
 // flush must not wedge exit). Without this, app.quit() raced the async
-// closeActiveSession fired on window close.
-let quitHeld = false;
+// closeActiveSession fired on window close. A quit that arrives while the
+// hold is on waits with it (`QuitHold`, Mac findings 2026-10-24, item 6).
+const quitHold = new QuitHold();
 app.on("before-quit", (event) => {
   // An app/OS-initiated quit (Cmd+Q, logout, updater) reaches the window's
   // close handler next — flip the close-to-tray override FIRST or that
   // handler would preventDefault + hide, silently cancelling the quit.
   quitRequested = true;
-  if (quitHeld) return;
+  const held = quitHold.onBeforeQuit(
+    startQuitFlush,
+    () => app.quit(),
+    QUIT_HOLD_MS,
+  );
+  if (held) event.preventDefault();
+});
+
+/** What a quit waits for, started now: the live session's dispose and the
+ *  window's final geometry. Null when there is nothing to wait for. */
+function startQuitFlush(): Promise<unknown> | null {
   // Quit paths that arrive BEFORE the window closed — the updater's
   // quitAndInstall (重启并更新), Cmd+Q, OS logout — found pendingDispose
   // still null here (it was assigned only in win.on("closed"), which has
@@ -894,28 +1015,27 @@ app.on("before-quit", (event) => {
     }
     persistWindowState();
   }
-  if (pendingDispose === null && pendingStateWrite === null) return;
-  quitHeld = true;
-  event.preventDefault();
-  const timeout = new Promise<void>((resolve) => {
-    setTimeout(resolve, QUIT_HOLD_MS);
-  });
-  const flushes = Promise.allSettled([
+  if (pendingDispose === null && pendingStateWrite === null) return null;
+  // Out of sight while it waits: on macOS a direct quit leaves the window
+  // up and looking idle, which is what invited the second Cmd+Q. A
+  // full-screen window stays — hiding it leaves its Space black, and leaving
+  // full screen first would save the wrong state (hide-to-tray.ts).
+  if (w !== null && !w.isDestroyed() && !w.isFullScreen()) w.hide();
+  return Promise.allSettled([
     pendingDispose ?? Promise.resolve(),
     // The window-state write fired by the close handler — a maximize-then-
     // quit must not lose the final geometry capture (2026-07-13).
     pendingStateWrite ?? Promise.resolve(),
-  ]);
-  void Promise.race([flushes, timeout]).finally(() => {
+  ]).finally(() => {
     pendingDispose = null;
     pendingStateWrite = null;
-    app.quit();
   });
-});
+}
 
 // Remove the tray icon promptly at exit (Windows otherwise leaves a ghost
 // icon in the tray until the next hover sweep).
 app.on("will-quit", () => {
   tray?.destroy();
   tray = null;
+  void documentReader.close();
 });

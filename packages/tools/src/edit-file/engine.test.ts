@@ -1,135 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  applyHunks,
-  computeUnifiedDiff,
-  parsePatch,
-  validateHunks,
-} from "./engine.js";
-
-describe("parsePatch", () => {
-  it("accepts a single well-formed hunk", () => {
-    const r = parsePatch([{ search: "old", replace: "new" }]);
-    expect(r.ok).toBe(true);
-    if (!r.ok) throw new Error();
-    expect(r.hunks).toEqual([{ search: "old", replace: "new" }]);
-  });
-
-  it("accepts multi-hunk arrays", () => {
-    const r = parsePatch([
-      { search: "a", replace: "A" },
-      { search: "b", replace: "B" },
-    ]);
-    expect(r.ok).toBe(true);
-  });
-
-  it("accepts empty replace (deletion)", () => {
-    const r = parsePatch([{ search: "remove me\n", replace: "" }]);
-    expect(r.ok).toBe(true);
-  });
-
-  it("rejects non-array input", () => {
-    const r = parsePatch("not an array" as unknown);
-    expect(r.ok).toBe(false);
-    if (r.ok) throw new Error();
-    expect(r.code).toBe("parse_failed");
-  });
-
-  it("rejects empty hunks array", () => {
-    const r = parsePatch([]);
-    expect(r.ok).toBe(false);
-    if (r.ok) throw new Error();
-    expect(r.code).toBe("parse_failed");
-  });
-
-  it("rejects empty search", () => {
-    const r = parsePatch([{ search: "", replace: "x" }]);
-    expect(r.ok).toBe(false);
-    if (r.ok) throw new Error();
-    expect(r.code).toBe("parse_failed");
-  });
-
-  it("rejects non-string fields", () => {
-    const r = parsePatch([{ search: 1, replace: "x" }] as unknown);
-    expect(r.ok).toBe(false);
-  });
-});
-
-describe("validateHunks", () => {
-  it("ok when each search appears exactly once", () => {
-    const r = validateHunks("hello world", [
-      { search: "world", replace: "earth" },
-    ]);
-    expect(r.ok).toBe(true);
-  });
-
-  it("hunk_not_found when search absent", () => {
-    const r = validateHunks("hello world", [{ search: "moon", replace: "x" }]);
-    expect(r.ok).toBe(false);
-    if (r.ok) throw new Error();
-    expect(r.code).toBe("hunk_not_found");
-  });
-
-  it("hunk_ambiguous when search appears multiple times", () => {
-    const r = validateHunks("foo foo", [{ search: "foo", replace: "bar" }]);
-    expect(r.ok).toBe(false);
-    if (r.ok) throw new Error();
-    expect(r.code).toBe("hunk_ambiguous");
-  });
-
-  it("allows sequential hunks on disjoint regions", () => {
-    const r = validateHunks("alpha beta gamma", [
-      { search: "alpha", replace: "ALPHA" },
-      { search: "gamma", replace: "GAMMA" },
-    ]);
-    expect(r.ok).toBe(true);
-  });
-
-  it("hunk_overlap when a later search overlaps an earlier replacement region", () => {
-    const before = "say small thing";
-    const r = validateHunks(before, [
-      { search: "small", replace: "BIG" },
-      { search: "ay BIG", replace: "ay XXX" },
-    ]);
-    expect(r.ok).toBe(false);
-    if (r.ok) throw new Error();
-    expect(r.code).toBe("hunk_overlap");
-  });
-});
-
-describe("applyHunks", () => {
-  it("applies a single hunk", () => {
-    expect(
-      applyHunks("hello world", [{ search: "world", replace: "earth" }]),
-    ).toBe("hello earth");
-  });
-
-  it("applies multiple hunks in order", () => {
-    expect(
-      applyHunks("a b c", [
-        { search: "a", replace: "A" },
-        { search: "c", replace: "C" },
-      ]),
-    ).toBe("A b C");
-  });
-
-  it("preserves CRLF line endings", () => {
-    expect(applyHunks("a\r\nb\r\nc\r\n", [{ search: "b", replace: "B" }])).toBe(
-      "a\r\nB\r\nc\r\n",
-    );
-  });
-
-  it("preserves trailing newline", () => {
-    expect(applyHunks("hi\n", [{ search: "hi", replace: "hello" }])).toBe(
-      "hello\n",
-    );
-  });
-
-  it("supports deletion (empty replace)", () => {
-    expect(
-      applyHunks("a\nremove me\nb\n", [{ search: "remove me\n", replace: "" }]),
-    ).toBe("a\nb\n");
-  });
-});
+import { computeUnifiedDiff } from "./engine.js";
 
 describe("computeUnifiedDiff", () => {
   it("returns empty string when before === after", () => {
@@ -280,13 +150,75 @@ describe("computeUnifiedDiff — bounded cost (2026-08-25)", () => {
     expect(d).toContain("too large to align");
   });
 
-  it("below the budget nothing changes — still the whole-file walk", () => {
+  it("a small file's diff is its change and three lines either side, not the file (review 2026-11-10)", () => {
     const before = lines(300);
-    const after = before.replace("line 10\n", "TEN\n");
+    const after = before.replace("line 200\n", "TWO HUNDRED\n");
     const d = computeUnifiedDiff(before, after, "f.txt");
-    expect(d).not.toContain("unchanged lines omitted");
-    expect(d.split("\n").filter((l) => l.startsWith(" ")).length).toBe(299);
-    expect(count(d, "+")).toBe(1);
-    expect(count(d, "-")).toBe(1);
+    expect(d.split("\n")).toEqual([
+      "--- a/f.txt",
+      "+++ b/f.txt",
+      "\\ 197 unchanged lines omitted",
+      " line 197",
+      " line 198",
+      " line 199",
+      "+TWO HUNDRED",
+      "-line 200",
+      " line 201",
+      " line 202",
+      " line 203",
+      "\\ 96 unchanged lines omitted",
+    ]);
+  });
+
+  it("a change at a file's edge has no marker on that side", () => {
+    const before = lines(10);
+    const top = computeUnifiedDiff(
+      before,
+      before.replace("line 0\n", "ZERO\n"),
+      "f.txt",
+    );
+    expect(top.split("\n").slice(2, 7)).toEqual([
+      "+ZERO",
+      "-line 0",
+      " line 1",
+      " line 2",
+      " line 3",
+    ]);
+    expect(top).toContain("\\ 6 unchanged lines omitted");
+    const end = computeUnifiedDiff(
+      before,
+      before.replace("line 9\n", "NINE\n"),
+      "f.txt",
+    );
+    expect(end.split("\n").slice(-5)).toEqual([
+      " line 6",
+      " line 7",
+      " line 8",
+      "+NINE",
+      "-line 9",
+    ]);
+  });
+
+  it("the lines between two changes are all there, and the counts are the walk's", () => {
+    const before = lines(40);
+    const after = before
+      .replace("line 5\n", "FIVE\n")
+      .replace("line 30\n", "THIRTY\nTHIRTY-AND-A-HALF\n");
+    const d = computeUnifiedDiff(before, after, "f.txt");
+    expect(count(d, "+")).toBe(3);
+    expect(count(d, "-")).toBe(2);
+    // 3 before the first change, the 24 between the two, 3 after the second.
+    expect(d.split("\n").filter((l) => l.startsWith(" ")).length).toBe(30);
+    expect(d).toContain("\\ 2 unchanged lines omitted");
+    expect(d).toContain("\\ 6 unchanged lines omitted");
+  });
+
+  it("a mid-sized file's one-line change is not a quadratic walk", () => {
+    // 1,400 lines sat just under the table's budget: some 45 ms a diff.
+    const before = lines(1400);
+    const after = before.replace("line 700\n", "SEVEN HUNDRED\n");
+    const started = performance.now();
+    for (let i = 0; i < 20; i += 1) computeUnifiedDiff(before, after, "f.txt");
+    expect(performance.now() - started).toBeLessThan(200);
   });
 });

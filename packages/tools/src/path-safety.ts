@@ -10,8 +10,9 @@ import {
   resolve,
   sep,
 } from "node:path";
-import { isPathInside } from "@herta/core";
+import { harnessHomeDir, isPathInside, workspacesBaseDir } from "@herta/core";
 import {
+  foldName,
   hasCredentialSequence,
   isCredentialBasename,
   isSensitiveSegment,
@@ -97,8 +98,18 @@ const HARNESS_READ_PREFIXES = [".herta/logs/", ".herta/tool-results/"];
  * strictly beneath the prefix; skips only the structural `.herta` denial, so
  * the credential-basename and credential-directory checks still run over
  * whatever the user handed us.
+ *
+ * `.herta/web/` rides the same flag (ADR 0080): the pages `web_fetch` stored,
+ * redacted at write. Content brought into the session rather than harness
+ * internals — 板砖 reads the rest of a page there, quotes it back with
+ * `show_excerpt`, and cites it in `report_finding`.
  */
-const ATTACHMENT_READ_PREFIXES = [".herta/attachments/"];
+const ATTACHMENT_READ_PREFIXES = [
+  ".herta/attachments/",
+  ".herta/web/",
+  // What the page steps saw: whole trees and screenshots (ADR 0083 §11).
+  ".herta/browser/",
+];
 
 /**
  * Shell-output evidence the model may EXCERPT back to the user (ADR 0036,
@@ -174,10 +185,13 @@ async function realpathViaExistingAncestor(candidate: string): Promise<string> {
  * them case-sensitively and let both through. A case-SENSITIVE APFS volume
  * (a rare, deliberate format) makes this stricter than needed: an unrelated
  * `.GIT` directory is denied there, which is the fail-closed direction.
- * Linux filesystems are case-sensitive, so nothing folds.
+ * Linux filesystems are case-sensitive, so nothing folds. macOS folds as
+ * the credential checks do (`foldName`): APFS opens `objectſ` for `objects`
+ * (Mac findings 2026-10-24, item 5); NTFS does not fold `ſ`.
  */
 function caseNormalize(s: string): string {
-  return isWindows() || process.platform === "darwin" ? s.toLowerCase() : s;
+  if (process.platform === "darwin") return foldName(s);
+  return isWindows() ? s.toLowerCase() : s;
 }
 
 /** The name Win32 will ACTUALLY open for a path component (audit T3.4 review):
@@ -284,13 +298,22 @@ export function gitDirShapeWriteDenial(
 /** The deepest existing ancestor of `candidate`, realpath-ed, with the
  *  not-yet-created suffix re-joined — the sync twin of
  *  {@link realpathViaExistingAncestor}, for the sync shell classifier.
- *  Bounded by path depth; the raw candidate when nothing resolves. */
+ *  Bounded by path depth; the raw candidate when nothing resolves.
+ *
+ *  The NATIVE realpath, which returns the name on disk: JS `realpathSync`
+ *  keeps the input's spelling, so on a case-insensitive disk `…/VERIFY/WS`
+ *  stayed beside `…/verify/ws` and `.herta` writes through it were not
+ *  denied (Mac findings 2026-10-24, item 3). The async twin was already
+ *  native. On macOS the Data volume's firmlink spelling is folded too, and
+ *  the name is taken in NFC — APFS opens either normalization. */
 function realpathSyncViaExistingAncestor(candidate: string): string {
   let dir = candidate;
   const suffix: string[] = [];
   while (true) {
     try {
-      return join(realpathSync(dir), ...suffix.reverse());
+      return darwinCanonical(
+        join(realpathSync.native(dir), ...suffix.reverse()),
+      );
     } catch {
       const parent = dirname(dir);
       if (parent === dir) return candidate;
@@ -298,6 +321,65 @@ function realpathSyncViaExistingAncestor(candidate: string): string {
       dir = parent;
     }
   }
+}
+
+/** `/System/Volumes/Data/Users/x` IS `/Users/x` on macOS — the firmlink,
+ *  which even the native realpath leaves as spelled — and an NFD name is the
+ *  NFC one. Identity elsewhere. */
+function darwinCanonical(p: string): string {
+  if (process.platform !== "darwin") return p;
+  const DATA = "/System/Volumes/Data";
+  const unlinked = p.startsWith(`${DATA}/`) ? p.slice(DATA.length) : p;
+  return unlinked.normalize("NFC");
+}
+
+/** Both on one UNC share or neither: canonicalizing a share the workspace
+ *  is not on would block the main thread on a network timeout for nothing
+ *  (ADR 0068), and it cannot be the workspace. */
+function mayShareSpelling(root: string, target: string): boolean {
+  const unc = (p: string): boolean => /^(\\\\|\/\/)/.test(p);
+  return unc(root) === unc(target);
+}
+
+/**
+ * Where `target` lands in the workspace, spelled from `workspaceRoot` — or
+ * null when it lands outside. Inside as written, or once both are
+ * canonicalized: another case of the root on a case-insensitive disk, an
+ * 8.3 name, `/tmp` for `/private/tmp`, the macOS firmlink spelling, a link
+ * from outside into the workspace. Those are the same place, and the
+ * command lanes judged them lexically, so `echo x > …/VERIFY/WS/.herta/…`
+ * asked as "outside" where the root's own spelling blocked, and `find
+ * …/VERIFY/WS -name permissions.json -delete` went to the reviewer as a
+ * plain write (Mac findings 2026-10-24, item 3). A target inside as written
+ * comes back as written: a link from inside to outside keeps the lexical
+ * answer it always had.
+ */
+export function workspaceSpelling(
+  workspaceRoot: string,
+  target: string,
+): string | null {
+  const abs = resolve(target);
+  if (isPathInside(workspaceRoot, abs)) return abs;
+  if (!mayShareSpelling(workspaceRoot, abs)) return null;
+  const root = realpathSyncViaExistingAncestor(resolve(workspaceRoot));
+  const landed = realpathSyncViaExistingAncestor(abs);
+  if (!isPathInside(root, landed)) return null;
+  const rel = relativePath(root, landed);
+  return rel === ""
+    ? resolve(workspaceRoot)
+    : join(resolve(workspaceRoot), rel);
+}
+
+/** `dir` is the workspace root or a directory above it — as written or
+ *  canonically ({@link workspaceSpelling}'s spellings): a walk from there
+ *  reaches `.herta`. */
+export function holdsWorkspace(dir: string, workspaceRoot: string): boolean {
+  if (isPathInside(dir, workspaceRoot)) return true;
+  if (!mayShareSpelling(workspaceRoot, dir)) return false;
+  return isPathInside(
+    realpathSyncViaExistingAncestor(resolve(dir)),
+    realpathSyncViaExistingAncestor(resolve(workspaceRoot)),
+  );
 }
 
 /** True when a path RELATIVE to the workspace passes through a directory
@@ -354,9 +436,11 @@ export function gitInternalsWrite(
  * Denial message when a COMMAND would write into the harness's own state —
  * `.herta` anywhere beneath the workspace — else null (2026-09-30).
  *
- * `.herta/permissions.json` holds the workspace's automatic-review choice
- * (once also ADR 0030's command rules and ADR 0064's trust); beside it sit memory, logs
- * and attachments. The editors could never write there (the structural
+ * `.herta` holds the session records, the run journal, what undo keeps,
+ * memory, logs and attachments; until 2026-11-12 `.herta/permissions.json`
+ * held the workspace's automatic-review choice too (once also ADR 0030's
+ * command rules and ADR 0064's trust), which now lives in the harness's
+ * home ({@link harnessHomeWriteDenial}). The editors could never write there (the structural
  * denial in {@link resolveSafePath}), but a shell could: a redirect, `tee`,
  * `cp`, `rm` were classes the trust tier answered with no card, so one line in
  * a trusted workspace — every managed one, by default — planted rules or trust
@@ -388,9 +472,107 @@ export function hertaStateWriteDenial(
     relativeTouchesHerta(workspaceRoot, resolved) ||
     relativeTouchesHerta(rootResolved, resolved)
   ) {
-    return `writes into .herta — the harness's own state (its automatic-review choice, memory, logs); no command may change it`;
+    return `writes into .herta — the harness's own state (its records, memory, logs); no command may change it`;
   }
   return null;
+}
+
+const HARNESS_HOME_DENIAL =
+  "writes into the harness's home folder (~/.herta) — its own state (the automatic-review choices, user memory); no command may change it";
+
+/**
+ * Denial message when a COMMAND would write into the harness's HOME —
+ * `<home>/.herta`, less the managed workspaces under it — else null
+ * (2026-11-12, ADR 0064 amendment).
+ *
+ * The owner's automatic-review choices live there, for every workspace
+ * (`WorkspacePermissions`). {@link hertaStateWriteDenial} is relative to the
+ * workspace and says nothing of a path outside it: such a write asked as
+ * leaving the workspace, a class a review model may answer, so with review
+ * on an approved `cp x <home>/.herta/review-choices.json` would have set any
+ * workspace's choice. This is the same rule for the other place: a harness
+ * that obeys a file the agent can write has handed the agent its own
+ * permissions.
+ *
+ * Judged as spelled and through links (the deepest existing ancestor
+ * realpath-ed), like its twin. `<home>/.herta/workspaces/**` is not this
+ * guard's: a session's managed workspace lives there, its ordinary files
+ * must stay writable, and its own `.herta` is the twin's. The folder itself
+ * counts, so `rm -rf` or `mv` of it is refused.
+ */
+export function harnessHomeWriteDenial(
+  absolute: string,
+  home: string = homedir(),
+): string | null {
+  const state = harnessHomeDir(home);
+  const managed = workspacesBaseDir(home);
+  const spelled = resolve(absolute);
+  if (isPathInside(state, spelled) && !isPathInside(managed, spelled))
+    return HARNESS_HOME_DENIAL;
+  const resolved = realpathSyncViaExistingAncestor(spelled);
+  const stateResolved = realpathSyncViaExistingAncestor(state);
+  const managedResolved = realpathSyncViaExistingAncestor(managed);
+  if (
+    isPathInside(stateResolved, resolved) &&
+    !isPathInside(managedResolved, resolved)
+  )
+    return HARNESS_HOME_DENIAL;
+  return null;
+}
+
+/** `dir` is the harness's home or a directory above it — as written or
+ *  canonically: a walk started there reaches it (`find ~ -delete`). */
+export function holdsHarnessHome(
+  dir: string,
+  home: string = homedir(),
+): boolean {
+  const state = harnessHomeDir(home);
+  if (isPathInside(dir, state)) return true;
+  return isPathInside(
+    realpathSyncViaExistingAncestor(resolve(dir)),
+    realpathSyncViaExistingAncestor(state),
+  );
+}
+
+/**
+ * True when an absolute path PATTERN could expand to a path inside the
+ * harness's home: segment by segment it is the home's own spelling or a
+ * live `*`, `?`, `[…]` that matches it ({@link globSegmentMatches}: a
+ * leading `.` must be spelled, so `*` cannot reach `.herta` while `.h*`
+ * can). The literal spelling is {@link harnessHomeWriteDenial}'s; this is
+ * for what bash would expand, and a pattern that could also be a managed
+ * workspace (`<home>/.herta/<any>/x`) counts: only the literal `workspaces`
+ * segment is left to the other rules. Read against the home as spelled and
+ * as the disk names it.
+ */
+export function patternReachesHarnessHome(
+  absolutePattern: string,
+  home: string = homedir(),
+): boolean {
+  const segmentsOf = (p: string): string[] =>
+    resolve(p)
+      .split(/[\\/]/)
+      .filter((seg) => seg.length > 0);
+  // Both sides as Win32 opens them: the drive segment is `C:` on each, and
+  // canonicalizing one alone made it `C` against `C:`.
+  const sameSegment = (a: string, b: string): boolean =>
+    caseNormalize(winCanonicalizeSegment(a)) ===
+    caseNormalize(winCanonicalizeSegment(b));
+  const pattern = segmentsOf(absolutePattern);
+  const reaches = (state: string): boolean => {
+    const target = segmentsOf(state);
+    if (pattern.length < target.length) return false;
+    for (let i = 0; i < target.length; i += 1) {
+      const seg = pattern[i] as string;
+      const name = target[i] as string;
+      if (!sameSegment(seg, name) && !globSegmentMatches(seg, name))
+        return false;
+    }
+    const next = pattern[target.length];
+    return next === undefined || !sameSegment(next, "workspaces");
+  };
+  const state = harnessHomeDir(home);
+  return reaches(state) || reaches(realpathSyncViaExistingAncestor(state));
 }
 
 /**

@@ -17,17 +17,21 @@ import { join, relative } from "node:path";
 import {
   type AgentEvent,
   type ApprovalOverlayState,
+  type BrowserHost,
   defaultWorkspaceFor,
   dispatchJournalPath,
   type EventBus,
   isAbortError,
   type LastTurnEnd,
+  type PickedElement,
   type ProviderAdapter,
   type RepoContextSnapshot,
   readDispatchJournal,
   readUndoIndex,
   restoreUndo,
   resumableRun,
+  type ServerHost,
+  ServerHostError,
   type SessionTopic,
   type SystemBlock,
   type TerminalRecord,
@@ -44,8 +48,10 @@ import {
   type MetaThinkCorpus,
   type OpeningChoice,
   type PromptLang,
+  type ServerNote,
   type StaticHertaPrefix,
   sanitizeSystemBlock,
+  serverNoteBlock,
   V2ActorDriver,
 } from "@herta/herta";
 import { type ApiKey, deepseekVisionCaptioner } from "@herta/providers";
@@ -57,10 +63,13 @@ import {
   describeLog,
   describeRepoOutcome,
   describeWorkingDiff,
+  entryCommand,
   type GitReadTimeout,
   type LogPage,
   type LogQuery,
+  makeRunCommandRule,
   type RepoContextOutcome,
+  readLaunchFile,
   type WorkingDiff,
 } from "@herta/tools";
 import { type ImageCaptioner, migrateAttachments } from "./attachments.js";
@@ -92,8 +101,11 @@ import { loadSessionTitleState, SessionTitler } from "./session-titler.js";
 import { loadSessionVoice, type SessionVoice } from "./session-voice.js";
 import {
   type BackendStack,
+  backendUnavailableMessage,
   createActorStack,
   createBackendStack,
+  defaultDigestModel,
+  defaultWebClient,
   digestModelFrom,
   prepareBackendStack,
 } from "./session-wiring.js";
@@ -115,11 +127,16 @@ import type {
   ResolveApprovalOpts,
   ResumeEvent,
   RewindResult,
+  ServerEntryView,
+  ServerListing,
   Session,
   SessionAgentEvent,
+  SessionModels,
   SpeechControlEvent,
   StageImagesResult,
+  StartServerResult,
   SteerTextResult,
+  TalkTextResult,
   TitleEvent,
   TurnLifecycleEvent,
   UndoEvent,
@@ -320,20 +337,6 @@ export interface SessionInternalDeps {
 }
 
 /**
- * ADR 0044: the record note a NEW session carries when the configured
- * `minimal` contract fell back to `standard` because no bash exists on this
- * machine. Names the remedy — before this, the only surfaces were a
- * console.warn no GUI user sees and a Settings sentence that named the
- * problem but not the fix. Static harness text (the appendSystemNote caller
- * owns sanitizing; there is no user input here).
- */
-function contractFallbackNote(lang: PromptLang): string {
-  return lang === "en"
-    ? 'no bash found — the "minimal" tool contract is unavailable, running "standard" this session. Install Git for Windows (or set HERTA_BASH) and restart.'
-    : "未检测到 bash：工具契约「极简」不可用，本次按「标准」运行。安装 Git for Windows（或设置 HERTA_BASH）后重启生效。";
-}
-
-/**
  * How long `close()` waits for an interrupted turn to finish unwinding (the
  * bridge's done-marker, the driver's persist) before it tears down anyway.
  * A host's quit hold must outlast it (ADR 0071 §1.7): the desktop app held
@@ -508,6 +511,11 @@ export class SessionImpl implements Session {
    *  git-tool refresh after a workspace move, and its digest-tool mount
    *  when the first document lands. Both optional (tests build without). */
   private readonly onWorkspaceChanged: (() => void) | undefined;
+  /** The session's dev servers (ADR 0083 §5); null without a launcher. */
+  private readonly servers: ServerHost | null;
+  /** Ask-class launcher entries the Trailblazer confirmed in this session —
+   *  by name, argv and directory, so a changed entry asks again. */
+  private readonly confirmedServers = new Set<string>();
   private readonly onDocumentAttached: (() => void) | undefined;
   /** True between the backend's `turn.started` and its `turn.finished` /
    *  `turn.failed` on the bus — the window in which a steer has a sampling
@@ -598,6 +606,7 @@ export class SessionImpl implements Session {
     /** ADR 0067: the toolset follows the environment. Fired after the
      *  workspace holder moves (setWorkspace / resetWorkspace). */
     onWorkspaceChanged?: () => void;
+    servers?: ServerHost | null;
     /** ADR 0067: fired when a readable document is attached. */
     onDocumentAttached?: () => void;
     /** The contract this session's backend runs (ADR 0040): an interrupted
@@ -608,6 +617,7 @@ export class SessionImpl implements Session {
     this.steer = opts.steer;
     this.bus = opts.bus;
     this.onWorkspaceChanged = opts.onWorkspaceChanged;
+    this.servers = opts.servers ?? null;
     this.onDocumentAttached = opts.onDocumentAttached;
     this.lastTurnEnd = opts.lastTurnEnd;
     this.sessionId = opts.sessionId;
@@ -665,10 +675,10 @@ export class SessionImpl implements Session {
   }
 
   /**
-   * ADR 0044: flush the deferred contract-fallback note (minimal asked for,
-   * no bash on this machine) as an out-of-turn `→ 系统` record note — the
+   * ADR 0044, ADR 0086: flush the deferred no-bash note (no bash on this
+   * machine, so no backend) as an out-of-turn `→ 系统` record note — the
    * shared record per D7, so the user learns the remedy where they live and
-   * Herta can answer "why is 板砖 on the standard contract" from the record.
+   * Herta can answer "why can 板砖 not run here" from the record.
    *
    * Deferred rather than appended at create because the record's block order
    * must match the persisted order: a NEW session's opening seed is persisted
@@ -679,11 +689,44 @@ export class SessionImpl implements Session {
    * opening) and from submitText (a front-end that never plays openings, e.g.
    * the CLI — the note lands before the first user block).
    */
+  /** Launcher events waiting for a moment between turns (ADR 0083 §5). */
+  private readonly pendingServerNotes: ServerNote[] = [];
+
+  noteServer(note: ServerNote): void {
+    this.pendingServerNotes.push(note);
+    this.flushServerNotes();
+  }
+
+  /** Between turns only, and after a new session's opening is in the
+   *  record — the same ordering the contract note keeps (above). The names
+   *  and commands come from herta.launch.json: sanitized at construction,
+   *  the one gate on a system block. */
+  private flushServerNotes(): void {
+    if (
+      this.pendingServerNotes.length === 0 ||
+      this.currentTurn !== null ||
+      this.undoing ||
+      this.pendingOpening !== null
+    )
+      return;
+    for (const note of this.pendingServerNotes.splice(0)) {
+      this.driver.appendSystemBlock(sanitizeSystemBlock(serverNoteBlock(note)));
+    }
+    this._record = this.driver.getRecord();
+  }
+
   private flushContractNote(): void {
     const note = this.pendingContractNote;
     if (note === null || this.currentTurn !== null) return;
     this.pendingContractNote = null;
-    this.driver.appendSystemNote("系统", note);
+    // Marked as a notice: the desktop folds an out-of-turn system note
+    // behind a click, and this one says that nothing runs.
+    this.driver.appendSystemBlock({
+      kind: "system",
+      label: "系统",
+      body: note,
+      notice: "backend_unavailable",
+    });
     this._record = this.driver.getRecord();
   }
 
@@ -785,6 +828,8 @@ export class SessionImpl implements Session {
       // entry replacing `currentTurn` mid-turn is what the callers' gates
       // forbid; the check keeps a wrong release impossible regardless.)
       if (this.currentTurn?.turnId === turnId) this.currentTurn = null;
+      // A launcher event that came mid-turn lands now (ADR 0083 §5).
+      this.flushServerNotes();
       // A dispatch, a Stop or a 继续 may have changed what can be continued
       // (ADR 0071 §1.4).
       void this.refreshResumable();
@@ -812,6 +857,14 @@ export class SessionImpl implements Session {
 
   get record(): TerminalRecord {
     return this._record;
+  }
+
+  /** What the chat has been sent, each block with the stamp it went with
+   *  (review 2026-11-05, N5). `record` is stale mid-turn, and this sitting's
+   *  blocks are stamped only on their way out, so a page of it cost a run its
+   *  耗时 and an open 完整记录 tab its run. */
+  get shownRecord(): TerminalRecord {
+    return this.sink.flushedRecord() ?? this._record;
   }
 
   get overlay(): ApprovalOverlayState | null {
@@ -985,12 +1038,14 @@ export class SessionImpl implements Session {
   }
 
   /** Where the latest turn starts: its user block, never a steer (ADR 0063
-   *  §1.10) — the cut a rewind makes. -1 with no turn. */
+   *  §1.10) nor talk during a run (ADR 0085) — the cut a rewind makes. -1
+   *  with no turn. */
   private latestTurnStart(): number {
     const record = this.driver.getRecord();
     for (let i = record.length - 1; i >= 0; i -= 1) {
       const b = record[i];
-      if (b?.kind === "user" && b.steer !== true) return i;
+      if (b?.kind === "user" && b.steer !== true && b.duringRun !== true)
+        return i;
     }
     return -1;
   }
@@ -1096,6 +1151,7 @@ export class SessionImpl implements Session {
       } finally {
         this.undoing = false;
         landed();
+        this.flushServerNotes();
       }
     }
   }
@@ -1151,7 +1207,11 @@ export class SessionImpl implements Session {
 
   async submitText(
     text: string,
-    opts: { readonly stagedImageIds?: readonly string[] } = {},
+    opts: {
+      readonly stagedImageIds?: readonly string[];
+      readonly mentions?: readonly string[];
+      readonly picks?: readonly PickedElement[];
+    } = {},
   ): Promise<{ readonly turnId: string } | { readonly needsKey: true }> {
     // No DeepSeek key yet (first run, or it was cleared): don't run the turn —
     // signal the renderer to prompt for one. The opening (no LLM call) already
@@ -1205,7 +1265,25 @@ export class SessionImpl implements Session {
         // snapshot. The driver persists each new block to JSONL inside
         // runTurn; nothing to re-persist here. See
         // docs/superpowers/specs/2026-06-01-gui-record-stream-ordering-design.md.
-        await this.driver.runTurn(text, signal, true, userAttachments);
+        // Only the paths the text still holds (ADR 0072 amendment
+        // 2026-10-20): a stale or forged list names nothing.
+        const mentions = (opts.mentions ?? []).filter(
+          (p) => typeof p === "string" && p.length > 0 && text.includes(p),
+        );
+        // The same for picked elements (ADR 0083 §4): only lines the text
+        // still holds.
+        const picks = (opts.picks ?? []).filter(
+          (p) =>
+            typeof p?.line === "string" &&
+            typeof p.element === "string" &&
+            typeof p.route === "string" &&
+            p.line.length > 0 &&
+            text.includes(p.line),
+        );
+        await this.driver.runTurn(text, signal, true, userAttachments, {
+          ...(mentions.length > 0 ? { mentions } : {}),
+          ...(picks.length > 0 ? { picks } : {}),
+        });
       },
       {
         onFinished: () => this.recordTurnEnd("completed"),
@@ -1292,6 +1370,9 @@ export class SessionImpl implements Session {
   async regenerateLastReplyIfOrphaned(): Promise<void> {
     const last = this.driver.getRecord().at(-1);
     if (last === undefined || last.kind !== "user") return;
+    // Talk during a run is not a message to re-run as a turn (ADR 0085): it
+    // fell inside a run whose own ending decides what reopening does.
+    if (last.duringRun === true) return;
     // A trailing user block is NOT proof of a crash (audit 2026-07-24, 1.6).
     // An interrupted turn — and a provider-failed one — leaves a byte-identical
     // file: the user block is flushed at the actor loop's head and persisted
@@ -1350,6 +1431,7 @@ export class SessionImpl implements Session {
       // No seed to stream (resumed session, or a new one without an opening)
       // — but a deferred contract note still wants the record (ADR 0044).
       this.flushContractNote();
+      this.flushServerNotes();
       return;
     }
     // Single-turn invariant (see submitText): don't stream the opening over an
@@ -1395,6 +1477,7 @@ export class SessionImpl implements Session {
     // durable either way): the contract-fallback note follows it into the
     // record, so the user reads the opening first and the notice second.
     this.flushContractNote();
+    this.flushServerNotes();
   }
 
   async interrupt(opts?: {
@@ -1425,24 +1508,86 @@ export class SessionImpl implements Session {
    * for the loop's next head, and the bus carries `user.steer`, which the
    * bridge projects into the shared record as a user block (Herta sees it,
    * D7) and stages as a beat. Anything else — idle, Herta's own speech,
-   * the commentary after the run — answers `queued`, records nothing, and
-   * leaves the caller holding the text for the next turn.
+   * the commentary after the run, a turn already stopped whose loop has not
+   * seen it yet — answers `queued`, records nothing, and leaves the caller
+   * holding the text for the next turn.
    */
-  async steerText(text: string): Promise<SteerTextResult> {
+  async steerText(
+    text: string,
+    picks?: readonly PickedElement[],
+  ): Promise<SteerTextResult> {
     const trimmed = text.trim();
     if (
       trimmed.length === 0 ||
       this.currentTurn === null ||
+      this.currentTurn.abortController.signal.aborted ||
       !this.backendRunning
     ) {
       return { queued: true };
     }
     this.steer.push(trimmed);
+    // Picked elements whose lines the steer still holds (ADR 0083 §4).
+    const held = (picks ?? []).filter(
+      (p) =>
+        typeof p?.line === "string" &&
+        typeof p.element === "string" &&
+        typeof p.route === "string" &&
+        p.line.length > 0 &&
+        trimmed.includes(p.line),
+    );
     this.bus.publish({
       type: "user.steer",
       layer: "actor",
       id: randomUUID(),
       text: trimmed,
+      ...(held.length > 0 ? { picks: held } : {}),
+    });
+    return { accepted: this.currentTurn.turnId };
+  }
+
+  /**
+   * A message to Herta while 板砖 works (ADR 0085 step 3). The same window
+   * as a steer — a backend run working — and the same route into the record:
+   * the bus carries `user.talk`, and the bridge, the record's one writer
+   * while a run works, records it as talk and has her answer it. It never
+   * reaches 板砖. Outside a run, or once the turn is stopped: `queued`,
+   * nothing recorded.
+   */
+  async talkText(
+    text: string,
+    opts: {
+      readonly mentions?: readonly string[];
+      readonly picks?: readonly PickedElement[];
+    } = {},
+  ): Promise<TalkTextResult> {
+    const trimmed = text.trim();
+    if (
+      trimmed.length === 0 ||
+      this.currentTurn === null ||
+      this.currentTurn.abortController.signal.aborted ||
+      !this.backendRunning
+    ) {
+      return { queued: true };
+    }
+    // Only the paths and picked lines the text still holds, as a message's.
+    const mentions = (opts.mentions ?? []).filter(
+      (p) => typeof p === "string" && p.length > 0 && trimmed.includes(p),
+    );
+    const picks = (opts.picks ?? []).filter(
+      (p) =>
+        typeof p?.line === "string" &&
+        typeof p.element === "string" &&
+        typeof p.route === "string" &&
+        p.line.length > 0 &&
+        trimmed.includes(p.line),
+    );
+    this.bus.publish({
+      type: "user.talk",
+      layer: "actor",
+      id: randomUUID(),
+      text: trimmed,
+      ...(mentions.length > 0 ? { mentions } : {}),
+      ...(picks.length > 0 ? { picks } : {}),
     });
     return { accepted: this.currentTurn.turnId };
   }
@@ -1463,6 +1608,11 @@ export class SessionImpl implements Session {
     if (this.currentTurn !== null || this.undoing) {
       return { ok: false, reason: "turn_in_progress" };
     }
+    // The composer's suggestion is for the exchange this withdraws. One in
+    // flight is stopped here, before the first await: a rewind is allowed
+    // exactly while it runs, and it used to land after the cut (review
+    // 2026-11-10, second pass). The renderer drops one already shown.
+    this.abortPrediction();
     // The turn's edits, read before the cut moves the turn's start (ADR
     // 0074 §4): they leave the record with it, and stay undoable from the
     // rewind notice until the next send.
@@ -1499,7 +1649,7 @@ export class SessionImpl implements Session {
     // is the only event that shrinks the record, and the renderer cannot work
     // the pruning out for itself: a topic anchored in surviving history but
     // BORN in the withdrawn turn looks alive from there (user 2026-07-30).
-    const tail = recordTail(this._record);
+    const tail = recordTail(this.shownRecord);
     this.projector.emitRecord({
       kind: "reset",
       record: tail.record,
@@ -1651,6 +1801,109 @@ export class SessionImpl implements Session {
    * Mirrors rewindLastTurn's guard; the DeviceCard menu is clickable mid-turn,
    * so enforce it here rather than trusting the renderer.
    */
+  async listServers(): Promise<ServerListing> {
+    if (this.servers === null) return { ok: false, reason: "no_launcher" };
+    const file = await readLaunchFile(this.wsHolder.current);
+    if (!file.ok)
+      return { ok: false, reason: file.code, message: file.message };
+    const host = this.servers;
+    return {
+      ok: true,
+      entries: file.entries.map((e): ServerEntryView => {
+        const st = host.status(e.name);
+        return {
+          name: e.name,
+          command: entryCommand(e),
+          port: e.port,
+          url: e.url,
+          state: st?.state ?? "idle",
+          ...(st !== null ? { by: st.by } : {}),
+          ...(st !== null && st.logPath !== "" ? { logPath: st.logPath } : {}),
+          ...(st?.exitCode !== undefined ? { exitCode: st.exitCode } : {}),
+        };
+      }),
+    };
+  }
+
+  async startServer(
+    name: string,
+    opts: { readonly confirmed?: string } = {},
+  ): Promise<StartServerResult> {
+    if (this.servers === null) return { ok: false, reason: "no_launcher" };
+    const root = this.wsHolder.current;
+    const file = await readLaunchFile(root);
+    if (!file.ok)
+      return { ok: false, reason: file.code, message: file.message };
+    const entry = file.entries.find((e) => e.name === name);
+    if (entry === undefined) return { ok: false, reason: "no_entry" };
+    const command = entryCommand(entry);
+    // Classified exactly as run_command would classify this argv in this
+    // directory (ADR 0083 §5): 板砖 may have written the file, and a page
+    // it read could have steered what it wrote. The Trailblazer's own
+    // click answers an ask — never a reviewer (it is their action).
+    const verdict = await makeRunCommandRule()(
+      {
+        id: `run-${name}`,
+        tool: "run_command",
+        input: {
+          argv: [entry.command, ...entry.args],
+          cwd: relative(root, entry.cwd) || ".",
+        },
+      },
+      { workspaceRoot: root } as Parameters<
+        ReturnType<typeof makeRunCommandRule>
+      >[1],
+    );
+    if (verdict.kind === "deny")
+      return { ok: false, reason: "refused", message: verdict.reason };
+    const key = [entry.name, entry.command, ...entry.args, entry.cwd].join(
+      "\0",
+    );
+    if (verdict.kind === "ask") {
+      // The answer names the card it answers: the file is read again here,
+      // and an entry rewritten while the card was open asks again with what
+      // it runs now (review 2026-10-30, U2).
+      if (opts.confirmed === key) this.confirmedServers.add(key);
+      else if (!this.confirmedServers.has(key))
+        return {
+          ok: false,
+          reason: "confirm",
+          command,
+          ...(verdict.code !== undefined ? { code: verdict.code } : {}),
+          shown: key,
+        };
+    }
+    try {
+      const started = await this.servers.start(entry, { by: "trailblazer" });
+      this.noteServer({
+        kind: "started",
+        name: entry.name,
+        command,
+        url: started.status.url,
+        already: started.already,
+      });
+      return { ok: true, already: started.already, url: started.status.url };
+    } catch (err) {
+      if (!(err instanceof ServerHostError)) throw err;
+      return {
+        ok: false,
+        reason: "failed",
+        code: err.code,
+        message: err.message,
+      };
+    }
+  }
+
+  async stopServer(name: string): Promise<{ readonly ok: boolean }> {
+    if (this.servers === null) return { ok: false };
+    const before = this.servers.status(name);
+    const running = before?.state === "starting" || before?.state === "ready";
+    const after = await this.servers.stop(name);
+    if (after === null) return { ok: false };
+    if (running) this.noteServer({ kind: "stopped", name });
+    return { ok: true };
+  }
+
   async setWorkspace(workspace: string): Promise<WorkspaceSetResult> {
     if (this.currentTurn !== null) {
       return { ok: false, reason: "turn_in_progress" };
@@ -2046,6 +2299,15 @@ export class SessionImpl implements Session {
      *  holder, 2026-10-10). Absent = off: a host that offers no switch
      *  (tests, the CLI) makes no prediction calls. */
     composerPredictions?: () => boolean;
+    /** The session's browser page (ADR 0083), from the host's provider.
+     *  Absent = no page steps (tests, the CLI). */
+    browser?: BrowserHost | null;
+    /** The session's dev servers (ADR 0083 §5), from the host's provider.
+     *  Absent = no dev_server (tests, the CLI). */
+    servers?: ServerHost | null;
+    /** Live getter for the models and 板砖's effort (from the host's holder,
+     *  ADR 0081). Absent = the config's, fixed (tests). */
+    models?: () => SessionModels;
     /** Interaction language (slice 4): threaded into every language-
      *  parameterized constructor below (static prefix, seeds, opening,
      *  meta-think, hints, recap, title) and into the V2ActorDriver. The
@@ -2092,22 +2354,43 @@ export class SessionImpl implements Session {
     // provider (offline-providers.ts) — and the same for the actor's roles
     // and the title below.
     const stubs = deps.providerOverrides;
-    // Backend chat adapter — dispatch on provider type via the shared factory.
-    // Thinking-effort normalization lives in provider-factory.ts (the broad
-    // ThinkingEffort enum maps onto each vendor's own vocabulary). Settings →
-    // Coprocessor supplies the model and the thinking level (default "high").
-    const backendProvider =
-      stubs?.backend ??
-      (stubs !== undefined
-        ? offlineChatProvider("backend")
-        : createChatProvider({
-            type: config.providers.type ?? "deepseek",
-            apiKey,
-            model: config.providers.backendModel,
-            actorModel: config.providers.actorModel,
-            thinking: config.thinking,
-            ...baseUrl,
-          }));
+    // The live choice (ADR 0081): Herta's model is read at each turn's
+    // start, 板砖's model and effort at each dispatch's — a change in
+    // Settings lands at the next one, never inside a call.
+    const models: () => SessionModels =
+      opts.models ??
+      (() => ({
+        actorModel: config.providers.actorModel,
+        backendModel: config.providers.backendModel,
+        ...(config.thinking !== undefined ? { thinking: config.thinking } : {}),
+      }));
+    // One provider per model and effort, built when a dispatch first needs
+    // it; a run in flight keeps the one it started with. Built through the
+    // fork's provider factory (provider-factory.ts) so the live model applies
+    // to whichever provider the user configured.
+    let backendProviderKey = "";
+    let backendProviderBuilt: ProviderAdapter | null = null;
+    const backendProvider = (): ProviderAdapter => {
+      if (stubs?.backend !== undefined) return stubs.backend;
+      if (stubs !== undefined) {
+        backendProviderBuilt ??= offlineChatProvider("backend");
+        return backendProviderBuilt;
+      }
+      const m = models();
+      const key = `${m.backendModel}|${m.thinking ?? ""}`;
+      if (backendProviderBuilt === null || key !== backendProviderKey) {
+        backendProviderBuilt = createChatProvider({
+          type: config.providers.type ?? "deepseek",
+          apiKey,
+          model: m.backendModel,
+          actorModel: m.actorModel,
+          ...(m.thinking !== undefined ? { thinking: m.thinking } : {}),
+          ...baseUrl,
+        });
+        backendProviderKey = key;
+      }
+      return backendProviderBuilt;
+    };
 
     // 1. Backend stack (shared wiring — see session-wiring.ts). The
     //    OverlayAskResolver surfaces pending permission requests through the
@@ -2129,11 +2412,12 @@ export class SessionImpl implements Session {
     const steer = new SteerChannel();
     // The one thing the synchronous build would block on (a bash start, on
     // the desktop app's main thread) is found out here, awaited.
-    await prepareBackendStack({
-      wantMinimal: config.backendContract === "minimal",
-    });
+    await prepareBackendStack();
     const backend = createBackendStack({
       wsHolder,
+      ...(config.reviewChoicesFile !== undefined
+        ? { reviewChoicesFile: config.reviewChoicesFile }
+        : {}),
       workspaceRoot,
       lang,
       pendingUserInput: () => steer.drain(),
@@ -2141,12 +2425,10 @@ export class SessionImpl implements Session {
       journalPath: dispatchJournalPath(config.transcriptDir, sessionId),
       // And what 板砖's editors replace, for undo (ADR 0074).
       undoDir: undoStoreDir(config.transcriptDir, sessionId),
-      // The contract the setting asks for (ADR 0040). `minimal` needs a bash
-      // on this machine; without one the session runs `standard`. The
-      // Settings row shows the detection result (the GUI's getBackendContract
-      // reports `bashFound`), and since ADR 0044 a NEW session also carries
-      // one `→ 系统` record note naming the remedy (see contractFallbackNote).
-      wantMinimal: config.backendContract === "minimal",
+      // 板砖 runs on a bash (ADR 0040) and nothing else (ADR 0086). Without
+      // one the session has no backend: Settings says so (`bashFound`), a NEW
+      // session carries one `→ 系统` note naming the remedy, and a dispatch
+      // fails with the same words (`backendUnavailableMessage`).
       // ADR 0067: a reopened record that already carries a document mounts
       // `digest_document` from the start; a fresh session waits for one.
       attachmentsPresent: initialRecord.some(
@@ -2159,7 +2441,7 @@ export class SessionImpl implements Session {
       extraTools: mcp.tools,
       // ADR 0048 §5: the stack mounts `view_image` only when this model can
       // actually see (isVisionModel, one rule for both hosts).
-      backendModel: config.providers.backendModel,
+      backendModel: () => models().backendModel,
       // The digest tool's side model (ADR 0043): flash-equivalent sidecar,
       // thinking off. Uses the user's configured provider (not a hardcoded
       // DeepSeek flash) so OpenAI / Anthropic / compat sessions can digest.
@@ -2182,10 +2464,22 @@ export class SessionImpl implements Session {
                 }),
               )
             : null,
+      // The web tools (ADR 0080 §4): on whenever the session has the key —
+      // which it always has here. A test with provider overrides never
+      // reaches the network, so it gets none.
+      webClient:
+        deps.providerOverrides === undefined
+          ? defaultWebClient(apiKey, baseUrl)
+          : null,
+      // The page the Trailblazer watches (ADR 0083), when the host has one.
+      browser: opts.browser ?? null,
+      // Its dev servers (ADR 0083 §5), when the host has a launcher.
+      servers: opts.servers ?? null,
       makeAsk: ({ cache, workspacePermissions }) => {
         overlayResolver = new OverlayAskResolver({
           cache,
           permissions: workspacePermissions,
+          workspace: () => sessionHolder.session?.backendWorkspace ?? "",
           // Automatic review is on by default in the managed sandbox (ADR 0064
           // amendment 2026-10-10): a new session's workspace under
           // ~/.herta/workspaces holds nothing of the user's. A provider —
@@ -2247,11 +2541,9 @@ export class SessionImpl implements Session {
     if (overlayResolver === undefined) {
       throw new Error("createBackendStack did not build the ask resolver");
     }
-    const contractFellBack =
-      config.backendContract === "minimal" && backend.bashPath === null;
-    if (contractFellBack) {
+    if (backend.unavailable !== null) {
       console.warn(
-        "[herta] backendContract=minimal requested but no bash found (install Git for Windows or set HERTA_BASH); running the standard contract",
+        "[herta] no bash found (install Git for Windows or set HERTA_BASH): 板砖 cannot run coding tasks in this session",
       );
     }
     const { bus, workspacePermissions, runtimeFactory } = backend;
@@ -2274,8 +2566,13 @@ export class SessionImpl implements Session {
       const s = sessionHolder.session;
       if (s === null || ev.layer !== "backend") return;
       if (ev.type === "turn.started") s.backendRunning = true;
-      else if (ev.type === "turn.finished" || ev.type === "turn.failed")
+      else if (ev.type === "turn.finished" || ev.type === "turn.failed") {
         s.backendRunning = false;
+        // Nothing drains the channel from here. A steer left in it would
+        // open a second dispatch in this turn as a message from nowhere
+        // (ADR 0063; review 2026-11-05).
+        steer.clear();
+      }
     });
 
     // 2. Actor stack (shared wiring): providers, static prefix (+ reopen
@@ -2286,6 +2583,7 @@ export class SessionImpl implements Session {
       workspaceRoot,
       sessionId,
       lang,
+      browser: (opts.browser ?? null) !== null,
       initialRecord,
       apiKey,
       ...(config.providers.baseUrl !== undefined
@@ -2422,7 +2720,7 @@ export class SessionImpl implements Session {
     //     submitText into driver.runTurn so interrupt() can cancel.
     const driver = new V2ActorDriver({
       provider: actor.actorProvider,
-      model: config.providers.actorModel,
+      model: () => models().actorModel,
       staticPrefix: actor.staticPrefix,
       // Project rules are re-read for every request. The backend stack owns an
       // equivalent getter, so Herta and Brick see the same rules even after a
@@ -2436,6 +2734,9 @@ export class SessionImpl implements Session {
       }),
       bus,
       runtimeFactory,
+      // Her `@板砖` during a run steers it (ADR 0085 §4), through the same
+      // channel as the Trailblazer's steer.
+      steerBackend: (text: string) => steer.push(text),
       persister,
       sink,
       onPrompt: actor.onPrompt,
@@ -2497,10 +2798,15 @@ export class SessionImpl implements Session {
     const session = new SessionImpl({
       steer,
       bus,
-      // ADR 0067: the git tools follow the workspace, the digest tool waits
-      // for a document — both decided by the backend stack.
-      onWorkspaceChanged: () => backend.refreshGitTools(),
+      // ADR 0067: the digest tool waits for a document, decided by the
+      // backend stack.
+      // The session's dev servers stop when its workspace moves (ADR 0083
+      // §5): they serve the folder that was.
+      onWorkspaceChanged: () => {
+        void opts.servers?.stopAll();
+      },
       onDocumentAttached: () => backend.mountDigestTool(),
+      servers: opts.servers ?? null,
       sessionId,
       workspaceRoot,
       wsHolder,
@@ -2536,11 +2842,11 @@ export class SessionImpl implements Session {
       mcpDispose: mcp.dispose,
       mcpConnectionStatus: mcp.connectionStatus,
       lang,
-      // ADR 0044: NEW sessions only — a resumed record already carried the
-      // note when it was new (and the machine state may have changed since).
+      // NEW sessions only — a resumed record already carried the note when
+      // it was new (and the machine state may have changed since).
       pendingContractNote:
-        contractFellBack && initialRecord.length === 0
-          ? contractFallbackNote(lang)
+        backend.unavailable !== null && initialRecord.length === 0
+          ? backendUnavailableMessage(lang)
           : null,
       // The captioning instrument (ADR 0048 §3). Same shape as the digest
       // model above: absent under provider overrides, so a test never reaches

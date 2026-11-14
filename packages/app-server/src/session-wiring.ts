@@ -22,14 +22,15 @@
  * callbacks are the front-end's own).
  */
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   type AgentEvent,
   type AskResolver,
+  BACKEND_CONTRACT,
   BackendContextBuilder,
-  type BackendContract,
+  type BrowserHost,
   CodingAgentRuntime,
   type CompletionProviderAdapter,
   darwinBackendHostNote,
@@ -42,11 +43,13 @@ import {
   narrativeDirFor,
   type ProviderAdapter,
   RulePermissionEngine,
+  type ServerHost,
   SessionApprovalCache,
+  sweepEvidenceSoon,
   type TerminalRecord,
   type TerminalRecordBlock,
+  type WebClient,
   WorkspacePermissions,
-  windowsBackendHostNote,
   wireTaskScopedApprovalCache,
 } from "@herta/core";
 import {
@@ -54,6 +57,8 @@ import {
   buildRecapRuntime,
   buildStaticHertaPrefix,
   type DriverSessionScope,
+  flowWordJudge,
+  hertaWordOn,
   loadActorHints,
   loadMetaThinkCorpus,
   type MetaThinkCorpus,
@@ -78,26 +83,35 @@ import {
   selectPromptExclusions,
 } from "@herta/knowledge/dream-prompt";
 import { FileMemoryManager } from "@herta/memory";
-import { type ApiKey, deepseekProvider } from "@herta/providers";
 import {
+  type ApiKey,
+  deepseekCompletionProvider,
+  deepseekProvider,
+  deepseekWebClient,
+} from "@herta/providers";
+import {
+  browserActTool,
+  browserNavigateTool,
+  browserReadTool,
+  browserScreenshotTool,
   createMinimalTools,
-  createMvpTools,
   type DigestModel,
   describeRepoContext,
   diffCommittedRange,
   digestToolFor,
   findBash,
-  gitDiffTool,
-  gitStatusTool,
   PersistentShell,
+  primeConsoleEncoding,
   primeShellPaths,
   probeRepoState,
-  registerEditFileRule,
+  registerBrowserRules,
+  registerDevServer,
   registerMinimalRules,
-  registerRunCommandRule,
-  registerWriteNewFileRule,
+  registerWebRules,
   shellWorkspaceHint,
+  viewImageToolFor,
 } from "@herta/tools";
+import type { FlowWord } from "./flow/flow-pipeline.js";
 import {
   createChatProvider,
   createCompletionProvider,
@@ -112,6 +126,7 @@ import { loadEffectiveRules } from "./workspace-rules.js";
 export {
   AutoReviewer,
   defaultReviewModel,
+  ownerAnswers,
   type ReviewDeps,
   reviewBeforeCard,
   reviewTakes,
@@ -158,6 +173,7 @@ export function createBackendProvider(opts: {
   readonly fetchImpl?: typeof fetch;
 }): ProviderAdapter {
   return deepseekProvider({
+    site: "backend",
     apiKey: opts.apiKey,
     model: opts.model,
     thinking:
@@ -230,6 +246,15 @@ export function digestModelFrom(provider: ProviderAdapter): DigestModel {
   };
 }
 
+/** The web seam as both hosts mount it (ADR 0080): DeepSeek's Search and
+ *  Fetch over the same key and base URL as everything else. */
+export function defaultWebClient(
+  apiKey: ApiKey,
+  baseUrl: { baseUrl?: string } = {},
+): WebClient {
+  return deepseekWebClient({ apiKey, ...baseUrl });
+}
+
 export function makeDigestProvider(
   apiKey: ApiKey,
   baseUrl: { baseUrl?: string } = {},
@@ -248,19 +273,85 @@ export function makeDigestProvider(
   });
 }
 
+/** Flow's side model (ADR 0084 §5): the digest's flash with thinking off,
+ *  but room for five cards or a 1 500-character write-up as JSON — the
+ *  digest's 1 024 tokens cut either short, and then nothing parses. */
+export function flowSideModel(
+  apiKey: ApiKey,
+  baseUrl: { baseUrl?: string } = {},
+): DigestModel {
+  return digestModelFrom(
+    deepseekProvider({
+      site: "flow",
+      apiKey,
+      model: "deepseek-flash",
+      thinking: false,
+      maxTokens: 4096,
+      temperature: 0.2,
+      ...baseUrl,
+    }),
+  );
+}
+
+/** Flow's judge of her word (ADR 0084 §7): flash with reasoning on, as the
+ *  supervisor runs — the lab's judge without reasoning let invented numbers
+ *  through. */
+export function flowJudgeProvider(
+  apiKey: ApiKey,
+  baseUrl: { baseUrl?: string } = {},
+): ProviderAdapter {
+  return deepseekProvider({
+    site: "flow-judge",
+    apiKey,
+    model: "deepseek-flash",
+    thinking: "high",
+    ...baseUrl,
+  });
+}
+
+/** Herta's word on a Flow post (ADR 0084 §7): her own model over the
+ *  completion endpoint, in Flow's own frame, each candidate past Flow's
+ *  judge. The model is read per word, so a change in Settings reaches the
+ *  next one. */
+export function flowWordFrom(opts: {
+  readonly apiKey: ApiKey;
+  readonly baseUrl?: string;
+  readonly model: () => string;
+}): FlowWord {
+  const baseUrl = opts.baseUrl !== undefined ? { baseUrl: opts.baseUrl } : {};
+  const provider = deepseekCompletionProvider({
+    site: "flow-word",
+    apiKey: opts.apiKey,
+    ...baseUrl,
+  });
+  const judgeProvider = flowJudgeProvider(opts.apiKey, baseUrl);
+  return (post, signal, lang) =>
+    hertaWordOn(
+      post,
+      {
+        provider,
+        model: opts.model(),
+        lang,
+        judge: flowWordJudge({ provider: judgeProvider, lang }),
+      },
+      signal,
+    );
+}
+
 export interface BackendStackOpts {
   /** The ONE mutable holder of the effective 板砖 workspace. Shared with the
    *  caller (setWorkspace / `/workspace set` mutate `.current`); every
    *  per-dispatch reader below reads it fresh. Never reassign the holder. */
   readonly wsHolder: { current: string };
+  /** Where the owner's automatic-review choices are kept
+   *  (`reviewChoicesFileFor(home)`). Absent → in memory, for this stack. */
+  readonly reviewChoicesFile?: string | null;
   /** Record-store anchor (project memory lives under it). */
   readonly workspaceRoot: string;
   readonly lang: PromptLang;
-  /** The contract the caller asked for (ADR 0040). `minimal` needs a bash on
-   *  this machine; without one the stack runs `standard` and reports it via
-   *  `contract` / `bashPath` so the caller can warn where it sees fit. */
-  readonly wantMinimal: boolean;
-  readonly backendProvider: ProviderAdapter;
+  /** 板砖's provider, or a getter for the live one (ADR 0081): resolved when
+   *  each dispatch builds its runtime, so a run in flight keeps its own. */
+  readonly backendProvider: ProviderAdapter | (() => ProviderAdapter);
   /** Extra tools (e.g. MCP) registered AFTER the contract's built-in set.
    *  Absent/empty → none. */
   readonly extraTools?: readonly HertaTool[];
@@ -270,14 +361,23 @@ export interface BackendStackOpts {
    *  by a RE-LOOK rather than by the attachment caption's one-shot reading.
    *  Was a caller-supplied `vision` flag until 2026-09-03; the two hosts
    *  had each derived it their own way. */
-  readonly backendModel: string;
+  readonly backendModel: string | (() => string);
   /** The digest tool's side model (ADR 0043); null mounts the tool as
    *  `unavailable` (no key, tests). */
   readonly digestModel: DigestModel | null;
-  /** Test seam for the host-note decision (ADR 0044); defaults to
-   *  `process.platform`. On "win32" the STANDARD contract carries
-   *  `windowsBackendHostNote` — the minimal contract never does (it runs on
-   *  bash by construction). */
+  /** The web seam (ADR 0080): mounts `web_search` / `web_fetch`. A host
+   *  passes one whenever the session has a DeepSeek key
+   *  (§4 — the environment decides, never a preference); absent or null
+   *  leaves the tools out (tests, labs). */
+  readonly webClient?: WebClient | null;
+  /** The session's browser page (ADR 0083): the desktop's main hands one
+   *  in, and the page steps mount with their rules. The CLI has none. */
+  readonly browser?: BrowserHost | null;
+  /** The session's dev servers (ADR 0083 §5): the desktop's main hands a
+   *  launcher; the CLI none, and then there is no dev_server. */
+  readonly servers?: ServerHost | null;
+  /** Test seam for the host-note decision (ADR 0044) and the no-bash
+   *  message's wording; defaults to `process.platform`. */
   readonly platform?: NodeJS.Platform;
   /** Builds the front-end's ask resolver once the cache and the
    *  workspace's permission choices it consults exist. The returned
@@ -302,11 +402,45 @@ export interface BackendStackOpts {
   readonly attachmentsPresent?: boolean;
 }
 
+/**
+ * No bash on this machine, so 板砖 cannot run (ADR 0086, owner 2026-11-12).
+ * The standard tool set used to step in here without a word; it is deleted,
+ * and a session in this state says so instead: a note when it starts, and
+ * this error when Herta dispatches, which the bridge shows as the run's
+ * failure with the remedy in it.
+ */
+export class BackendUnavailableError extends Error {
+  readonly code = "backend_unavailable";
+  constructor(lang: PromptLang, platform: NodeJS.Platform = process.platform) {
+    super(backendUnavailableMessage(lang, platform));
+    this.name = "BackendUnavailableError";
+  }
+}
+
+/** What a session with no bash tells its reader, and what to do about it.
+ *  One text for the session's opening note and the dispatch's failure. */
+export function backendUnavailableMessage(
+  lang: PromptLang,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (platform === "win32") {
+    return lang === "en"
+      ? "no bash was found on this machine, so 板砖 cannot run coding tasks. Install Git for Windows (it includes bash), or point HERTA_BASH at one, then restart."
+      : "本机没有找到 bash，板砖无法执行任务。安装 Git for Windows（自带 bash），或用 HERTA_BASH 指向一个 bash，然后重启。";
+  }
+  return lang === "en"
+    ? "no bash was found on this machine, so 板砖 cannot run coding tasks. Install bash, or point HERTA_BASH at one, then restart."
+    : "本机没有找到 bash，板砖无法执行任务。安装 bash，或用 HERTA_BASH 指向一个 bash，然后重启。";
+}
+
 export interface BackendStack {
-  readonly contract: BackendContract;
-  /** The bash the minimal contract runs on; null when none was found or the
-   *  standard contract was requested. */
+  /** The tool set's name, as a run's journal records it (`BACKEND_CONTRACT`):
+   *  a journal that names another is not offered for continuing. */
+  readonly contract: typeof BACKEND_CONTRACT;
+  /** The bash 板砖 runs on; null when none was found (see `unavailable`). */
   readonly bashPath: string | null;
+  /** Why this stack has no backend, or null when it has one. */
+  readonly unavailable: "no_bash" | null;
   /** Single shared bus across actor, backend, renderer and permission rules. */
   readonly bus: EventBus<AgentEvent>;
   readonly approvalCache: SessionApprovalCache;
@@ -322,18 +456,6 @@ export interface BackendStack {
    *  when the first document is attached; the builder lists tools per
    *  brief, so the next dispatch sees it. */
   readonly mountDigestTool: () => void;
-  /** Re-decide the git tools from the CURRENT workspace (ADR 0067): mounted
-   *  inside a git repository, unmounted outside. Standard contract only —
-   *  the minimal contract's bash runs git itself. The session calls it after
-   *  a workspace move; a no-op when nothing changes. */
-  readonly refreshGitTools: () => void;
-}
-
-/** A workspace is "inside a git repository" when it carries a `.git` entry
- *  (a directory, or the file a worktree keeps). Cheap and synchronous: the
- *  decision is made at build and at a workspace move, never per call. */
-export function hasGitDir(workspace: string): boolean {
-  return existsSync(join(workspace, ".git"));
 }
 
 /**
@@ -343,23 +465,28 @@ export function hasGitDir(workspace: string): boolean {
  * the main thread — a host awaits this first and the build finds the answer
  * cached. Optional: a host that skips it gets the same stack, just slower.
  * Never rejects.
+ *
+ * And which code page this machine's native programs write in (Windows
+ * only, one registry read): a child's output is read in it where it is not
+ * UTF-8 (`console-decode.ts`, review 2026-11-10). A host that skips this
+ * reads everything as UTF-8, as before.
  */
-export function prepareBackendStack(opts: {
-  readonly wantMinimal: boolean;
-}): Promise<void> {
-  return opts.wantMinimal ? primeShellPaths(findBash()) : Promise.resolve();
+export function prepareBackendStack(): Promise<void> {
+  return Promise.all([
+    primeShellPaths(findBash()),
+    primeConsoleEncoding(),
+  ]).then(() => undefined);
 }
 
 /** Which host note a session's backend frame carries (ADR 0044, amended
- *  2026-09-23), as a spreadable deps fragment. Exported for its tests. */
+ *  2026-09-23), as a spreadable deps fragment: macOS's, because the Mac's
+ *  shell is a BSD userland. Windows had one for the standard set, which told
+ *  it there was no bash; with no bash there is no backend now (ADR 0086).
+ *  Exported for its tests. */
 export function hostNoteFor(
   platform: NodeJS.Platform,
-  contract: BackendContract,
   lang: "zh" | "en",
 ): { hostNote?: string } {
-  if (platform === "win32" && contract === "standard") {
-    return { hostNote: windowsBackendHostNote(lang) };
-  }
   if (platform === "darwin") return { hostNote: darwinBackendHostNote(lang) };
   return {};
 }
@@ -367,13 +494,22 @@ export function hostNoteFor(
 export function createBackendStack(opts: BackendStackOpts): BackendStack {
   const { wsHolder, lang } = opts;
 
+  // What this workspace's commands left more than thirty days ago goes
+  // (owner 2026-11-12, `evidence-retention.ts`). Detached, async, and at
+  // most once every six hours for a workspace: the session does not wait.
+  void sweepEvidenceSoon(wsHolder.current);
+
   // Approval cache + the workspace's permission choices first: the ask
   // resolver consults them.
   const approvalCache = new SessionApprovalCache();
-  // Whether automatic review is on (ADR 0075) — persisted under the
-  // EFFECTIVE workspace's .herta/permissions.json. Reads the holder so a
-  // mid-session workspace change re-anchors the choice with the workspace.
-  const workspacePermissions = new WorkspacePermissions(() => wsHolder.current);
+  // Whether automatic review is on (ADR 0075) — the owner's choice for the
+  // EFFECTIVE workspace, kept outside every workspace (ADR 0064 amendment
+  // 2026-11-12). Reads the holder so a mid-session workspace change
+  // re-anchors the choice with the workspace.
+  const workspacePermissions = new WorkspacePermissions(
+    () => wsHolder.current,
+    opts.reviewChoicesFile ?? null,
+  );
   const ask = opts.makeAsk({ cache: approvalCache, workspacePermissions });
   const permissions = new RulePermissionEngine({ ask });
 
@@ -384,12 +520,12 @@ export function createBackendStack(opts: BackendStackOpts): BackendStack {
   // each backend brief ends, so a remembered allow never outlives the task.
   wireTaskScopedApprovalCache(bus, approvalCache);
 
-  // Tool registry — the contract asked for (ADR 0040): the trained two-tool
-  // shape (+ the two record channels) when a bash exists, else the standard
-  // set.
-  const bashPath = opts.wantMinimal ? findBash() : null;
-  const contract: BackendContract =
-    opts.wantMinimal && bashPath !== null ? "minimal" : "standard";
+  // Tool registry — the trained two-tool shape (+ the record channels) on
+  // the machine's bash (ADR 0040), and nothing else: the standard set that
+  // used to be fallen back to here, silently, is deleted (ADR 0086). With no
+  // bash there is no backend.
+  const bashPath = findBash();
+  const unavailable = bashPath === null ? "no_bash" : null;
   const backendTools = new InMemoryToolRegistry();
   // The shell's own spelling of the workspace, read fresh per schema /
   // prompt build so a mid-session workspace change is reflected.
@@ -399,33 +535,34 @@ export function createBackendStack(opts: BackendStackOpts): BackendStack {
       : new PersistentShell({ bashPath, workspaceRoot: wsHolder.current })
           .workspaceShellPath;
   // Whether the backend MODEL can read a picture (ADR 0048 §5). Mounts
-  // `view_image` on either contract; false everywhere else, so a model
+  // `view_image`; false everywhere else, so a model
   // without vision is never told it can look.
-  const vision = isVisionModel(opts.backendModel);
+  const backendModelNow = (): string =>
+    typeof opts.backendModel === "function"
+      ? opts.backendModel()
+      : opts.backendModel;
+  const backendProviderNow = (): ProviderAdapter =>
+    typeof opts.backendProvider === "function"
+      ? opts.backendProvider()
+      : opts.backendProvider;
+  const vision = isVisionModel(backendModelNow());
   // The toolset follows the environment, per session (ADR 0067): the
-  // digest tool waits for a document, the git tools for a repository. Both
-  // decisions are made here and at the two events that change them —
-  // never per turn, since the tools array heads the cached prefix.
-  if (contract === "minimal") {
-    for (const t of createMinimalTools({
-      bashPath: bashPath as string,
-      workspaceShellPath,
-      digestModel: opts.digestModel,
-      lang,
-      vision,
-      digest: false,
-    }))
-      backendTools.register(t);
-  } else {
-    for (const t of createMvpTools({
-      digestModel: opts.digestModel,
-      lang,
-      vision,
-      digest: false,
-      gitTools: hasGitDir(wsHolder.current),
-    }))
-      backendTools.register(t);
-  }
+  // digest tool waits for a document. The decision is made here and at the
+  // event that changes it — never per turn, since the tools array heads the
+  // cached prefix.
+  // No bash, no tools: nothing is mounted for a backend that cannot run.
+  for (const t of bashPath === null
+    ? []
+    : createMinimalTools({
+        bashPath,
+        workspaceShellPath,
+        digestModel: opts.digestModel,
+        lang,
+        vision,
+        digest: false,
+        webClient: opts.webClient ?? null,
+      }))
+    backendTools.register(t);
   // Extra tools (MCP) join after the contract set; their `mcp__` prefix
   // keeps them from shadowing a built-in.
   for (const t of opts.extraTools ?? []) backendTools.register(t);
@@ -436,53 +573,76 @@ export function createBackendStack(opts: BackendStackOpts): BackendStack {
     );
   };
   if (opts.attachmentsPresent === true) mountDigestTool();
-  const refreshGitTools = (): void => {
-    if (contract !== "standard") return;
-    const want = hasGitDir(wsHolder.current);
-    const have = backendTools.get("git_status") !== undefined;
-    if (want && !have) {
-      backendTools.register(gitStatusTool());
-      backendTools.register(gitDiffTool());
-    } else if (!want && have) {
-      backendTools.unregister("git_status");
-      backendTools.unregister("git_diff");
-    }
-  };
 
   const backendBuilder = new BackendContextBuilder({
     tools: backendTools,
-    contract,
     workspaceHint: () =>
-      contract === "minimal"
+      bashPath !== null
         ? shellWorkspaceHint(bashPath, wsHolder.current, lang)
         : undefined,
     // Both agents read the same effective workspace rules on every request;
     // the Herta half is wired in SessionImpl when it builds the actor driver.
     projectRules: () => loadEffectiveRules(wsHolder.current).text,
-    // ADR 0044: the standard contract on Windows says what the host is —
-    // without it the backend's Unix habits (grep/sed/ls) are a not_found
-    // each, which is what a bash-less machine's user reads as "很多命令
-    // 执行不了". win32 standard only. macOS (amended 2026-09-23): BOTH
-    // contracts, because the GNU habits (`sed -i`, `grep -P`, bash-4 syntax)
-    // fail in the Mac's BSD shell as much as through run_command. Per
-    // SESSION, like the toolset (ADR 0067) — never a per-turn prompt change.
-    // The note texts live in core.
-    ...hostNoteFor(opts.platform ?? process.platform, contract, lang),
+    // ADR 0044 (amended 2026-09-23): on macOS the frame says what the host
+    // is, because the GNU habits (`sed -i`, `grep -P`, bash-4 syntax) fail
+    // in the Mac's BSD shell. Per SESSION, like the toolset (ADR 0067) —
+    // never a per-turn prompt change. The note's text lives in core.
+    ...hostNoteFor(opts.platform ?? process.platform, lang),
   });
 
   // Permission rules attach to the shared engine.
-  if (contract === "minimal") {
-    registerMinimalRules(permissions, { bus, bashPath });
-  } else {
-    registerEditFileRule(permissions, { bus });
-    registerWriteNewFileRule(permissions, { bus });
-    registerRunCommandRule(permissions);
+  if (bashPath !== null) registerMinimalRules(permissions, { bus, bashPath });
+  // Neither web tool asks (ADR 0080 §3); the rule says so explicitly.
+  if (opts.webClient != null) registerWebRules(permissions);
+  // The page steps (ADR 0083 §6–§7): loopback only, judged before each step.
+  const browser = opts.browser ?? null;
+  if (browser !== null) {
+    backendTools.register(browserNavigateTool({ host: browser }));
+    backendTools.register(browserReadTool({ host: browser }));
+    registerBrowserRules(permissions, browser);
   }
+  // The launcher (ADR 0083 §5): a start judged as run_command would judge
+  // the entry's argv.
+  if (opts.servers != null) {
+    registerDevServer(
+      permissions,
+      (t) => backendTools.register(t),
+      opts.servers,
+    );
+  }
+  let browserEyes: boolean | null = null;
 
-  const runtimeFactory = (): CodingAgentRuntime =>
-    new CodingAgentRuntime({
+  // `view_image` follows the model (ADR 0048 §5), checked when a dispatch
+  // starts (ADR 0081) — a model switched in Settings mounts or drops it for
+  // the next run, never inside one.
+  const syncVisionTool = (): void => {
+    const want = isVisionModel(backendModelNow());
+    const have = backendTools.get("view_image") !== undefined;
+    if (want && !have) backendTools.register(viewImageToolFor({ bashPath }));
+    else if (!want && have) backendTools.unregister("view_image");
+    // The page's act and screenshot steps follow it too: a position from a
+    // screenshot, and the picture itself, only for a model that reads
+    // images (ADR 0083 §6) — at the same boundary.
+    if (browser !== null && browserEyes !== want) {
+      backendTools.unregister("browser_act");
+      backendTools.unregister("browser_screenshot");
+      backendTools.register(browserActTool({ host: browser, eyes: want }));
+      backendTools.register(
+        browserScreenshotTool({ host: browser, eyes: want }),
+      );
+      browserEyes = want;
+    }
+  };
+
+  const runtimeFactory = (): CodingAgentRuntime => {
+    // The bridge turns this into the run's failure, remedy included.
+    if (unavailable !== null) {
+      throw new BackendUnavailableError(lang, opts.platform);
+    }
+    syncVisionTool();
+    return new CodingAgentRuntime({
       sessionId: randomUUID(),
-      provider: opts.backendProvider,
+      provider: backendProviderNow(),
       tools: backendTools,
       permissions,
       backendBuilder,
@@ -520,12 +680,14 @@ export function createBackendStack(opts: BackendStackOpts): BackendStack {
         : {}),
       // The undo store (ADR 0074): what the editors replace, per segment.
       ...(opts.undoDir !== undefined ? { undoDir: opts.undoDir } : {}),
-      contract,
+      contract: BACKEND_CONTRACT,
     });
+  };
 
   return {
-    contract,
+    contract: BACKEND_CONTRACT,
     bashPath,
+    unavailable,
     bus,
     approvalCache,
     workspacePermissions,
@@ -535,7 +697,6 @@ export function createBackendStack(opts: BackendStackOpts): BackendStack {
     memory,
     runtimeFactory,
     mountDigestTool,
-    refreshGitTools,
   };
 }
 
@@ -576,6 +737,10 @@ export interface ActorStackOpts {
   readonly workspaceRoot: string;
   readonly sessionId: string;
   readonly lang: PromptLang;
+  /** 板砖 has a page this session (ADR 0083): the desktop's main hands one,
+   *  the CLI mounts none. Herta's envSet follows it (R5). Required, so each
+   *  host decides. */
+  readonly browser: boolean;
   /** The record a reopened session loads (own-dream exclusions; no opening).
    *  Empty for a new session. */
   readonly initialRecord: TerminalRecord;
@@ -692,6 +857,7 @@ export async function createActorStack(
     return buildStaticHertaPrefix({
       workspaceRoot,
       lang,
+      browser: opts.browser,
       // ALWAYS log a dropped few-shot (ADR 0051): the 2026-08-06 guard
       // regression silently dropped the entire 废案 corpus for 25 days
       // because only the CLI passed a logger and the GUI path had none —

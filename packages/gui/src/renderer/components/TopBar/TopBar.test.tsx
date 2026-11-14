@@ -7,6 +7,7 @@ import {
   createMockHertaBridge,
   type MockHertaBridge,
 } from "../../ipc/mock-bridge.js";
+import { useShortcut } from "../../lib/shortcut-registry.js";
 import { TopBar } from "./TopBar.js";
 
 function renderTopBar(
@@ -374,5 +375,97 @@ describe("TopBar new-session mid-turn guard (2026-07-12)", () => {
     // The tray attempt was the first step — a direct click now creates.
     fireEvent.click(btn);
     expect(bar.calls.createSession).toHaveLength(1);
+  });
+
+  it("the browser's button opens the page tab, with a session and pages (ADR 0083)", () => {
+    const mock = createMockHertaBridge();
+    const bridge = { ...mock.bridge, pageShow: vi.fn() };
+    const opened = vi.fn(() => true);
+    function Host(): null {
+      useShortcut("openBrowser", opened, true);
+      return null;
+    }
+    renderWithLocale(
+      <HertaBridgeProvider bridge={bridge}>
+        <Host />
+        <TopBar
+          collapsed={false}
+          onToggleCollapse={vi.fn()}
+          searchActive={false}
+          onToggleSearch={vi.fn()}
+        />
+      </HertaBridgeProvider>,
+    );
+    // No session yet: no page to open.
+    expect(screen.queryByRole("button", { name: "Browser" })).toBeNull();
+    act(() => {
+      mock.emitReset({
+        sessionId: "s-1",
+        workspaceRoot: "/r",
+        record: [],
+        overlay: null,
+        title: null,
+        backendWorkspace: "/r",
+        backendWorkspaceIsDefault: true,
+      });
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Browser" }));
+    expect(opened).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("TopBar — Flow's radio (owner 2026-10-31)", () => {
+  const flowButton = (c: HTMLElement) =>
+    c.querySelector<SVGElement>("svg[data-icon='flow']");
+
+  it("takes the shared icon treatment, as the globe and the rest do", () => {
+    const { container } = renderTopBar({
+      flow: { open: false, unread: false, gathering: false },
+    });
+    const svg = flowButton(container);
+    expect(svg?.classList.contains("sidebar-header-icon-svg")).toBe(true);
+    // No fixed stroke: CSS owns it, so hover can thicken it.
+    expect(svg?.getAttribute("stroke-width")).toBeNull();
+    expect(svg?.classList.contains("is-gathering")).toBe(false);
+    expect(svg?.classList.contains("is-ready")).toBe(false);
+  });
+
+  // Owner 2026-10-31: one animation for both hid when the issue was ready.
+  it("pulses only while gathering; a ready issue holds still under the dot", () => {
+    const state = (flow: {
+      open: boolean;
+      unread: boolean;
+      gathering: boolean;
+    }) => {
+      const { container } = renderTopBar({ flow });
+      const svg = flowButton(container);
+      return {
+        gathering: svg?.classList.contains("is-gathering") ?? false,
+        ready: svg?.classList.contains("is-ready") ?? false,
+        dot: container.querySelector(".flow-button-dot") !== null,
+      };
+    };
+    expect(state({ open: false, unread: false, gathering: true })).toEqual({
+      gathering: true,
+      ready: false,
+      dot: false,
+    });
+    expect(state({ open: false, unread: true, gathering: false })).toEqual({
+      gathering: false,
+      ready: true,
+      dot: true,
+    });
+    // A refresh over an unread issue: still gathering, the dot still says
+    // there is one to read.
+    expect(state({ open: false, unread: true, gathering: true })).toEqual({
+      gathering: true,
+      ready: false,
+      dot: true,
+    });
+    expect(state({ open: true, unread: true, gathering: true })).toEqual({
+      gathering: false,
+      ready: false,
+      dot: false,
+    });
   });
 });

@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import { useT } from "../../i18n/LocaleProvider.js";
+import { OVERLAY_Z, topOverlayZ } from "../../lib/overlay-stack.js";
 import { boundQuoteText, type ComposerQuote } from "../../lib/quote-format.js";
 
 /**
@@ -88,6 +89,9 @@ export interface PieceQuoting {
   readonly path: string;
   readonly lang: "zh" | "en";
   readonly onQuote: (quotes: readonly ComposerQuote[]) => void;
+  /** The picked pieces held no text to quote — a scanned PDF's pages
+   *  (ADR 0078 amendment 2026-10-21): say so, never do nothing. */
+  readonly onNoText?: () => void;
 }
 
 /** One piece of the mask: where it lies on the host, and what it quotes. */
@@ -218,19 +222,26 @@ export function PieceMask({
     };
   }, [enabled, hostRef, scrollerRef, measure, hide]);
 
-  // Escape clears and fades.
+  // Escape clears and fades — and only that (ADR 0082 §11). In the capture
+  // phase, ahead of the viewer's own Escape (which would close the viewer
+  // too), and marked so neither the viewer nor the run's stop takes it. Not
+  // under a dialog that owns the keyboard (Settings, the cheat sheet…).
   useEffect(() => {
     if (!shown) return undefined;
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === "Escape") hide(true);
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      const z = topOverlayZ();
+      if (z !== null && z > OVERLAY_Z.approval) return;
+      e.preventDefault();
+      hide(true);
     };
     const onUp = (): void => {
       drag.current = null;
     };
-    window.addEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, { capture: true });
     window.addEventListener("pointerup", onUp);
     return () => {
-      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keydown", onKey, { capture: true });
       window.removeEventListener("pointerup", onUp);
     };
   }, [shown, hide]);

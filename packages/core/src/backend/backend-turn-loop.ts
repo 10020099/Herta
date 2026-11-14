@@ -853,21 +853,16 @@ export async function* runBackendTurnLoop(
         // always silent. Emitted AFTER the tool.call.finished above, so the
         // "↳ tests:" record block lands before the beat that reacts to it.
         //
-        // Both command tools, keyed on the DATA rather than the tool name
-        // (2026-08-24, codex study): this read `call.tool === "run_command"`,
-        // so when the minimal contract became the default on 2026-08-17 the
-        // beat silently stopped firing — `bash` computes `testRun` exactly the
-        // same way, and a test run went invisible to Herta on every default
-        // session for a week. A tool-name gate on a per-contract tool is the
-        // bug; the shape of the result is the honest condition.
+        // Read off the command's result DATA (2026-08-24, codex study): the
+        // gate once named the standard set's command tool alone, so when
+        // `bash` became the default on 2026-08-17 the beat silently stopped
+        // firing, and a test run went invisible to Herta on every default
+        // session for a week. `bash` is the one command tool now (ADR 0086);
+        // the shape of its result is still the condition.
         const testRun = (
           result.data as { testRun?: { status?: unknown } } | undefined
         )?.testRun;
-        if (
-          (call.tool === "run_command" || call.tool === "bash") &&
-          result.ok &&
-          testRun !== undefined
-        ) {
+        if (call.tool === "bash" && result.ok && testRun !== undefined) {
           // `passed` rides along (2026-09-03) so the beat classifier can
           // leave a green run to Herta's synthesis and react only to a red
           // one — the detector's status is "passed" or "failed".
@@ -975,8 +970,27 @@ const MAX_MALFORMED_TOOL_ARGS = 3;
  */
 function malformedArgsResult(
   toolName: string,
-  malformed: { raw: string; parseError: string },
+  malformed: { raw: string; parseError: string; truncated?: true },
 ): ToolResult {
+  if (malformed.truncated === true) {
+    // Not an escaping slip: the same call written again would be cut at
+    // the same place, so the answer names the one thing that helps.
+    return {
+      ok: false,
+      error: {
+        code: "malformed_tool_args",
+        message: `arguments for ${toolName} were cut off at the output limit, ${malformed.raw.length} characters in`,
+        retryable: false,
+      },
+      suggestion:
+        "The tool did NOT run — nothing changed. One message of yours can only be so long, " +
+        "and this call's arguments ran past that limit, so they never arrived whole. " +
+        "Sending the same call again will be cut off at the same place. Do it in smaller pieces: " +
+        "create a long file with its first part and append the rest in further calls, " +
+        "or split a large edit into several.",
+      summary: `failed: arguments for ${toolName} cut off at the output limit`,
+    };
+  }
   return {
     ok: false,
     error: {
@@ -1153,13 +1167,6 @@ export function summarizeInput(
 
   if (obj !== null) {
     switch (tool) {
-      case "read_file":
-      case "edit_file":
-      case "write_new_file": {
-        const path = str(obj.path);
-        if (path !== null) return cap(path);
-        break; // malformed → fall through to JSON fallback
-      }
       case "show_excerpt": {
         // Was the JSON fallback until 2026-08-17 — the record read
         // `Reading {"path":".herta/attachments/…` (real session). Cite it
@@ -1177,39 +1184,11 @@ export function summarizeInput(
         const match = str(obj.match);
         return cap(match !== null ? `${path} ~"${match}"` : path);
       }
-      case "search_text": {
-        // `"pattern" in path` when a path was given (2026-08-17): the verb
-        // became Searching, and where it looked is half of what a reader
-        // wants — a search into one attached file reads differently from a
-        // whole-workspace one.
-        const pattern = str(obj.pattern);
-        if (pattern === null) break;
-        const path = str(obj.path);
-        return cap(
-          path !== null && path !== "."
-            ? `"${pattern}" in ${path}`
-            : `"${pattern}"`,
-        );
-      }
-      case "glob": {
-        const pattern = str(obj.pattern);
-        if (pattern !== null) return cap(`"${pattern}"`);
-        break;
-      }
       case "memory_save": {
         // The entry `kind` (build_command / repo_fact / …) is a short,
         // identifying category. Never surface the full `text` body inline.
         const kind = str(obj.kind);
         return kind !== null ? cap(kind) : "";
-      }
-      case "run_command": {
-        if (Array.isArray(obj.argv)) {
-          const argv = obj.argv.filter(
-            (a): a is string => typeof a === "string",
-          );
-          if (argv.length > 0) return cap(argv.join(" "));
-        }
-        break;
       }
       case "bash": {
         // Minimal contract (ADR 0040): the command line itself, first line
@@ -1228,7 +1207,7 @@ export function summarizeInput(
       case "str_replace_editor": {
         // `<command> <path>` (+ the range for a ranged view) — the bridge
         // picks Reading/Writing from the leading word, so the shape is
-        // load-bearing (workflowLabel in backend-bridge.ts).
+        // load-bearing (workflowLabel in backend-record-projection.ts).
         const command = str(obj.command);
         const path = str(obj.path);
         if (command === null || path === null) break;
@@ -1241,19 +1220,6 @@ export function summarizeInput(
             : `${command} ${path}`,
         );
       }
-      case "command_output": {
-        // "Reading bg-1 output" (2026-08-17): both background follow-ups used
-        // to render as `Running bg-1`, which reads as a second launch.
-        const id = str(obj.backgroundId);
-        return id !== null ? cap(`${id} output`) : "";
-      }
-      case "command_stop": {
-        const id = str(obj.backgroundId);
-        return id !== null ? cap(id) : "";
-      }
-      case "git_status":
-      case "git_diff":
-        return ""; // verb alone is enough
       default:
         break; // unknown tool → JSON fallback below
     }

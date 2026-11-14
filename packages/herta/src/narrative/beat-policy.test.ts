@@ -8,47 +8,48 @@ describe("classifyBeatTrigger — event → trigger", () => {
       type: "tool.call.started",
       layer: "actor",
       id: "t1",
-      tool: "read_file",
-      inputSummary: "foo.ts",
+      tool: "str_replace_editor",
+      inputSummary: "view foo.ts",
     };
     expect(classifyBeatTrigger(ev)).toBeNull();
   });
 
-  it("a steer (actor-layer user.steer) earns one beat, keyed by its id (ADR 0063)", () => {
+  it("a steer and talk earn no beat: a steer is said to 板砖, and she answers talk in her own lane (ADR 0085 step 4)", () => {
     const steer: AgentEvent = {
       type: "user.steer",
       layer: "actor",
       id: "s-1",
       text: "also rename the test file",
     };
-    expect(classifyBeatTrigger(steer)).toEqual({ signature: "steer:s-1" });
-    // Any other actor-layer event stays silent.
+    const talk: AgentEvent = {
+      type: "user.talk",
+      layer: "actor",
+      id: "t-1",
+      text: "周末几点？",
+    };
+    expect(classifyBeatTrigger(steer)).toBeNull();
+    expect(classifyBeatTrigger(talk)).toBeNull();
     const delta: AgentEvent = {
       type: "assistant.delta",
       layer: "actor",
       text: "…",
     };
     expect(classifyBeatTrigger(delta)).toBeNull();
-    // The policy dedups by signature: the same steer staged twice fires once.
-    const policy = new BeatPolicy({ clock: () => 0 });
-    expect(policy.shouldStage(steer)).toEqual({ signature: "steer:s-1" });
-    policy.markFired("steer:s-1", 0);
-    expect(policy.shouldStage(steer)).toBeNull();
   });
 
   it("returns null on backend tool.call.started for any workflow kind (N2, 2026-05-23)", () => {
     // 2026-05-23 N2 tightening: beats no longer fire on workflow
     // start events. The model has no useful content to comment on
     // (the START event has no output yet), and firing on every
-    // file read / plan step / git_status made Herta too chatty. The
+    // file read / plan step / `git status` made Herta too chatty. The
     // → 差分协处理器 system block still appears (projected by the
     // backend bridge); Herta just doesn't beat on it.
     const ev: AgentEvent = {
       type: "tool.call.started",
       layer: "backend",
       id: "t1",
-      tool: "edit_file",
-      inputSummary: "foo.ts",
+      tool: "str_replace_editor",
+      inputSummary: "str_replace foo.ts",
     };
     expect(classifyBeatTrigger(ev)).toBeNull();
   });
@@ -58,15 +59,15 @@ describe("classifyBeatTrigger — event → trigger", () => {
       type: "tool.call.started",
       layer: "backend",
       id: "t1",
-      tool: "read_file",
-      inputSummary: "a.ts",
+      tool: "str_replace_editor",
+      inputSummary: "view a.ts",
     };
     const b: AgentEvent = {
       type: "tool.call.started",
       layer: "backend",
       id: "t2",
-      tool: "glob",
-      inputSummary: "src/**",
+      tool: "bash",
+      inputSummary: "ls src",
     };
     expect(classifyBeatTrigger(a)).toBeNull();
     expect(classifyBeatTrigger(b)).toBeNull();
@@ -88,7 +89,7 @@ describe("classifyBeatTrigger — event → trigger", () => {
       type: "tool.call.finished",
       layer: "backend",
       id: "t1",
-      tool: "edit_file",
+      tool: "str_replace_editor",
       result: { ok: true, summary: "patched foo.ts", data: {} },
     };
     expect(classifyBeatTrigger(ev)).toBeNull();
@@ -99,15 +100,15 @@ describe("classifyBeatTrigger — event → trigger", () => {
       type: "tool.call.finished",
       layer: "backend",
       id: "t1",
-      tool: "edit_file",
+      tool: "str_replace_editor",
       result: {
         ok: false,
-        error: { code: "stale_read", message: "...", retryable: false },
+        error: { code: "stale_view", message: "...", retryable: false },
         summary: "failed",
       },
     };
     const t = classifyBeatTrigger(ev);
-    expect(t?.signature).toBe("tool.fail:edit_file:stale_read");
+    expect(t?.signature).toBe("tool.fail:str_replace_editor:stale_view");
   });
 
   it("carries only the dedup signature — no per-event prose leaks into the spec", () => {
@@ -115,7 +116,7 @@ describe("classifyBeatTrigger — event → trigger", () => {
       type: "tool.call.finished",
       layer: "backend",
       id: "t1",
-      tool: "edit_file",
+      tool: "str_replace_editor",
       result: {
         ok: false,
         error: {
@@ -140,7 +141,7 @@ describe("classifyBeatTrigger — event → trigger", () => {
       type: "tool.call.finished",
       layer: "backend",
       id: "t1",
-      tool: "edit_file",
+      tool: "str_replace_editor",
       result: {
         ok: false,
         error: {
@@ -154,14 +155,14 @@ describe("classifyBeatTrigger — event → trigger", () => {
     expect(classifyBeatTrigger(denied)).toBeNull();
   });
 
-  it("fires on patch.preview", () => {
+  it("a patch preview is progress, not a checkpoint: no beat (ADR 0085 step 4)", () => {
     const ev: AgentEvent = {
       type: "patch.preview",
       layer: "backend",
       diff: "--- a\n+++ b\n@@\n-x\n+y\n",
       files: ["foo.ts"],
     };
-    expect(classifyBeatTrigger(ev)?.signature).toBe("patch.preview:first");
+    expect(classifyBeatTrigger(ev)).toBeNull();
   });
 
   it("fires on a red verification.finished", () => {
@@ -185,8 +186,8 @@ describe("classifyBeatTrigger — event → trigger", () => {
         summary: `crashed: ${tool}`,
       },
     });
-    const a = classifyBeatTrigger(crash("read_file"));
-    const b = classifyBeatTrigger(crash("glob"));
+    const a = classifyBeatTrigger(crash("str_replace_editor"));
+    const b = classifyBeatTrigger(crash("bash"));
     expect(a?.signature).toBe("tool.fail:crash");
     expect(b?.signature).toBe("tool.fail:crash");
     // The collapse precedes the workflow-kind allowlist: a crash on a tool
@@ -200,14 +201,45 @@ describe("classifyBeatTrigger — event → trigger", () => {
       type: "tool.call.finished",
       layer: "backend",
       id: "c-x",
-      tool: "glob",
+      tool: "bash",
       result: {
         ok: false,
-        error: { code: "invalid_pattern", message: "bad", retryable: false },
-        summary: "invalid pattern",
+        error: { code: "invalid_input", message: "bad", retryable: false },
+        summary: "invalid input",
       },
     });
-    expect(ordinary?.signature).toBe("tool.fail:glob:invalid_pattern");
+    expect(ordinary?.signature).toBe("tool.fail:bash:invalid_input");
+  });
+
+  it("a failed step of a tool no session has earns no beat: the deleted standard set's names are unknown tools now (ADR 0086)", () => {
+    const failed = (tool: string): AgentEvent => ({
+      type: "tool.call.finished",
+      layer: "backend",
+      id: `f-${tool}`,
+      tool,
+      result: {
+        ok: false,
+        error: { code: "not_found", message: "x", retryable: false },
+        summary: "failed",
+      },
+    });
+    for (const tool of [
+      "read_file",
+      "search_text",
+      "glob",
+      "edit_file",
+      "write_new_file",
+      "run_command",
+      "command_output",
+      "command_stop",
+      "git_status",
+      "git_diff",
+    ]) {
+      expect(classifyBeatTrigger(failed(tool)), tool).toBeNull();
+    }
+    expect(classifyBeatTrigger(failed("bash"))?.signature).toBe(
+      "tool.fail:bash:not_found",
+    );
   });
 
   it("fires on a FAILED verification.finished (test-result beat — producer added 2026-07-23)", () => {
@@ -294,16 +326,20 @@ describe("classifyBeatTrigger — event → trigger", () => {
 });
 
 describe("BeatPolicy — staging, dedup, and fire-time throttle", () => {
-  // N2 (2026-05-23): tool.call.started no longer fires beats, so we
-  // exercise the staging/dedup machinery via the still-beat-worthy
-  // `patch.preview` event. M3 (2026-07-04): staging is clock-free;
-  // the throttle window is checked at fire time via readyToFire().
-  function previewEv(path: string): AgentEvent {
+  // N2 (2026-05-23): tool.call.started no longer fires beats, and the
+  // patch preview went with ADR 0085 step 4, so we exercise the
+  // staging/dedup machinery via a checkpoint: a step that failed.
+  function failEv(path: string): AgentEvent {
     return {
-      type: "patch.preview",
+      type: "tool.call.finished",
       layer: "backend",
-      diff: "--- a\n+++ b\n@@ ... @@",
-      files: [path],
+      id: `t-${path}`,
+      tool: "str_replace_editor",
+      result: {
+        ok: false,
+        error: { code: "stale_view", message: path, retryable: false },
+        summary: "failed",
+      },
     };
   }
   function verificationEv(): AgentEvent {
@@ -328,17 +364,17 @@ describe("BeatPolicy — staging, dedup, and fire-time throttle", () => {
 
   it("returns a trigger on first event", () => {
     const p = new BeatPolicy({ clock: () => 0 });
-    const t = p.shouldStage(previewEv("a.ts"));
+    const t = p.shouldStage(failEv("a.ts"));
     expect(t).not.toBeNull();
-    expect(t?.signature).toBe("patch.preview:first");
+    expect(t?.signature).toBe("tool.fail:str_replace_editor:stale_view");
   });
 
   it("returns null on second event with the same signature after it fired (dedup)", () => {
     const p = new BeatPolicy({ clock: () => 1000 });
-    expect(p.shouldStage(previewEv("a.ts"))).not.toBeNull();
-    p.markFired("patch.preview:first", 1000);
-    // Same `patch.preview:first` signature — dedup blocks the second.
-    expect(p.shouldStage(previewEv("b.ts"))).toBeNull();
+    expect(p.shouldStage(failEv("a.ts"))).not.toBeNull();
+    p.markFired("tool.fail:str_replace_editor:stale_view", 1000);
+    // Same `tool.fail:str_replace_editor:stale_view` signature — dedup blocks the second.
+    expect(p.shouldStage(failEv("b.ts"))).toBeNull();
   });
 
   it("stages a different signature even inside the throttle window (M3: staging is clock-free)", () => {
@@ -350,8 +386,8 @@ describe("BeatPolicy — staging, dedup, and fire-time throttle", () => {
       clock: () => clock.now,
       minInterBurstMs: 3000,
     });
-    expect(p.shouldStage(previewEv("a.ts"))).not.toBeNull();
-    p.markFired("patch.preview:first", 0);
+    expect(p.shouldStage(failEv("a.ts"))).not.toBeNull();
+    p.markFired("tool.fail:str_replace_editor:stale_view", 0);
 
     clock.now = 1000;
     expect(p.shouldStage(verificationEv())?.signature).toBe(
@@ -367,7 +403,7 @@ describe("BeatPolicy — staging, dedup, and fire-time throttle", () => {
     });
     // lastBurstAt starts at -Infinity — the first beat is never held.
     expect(p.readyToFire()).toBe(true);
-    p.markFired("patch.preview:first", 0);
+    p.markFired("tool.fail:str_replace_editor:stale_view", 0);
 
     clock.now = 1000;
     expect(p.readyToFire()).toBe(false);
@@ -385,8 +421,8 @@ describe("BeatPolicy — staging, dedup, and fire-time throttle", () => {
     // A dropped beat (provider error) should not permanently consume its
     // signature; in-flight duplicates are the bridge's staged/ready scan.
     const p = new BeatPolicy({ clock: () => 0 });
-    expect(p.shouldStage(previewEv("a.ts"))).not.toBeNull();
-    expect(p.shouldStage(previewEv("a.ts"))).not.toBeNull();
+    expect(p.shouldStage(failEv("a.ts"))).not.toBeNull();
+    expect(p.shouldStage(failEv("a.ts"))).not.toBeNull();
   });
 
   it("reset() clears dedup but does NOT reset lastBurstAt", () => {
@@ -395,10 +431,10 @@ describe("BeatPolicy — staging, dedup, and fire-time throttle", () => {
       clock: () => clock.now,
       minInterBurstMs: 3000,
     });
-    expect(p.shouldStage(previewEv("a.ts"))).not.toBeNull();
-    p.markFired("patch.preview:first", 0);
+    expect(p.shouldStage(failEv("a.ts"))).not.toBeNull();
+    p.markFired("tool.fail:str_replace_editor:stale_view", 0);
     // Fired → dedup blocks re-staging.
-    expect(p.shouldStage(previewEv("b.ts"))).toBeNull();
+    expect(p.shouldStage(failEv("b.ts"))).toBeNull();
 
     p.reset();
 
@@ -406,7 +442,7 @@ describe("BeatPolicy — staging, dedup, and fire-time throttle", () => {
     // Dedup cleared → the signature stages again; but the throttle
     // window survives reset (lastBurstAt unchanged), so it is not yet
     // eligible to FIRE — that's the turn-2 flood protection.
-    expect(p.shouldStage(previewEv("b.ts"))).not.toBeNull();
+    expect(p.shouldStage(failEv("b.ts"))).not.toBeNull();
     expect(p.readyToFire()).toBe(false);
 
     clock.now = 3000;

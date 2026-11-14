@@ -485,7 +485,9 @@ describe("buildSupervisorPrompt", () => {
     // Names the out-of-scope categories the model misuses.
     expect(sys).toContain("查别人的喜好");
     expect(sys).toContain("礼物建议");
-    expect(sys).toContain("在线搜索");
+    // Going online off the work stays out; technical lookups are in (ADR 0080).
+    expect(sys).toContain("和代码 / 研究无关的上网");
+    expect(sys).toContain("查技术资料");
     expect(sys).toContain("私事");
     // Veto-reason templates.
     expect(sys).toContain("@板砖 不查那种事");
@@ -729,6 +731,20 @@ describe("prompt language variants (EN interaction slice 3b)", () => {
     );
     // Empty input still collapses to "".
     expect(renderFeianGrounding([], "en")).toBe("");
+  });
+
+  it("buildTriggerRecheckPrompt: an answer during a run carries its rule, in its language, and nothing else does", () => {
+    const line = { recentRecord: [], candidateSpeech: "@板砖 看看" };
+    const zh = "只有开拓者在这趟里说的话要板砖改做什么";
+    const en = "should fire only if what the Trailblazer said during this run";
+    expect(buildTriggerRecheckPrompt(line).prompt).not.toContain(zh);
+    expect(
+      buildTriggerRecheckPrompt({ ...line, duringRun: true }).prompt,
+    ).toContain(zh);
+    expect(
+      buildTriggerRecheckPrompt({ ...line, lang: "en", duringRun: true })
+        .prompt,
+    ).toContain(en);
   });
 
   it("buildTriggerRecheckPrompt: default equals lang:'zh'; lang:'en' selects the EN recheck prompt around CN tokens", () => {

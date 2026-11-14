@@ -19,6 +19,7 @@ import type {
   SessionSearchHit,
   SteerTextResult,
   SubmitTextResult,
+  TalkTextResult,
   TerminalRecord,
   TitleEvent,
   TurnLifecycleEvent,
@@ -28,6 +29,7 @@ import type {
   VoiceCueEvent,
   WorkspaceEvent,
 } from "@herta/app-server";
+import { jumpRange, pageEnd, pageStart } from "@herta/core/record-window";
 import type {
   AttachProgressEvent,
   AttentionSettings,
@@ -46,6 +48,7 @@ import type {
   NavBlockedEvent,
   ProjectRuleFile,
   RealtimeVoiceState,
+  RecordWindowRequest,
   SessionError,
   SessionNoSession,
   SessionOpenFailure,
@@ -64,6 +67,8 @@ export interface MockHertaBridgeOpts {
   readonly interruptResult?: { readonly ok: boolean };
   /** What `steerText` answers (ADR 0063); default accepted on "mock-turn". */
   readonly steerTextResult?: SteerTextResult;
+  /** What `talkText` answers (ADR 0085); default accepted on "mock-turn". */
+  readonly talkTextResult?: TalkTextResult;
   /** What `continueInterrupted` answers (ADR 0071 §1.4); default a turn. */
   readonly continueInterruptedResult?: ContinueInterruptedResult;
   readonly rewindLastTurnResult?: RewindResult;
@@ -77,6 +82,11 @@ export interface MockHertaBridgeOpts {
     readonly start: number;
     readonly blocks: TerminalRecord;
   };
+  /** The whole record behind recordWindow (a jump, a later page) and, when
+   *  no `recordSliceResult` is seeded, behind recordSlice: the mock answers
+   *  by the app's own window rules, as main does. Without it recordWindow
+   *  answers nothing. */
+  readonly fullRecord?: TerminalRecord;
   readonly openSessionResult?: SessionSnapshot | SessionOpenFailure;
   readonly createSessionResult?: SessionSnapshot;
   readonly resolveApprovalResult?: ApprovalResult;
@@ -228,12 +238,17 @@ export interface MockHertaBridge {
   readonly bridge: HertaBridge;
   readonly calls: {
     submitText: string[];
+    /** The `@` mentions sent with each submitText, positionally paired. */
+    submitTextMentions: Array<readonly string[] | undefined>;
+    /** The picked page elements sent with each submitText (ADR 0083 §4). */
+    submitTextPicks: Array<readonly { readonly line: string }[] | undefined>;
     /** The staged-image ids sent WITH each submitText, positionally paired
      *  with `submitText` (ADR 0048 §4). */
     submitTextStaged: Array<readonly string[] | undefined>;
     interrupt: Array<string | undefined>;
     /** The texts steered while 板砖 ran (ADR 0063). */
     steerText: string[];
+    talkText: string[];
     /** 继续 presses (ADR 0071 §1.4). */
     continueInterrupted: number;
     rewindLastTurn: number;
@@ -252,9 +267,11 @@ export interface MockHertaBridge {
     checkForUpdate: number;
     restartAndInstall: number;
     openExternal: string[];
+    openWebPage: Array<[string, string]>;
     listSessions: number;
     searchSessions: string[];
     recordSlice: Array<[string, number, number]>;
+    recordWindow: Array<[string, RecordWindowRequest]>;
     pickWorkspace: number;
     setWorkspace: Array<[string, string]>;
     resetWorkspace: string[];
@@ -323,7 +340,11 @@ export interface MockHertaBridge {
   emitWindowFullScreen(fullScreen: boolean): void;
   /** The application menu's Settings… item. */
   emitOpenSettings(): void;
+  /** The menu's Close (Ctrl/⌘+W, ADR 0082). */
+  emitCloseRequested(): void;
   emitRecord(e: RecordEvent): void;
+  /** Replace the record recordWindow answers from (main's copy moved on). */
+  setFullRecord(record: TerminalRecord): void;
   emitOverlay(e: OverlayEvent): void;
   emitSpeech(e: SpeechControlEvent): void;
   emitAgent(e: SessionAgentEvent): void;
@@ -367,6 +388,7 @@ export function createMockHertaBridge(
   opts: MockHertaBridgeOpts = {},
 ): MockHertaBridge {
   const recordCbs = new Set<(e: RecordEvent) => void>();
+  let fullRecord = opts.fullRecord;
   const overlayCbs = new Set<(e: OverlayEvent) => void>();
   const speechCbs = new Set<(e: SpeechControlEvent) => void>();
   const agentCbs = new Set<(e: SessionAgentEvent) => void>();
@@ -388,9 +410,12 @@ export function createMockHertaBridge(
 
   const calls: MockHertaBridge["calls"] = {
     submitText: [],
+    submitTextMentions: [],
+    submitTextPicks: [],
     submitTextStaged: [],
     interrupt: [],
     steerText: [],
+    talkText: [],
     continueInterrupted: 0,
     rewindLastTurn: 0,
     undoLastTurnEdits: [],
@@ -407,9 +432,11 @@ export function createMockHertaBridge(
     checkForUpdate: 0,
     restartAndInstall: 0,
     openExternal: [],
+    openWebPage: [],
     listSessions: 0,
     searchSessions: [],
     recordSlice: [],
+    recordWindow: [],
     pickWorkspace: 0,
     getDreamConfig: 0,
     setDreamConfig: [],
@@ -605,6 +632,7 @@ export function createMockHertaBridge(
   const windowMaximizedCbs = new Set<(maximized: boolean) => void>();
   const windowFullScreenCbs = new Set<(fullScreen: boolean) => void>();
   const openSettingsCbs = new Set<() => void>();
+  const closeRequestedCbs = new Set<() => void>();
 
   const bridge: HertaBridge = {
     platform: opts.platform ?? "win32",
@@ -625,9 +653,12 @@ export function createMockHertaBridge(
     windowIsFullScreen: async () => opts.windowIsFullScreenResult ?? false,
     onWindowFullScreen: (cb) => sub(windowFullScreenCbs, cb),
     onOpenSettings: (cb) => sub(openSettingsCbs, cb),
-    submitText: async (text, stagedImageIds) => {
+    onCloseRequested: (cb) => sub(closeRequestedCbs, cb),
+    submitText: async (text, stagedImageIds, mentions, picks) => {
       calls.submitText.push(text);
       calls.submitTextStaged.push(stagedImageIds);
+      calls.submitTextMentions.push(mentions);
+      calls.submitTextPicks.push(picks);
       return opts.submitTextResult ?? { turnId: "mock-turn" };
     },
     interrupt: async (turnId) => {
@@ -647,6 +678,10 @@ export function createMockHertaBridge(
       return opts.continueInterruptedResult ?? { turnId: "mock-turn" };
     },
     onResume: (cb) => sub(resumeCbs, cb),
+    talkText: async (text) => {
+      calls.talkText.push(text);
+      return opts.talkTextResult ?? { accepted: "mock-turn" };
+    },
     steerText: async (text) => {
       calls.steerText.push(text);
       return opts.steerTextResult ?? { accepted: "mock-turn" };
@@ -675,7 +710,24 @@ export function createMockHertaBridge(
     },
     recordSlice: async (sessionId, before, count) => {
       calls.recordSlice.push([sessionId, before, count]);
-      return opts.recordSliceResult ?? { start: 0, blocks: [] };
+      if (opts.recordSliceResult !== undefined) return opts.recordSliceResult;
+      if (fullRecord === undefined) return { start: 0, blocks: [] };
+      const end = Math.min(before, fullRecord.length);
+      const start = pageStart(fullRecord, count, end);
+      return { start, blocks: fullRecord.slice(start, end) };
+    },
+    recordWindow: async (sessionId, req) => {
+      calls.recordWindow.push([sessionId, req]);
+      const full = fullRecord;
+      if (full === undefined) return { start: 0, blocks: [] };
+      if (req.kind === "later") {
+        if (req.after >= full.length) return { start: 0, blocks: [] };
+        const end = pageEnd(full, req.count, req.after);
+        return { start: req.after, blocks: full.slice(req.after, end) };
+      }
+      const range = jumpRange(full, { start: req.start, end: req.end }, req.to);
+      if (range === null) return { start: 0, blocks: [] };
+      return { start: range.start, blocks: full.slice(range.start, range.end) };
     },
     openSession: async (id) => {
       calls.openSession.push(id);
@@ -717,6 +769,10 @@ export function createMockHertaBridge(
     },
     openExternal: async (url) => {
       calls.openExternal.push(url);
+    },
+    openWebPage: async (sessionId, url) => {
+      calls.openWebPage.push([sessionId, url]);
+      return true;
     },
     getUpdateState: async () => opts.updateState ?? { phase: "idle" },
     getAppVersion: async () => opts.appVersion ?? "0.1.0",
@@ -1157,6 +1213,9 @@ export function createMockHertaBridge(
     emitRecord: (e) => {
       for (const cb of recordCbs) cb(e);
     },
+    setFullRecord: (record) => {
+      fullRecord = record;
+    },
     emitOverlay: (e) => {
       for (const cb of overlayCbs) cb(e);
     },
@@ -1216,6 +1275,9 @@ export function createMockHertaBridge(
     },
     emitOpenSettings: () => {
       for (const cb of openSettingsCbs) cb();
+    },
+    emitCloseRequested: () => {
+      for (const cb of closeRequestedCbs) cb();
     },
   };
 }

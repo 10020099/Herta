@@ -236,8 +236,8 @@ describe("runActorCompletionTurn — end-to-end (think → speak rhythm)", () =>
         publishWithLayer(bus, "backend", {
           type: "tool.call.started",
           id: "t1",
-          tool: "read_file",
-          inputSummary: "foo.ts",
+          tool: "str_replace_editor",
+          inputSummary: "view foo.ts",
         });
         return {
           taskId: brief.taskId,
@@ -360,9 +360,14 @@ describe("runActorCompletionTurn — Slice 13 end-to-end (mood routing)", () => 
     const runtime: CodingAgentRuntime = {
       runBrief: async (brief: HertaToAgentBrief) => {
         publishWithLayer(bus, "backend", {
-          type: "patch.preview",
-          diff: "+x",
-          files: ["a.ts"],
+          type: "tool.call.finished",
+          id: "f-a.ts",
+          tool: "str_replace_editor",
+          result: {
+            ok: false,
+            error: { code: "stale_view", message: "a.ts", retryable: false },
+            summary: "edit failed",
+          },
         });
         // Keep the brief pending long enough for the drain to fire the beat.
         await new Promise<void>((r) => setTimeout(r, 50));

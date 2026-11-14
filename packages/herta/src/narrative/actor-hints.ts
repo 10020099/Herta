@@ -2,8 +2,7 @@ import { promptAssetsFor } from "./prompt-assets.js";
 import type { PromptLang } from "./prompt-lang.js";
 import {
   actorHintTexts,
-  BEAT_HINT_PATCH_PREVIEW,
-  BEAT_HINT_STEER,
+  BEAT_HINT_TALK,
   BEAT_HINT_TOOL_FAIL,
   BEAT_HINT_VERIFICATION_FINISHED,
   PHASE_TWO_SPEECH_HINT,
@@ -38,11 +37,15 @@ export interface ActorHints {
    *  reaches the user, but it enters the record and next turn's prompt,
    *  where it reads as something she actually thought. */
   readonly thoughtSlotRetry: readonly [string, string, string];
-  readonly beatPatchPreview: string;
+  /** The checkpoints (ADR 0085 §5): a red check, a step that failed. The
+   *  patch-preview and steer beats went with step 4 — routine progress, and
+   *  a steer is not said to her. */
   readonly beatVerification: string;
   readonly beatToolFail: string;
-  /** The steer beat (ADR 0063 §1.4): the user cut in while 板砖 works. */
-  readonly beatSteer: string;
+  /** Her answer to talk while 板砖 works (ADR 0085 step 5): from the record,
+   *  no verdict before the run is done, and a spelled-out @板砖 for what is
+   *  to reach the run. No `{{no_banzhuan}}` clause: here it is a steer. */
+  readonly beatTalk: string;
   readonly supervisorVetoTemplate: string;
   /** Rethink-respeak stage 1 (2026-07-18): the fresh （我 想） that digests
    *  a supervisor veto before the respeak. Carries `{{reason}}`. */
@@ -89,10 +92,9 @@ export const DEFAULT_ACTOR_HINTS: ActorHints = {
   speechSlotRetry: PHASE_TWO_SPEECH_SLOT_RETRY_HINTS,
   thoughtRetry: PHASE_TWO_THOUGHT_RETRY_HINTS,
   thoughtSlotRetry: PHASE_TWO_THOUGHT_SLOT_RETRY_HINTS,
-  beatPatchPreview: BEAT_HINT_PATCH_PREVIEW,
   beatVerification: BEAT_HINT_VERIFICATION_FINISHED,
   beatToolFail: BEAT_HINT_TOOL_FAIL,
-  beatSteer: BEAT_HINT_STEER,
+  beatTalk: BEAT_HINT_TALK,
   supervisorVetoTemplate: SUPERVISOR_VETO_TEMPLATE,
   supervisorRethinkTemplate: SUPERVISOR_RETHINK_TEMPLATE_TEXT.zh,
   supervisorRespeak: SUPERVISOR_RESPEAK_TEXT.zh,
@@ -115,10 +117,9 @@ export function defaultActorHintsFor(lang: PromptLang = "zh"): ActorHints {
     speechSlotRetry: t.speechSlotRetry,
     thoughtRetry: t.thoughtRetry,
     thoughtSlotRetry: t.thoughtSlotRetry,
-    beatPatchPreview: t.beatPatchPreview,
     beatVerification: t.beatVerification,
     beatToolFail: t.beatToolFail,
-    beatSteer: t.beatSteer,
+    beatTalk: t.beatTalk,
     supervisorVetoTemplate: SUPERVISOR_VETO_TEMPLATE_TEXT[lang],
     supervisorRethinkTemplate: SUPERVISOR_RETHINK_TEMPLATE_TEXT[lang],
     supervisorRespeak: SUPERVISOR_RESPEAK_TEXT[lang],
@@ -146,13 +147,11 @@ export function selectBeatHint(
   hints: ActorHints,
   triggerSignature: string,
 ): string {
-  if (triggerSignature === "patch.preview:first") return hints.beatPatchPreview;
   if (triggerSignature === "verification.finished") {
     return hints.beatVerification;
   }
   if (triggerSignature.startsWith("tool.fail:")) return hints.beatToolFail;
-  // The user cut in (ADR 0063): `steer:<id>`, one per interjection.
-  if (triggerSignature.startsWith("steer:")) return hints.beatSteer;
+  if (triggerSignature === "talk") return hints.beatTalk;
   return hints.phase2Speech;
 }
 
@@ -197,16 +196,12 @@ export function loadActorHints(lang: PromptLang = "zh"): ActorHints {
       asset(hints, "thought_slot_retry_2") ?? defaults.thoughtSlotRetry[1],
       asset(hints, "thought_slot_retry_3") ?? defaults.thoughtSlotRetry[2],
     ],
-    beatPatchPreview: splice(
-      asset(hints, "beat_patch_preview"),
-      defaults.beatPatchPreview,
-    ),
     beatVerification: splice(
       asset(hints, "beat_verification"),
       defaults.beatVerification,
     ),
     beatToolFail: splice(asset(hints, "beat_tool_fail"), defaults.beatToolFail),
-    beatSteer: splice(asset(hints, "beat_steer"), defaults.beatSteer),
+    beatTalk: asset(hints, "beat_talk") ?? defaults.beatTalk,
     supervisorVetoTemplate:
       asset(hints, "supervisor_veto") ?? defaults.supervisorVetoTemplate,
     supervisorRethinkTemplate:

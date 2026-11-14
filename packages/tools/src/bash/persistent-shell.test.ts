@@ -1,4 +1,4 @@
-import { mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,8 +9,13 @@ import { PersistentShell } from "./persistent-shell.js";
 import { makeMsysPaths, shellPathsFor } from "./shell-paths.js";
 
 // Real bash processes: comfortably over the 5 s default under suite load; the
-// hook budget covers removeTmpDir's patient teardown on Windows.
+// hook budget covers removeTmpDir's patient teardown on Windows. A test that
+// starts more than one shell, or reads the process table, says its own.
 vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
+
+/** The process-table query's budget: on Windows a PowerShell start and a WMI
+ *  read, past its own 20 s default in a loaded suite (2026-11-03). */
+const QUERY_MS = 60_000;
 
 const BASH = findBash();
 const d = describe.skipIf(BASH === null);
@@ -45,7 +50,7 @@ d("PersistentShell (real bash)", () => {
         expect(r.output).not.toContain("__HERTA_PD_");
         const sleeper = Number(r.output.trim());
         expect(said).toHaveLength(1);
-        const rows = await listProcesses();
+        const rows = await listProcesses({ timeoutMs: QUERY_MS });
         const shellRow = rows.find((row) => row.pid === said[0]);
         expect(shellRow).toBeDefined();
         // Windows' parent ids do not lead from the shell to the command
@@ -61,6 +66,7 @@ d("PersistentShell (real bash)", () => {
         await own.kill();
       }
     },
+    QUERY_MS + 30_000,
   );
 
   it.skipIf(process.platform !== "win32")(
@@ -197,6 +203,43 @@ d("PersistentShell (real bash)", () => {
     expect(r.cwdReset).toBe(false);
   });
 
+  it("reports the exit status of every stage of the last pipeline: a failure upstream of a pipe is not lost (real run 2026-11-12)", async () => {
+    const piped = await shell.run("(exit 3) | cat | cat", {
+      timeoutMs: 10_000,
+    });
+    // The line's exit code is its last stage's, as bash has it.
+    expect(piped.exitCode).toBe(0);
+    expect(piped.pipeStatus).toEqual([3, 0, 0]);
+    // A single command is a pipeline of one.
+    const single = await shell.run("(exit 4)", { timeoutMs: 10_000 });
+    expect(single.exitCode).toBe(4);
+    expect(single.pipeStatus).toEqual([4]);
+    // The LAST pipeline: a command after the pipe replaces its statuses.
+    const after = await shell.run("(exit 5) | cat; echo done", {
+      timeoutMs: 10_000,
+    });
+    expect(after.output.trim()).toBe("done");
+    expect(after.pipeStatus).toEqual([0]);
+    // Neither protocol variable reaches a command's output.
+    expect(piped.output).toBe("");
+  });
+
+  it("the stage statuses survive what a command leaves behind: its own IFS, `set -u`, `set -x`", async () => {
+    const ifs = await shell.run("IFS=:; (exit 2) | cat", { timeoutMs: 10_000 });
+    expect(ifs.pipeStatus).toEqual([2, 0]);
+    const strict = await shell.run("set -u; set -x; (exit 6) | cat", {
+      timeoutMs: 10_000,
+    });
+    expect(strict.exitCode).toBe(0);
+    expect(strict.pipeStatus).toEqual([6, 0]);
+    // The trailer's own lines are not traced into the output.
+    expect(strict.output).not.toContain("__herta");
+    // And the next call starts untraced, with the cwd it had.
+    const next = await shell.run("echo ok", { timeoutMs: 10_000 });
+    expect(next.output.trim()).toBe("ok");
+    expect(next.pipeStatus).toEqual([0]);
+  });
+
   it("keeps cwd, variables and functions across calls (the trained shape's persistence)", async () => {
     writeFileSync(join(ws, "a.txt"), "A\n");
     await shell.run(
@@ -243,6 +286,46 @@ d("PersistentShell (real bash)", () => {
     expect(r.freshShell).toBe(false);
   });
 
+  it("`set -x` and `set -v` do not hide a call's end, and neither outlives its call (review 2026-11-10)", async () => {
+    // Either one echoed the wrapper's marker line, the marker without its
+    // exit code, and the call waited out its timeout and lost the shell.
+    const x = await shell.run("set -x; echo hi; false", {
+      timeoutMs: 10_000,
+    });
+    expect(x.timedOut).toBe(false);
+    expect(x.exitCode).toBe(1);
+    expect(x.output).toBe("+ echo hi\nhi\n+ false\n");
+    const afterX = await shell.run("echo again", { timeoutMs: 10_000 });
+    expect(afterX.output).toBe("again\n");
+    expect(afterX.freshShell).toBe(false);
+
+    const v = await shell.run("set -v; echo hi; (exit 4)", {
+      timeoutMs: 10_000,
+    });
+    expect(v.timedOut).toBe(false);
+    expect(v.exitCode).toBe(4);
+    expect(v.output).toBe("hi\n");
+    const afterV = await shell.run("echo again", { timeoutMs: 10_000 });
+    expect(afterV.output).toBe("again\n");
+    expect(afterV.freshShell).toBe(false);
+  });
+
+  it("a call ends at its marker's line, not at the marker's first appearance — a trap that keeps tracing on cannot hold it open", async () => {
+    // The trap turns tracing back on before every command, the wrapper's
+    // own included: its marker line is traced, marker and all, first.
+    const r = await shell.run("trap 'set -x' DEBUG; echo hi", {
+      timeoutMs: 10_000,
+    });
+    expect(r.timedOut).toBe(false);
+    expect(r.exitCode).toBe(0);
+    expect(r.output).toContain("hi\n");
+    const off = await shell.run("trap - DEBUG", { timeoutMs: 10_000 });
+    expect(off.timedOut).toBe(false);
+    expect(off.freshShell).toBe(false);
+    const clean = await shell.run("echo again", { timeoutMs: 10_000 });
+    expect(clean.output).toBe("again\n");
+  });
+
   it("puts the shell back into the workspace when a command leaves it, and says so", async () => {
     const r = await shell.run("cd .. && pwd", { timeoutMs: 10_000 });
     expect(r.cwdReset).toBe(true);
@@ -267,6 +350,31 @@ d("PersistentShell (real bash)", () => {
     expect(r2.output).toBe("KEEP=\n");
     expect(shell.spawns).toBe(2);
   });
+
+  it("after a timeout, an exit or a kill, cwd says where the next command will run — the workspace, not a `cd` the lost shell took with it (release review 2026-10-22)", async () => {
+    mkdirSync(join(ws, "sub"));
+    await shell.run("cd sub", { timeoutMs: 10_000 });
+    expect(shell.cwd).toBe(join(ws, "sub"));
+    const r = await shell.run("sleep 30", { timeoutMs: 800 });
+    expect(r.timedOut).toBe(true);
+    expect(shell.cwd).toBe(ws);
+    // The shell's own exit, and a kill, the same.
+    await shell.run("cd sub", { timeoutMs: 10_000 });
+    expect(shell.cwd).toBe(join(ws, "sub"));
+    await shell.run("exit 3", { timeoutMs: 10_000 });
+    expect(shell.cwd).toBe(ws);
+    await shell.run("cd sub", { timeoutMs: 10_000 });
+    await shell.kill();
+    expect(shell.cwd).toBe(ws);
+    // And it is where the next command does run.
+    const next = await shell.run("pwd", { timeoutMs: 10_000 });
+    expect(
+      shellPathsFor(BASH as string).toNative(next.output.trim()) ??
+        next.output.trim(),
+    ).toBe(ws);
+    // Four shells started and three ended: 14 s alone, past 30 s in a loaded
+    // suite (2026-11-03).
+  }, 90_000);
 
   it("bounds a chatty command: keeps the tail, counts the total", async () => {
     const small = new PersistentShell({
@@ -334,8 +442,7 @@ d("PersistentShell (real bash)", () => {
     }
   }, 90_000);
 
-  it("registers as an INTERNAL background process and kill() is idempotent", async () => {
-    expect(shell.internal).toBe(true);
+  it("registers under its fixed id and kill() is idempotent", async () => {
     expect(shell.id).toBe("shell");
     await shell.run("true", { timeoutMs: 10_000 });
     expect(shell.isRunning()).toBe(true);
@@ -378,3 +485,38 @@ describe.skipIf(process.platform !== "win32")(
     });
   },
 );
+
+d("PersistentShell — a native program's code page (review 2026-11-10)", () => {
+  it("a line that is not UTF-8 is read in the machine's code page, and a UTF-8 line as UTF-8", async () => {
+    const own = new PersistentShell({
+      bashPath: BASH as string,
+      workspaceRoot: ws,
+      legacyEncoding: "gb18030",
+    });
+    try {
+      // 「中文」 as code page 936 writes it, then a UTF-8 line, then text
+      // with no line break before the call ends.
+      const r = await own.run(
+        "printf '\\xd6\\xd0\\xce\\xc4\\n'; printf '你好\\n'; printf 'tail'",
+        { timeoutMs: 10_000 },
+      );
+      expect(r.timedOut).toBe(false);
+      expect(r.exitCode).toBe(0);
+      expect(r.output).toBe("中文\n你好\ntail");
+      // The shell is the same one, and its next call ends as usual.
+      const again = await own.run("echo again", { timeoutMs: 10_000 });
+      expect(again.output).toBe("again\n");
+      expect(again.freshShell).toBe(false);
+    } finally {
+      await own.kill();
+    }
+  });
+
+  it("with no code page known the same bytes read as they did", async () => {
+    const r = await shell.run("printf '\\xd6\\xd0\\xce\\xc4\\n'", {
+      timeoutMs: 10_000,
+    });
+    expect(r.timedOut).toBe(false);
+    expect(r.output).toContain("�");
+  });
+});

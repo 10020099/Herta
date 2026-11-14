@@ -8,7 +8,7 @@ import {
   estimatePromptTokens,
   reportUsageNote,
 } from "@herta/core";
-import { makeFireBeat } from "./actor-turn-beat.js";
+import { makeFireAnswer, makeFireBeat } from "./actor-turn-beat.js";
 import {
   ActorTurnAbortedError,
   type ActorTurnDeps,
@@ -31,7 +31,10 @@ import {
   runPhaseTwo,
   stripStrayOpenTags,
 } from "./actor-turn-stream.js";
-import { invokeBanzhuanBridge } from "./backend-bridge.js";
+import {
+  type BanzhuanBridgeDeps,
+  invokeBanzhuanBridge,
+} from "./backend-bridge.js";
 import { BeatPolicy } from "./beat-policy.js";
 import { isUnusableBlock, retryCause } from "./block-shape.js";
 import { commonPrefixLen } from "./common-prefix.js";
@@ -42,6 +45,7 @@ import {
   parseHertaBlock,
   stripBanzhuanTrigger,
 } from "./parse.js";
+import { ACTOR_WINDOW_TOKENS, assertPromptFits } from "./prompt-size.js";
 import { compactThreshold } from "./session-recap.js";
 import {
   type PreparedRecap,
@@ -557,12 +561,17 @@ export async function runActorCompletionTurn(
 ): Promise<ActorTurnState> {
   const sizes: number[] = [];
   const ownHook = deps.onCompletionPrompt;
+  const window = deps.promptWindowTokens ?? ACTOR_WINDOW_TOKENS;
   try {
     return await runTurn(state, userText, {
       ...deps,
       onCompletionPrompt: (prompt) => {
-        sizes.push(estimatePromptTokens(prompt));
+        const size = estimatePromptTokens(prompt);
+        sizes.push(size);
         ownHook?.(prompt);
+        // The hook fires before the request leaves: a prompt the window
+        // cannot hold ends the turn here (`prompt-size.ts`).
+        assertPromptFits(size, window);
       },
     });
   } finally {
@@ -606,6 +615,12 @@ async function runTurn(
       kind: "user",
       text: userText,
       ...(deps.resume === true ? { resume: true as const } : {}),
+      ...(deps.userMentions !== undefined && deps.userMentions.length > 0
+        ? { mentions: deps.userMentions }
+        : {}),
+      ...(deps.userPicks !== undefined && deps.userPicks.length > 0
+        ? { picks: deps.userPicks }
+        : {}),
     },
     ...(deps.userAttachments ?? []),
   ];
@@ -672,6 +687,7 @@ async function runTurn(
       signal,
       beatPolicy: policy,
       fireBeat,
+      ...talkLane(deps, priorTurnLength, recap, recapBoundaryIndex),
       sink: deps.sink,
       ...(deps.resume === true ? { resume: true as const } : {}),
     });
@@ -1448,6 +1464,7 @@ async function runTurn(
         signal,
         beatPolicy: policy,
         fireBeat,
+        ...talkLane(deps, priorTurnLength, recap, recapBoundaryIndex),
         sink: deps.sink,
       });
       dispatchCount += 1;
@@ -1470,4 +1487,28 @@ async function runTurn(
   // Safety cap hit on speech iterations.
   deps.sink?.flushBlocks(record);
   return { record };
+}
+
+/**
+ * Her lane while 板砖 works (ADR 0085 step 3): she answers talk, and a live
+ * `@板砖` in her answer steers the run. Both dispatch sites hand the bridge
+ * the same; a front-end that sends no talk (the CLI) never wakes it.
+ */
+function talkLane(
+  deps: ActorTurnDeps,
+  priorTurnLength: number,
+  recap: string | undefined,
+  recapBoundaryIndex: number,
+): Pick<BanzhuanBridgeDeps, "answerTalk" | "steerBackend"> {
+  return {
+    answerTalk: makeFireAnswer(
+      deps,
+      priorTurnLength,
+      recap,
+      recapBoundaryIndex,
+    ),
+    ...(deps.steerBackend !== undefined
+      ? { steerBackend: deps.steerBackend }
+      : {}),
+  };
 }

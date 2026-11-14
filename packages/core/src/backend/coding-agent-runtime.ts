@@ -13,6 +13,7 @@ import { CALL_ERROR_DENY_CODES } from "../permission-deny-codes.js";
 import type { PermissionEngine, RiskLevel } from "../permission-engine.js";
 import { ReadLedger } from "../read-ledger.js";
 import { countDiffLines } from "../text/diff-lines.js";
+import { COMMAND_TOOLS, WRITING_TOOLS } from "../tool-kinds.js";
 import type { ToolRegistry } from "../tool-registry.js";
 import { TranscriptStore } from "../transcript-store.js";
 import type { AgentEvent } from "../types/events.js";
@@ -38,33 +39,19 @@ import { type UndoSegment, UndoStore } from "./undo-store.js";
 
 /**
  * Tools whose SUCCESS argues that the task advanced (audit 2026-07-24, 1.2).
- * Read-only and bookkeeping tools — read_file, search_text, glob,
- * git_status, git_diff, command_output — execute successfully
- * while changing nothing, so counting them as completion evidence let a
- * backend that merely investigated report 完成.
+ * A tool that only reads or presents — `show_excerpt`, `report_finding`, a
+ * page read — succeeds while changing nothing, so counting it as completion
+ * evidence let a backend that merely investigated report 完成.
  */
 const MUTATING_TOOLS: ReadonlySet<string> = new Set([
-  "edit_file",
-  "write_new_file",
-  "run_command",
-  "command_stop",
   // Not `memory_save` (ADR 0077): a saved fact changes the harness's own
-  // store, not the user's task, and on the default contract a run that
-  // read, failed and saved a fact would have reported 完成 — the trap the
-  // reads were taken out of (audit 2026-07-24, 1.2).
-  // Minimal contract (ADR 0040): `bash` counts like run_command (exit 0
-  // only, see below); the editor counts only for its writing commands —
-  // a `view` is a read and proves nothing (the result data says which).
+  // store, not the user's task, and a run that read, failed and saved a
+  // fact would have reported 完成 — the trap the reads were taken out of
+  // (audit 2026-07-24, 1.2).
+  // `bash` counts on exit 0 only (see below); the editor counts only for
+  // its writing commands — a `view` is a read and proves nothing (the
+  // result data says which).
   "bash",
-  "str_replace_editor",
-]);
-
-/** The two shell-shaped tools whose result data is RunCommandData. */
-const COMMAND_TOOLS: ReadonlySet<string> = new Set(["run_command", "bash"]);
-/** The three file-writing tools whose result data carries relPath + diff. */
-const WRITING_TOOLS: ReadonlySet<string> = new Set([
-  "edit_file",
-  "write_new_file",
   "str_replace_editor",
 ]);
 
@@ -579,10 +566,7 @@ export class CodingAgentRuntime {
               if (path !== undefined) {
                 changedByPath.set(path, {
                   path,
-                  kind:
-                    event.tool === "write_new_file" || data?.created === true
-                      ? "created"
-                      : "modified",
+                  kind: data?.created === true ? "created" : "modified",
                   diffSummary:
                     typeof data?.diff === "string"
                       ? summarizeDiff(data.diff)
@@ -673,10 +657,6 @@ export class CodingAgentRuntime {
         // Read only once old iterations have been dropped (working-state.ts).
         workingState: () => ({
           changedFiles: [...changedByPath.values()],
-          background: bg
-            .list()
-            .filter((p) => p.isRunning())
-            .map((p) => ({ id: p.id, command: p.argv.join(" ") })),
           findings: findings.all(),
           steers,
         }),
@@ -761,7 +741,6 @@ export class CodingAgentRuntime {
         ...(undoSegment !== undefined ? { undo: undoSegment.undo } : {}),
       };
 
-      let stoppedBackground = 0;
       try {
         for await (const event of runBackendTurnLoop(
           turnDepsWithJournal,
@@ -789,16 +768,11 @@ export class CodingAgentRuntime {
         }
       } finally {
         unsubscribe();
-        // No unmanaged backgrounding (ADR 0025 slice 4): whatever the model
-        // left running dies with the brief — on success, failure, AND abort
-        // (this finally runs when the loop throws).
-        stoppedBackground = await bg.stopAll();
-      }
-      if (stoppedBackground > 0) {
-        builder.addResidualRisk(
-          `${stoppedBackground} background command(s) still running at brief end were stopped`,
-          { leading: true },
-        );
+        // No unmanaged backgrounding (ADR 0025 slice 4): the shell, and
+        // whatever the model left running in it, dies with the brief — on
+        // success, failure, AND abort (this finally runs when the loop
+        // throws). Routine: it is not a risk on the report (ADR 0086).
+        await bg.stopAll();
       }
 
       // Attribute anything the editors did not report — shell writes, moves,
@@ -915,13 +889,19 @@ export class CodingAgentRuntime {
           // they had explicitly refused was done, the denial surviving only
           // as a residual-risk line. A refusal now CAPS the status.
           //
-          // "Landed" is mutations/verification — deliberately NOT
-          // `hasOkEvidence`, which would call a run that only READ things
-          // "partial" instead of 受阻 (and see 1.2 on that counting
-          // generally).
+          // "Landed" is mutations, verification or findings — deliberately
+          // NOT `hasOkEvidence`, which would call a run that only READ
+          // things "partial" instead of 受阻 (and see 1.2 on that counting
+          // generally). Findings count (owner 2026-10-24): a run that
+          // answered its brief while one side command was refused — a
+          // write into `.herta`, a probe the Trailblazer declined — was
+          // marked 卡住了, and Herta read six findings that answered the
+          // question as a failed run (ADR 0083 step 7 lab). 受阻 means the
+          // refusal left nothing: no change, no test, no finding.
           const landed =
             partialReport.changedFiles.length > 0 ||
-            partialReport.tests.length > 0;
+            partialReport.tests.length > 0 ||
+            findings.size > 0;
           builder.setStatus(landed ? "partial" : "blocked");
         } else {
           // Only SUCCESSFUL tool results (or harvested tests/files) argue

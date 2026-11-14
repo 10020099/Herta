@@ -15,7 +15,14 @@ import {
   resolveDiffPromptMaxLines,
 } from "./diff-collapse.js";
 import { escapeUserText } from "./escape.js";
+import { namePicks } from "./page-voice.js";
 import type { PromptLang } from "./prompt-lang.js";
+import {
+  nameMentionedPaths,
+  nameQuotedPagesForHerta,
+  systemRowForHerta,
+} from "./record-voice.js";
+import { groupRunsForHerta, liveRunForHerta } from "./run-grouping.js";
 
 /**
  * Serializer options for the prompt-side projection of a TerminalRecord.
@@ -116,7 +123,13 @@ export function serializeBlock(
 ): string {
   switch (block.kind) {
     case "user":
-      return `（开拓者 说）\n${escapeUserText(block.text)}\n（/开拓者 说）`;
+      // A path mentioned with the composer's `@` reads as its name (ADR
+      // 0072 amendment 2026-10-20): the chip the user saw.
+      // An element picked on the page reads as the element (ADR 0083 §4).
+      // A quoted Flow post's page reads as its host (ADR 0084 §9).
+      // Picks first: they are found by their whole line, and a mention
+      // rewritten inside one left her the page's raw HTML (review 2026-11-05).
+      return `（开拓者 说）\n${escapeUserText(nameMentionedPaths(namePicks(nameQuotedPagesForHerta(block.text, opts?.lang ?? "zh"), block.picks, opts?.lang ?? "zh"), block.mentions))}\n（/开拓者 说）`;
     case "herta": {
       const [openTag, closeTag] =
         block.surface === "thought"
@@ -149,6 +162,7 @@ export function serializeBlock(
               block.body,
               resolveDiffPromptMaxLines(),
               opts?.lang ?? "zh",
+              "herta",
             );
       // Append fuller evidence (command output tail / done-marker roll-up)
       // for the prompt ONLY. The CLI renderer ignores evidenceDetail (it
@@ -204,6 +218,46 @@ export function serializeTerminalRecord(
   const guarded = record.filter(
     (b) => b.kind !== "system" || isSystemBlockLabel(b.label),
   );
+  // Each run right after the bubble that dispatched it, the talk during it
+  // after it (ADR 0085 §3) — with no talk during a run, `guarded` itself.
+  const { record: grouped, live } = groupRunsForHerta(guarded);
+  if (live === null) return renderView(grouped, opts);
+  // A run still working, with talk after it: the view up to it as always,
+  // the run in its live form, then the talk. One fold decision over the
+  // whole record serves the three, as it serves a beat's two halves.
+  const lang = opts?.lang ?? "zh";
+  const attachmentFolds = decideAttachmentFolds(grouped);
+  const compress =
+    opts?.verbatimSinceLastDispatch === true
+      ? false
+      : opts?.compressDiffs !== false;
+  return [
+    renderView(grouped.slice(0, live.start), opts, attachmentFolds),
+    renderRun(liveRunForHerta(grouped.slice(live.start, live.end), lang), {
+      compress,
+      compact: false,
+      lang,
+      attachmentFolds,
+    }),
+    renderRun(grouped.slice(live.end), {
+      compress,
+      compact: false,
+      lang,
+      attachmentFolds,
+    }),
+  ]
+    .filter((s) => s.length > 0)
+    .join("\n\n");
+}
+
+/** The record (or the part of it before a live run) under the options'
+ *  treatment. `folds`: the attachment fold decided over a larger record
+ *  this is a piece of. */
+function renderView(
+  blocks: TerminalRecord,
+  opts: SerializeOptions | undefined,
+  folds?: AttachmentFolds,
+): string {
   if (opts?.verbatimSinceLastDispatch === true) {
     // Beat mode: default optimizations up to the prior dispatch's marker,
     // verbatim after it. boundary is -1 with no prior dispatch → empty head,
@@ -211,20 +265,20 @@ export function serializeTerminalRecord(
     // State-1 pass-through treatment inside compactRecordForPrompt (no
     // herta block follows it WITHIN the head) — one bounded roll-up block,
     // accepted so the marker's outcome stays legible to the beat.
-    const boundary = findLastDispatchBoundary(guarded);
+    const boundary = findLastDispatchBoundary(blocks);
     const lang = opts?.lang ?? "zh";
     // The attachment fold is decided over the WHOLE record before the split
     // (ADR 0033 §6g amendment): its window counts user turns and later
     // mentions on both sides of the boundary, so neither half may decide
     // from what it alone can see. See the option's JSDoc.
-    const attachmentFolds = decideAttachmentFolds(guarded);
-    const head = renderRun(guarded.slice(0, boundary + 1), {
+    const attachmentFolds = folds ?? decideAttachmentFolds(blocks);
+    const head = renderRun(blocks.slice(0, boundary + 1), {
       compress: true,
       compact: true,
       lang,
       attachmentFolds,
     });
-    const tail = renderRun(guarded.slice(boundary + 1), {
+    const tail = renderRun(blocks.slice(boundary + 1), {
       compress: false,
       compact: false,
       lang,
@@ -232,10 +286,11 @@ export function serializeTerminalRecord(
     });
     return [head, tail].filter((s) => s.length > 0).join("\n\n");
   }
-  return renderRun(guarded, {
+  return renderRun(blocks, {
     compress: opts?.compressDiffs !== false,
     compact: opts?.compactBridgeOutput !== false,
     lang: opts?.lang ?? "zh",
+    ...(folds !== undefined ? { attachmentFolds: folds } : {}),
   });
 }
 
@@ -261,10 +316,21 @@ function renderRun(
           ? { attachmentFolds: treatment.attachmentFolds }
           : {}),
       })
-    : treatment.attachmentFolds !== undefined
-      ? foldAttachments(blocks, treatment.attachmentFolds, treatment.lang)
-      : blocks;
+    : // Uncompacted, an attachment still reads as she would remember it
+      // (ADR 0079): with no fold decided, every one is fresh.
+      foldAttachments(
+        blocks,
+        treatment.attachmentFolds ?? new Map(),
+        treatment.lang,
+      );
   return projected
+    .flatMap((b): TerminalRecordBlock[] => {
+      // 板砖's rows read as her notes (ADR 0079 §2); a row with nothing for
+      // her drops out.
+      if (b.kind !== "system") return [b];
+      const row = systemRowForHerta(b, treatment.lang);
+      return row === null ? [] : [row];
+    })
     .map((b) =>
       serializeBlock(b, {
         compressDiffs: treatment.compress,

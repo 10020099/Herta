@@ -831,9 +831,14 @@ describe("runActorCompletionTurn — in-turn beats", () => {
     const runtime: CodingAgentRuntime = {
       runBrief: async (brief: HertaToAgentBrief) => {
         publishWithLayer(bus, "backend", {
-          type: "patch.preview",
-          diff: "--- a\n+++ b\n@@ ... @@",
-          files: ["foo.ts"],
+          type: "tool.call.finished",
+          id: "f-foo.ts",
+          tool: "str_replace_editor",
+          result: {
+            ok: false,
+            error: { code: "stale_view", message: "foo.ts", retryable: false },
+            summary: "edit failed",
+          },
         });
         return {
           taskId: brief.taskId,
@@ -871,7 +876,7 @@ describe("runActorCompletionTurn — in-turn beats", () => {
     expect(systems).toHaveLength(2);
     // First system block is the projected patch.preview; the last is the
     // run-closing done-marker.
-    expect((systems[0] as { body: string }).body).toContain("patch preview");
+    expect((systems[0] as { body: string }).body).toContain("stale_view");
     expect((systems[1] as { role?: string }).role).toBe("done-marker");
 
     // Three scripted completion calls happened, plus the two auto thoughts.
@@ -881,7 +886,7 @@ describe("runActorCompletionTurn — in-turn beats", () => {
     // The beat prompt (prompts[1]) should include the projected backend
     // SystemBlock so Herta sees what she's reacting to.
     expect(prompts[1]).toContain("系统");
-    expect(prompts[1]).toContain("patch preview"); // body from projector
+    expect(prompts[1]).toContain("这一步没成（str_replace_editor）"); // the failed step, as she reads it (ADR 0079)
     expect(prompts[1]).toContain("foo.ts");
     expect(prompts[1]).toMatch(/（我 说）\n$/); // beat prompt ends with forced-speech open tag
   });
@@ -909,9 +914,14 @@ describe("runActorCompletionTurn — in-turn beats", () => {
     const runtime: CodingAgentRuntime = {
       runBrief: async (brief: HertaToAgentBrief) => {
         publishWithLayer(bus, "backend", {
-          type: "patch.preview",
-          diff: "--- a\n+++ b\n@@ ... @@",
-          files: ["foo.ts"],
+          type: "tool.call.finished",
+          id: "f-foo.ts",
+          tool: "str_replace_editor",
+          result: {
+            ok: false,
+            error: { code: "stale_view", message: "foo.ts", retryable: false },
+            summary: "edit failed",
+          },
         });
         return {
           taskId: brief.taskId,
@@ -961,9 +971,14 @@ describe("runActorCompletionTurn — in-turn beats", () => {
     const runtime: CodingAgentRuntime = {
       runBrief: async (brief: HertaToAgentBrief) => {
         publishWithLayer(bus, "backend", {
-          type: "patch.preview",
-          diff: "--- a\n+++ b\n@@ ... @@",
-          files: ["foo.ts"],
+          type: "tool.call.finished",
+          id: "f-foo.ts",
+          tool: "str_replace_editor",
+          result: {
+            ok: false,
+            error: { code: "stale_view", message: "foo.ts", retryable: false },
+            summary: "edit failed",
+          },
         });
         return {
           taskId: brief.taskId,
@@ -1019,9 +1034,14 @@ describe("runActorCompletionTurn — in-turn beats", () => {
     const runtime: CodingAgentRuntime = {
       runBrief: async (brief: HertaToAgentBrief) => {
         publishWithLayer(bus, "backend", {
-          type: "patch.preview",
-          diff: "--- a\n+++ b\n@@ ... @@",
-          files: ["foo.ts"],
+          type: "tool.call.finished",
+          id: "f-foo.ts",
+          tool: "str_replace_editor",
+          result: {
+            ok: false,
+            error: { code: "stale_view", message: "foo.ts", retryable: false },
+            summary: "edit failed",
+          },
         });
         return {
           taskId: brief.taskId,
@@ -1070,9 +1090,14 @@ describe("runActorCompletionTurn — in-turn beats", () => {
     const runtime: CodingAgentRuntime = {
       runBrief: async (brief: HertaToAgentBrief) => {
         publishWithLayer(bus, "backend", {
-          type: "patch.preview",
-          diff: "--- a\n+++ b\n@@ ... @@",
-          files: ["foo.ts"],
+          type: "tool.call.finished",
+          id: "f-foo.ts",
+          tool: "str_replace_editor",
+          result: {
+            ok: false,
+            error: { code: "stale_view", message: "foo.ts", retryable: false },
+            summary: "edit failed",
+          },
         });
         return {
           taskId: brief.taskId,
@@ -1120,9 +1145,14 @@ describe("runActorCompletionTurn — in-turn beats", () => {
     const runtime: CodingAgentRuntime = {
       runBrief: async (brief: HertaToAgentBrief) => {
         publishWithLayer(bus, "backend", {
-          type: "patch.preview",
-          diff: "--- a\n+++ b\n@@ ... @@",
-          files: ["foo.ts"],
+          type: "tool.call.finished",
+          id: "f-foo.ts",
+          tool: "str_replace_editor",
+          result: {
+            ok: false,
+            error: { code: "stale_view", message: "foo.ts", retryable: false },
+            summary: "edit failed",
+          },
         });
         return {
           taskId: brief.taskId,
@@ -1187,9 +1217,14 @@ describe("runActorCompletionTurn — in-turn beats", () => {
     const runtime: CodingAgentRuntime = {
       runBrief: async (brief: HertaToAgentBrief) => {
         publishWithLayer(bus, "backend", {
-          type: "patch.preview",
-          diff: "--- a\n+++ b\n@@ ... @@",
-          files: ["foo.ts"],
+          type: "tool.call.finished",
+          id: "f-foo.ts",
+          tool: "str_replace_editor",
+          result: {
+            ok: false,
+            error: { code: "stale_view", message: "foo.ts", retryable: false },
+            summary: "edit failed",
+          },
         });
         return {
           taskId: brief.taskId,
@@ -1220,8 +1255,8 @@ describe("runActorCompletionTurn — in-turn beats", () => {
     // `patch.preview` use a hint specifically about reacting to the
     // diff that just appeared — NOT the generic speech hint anymore.
     expect(beatPrompt.endsWith("\n（我 说）\n")).toBe(true);
-    expect(beatPrompt).toContain("板砖刚把补丁亮在记录上方了");
-    expect(beatPrompt).toContain("一句话点评");
+    expect(beatPrompt).toContain("板砖刚一步失败了");
+    expect(beatPrompt).toContain("把失败点拎出来");
     // Must still bracket-anchor the open/close tags so the model
     // doesn't drift surface.
     expect(beatPrompt).toContain("必须以（我 说）开始，以（/我 说）结束");
@@ -1514,9 +1549,14 @@ describe("runActorCompletionTurn — onPrompt callback (prompt dump)", () => {
     const runtime: CodingAgentRuntime = {
       runBrief: async (brief: HertaToAgentBrief) => {
         publishWithLayer(bus, "backend", {
-          type: "patch.preview",
-          diff: "--- a\n+++ b\n@@ ... @@",
-          files: ["foo.ts"],
+          type: "tool.call.finished",
+          id: "f-foo.ts",
+          tool: "str_replace_editor",
+          result: {
+            ok: false,
+            error: { code: "stale_view", message: "foo.ts", retryable: false },
+            summary: "edit failed",
+          },
         });
         return {
           taskId: brief.taskId,
@@ -1561,7 +1601,7 @@ describe("runActorCompletionTurn — onPrompt callback (prompt dump)", () => {
     ]);
     // The beat prompt should be the one that ends with the open tag and
     // contains the projected backend system block.
-    expect(requests[2]?.prompt).toContain("patch preview");
+    expect(requests[2]?.prompt).toContain("这一步没成（str_replace_editor）");
     expect(requests[2]?.prompt).toMatch(/（我 说）\n$/);
   });
 
@@ -1724,9 +1764,14 @@ describe("runActorCompletionTurn — thought/speech surface", () => {
         // Post-N2: patch.preview is the beat-firing event, so the empty
         // beat script above is actually consumed by a beat.
         publishWithLayer(bus, "backend", {
-          type: "patch.preview",
-          diff: "--- a\n+++ b\n@@ ... @@",
-          files: ["foo.ts"],
+          type: "tool.call.finished",
+          id: "f-foo.ts",
+          tool: "str_replace_editor",
+          result: {
+            ok: false,
+            error: { code: "stale_view", message: "foo.ts", retryable: false },
+            summary: "edit failed",
+          },
         });
         return {
           taskId: brief.taskId,
@@ -1956,8 +2001,8 @@ describe("runActorCompletionTurn — renderer cursor / record sync (C1 regressio
         publishWithLayer(bus, "backend", {
           type: "tool.call.started",
           id: "t1",
-          tool: "read_file",
-          inputSummary: "foo.ts",
+          tool: "str_replace_editor",
+          inputSummary: "view foo.ts",
         });
         return {
           taskId: brief.taskId,
@@ -2519,9 +2564,14 @@ describe("runActorCompletionTurn — two-phase mood routing (Slice 13)", () => {
     const runtime: CodingAgentRuntime = {
       runBrief: async (brief: HertaToAgentBrief) => {
         publishWithLayer(bus, "backend", {
-          type: "patch.preview",
-          diff: "--- a\n+++ b\n@@ ... @@",
-          files: ["foo.ts"],
+          type: "tool.call.finished",
+          id: "f-foo.ts",
+          tool: "str_replace_editor",
+          result: {
+            ok: false,
+            error: { code: "stale_view", message: "foo.ts", retryable: false },
+            summary: "edit failed",
+          },
         });
         return {
           taskId: brief.taskId,
@@ -6518,14 +6568,14 @@ describe("runActorCompletionTurn — compaction (2026-05-24)", () => {
         publishWithLayer(bus, "backend", {
           type: "tool.call.started",
           id: "t1",
-          tool: "read_file",
-          inputSummary: "a.ts",
+          tool: "str_replace_editor",
+          inputSummary: "view a.ts",
         });
         publishWithLayer(bus, "backend", {
           type: "tool.call.started",
           id: "t2",
-          tool: "edit_file",
-          inputSummary: "a.ts",
+          tool: "str_replace_editor",
+          inputSummary: "str_replace a.ts",
         });
         return {
           taskId: brief.taskId,
@@ -6550,9 +6600,10 @@ describe("runActorCompletionTurn — compaction (2026-05-24)", () => {
     expect(thoughtPrompts).toHaveLength(2);
     expect(prompts).toHaveLength(2);
     for (const iter2Prompt of [thoughtPrompts[1] ?? "", prompts[1] ?? ""]) {
-      expect(iter2Prompt).toContain("[历史已压缩 · 板砖]");
-      expect(iter2Prompt).toContain("Reading a.ts");
-      expect(iter2Prompt).toContain("Writing a.ts");
+      expect(iter2Prompt).toContain("板砖之前做过的事（细节不在手边）：");
+      // A run with no outcome rows folds to its steps (ADR 0079).
+      expect(iter2Prompt).toContain("读 a.ts");
+      expect(iter2Prompt).toContain("写 a.ts");
       expect(iter2Prompt).not.toContain('Reading {"path":"a.ts"}');
     }
   });
@@ -6587,14 +6638,19 @@ describe("runActorCompletionTurn — compaction (2026-05-24)", () => {
         publishWithLayer(bus, "backend", {
           type: "tool.call.started",
           id: "t-read",
-          tool: "read_file",
-          inputSummary: '{"path":"foo.ts"}',
+          tool: "str_replace_editor",
+          inputSummary: "view foo.ts",
         });
         // Emit a patch.preview to trigger a beat.
         publishWithLayer(bus, "backend", {
-          type: "patch.preview",
-          diff: "--- a\n+++ b\n@@ ... @@",
-          files: ["foo.ts"],
+          type: "tool.call.finished",
+          id: "f-foo.ts",
+          tool: "str_replace_editor",
+          result: {
+            ok: false,
+            error: { code: "stale_view", message: "foo.ts", retryable: false },
+            summary: "edit failed",
+          },
         });
         return {
           taskId: brief.taskId,
@@ -6614,17 +6670,15 @@ describe("runActorCompletionTurn — compaction (2026-05-24)", () => {
       deps,
     );
     // Find the beat prompt. It's the one containing the
-    // patch.preview hint marker ("板砖刚把补丁亮在记录上方了").
-    const beatPrompt = prompts.find((p) =>
-      p.includes("板砖刚把补丁亮在记录上方了"),
-    );
+    // patch.preview hint marker ("板砖刚一步失败了").
+    const beatPrompt = prompts.find((p) => p.includes("板砖刚一步失败了"));
     expect(beatPrompt).toBeDefined();
     // The beat prompt should NOT contain the compaction header
     // (compactBridgeOutput: false — even with 2 system blocks present).
-    expect(beatPrompt).not.toContain("[历史已压缩 · 板砖]");
+    expect(beatPrompt).not.toContain("板砖之前做过的事（细节不在手边）：");
     // Raw blocks present in the beat prompt.
-    expect(beatPrompt).toContain("patch preview: foo.ts");
-    expect(beatPrompt).toContain('Reading {"path":"foo.ts"}'); // ADDED — raw, uncompacted
+    expect(beatPrompt).toContain("这一步没成（str_replace_editor）");
+    expect(beatPrompt).toContain("读 foo.ts"); // the step, uncompacted
   });
 
   it("selfCorrection + compactable system run upstream: both preserved in next-turn prompt", async () => {
@@ -6681,14 +6735,14 @@ describe("runActorCompletionTurn — compaction (2026-05-24)", () => {
         publishWithLayer(bus, "backend", {
           type: "tool.call.started",
           id: "t1",
-          tool: "read_file",
-          inputSummary: "x.ts",
+          tool: "str_replace_editor",
+          inputSummary: "view x.ts",
         });
         publishWithLayer(bus, "backend", {
           type: "tool.call.started",
           id: "t2",
-          tool: "edit_file",
-          inputSummary: "x.ts",
+          tool: "str_replace_editor",
+          inputSummary: "str_replace x.ts",
         });
         return {
           taskId: brief.taskId,
@@ -6723,9 +6777,9 @@ describe("runActorCompletionTurn — compaction (2026-05-24)", () => {
     expect(lastPrompt).toContain("——换个说法");
     expect(lastPrompt).toContain("改了的话。@板砖");
     // Bridge output compacted.
-    expect(lastPrompt).toContain("[历史已压缩 · 板砖]");
-    expect(lastPrompt).toContain("Reading x.ts");
-    expect(lastPrompt).toContain("Writing x.ts");
+    expect(lastPrompt).toContain("板砖之前做过的事（细节不在手边）：");
+    expect(lastPrompt).toContain("读 x.ts");
+    expect(lastPrompt).toContain("写 x.ts");
   });
 });
 
@@ -7400,5 +7454,141 @@ describe("runActorCompletionTurn — live-feed supervised reveal (LFR T4)", () =
     );
     expect(speech).toBeDefined();
     expect((speech as { text: string }).text).toBe("嗯。重写好了。");
+  });
+});
+
+describe("a speech cut at the length cap is continued (owner 2026-11-11)", () => {
+  const speechOf = (record: TerminalRecord): string =>
+    (
+      record.find((b) => b.kind === "herta" && b.surface === "speech") as {
+        text: string;
+      }
+    ).text;
+
+  it("goes on from its last character: one block, streamed as one, the seam nowhere", async () => {
+    const parts = [
+      "这件事要分三层讲。第一层，",
+      "先看数据怎么流；第二层，",
+      "再看谁在改它。",
+    ] as const;
+    const { provider, prompts, requests } = mkProvider([
+      [
+        { type: "text-delta", text: parts[0] },
+        { type: "finish", reason: "length" },
+      ],
+      [
+        { type: "text-delta", text: parts[1] },
+        { type: "finish", reason: "length" },
+      ],
+      [
+        { type: "text-delta", text: parts[2] },
+        { type: "finish", reason: "stop" },
+      ],
+    ]);
+    const sinkBundle = mkSink();
+    const { record } = await runActorCompletionTurn(
+      { record: [] as TerminalRecord },
+      "讲讲这个模块",
+      { ...mkDeps({ provider }), sink: sinkBundle.sink },
+    );
+
+    // Before, the finish reason was not read: the first part was committed
+    // as her whole answer.
+    expect(speechOf(record)).toBe(parts.join(""));
+    expect(sinkBundle.tokens.join("")).toBe(parts.join(""));
+    // One speech on screen, not three.
+    expect(sinkBundle.beginCalls).toEqual(["thought", "speech"]);
+    expect(sinkBundle.endStreamCalls).toBe(2);
+    // Each later completion is asked to write on from where the block is.
+    expect(prompts).toHaveLength(3);
+    expect(prompts[1]).toBe(`${prompts[0]}${parts[0]}`);
+    expect(prompts[2]).toBe(`${prompts[0]}${parts[0]}${parts[1]}`);
+    // Under the same cap and the same stops as the first.
+    expect(requests[1]?.maxTokens).toBe(requests[0]?.maxTokens);
+    expect(requests[2]?.stop).toEqual(requests[0]?.stop);
+  });
+
+  it("twice and no more: a runaway is still stopped", async () => {
+    const cut = (text: string): CompletionEvent[] => [
+      { type: "text-delta", text },
+      { type: "finish", reason: "length" },
+    ];
+    const { provider, prompts } = mkProvider([
+      cut("一。"),
+      cut("二。"),
+      cut("三。"),
+      cut("四，不该被问到。"),
+    ]);
+    const { record } = await runActorCompletionTurn(
+      { record: [] as TerminalRecord },
+      "hi",
+      mkDeps({ provider }),
+    );
+    expect(prompts).toHaveLength(3);
+    expect(speechOf(record)).toBe("一。二。三。");
+  });
+
+  it("a close tag the cap cut in half is written again whole, and none of it shows", async () => {
+    const { provider, prompts } = mkProvider([
+      [
+        { type: "text-delta", text: "说到这里。（/我" },
+        { type: "finish", reason: "length" },
+      ],
+      [
+        // What follows the tag is what a provider that cannot stop at a
+        // marker begun in its prompt would go on to write.
+        { type: "text-delta", text: "（/我 说）" },
+        { type: "text-delta", text: "（开拓者 说）不该出现" },
+        { type: "finish", reason: "stop" },
+      ],
+    ]);
+    const sinkBundle = mkSink();
+    const { record } = await runActorCompletionTurn(
+      { record: [] as TerminalRecord },
+      "hi",
+      { ...mkDeps({ provider }), sink: sinkBundle.sink },
+    );
+    // The half tag is not handed back as part of her words.
+    expect(prompts[1]).toBe(`${prompts[0]}说到这里。`);
+    expect(speechOf(record)).toBe("说到这里。");
+    expect(sinkBundle.tokens.join("")).toBe("说到这里。");
+  });
+
+  it("a speech that closed before the cap is not continued", async () => {
+    const { provider, prompts } = mkProvider([
+      [
+        { type: "text-delta", text: "够了。（/我 说）后面是多写的" },
+        { type: "finish", reason: "length" },
+      ],
+    ]);
+    const { record } = await runActorCompletionTurn(
+      { record: [] as TerminalRecord },
+      "hi",
+      mkDeps({ provider }),
+    );
+    expect(prompts).toHaveLength(1);
+    expect(speechOf(record)).toBe("够了。");
+  });
+
+  it("a thought cut at the cap is not: she speaks next either way", async () => {
+    const { provider, prompts } = mkScriptedThoughtsProvider([
+      [
+        { type: "text-delta", text: "想得太长，写到上限" },
+        { type: "finish", reason: "length" },
+      ],
+      [
+        { type: "text-delta", text: "好。" },
+        { type: "finish", reason: "stop" },
+      ],
+    ]);
+    const { record } = await runActorCompletionTurn(
+      { record: [] as TerminalRecord },
+      "hi",
+      mkDeps({ provider }),
+    );
+    // Two calls: the thought, once, and the speech.
+    expect(prompts).toHaveLength(2);
+    expect(prompts[0]?.endsWith("（我 想）\n")).toBe(true);
+    expect(speechOf(record)).toBe("好。");
   });
 });

@@ -1,4 +1,10 @@
 import type { Finding } from "../findings-ledger.js";
+// The journal's names, not only the tools 板砖 has now: a journal written on
+// the standard set (deleted, ADR 0086) is still sealed.
+import {
+  JOURNAL_COMMAND_TOOLS as COMMAND_TOOLS,
+  JOURNAL_WRITING_TOOLS as WRITING_TOOLS,
+} from "../tool-kinds.js";
 import type { CutoffOutcome } from "../types/terminal-record.js";
 import type { ToolCallRequest, ToolResult } from "../types/tool.js";
 import type { Message } from "../types/transcript.js";
@@ -63,12 +69,6 @@ export interface SealPlan extends OpenDispatch {
   readonly processes: readonly SealedProcess[];
 }
 
-const WRITING_TOOLS: ReadonlySet<string> = new Set([
-  "edit_file",
-  "write_new_file",
-  "str_replace_editor",
-]);
-const COMMAND_TOOLS: ReadonlySet<string> = new Set(["run_command", "bash"]);
 const STATE_TOOLS: ReadonlySet<string> = new Set(["report_finding"]);
 const OUTCOMES: ReadonlySet<string> = new Set<CutoffOutcome>([
   "not_started",

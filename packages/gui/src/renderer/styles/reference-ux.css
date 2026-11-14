@@ -1,6 +1,10 @@
 :root{
   --ink:#111417;
   --banzhuan-led:#4d86ff;
+  /* Who steered 板砖 (ADR 0085 amendment 2026-11-04): the Trailblazer gold,
+     Herta violet — the ring of their avatar on a steer row. */
+  --speaker-trailblazer:#ef9f27;
+  --speaker-herta:#7f77dd;
   --muted:#6f7782;
   --hairline:rgba(17,20,23,.08);
   --hairline-strong:rgba(17,20,23,.12);
@@ -163,6 +167,8 @@
    The opening splash stays light by design (its canvas glyphs are
    JS-drawn for a light field; see .opening-ascii). */
 :root[data-theme="dark"]{
+  --speaker-trailblazer:#f2b04d;
+  --speaker-herta:#9d97ea;
   --app-bg:
     radial-gradient(circle at 18% 35%,rgba(22,78,66,.5) 0 10%,transparent 28%),
     radial-gradient(circle at 58% 2%,rgba(26,84,74,.4) 0 8%,transparent 26%),
@@ -359,6 +365,10 @@
 }
 :root[data-theme="dark"] .card-menu-error,
 :root[data-theme="dark"] .settings-note.is-error,
+:root[data-theme="dark"] .settings-btn--danger {
+  color: #ff9d92;
+  border-color: rgba(255, 157, 146, 0.4);
+}
 :root[data-theme="dark"] .settings-key-delete {
   color: #ff9d92;
 }
@@ -618,10 +628,14 @@ button,
    than the slide so the clipping reads as a dissolve, not a guillotine. */
 .sidebar > * {
   width: var(--sidebar-content-w);
-  transition: opacity 150ms ease;
+  transition: opacity 150ms ease, visibility 0s;
 }
+/* Hidden once faded (ADR 0082 §11): at opacity 0 alone the cards were still
+   in the Tab order, invisible. Visible again at once on expand. */
 .app.sidebar-collapsed .sidebar > * {
   opacity: 0;
+  visibility: hidden;
+  transition: opacity 150ms ease, visibility 0s linear 150ms;
 }
 .app {
   transition: grid-template-columns 220ms ease;
@@ -939,6 +953,11 @@ button,
     background var(--dur-micro) ease,
     color var(--dur-micro) ease;
 }
+/* Its mirror at the BOTTOM of a window that stands away from the live end
+   (a far jump): the room goes above it instead. */
+.load-earlier.load-later {
+  margin: 18px auto 2px;
+}
 .load-earlier:hover {
   background: var(--pill-bg);
   color: var(--ink);
@@ -1144,7 +1163,7 @@ button,
 .avatar-glow{width:45px;height:45px;border-radius:50%;display:grid;place-items:center;background:rgba(255,255,255,.58);border:1px solid rgba(17,20,23,.07);box-shadow:0 5px 18px rgba(32,45,58,.06);color:var(--ink);font-size:18px}.avatar-glow::before{content:"♡";transform:translateY(-1px)}
 .user-turn{display:flex;justify-content:flex-end;gap:14px;margin:0 0 26px}.user-bubble{max-width:430px;padding:15px 18px 13px;border-radius:18px;background:var(--bubble-user);box-shadow:inset 0 1px 0 var(--glass-a62);font-size:15px;line-height:1.42}.time{display:block;margin-top:7px;font-size:12px;color:var(--muted-3);text-align:right}.user-avatar{width:42px;height:42px;border-radius:999px;display:grid;place-items:center;background:rgba(255,255,255,.52);border:1px solid var(--ink-a06);color:var(--ink);align-self:center}.assistant-turn{display:grid;grid-template-columns:50px minmax(280px,440px);gap:18px;margin:22px 0 34px 34px}.assistant-card{padding:20px 24px 16px;border-radius:18px;border:1px solid rgba(17,20,23,.105);background:rgba(255,255,255,.64);box-shadow:0 12px 32px rgba(32,45,58,.045),inset 0 1px 0 var(--glass-a72);font-size:16px;line-height:1.62}.assistant-card p{margin:0 0 6px}.assistant-card .time{text-align:left;margin-top:10px}.second-user{margin-top:8px;margin-right:0}.second-assistant{margin-top:14px;margin-left:34px}
 .status-row{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:14px;width:78%;margin:6px auto 26px;color:var(--muted-2);font-size:15px;letter-spacing:.16em}.status-row:before,.status-row:after{content:"";height:1px;background:var(--ink-a11)}.status-core{display:flex;gap:12px;align-items:center;white-space:nowrap}.transfer-icon{width:24px;height:24px;object-fit:contain;opacity:.68;filter:grayscale(1) brightness(.82);letter-spacing:0}.transfer-text{letter-spacing:.16em}
-.composer{height:78px;margin-bottom:0;border-radius:18px;border:1px solid var(--hairline);background:var(--composer-bg);box-shadow:0 2px 8px rgba(32,45,58,.10),inset 0 1px 0 var(--glass-a78);padding:0 18px 0 22px;display:flex;align-items:center;justify-content:space-between}.placeholder{font-size:16px;color:var(--muted-4)}.send{width:42px;height:42px;border:0;border-radius:50%;display:grid;place-items:center;background:rgba(154,160,181,.55);color:white;font-size:22px;line-height:1;cursor:default}
+.composer{height:calc(78px + var(--composer-grow,0px));margin-bottom:0;border-radius:18px;border:1px solid var(--hairline);background:var(--composer-bg);box-shadow:0 2px 8px rgba(32,45,58,.10),inset 0 1px 0 var(--glass-a78);padding:0 18px 0 22px;display:flex;align-items:center;justify-content:space-between}.placeholder{font-size:16px;color:var(--muted-4)}.send{width:42px;height:42px;border:0;border-radius:50%;display:grid;place-items:center;background:rgba(154,160,181,.55);color:white;font-size:22px;line-height:1;cursor:default}
 /* The rail's box is PINNED at the resting track width (--rail-w on
    .workspace-body): its track animates to 0 for the disconnect and
    viewer-open slides, and an unpinned rail shrank with it — the device
@@ -1164,7 +1183,7 @@ button,
 .app:has(.workspace.is-morphing) .device-card {
   backdrop-filter: none;
 }
-@media(max-width:1200px){.app{grid-template-columns:230px 1fr}.sidebar{--sidebar-content-w:176px}.workspace-body{--rail-w:300px;grid-template-columns:minmax(0,1fr) var(--rail-w) 0px;gap:0;--body-pad-top:18px;--body-pad-right:18px;--body-pad-bottom:18px;--body-pad-left:18px}.workspace{margin-right:18px}.workspace-body.viewer-docked{grid-template-columns:minmax(0,1fr) 0px min(var(--viewer-w,420px), calc(100% - 440px))}.assistant-turn{margin-left:0}.status-row{width:90%}.device-card{height:300px}.composer{height:104px}}
+@media(max-width:1200px){.app{grid-template-columns:230px 1fr}.sidebar{--sidebar-content-w:176px}.workspace-body{--rail-w:300px;grid-template-columns:minmax(0,1fr) var(--rail-w) 0px;gap:0;--body-pad-top:18px;--body-pad-right:18px;--body-pad-bottom:18px;--body-pad-left:18px}.workspace{margin-right:18px}.workspace-body.viewer-docked{grid-template-columns:minmax(0,1fr) 0px min(var(--viewer-w,420px), calc(100% - 440px))}.assistant-turn{margin-left:0}.status-row{width:90%}.device-card{height:300px}.composer{height:calc(104px + var(--composer-grow,0px))}}
 @media(max-width:900px){.utility-rail{display:none}.workspace-body{grid-template-columns:minmax(0,1fr) 0px 0px}.workspace{margin-right:0}.app{grid-template-columns:210px 1fr}.sidebar{--sidebar-content-w:156px}}
 /* Slice 3 additions — Conversation message rows and bubbles */
 .message-row {
@@ -1525,6 +1544,15 @@ button,
 .session-item.is-active {
   background: var(--wash-2);
 }
+/* The app's ring, not the browser's (owner 2026-10-21: in dark mode the
+   default two-tone ring — the system accent outside, white inside — showed
+   a white sliver). The arrows and Ctrl+Shift+[ / ] (ADR 0082) put the focus
+   on cards often now. Inset: the scrolling list clips anything outside a
+   card's box. */
+.session-item:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
 /* Session separation (adopted D1, 2026-06-13, replacing the O1 outlines):
    a center-fading gradient crease between CONSECUTIVE cards within a group
    — group labels already separate across groups. Drawn in the inter-card
@@ -1575,7 +1603,7 @@ button,
   font-size: 15px;
   color: transparent;
   caret-color: var(--ink);
-  line-height: 1.5;
+  line-height: var(--composer-line, 22.5px);
   outline: none;
   padding: 0;
   /* Always-reserved gutter (overflow-y: scroll), never auto: the highlight
@@ -1586,6 +1614,31 @@ button,
      paints until the input actually overflows. */
   overflow-y: scroll;
   overflow-x: hidden;
+  /* Two lines (its rows), plus the draft's growth, on the composer's own
+     curve so the two edges move together. */
+  height: calc(2 * var(--composer-line, 22.5px) + var(--composer-grow, 0px));
+  transition: height 0.44s var(--ease-signature);
+}
+/* Resting shrunk, the composer shows its two lines whatever the draft. */
+.composer.is-shrunk .composer-input {
+  height: calc(2 * var(--composer-line, 22.5px));
+}
+/* The draft as the textarea wraps it, unseen (Composer.tsx measureLines):
+   the highlight's wrap width and type. Anchored at the bottom so a tall
+   draft reaches up over the record, never below the window. */
+.composer-measure {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  visibility: hidden;
+  pointer-events: none;
+  font: inherit;
+  font-size: 15px;
+  line-height: var(--composer-line, 22.5px);
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding-right: 10px;
 }
 /* Match the conversation's slim scrollbar (user feedback 2026-07-23) — the
    default chunky OS bar (arrow buttons and all) sat inside the glass
@@ -1621,7 +1674,7 @@ button,
   margin: 0;
   font: inherit;
   font-size: 15px;
-  line-height: 1.5;
+  line-height: var(--composer-line, 22.5px);
   color: var(--ink);
   white-space: pre-wrap;
   word-break: break-word;
@@ -1640,6 +1693,147 @@ button,
 }
 .composer-ghost {
   color: rgba(77, 134, 255, 0.55);
+}
+/* A file chip (ADR 0072 amendment 2026-10-20): the token `@<name>` drawn as
+   a chip WITHOUT changing a glyph's width — the textarea above holds the
+   same characters, so any padding would walk the caret off its letters.
+   The tint's spread shadow is the chip's visible padding; the `@` goes
+   transparent and the type icon sits centred over it. */
+.composer-chip {
+  background: rgba(77, 134, 255, 0.13);
+  color: var(--mention-ink);
+  border-radius: 5px;
+  box-shadow: 0 0 0 2px rgba(77, 134, 255, 0.13);
+}
+.composer-chip__at {
+  position: relative;
+  color: transparent;
+}
+.composer-chip__icon {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  transform: translate(-50%, -52%);
+}
+/* The chip's menu: the app's menu card, opening above the chip. */
+.composer-chip-menu {
+  position: absolute;
+  z-index: 8;
+  min-width: 172px;
+  padding: 4px;
+  border: 1px solid var(--ink-a10);
+  border-radius: 10px;
+  background: var(--card-solid);
+  box-shadow: 0 10px 28px var(--shadow-pop);
+  animation: mentions-in 140ms var(--ease-pop) both;
+}
+.composer-chip-menu--sub {
+  left: 100%;
+  top: -5px;
+  margin-left: 4px;
+  animation: none;
+}
+.composer-chip-menu__sub-wrap {
+  position: relative;
+}
+.composer-chip-menu__item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: left;
+  white-space: nowrap;
+  color: var(--ink);
+  cursor: pointer;
+}
+.composer-chip-menu__item:hover,
+.composer-chip-menu__item:focus-visible,
+.composer-chip-menu__item[aria-expanded="true"] {
+  background: var(--ink-a06);
+}
+/* Walked with the arrows (ADR 0082 §10): the row's tint is the focus sign,
+   as the hover's is, not the browser's ring. */
+.composer-chip-menu__item:focus-visible {
+  outline: none;
+}
+.composer-chip-menu__item.is-danger {
+  color: var(--danger, #d9534f);
+}
+.composer-chip-menu__chevron {
+  margin-left: auto;
+  padding-left: 14px;
+  color: var(--muted-slate);
+}
+.composer-chip-menu__sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--ink-a10);
+}
+/* The same chip in a sent bubble — a real element there, so it pads. */
+.message-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin: 0 1px;
+  padding: 0 6px 0 4px;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(77, 134, 255, 0.13);
+  color: var(--mention-ink);
+  font: inherit;
+  line-height: 1.45;
+  vertical-align: baseline;
+  cursor: default;
+}
+button.message-chip {
+  cursor: pointer;
+}
+button.message-chip:hover {
+  background: rgba(77, 134, 255, 0.2);
+}
+.message-chip__icon {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+/* File-type glyph colours (the @ list, the chips). A badge's letters are
+   drawing, not text: they never ride a selection. */
+.file-icon { color: var(--muted-slate); user-select: none; }
+.file-icon--folder { color: #6f7f92; }
+.file-icon--ts { color: #2f74c0; }
+.file-icon--js { color: #b7860f; }
+.file-icon--md { color: #3b8a46; }
+.file-icon--json { color: #b06a14; }
+.file-icon--config { color: #7a5fc0; }
+.file-icon--git { color: #d2582c; }
+.file-icon--image { color: #158f7b; }
+.file-icon--pdf { color: #c9342f; }
+.file-icon--web { color: #d2582c; }
+.file-icon--py { color: #3572a5; }
+:root[data-theme="dark"] .file-icon--folder { color: #9aa8b8; }
+:root[data-theme="dark"] .file-icon--ts { color: #6ea8f0; }
+:root[data-theme="dark"] .file-icon--js { color: #e2c057; }
+:root[data-theme="dark"] .file-icon--md { color: #7cc486; }
+:root[data-theme="dark"] .file-icon--json { color: #e3a960; }
+:root[data-theme="dark"] .file-icon--config { color: #ab96ea; }
+:root[data-theme="dark"] .file-icon--git { color: #f08a62; }
+:root[data-theme="dark"] .file-icon--image { color: #4cc7b0; }
+:root[data-theme="dark"] .file-icon--pdf { color: #f07a76; }
+:root[data-theme="dark"] .file-icon--web { color: #f08a62; }
+:root[data-theme="dark"] .file-icon--py { color: #79a8d8; }
+/* In a chip the glyph takes the chip's ink, as the name does — named, not
+   inherited, in the composer: the `@` it sits over is transparent. */
+.composer-chip .composer-chip__icon,
+.message-chip .file-icon {
+  color: var(--mention-ink);
 }
 .composer-input::placeholder {
   color: var(--muted-4);
@@ -2106,6 +2300,29 @@ button,
   visibility: hidden;
   transition: none;
 }
+/* Back behind the glass while a lost scene is rebuilt (release review
+   2026-10-13): visible at once and fading in over the dead canvas fading
+   out — the base rule's delayed visibility would pop it in at 700 ms. */
+.device-card[data-scene="pending"] .device-frost {
+  transition:
+    filter 700ms ease,
+    opacity 700ms ease,
+    visibility 0s;
+}
+/* A scene that will not come (patience, a failure, past the rebuild
+   limit): the glass fades out over the flat art coming into focus, where
+   it used to cut from one drawing to the other. */
+.device-card.has-frost:not([data-scene]) .device-frost {
+  opacity: 0;
+  visibility: hidden;
+}
+.device-card.has-frost:not([data-scene]) .agent-lift-group,
+.device-card.has-frost:not([data-scene]) .agent-shadow {
+  transition:
+    transform 300ms ease-out,
+    filter 700ms ease,
+    opacity 700ms ease;
+}
 
 /* Slice 3 addition — reset UA button styles on .agent-preview (Task 13
    changed the element from <div> to <button> for a11y; UA defaults
@@ -2406,14 +2623,17 @@ button.agent-preview {
   position: fixed;
   top: 0;
   right: 0;
-  height: 40px;
+  /* The top bar's own height, so the caption glyphs sit on the bar icons'
+     centre line (owner 2026-10-24: at 40px they rode 6px high) and the
+     close button keeps the window's corner. */
+  height: var(--topbar-h, 52px);
   display: flex;
   z-index: 4000;
   -webkit-app-region: no-drag;
 }
 .window-controls__btn {
   width: 46px;
-  height: 40px;
+  height: 100%;
   border: 0;
   padding: 0;
   background: transparent;
@@ -2530,6 +2750,10 @@ button.agent-preview {
    website mounts this same stylesheet and must keep the bar flush left. */
 .app.is-mac .topbar {
   padding-left: 86px;
+  /* No caption buttons of ours on macOS (its lights are on the left), so
+     the bar runs to the edge: the browser's button at the right end sits at
+     the same 18px gutter as the left (ADR 0083, owner 2026-10-23). */
+  margin-right: 0;
 }
 /* …except in full screen, where macOS hides the lights (they come back with
    the menu bar, in a strip ABOVE the window's content), and the room kept for
@@ -2539,6 +2763,10 @@ button.agent-preview {
 }
 .topbar .sidebar-header-icon {
   -webkit-app-region: no-drag;
+}
+/* Pushes the browser's button to the bar's right end; stays a drag area. */
+.topbar-spacer {
+  flex: 1;
 }
 .topbar-title {
   margin: 0 0 0 6px;
@@ -3063,6 +3291,10 @@ button.agent-preview {
      fixed height (78/104/60px), so the resting look is unchanged. */
   align-content: flex-end;
   padding-bottom: 15px;
+  /* A long draft grows the composer upward a line at a time (owner
+     2026-11-03): the Composer sets the lines past two, up to six more, and
+     every height below adds them — the input row stays where it is. */
+  --composer-grow: calc(var(--composer-extra-lines, 0) * var(--composer-line, 22.5px));
   transition:
     height 0.44s var(--ease-signature),
     padding 0.44s var(--ease-signature),
@@ -3141,10 +3373,9 @@ button.agent-preview {
   left: 12px;
   bottom: 100%;
   width: min(520px, calc(100% - 24px));
-  max-height: 296px;
-  overflow-y: auto;
+  overflow: hidden;
   margin: 0 0 10px;
-  padding: 5px;
+  padding: 5px 0 5px 5px;
   border: 1px solid var(--ink-a10);
   border-radius: 12px;
   background: var(--card-solid);
@@ -3153,10 +3384,63 @@ button.agent-preview {
   z-index: 7;
   animation: mentions-in 160ms var(--ease-pop) both;
 }
+/* The rows scroll inside the card (ADR 0072 amendment 2026-10-20): the
+   card's edge stays whole while the rows fade at whichever edge has more
+   behind it — a hard cut read as a broken list. The scrollbar is the app's
+   slim pill, as in the conversation and the composer. */
+.composer-mentions__scroll {
+  max-height: 286px;
+  overflow-y: auto;
+  padding-right: 5px;
+  --fade-top: 0px;
+  --fade-bottom: 0px;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--fade-top),
+    #000 calc(100% - var(--fade-bottom)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--fade-top),
+    #000 calc(100% - var(--fade-bottom)),
+    transparent 100%
+  );
+}
+.composer-mentions__scroll[data-above="1"] {
+  --fade-top: 26px;
+}
+.composer-mentions__scroll[data-below="1"] {
+  --fade-bottom: 26px;
+}
+.composer-mentions__scroll::-webkit-scrollbar {
+  width: 10px;
+}
+.composer-mentions__scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.composer-mentions__scroll::-webkit-scrollbar-thumb {
+  background: var(--ink-a13);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+.composer-mentions__scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-a22);
+  background-clip: padding-box;
+}
+.composer-mentions__icon {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  align-self: center;
+}
 .composer-mentions__item {
   display: flex;
   align-items: baseline;
-  gap: 10px;
+  gap: 9px;
   width: 100%;
   padding: 6px 10px;
   border: 0;
@@ -3353,6 +3637,7 @@ button.agent-preview {
   .connect-morph-clone,
   .connect-morph-clone-label,
   .composer,
+  .composer-input,
   .status-row,
   .status-row::before,
   .status-row::after {
@@ -4422,6 +4707,113 @@ button.session-item__badge--dismiss {
 .activity-undo + .activity-line__duration {
   margin-left: 0;
 }
+/* A run of 板砖's (ADR 0085 §9): one row under her dispatching bubble. The
+   state words and the step count sit after the label, the live word
+   swapping in place. */
+.run-row__live {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+}
+/* 完整记录 ›: the run's every row, in a viewer tab — a quiet link right
+   after the line it opens, on every run however old (the rail's card has
+   left by then). */
+.run-row__record {
+  flex: none;
+  margin-left: 10px;
+  padding: 1px 2px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 18px;
+  color: var(--muted-4);
+  cursor: pointer;
+  transition: color var(--dur-micro) ease;
+}
+.run-row__record:hover {
+  color: var(--ink-2);
+}
+.run-row__record:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+/* 停止运行 on the row only while the rail — and the card that carries it —
+   is out of sight: a narrow window, or the viewer docked over the rail. */
+.run-row__steer,
+.run-row__stop {
+  display: none;
+  flex: none;
+  margin-left: auto;
+  padding: 1px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--ink-a05);
+  font: inherit;
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--muted-slate);
+  cursor: pointer;
+}
+.run-row__steer:hover,
+.run-row__stop:hover {
+  background: var(--ink-a09);
+  color: var(--ink-2);
+}
+.run-row__steer:focus-visible,
+.run-row__stop:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.run-row__stop + .activity-line__duration {
+  margin-left: 0;
+}
+.run-row__steer + .run-row__stop {
+  margin-left: 6px;
+}
+.workspace-body.viewer-docked .run-row__steer,
+.workspace-body.viewer-docked .run-row__stop {
+  display: inline-block;
+}
+@media (max-width: 900px) {
+  .run-row__steer,
+  .run-row__stop {
+    display: inline-block;
+  }
+}
+/* The composer's 插话 tag (ADR 0085 §9, owner 2026-11-05): a quote chip, on
+   the quotes' row inside the composer. Its label is words, not a path, so it
+   takes the interface's type. */
+.composer-steer-tag .composer-quote__label {
+  font-family: inherit;
+  font-size: 12px;
+}
+
+/* A speaker's avatar on a steer row (ADR 0085 amendment 2026-11-04): 18 px,
+   ringed in their colour. */
+.speaker-avatar {
+  flex: none;
+  box-sizing: border-box;
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1.5px solid var(--speaker-color);
+  overflow: hidden;
+}
+.speaker-avatar.is-trailblazer {
+  --speaker-color: var(--speaker-trailblazer);
+}
+.speaker-avatar.is-herta {
+  --speaker-color: var(--speaker-herta);
+}
+.speaker-avatar img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
 .activity-line__chevron {
   flex: none;
   color: var(--muted-4);
@@ -4676,6 +5068,12 @@ button.session-item__badge--dismiss {
      space back to the card. */
   padding-bottom: 12px;
   margin-bottom: -12px;
+  /* Room on the left for a steer's avatar, which sits centred on the
+     hairline and so reaches 4.5px past the list's edge: the list scrolls,
+     so it clips on both axes, and the avatar lost its left side (owner
+     2026-11-08). The negative margin keeps every row where it was. */
+  padding-left: 5px;
+  margin-left: -5px;
 }
 .trace-node {
   position: relative;
@@ -4798,6 +5196,60 @@ button.session-item__badge--dismiss {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* A steer on the card's timeline, where 板砖 took it: the avatar centred on
+   the hairline, the words aligned with the nodes'. */
+.trace-card__steer {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 5.5px;
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--ink);
+}
+.trace-card__steer .speaker-avatar {
+  margin-left: -4.5px;
+}
+.trace-card__steer::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 19px;
+  bottom: -11px;
+  width: 1px;
+  background: var(--hairline-strong);
+}
+.trace-card__steer:last-child::before {
+  display: none;
+}
+.trace-card__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.trace-card__action {
+  padding: 2px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--ink-a05);
+  font: inherit;
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--muted-slate);
+  cursor: pointer;
+  transition:
+    background var(--dur-micro) ease,
+    color var(--dur-micro) ease;
+}
+.trace-card__action:hover {
+  background: var(--ink-a09);
+  color: var(--ink-2);
+}
+.trace-card__action:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
 }
 .trace-card__note {
   flex: none;
@@ -5126,16 +5578,20 @@ button.repo-card__path,
 .plan-card__row.is-entering,
 .plan-card__row.is-leaving,
 .trace-card__segment.is-entering,
-.trace-card__segment.is-leaving {
+.trace-card__segment.is-leaving,
+.trace-card__steer.is-entering,
+.trace-card__steer.is-leaving {
   interpolate-size: allow-keywords;
   overflow: hidden;
 }
 .plan-card__row.is-entering,
-.trace-card__segment.is-entering {
+.trace-card__segment.is-entering,
+.trace-card__steer.is-entering {
   animation: card-row-in 300ms var(--ease-signature) both;
 }
 .plan-card__row.is-leaving,
-.trace-card__segment.is-leaving {
+.trace-card__segment.is-leaving,
+.trace-card__steer.is-leaving {
   animation: card-row-out 220ms ease both;
   pointer-events: none;
 }
@@ -5179,9 +5635,12 @@ button.repo-card__path,
   .plan-card__row.is-entering,
   .plan-card__row.is-leaving,
   .trace-card__segment.is-entering,
-  .trace-card__segment.is-leaving { animation: none; }
+  .trace-card__segment.is-leaving,
+  .trace-card__steer.is-entering,
+  .trace-card__steer.is-leaving { animation: none; }
   .plan-card__row.is-leaving,
-  .trace-card__segment.is-leaving { display: none; }
+  .trace-card__segment.is-leaving,
+  .trace-card__steer.is-leaving { display: none; }
   .repo-card__all svg { transition: none; }
 }
 .trace-card__note.is-fail {
@@ -6037,12 +6496,17 @@ button.repo-card__path,
 .file-viewer__tab {
   display: inline-flex;
   align-items: center;
-  min-width: 0;
+  /* A short name keeps its width, and six tabs (MAX_VIEWER_TABS) still fit
+     however narrow the panel is. */
+  min-width: min(74px, calc(100% / 6 - 4px));
   max-width: 180px;
   border-radius: 8px;
   padding: 0 2px 0 0;
   transition: background-color 140ms ease;
 }
+/* A run's name is long and starts with what tells it apart: it gives up its
+   width first, so 「Browser」 beside three of them stays a word. */
+.file-viewer__tab.is-run { flex-shrink: 8; }
 .file-viewer__tab.is-active {
   background: var(--glass-a78);
   box-shadow: inset 0 0 0 1px var(--hairline);
@@ -6050,6 +6514,10 @@ button.repo-card__path,
 .file-viewer__tab:not(.is-active):hover { background: var(--ink-a13); }
 .file-viewer__tab-name {
   min-width: 0;
+  /* The tab's cap less the × and the padding, on the name itself. Capped only
+     on the tab, a long name stayed wide in the flex sum and took the width
+     from its short neighbours: 「Browser」 read 「B…」 beside two run tabs. */
+  max-width: 149px;
   border: 0;
   background: transparent;
   padding: 4px 2px 4px 9px;
@@ -6209,6 +6677,108 @@ button.repo-card__path,
 .file-viewer__scroll::-webkit-scrollbar-thumb:hover {
   background: var(--ink-a22);
   background-clip: padding-box;
+}
+
+/* ── A run's 完整记录 (ADR 0085 §9) ──────────────────────────────────────────
+   Its head — the state, the counts, 撤销本轮改动 — then every row under the
+   card's phases, the steers where 板砖 took them, and the marker's facts. */
+.run-record {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 14px 16px 24px;
+}
+.run-record__head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--hairline);
+}
+.run-record__state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--ink);
+}
+.run-record__led {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #c2c8d0;
+}
+.run-record__led.is-live {
+  background: var(--banzhuan-led);
+}
+.run-record__label {
+  flex: none;
+  font-weight: 500;
+  color: var(--muted-3);
+}
+.run-record__summary {
+  min-width: 0;
+}
+.run-record__meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-left: 15px;
+  font-size: 12px;
+  color: var(--muted-4);
+  font-variant-numeric: tabular-nums;
+}
+.run-record__meta .activity-undo {
+  margin-left: auto;
+}
+.run-record__sections {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.run-record__phase-name {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--muted-2);
+}
+.run-record__rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-left: 12px;
+  border-left: 1px solid var(--hairline);
+}
+.run-record__steer {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12.5px;
+  line-height: 18px;
+  color: var(--ink);
+}
+.run-record__steer-text {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.run-record__facts-body {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--ink-a05);
+  font-family: ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 /* ── The commit tab (ADR 0059) ────────────────────────────────────────────
@@ -6478,6 +7048,17 @@ button.commit-view__path:hover {
   background: var(--ink-a13);
   color: var(--slate-deep);
 }
+/* The picker while it is on (ADR 0083 §4, the owner's pick B): the accent. */
+.file-viewer__action.is-picking,
+.file-viewer__action.is-picking:hover {
+  background: rgba(77, 134, 255, 0.13);
+  color: var(--accent-blue);
+}
+/* A picked element's crosshair takes the chip's ink, not a file's colour. */
+.message-chip--pick .message-chip__icon,
+.composer-chip .pick-icon {
+  color: var(--mention-ink);
+}
 
 /* Code tokens (highlight.js classes) in house ink — both themes read the
    same tokens, so the palette lives here once and follows the ink. */
@@ -6654,8 +7235,17 @@ button.commit-view__path:hover {
 .file-viewer__image-meta,
 .file-viewer__pdf-meta { padding-top: 6px; padding-bottom: 10px; font-variant-numeric: tabular-nums; }
 
-/* PDF pages: paper on the glass, one column, fit to width. */
-.file-viewer__pdf { padding: 16px; display: flex; flex-direction: column; align-items: center; gap: 14px; }
+/* PDF pages: paper on the glass, one column, fit to width. The column is a
+   positioned host so the piece mask can lie over the pages and scroll with
+   them (ADR 0078 amendment 2026-10-21). */
+.file-viewer__pdf { padding: 16px; }
+.file-viewer__pdf-host {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
 .file-viewer__pdf-page {
   /* A flex item in a column of definite height SHRINKS to fit by default,
      and overflow:hidden lets it shrink to nothing: a 52-page PDF rendered
@@ -7164,6 +7754,34 @@ button.commit-view__path:hover {
 }
 .settings-nav-item:hover { background: var(--ink-a05); }
 .settings-nav-item.is-active { background: rgba(77, 134, 255, .12); color: var(--accent-deep); }
+/* The nav is a column so the shortcuts row rests at its foot; the list
+   inside keeps block layout, so its margins collapse as they always did
+   (ADR 0082 amendment 2026-10-21, the owner's option A). */
+.settings-nav { display: flex; flex-direction: column; }
+.settings-nav-list { flex: 0 0 auto; }
+.settings-nav-foot {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-micro) ease;
+}
+.settings-nav-foot:hover { background: var(--ink-a06); }
+.settings-nav-foot:focus-visible {
+  outline: 2px solid var(--banzhuan-led);
+  outline-offset: 1px;
+}
 .settings-nav-item:focus-visible {
   outline: 2px solid var(--banzhuan-led);
   outline-offset: 1px;
@@ -7314,6 +7932,44 @@ button.commit-view__path:hover {
 .settings-row-title { margin: 0 0 3px; font-size: 14px; color: var(--ink); }
 .settings-row-desc { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.5; }
 .settings-row-control { flex: none; }
+/* The Trailblazer's two avatars (ADR 0085 amendment 2026-11-05): the pick
+   wears their gold ring, and a radio input covers each picture. */
+.avatar-picker {
+  display: flex;
+  gap: 10px;
+}
+.avatar-picker__option {
+  position: relative;
+  box-sizing: border-box;
+  display: block;
+  width: 36px;
+  height: 36px;
+  padding: 2px;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  cursor: pointer;
+}
+.avatar-picker__option:has(input:checked) {
+  border-color: var(--speaker-trailblazer);
+}
+.avatar-picker__option:has(input:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.avatar-picker__option input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.avatar-picker__option img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+}
 /* Voice volume slider (2026-07-11): native range input tinted via
    accent-color, with the current percentage beside it. Dimmed (and disabled
    via the input's own attribute) while the master mute is on — volume has
@@ -7414,24 +8070,110 @@ button.commit-view__path:hover {
   gap: 6px;
   margin: 2px 0 10px;
 }
-/* Strip the rail card's panel chrome — show only the (scaled) device visual. */
-.device-card.settings-bz-card {
-  height: auto;
-  background: none;
-  border: none;
-  box-shadow: none;
-  backdrop-filter: none;
-  border-radius: 0;
-  overflow: visible;
-}
-.settings-bz-card::before { display: none; }
-.settings-bz-card .agent-preview {
+/* The device as a line drawing (BanzhuanDemoCard.tsx; ADR 0057 §2.4 as
+   amended 2026-11-13). The box keeps the size the flat render had here, so
+   the pane's height is what it was. Lines take the theme's ink through
+   currentColor, in three weights (outline, inner edge, detail); the ring,
+   its glow and the disc behind the device take the state's colour,
+   `--bz-led`, which the pane sets from the legend's own swatch. */
+.settings-bz-card {
   width: 132px;
   height: 165px;
-  cursor: default;
+  color: var(--ink);
+  --bz-led: #7ba3f0;
+  --bz-detail-a: 0.3;
+  --bz-glow-a: 0.5;
+  --bz-back-a: 0.1;
 }
-.settings-bz-card .agent-preview::after {
-  cursor: default;
+:root[data-theme="dark"] .settings-bz-card {
+  --bz-detail-a: 0.34;
+  --bz-glow-a: 0.7;
+  --bz-back-a: 0.13;
+}
+.bz-art {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.bz-art-outline,
+.bz-art-edge,
+.bz-art-detail {
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.bz-art-outline { stroke-width: 1.8; opacity: 0.86; }
+.bz-art-edge { stroke-width: 1.15; opacity: 0.5; }
+/* No line under 1 px: at a 125 % display a thinner one greys out. */
+.bz-art-detail { stroke-width: 1; opacity: var(--bz-detail-a); }
+.bz-art-ripple { stroke-dasharray: 30 5 52 5 200; }
+.bz-art-tint { fill: currentColor; opacity: 0.045; }
+.bz-art-back {
+  fill: var(--bz-led);
+  opacity: var(--bz-back-a);
+  transition: fill 350ms ease;
+}
+.bz-art-led {
+  stroke: var(--bz-led);
+  stroke-width: 2.6;
+  transition: stroke 350ms ease;
+}
+.bz-art-glow {
+  stroke: var(--bz-led);
+  stroke-width: 6;
+  filter: blur(3.4px);
+  opacity: var(--bz-glow-a);
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: stroke 350ms ease;
+  animation: bz-art-breathe var(--agent-breathe-duration) ease-in-out infinite;
+}
+/* A lighter arc that runs round the ring while it works. */
+.bz-art-spin {
+  stroke: color-mix(in srgb, var(--bz-led) 30%, #fff);
+  stroke-width: 2.6;
+  stroke-linecap: round;
+  stroke-dasharray: 16 84;
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+/* The tempos are the rail ring's own (`.agent-ring.is-*`): 1.3 s working,
+   1.9 s held on an approval; green pops once, red blinks twice. */
+.settings-bz-card[data-state="delegated"] .bz-art-glow { animation-duration: 1.3s; }
+.settings-bz-card[data-state="delegated"] .bz-art-spin {
+  opacity: 0.95;
+  animation: bz-art-spin 1.15s linear infinite;
+}
+.settings-bz-card[data-state="waitingApproval"] .bz-art-glow { animation-duration: 1.9s; }
+.settings-bz-card[data-state="succeeded"] .bz-art-glow {
+  animation: bz-art-pop 600ms ease-out 1 both;
+}
+.settings-bz-card[data-state="failed"] .bz-art-led {
+  animation: bz-art-blink 1.1s linear 1;
+}
+@keyframes bz-art-breathe {
+  0%, 100% { opacity: var(--bz-glow-a); }
+  50% { opacity: calc(var(--bz-glow-a) * 0.45); }
+}
+@keyframes bz-art-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes bz-art-pop {
+  0% { transform: scale(1.35); opacity: 1; }
+  100% { transform: scale(1); opacity: var(--bz-glow-a); }
+}
+@keyframes bz-art-blink {
+  0%, 24%, 48%, 100% { opacity: 1; }
+  12%, 36% { opacity: 0.15; }
+}
+/* `[data-state]` so these outrank the per-state rules above. */
+@media (prefers-reduced-motion: reduce) {
+  .settings-bz-card[data-state] .bz-art-glow,
+  .settings-bz-card[data-state] .bz-art-spin,
+  .settings-bz-card[data-state] .bz-art-led {
+    animation: none;
+  }
 }
 .settings-bz-caption {
   text-align: center;
@@ -7697,6 +8439,14 @@ button.commit-view__path:hover {
   border: none;
 }
 .settings-btn--primary:hover:not(:disabled) { filter: brightness(1.05); }
+/* An armed destructive press (Clear browser data, ADR 0083 §8): the second
+   press does it. The key-delete link's red, in both themes. */
+.settings-btn--danger { color: #b23b3b; border-color: rgba(178, 59, 59, 0.4); }
+/* A button whose label changes in place keeps one width: every label sits
+   in the same cell, the others hidden (owner 2026-10-24). */
+.settings-btn__stack { display: inline-grid; }
+.settings-btn__stack > span { grid-area: 1 / 1; text-align: center; }
+.settings-btn__stack > .is-off { visibility: hidden; }
 .settings-key-delete {
   margin: 12px 0 0;
   padding: 0;
@@ -8205,7 +8955,7 @@ button.commit-view__path:hover {
    input. Rides the 0.44s signature height transition both ways; the strip
    itself fades in under the grow (below). */
 .composer.has-staged {
-  height: 144px;
+  height: calc(144px + var(--composer-grow, 0px));
 }
 @media (max-width: 1200px) {
   /* The 104px media height, same growth. And the bottom-anchor padding that
@@ -8214,7 +8964,7 @@ button.commit-view__path:hover {
     padding-bottom: 28px;
   }
   .composer.has-staged {
-    height: 170px;
+    height: calc(170px + var(--composer-grow, 0px));
   }
 }
 /* ── The held message (ADR 0063) ─────────────────────────────────────────
@@ -9049,11 +9799,11 @@ button.commit-view__path:hover {
    Pieces quoted from the viewer's page wait here as chips, above the input
    like the staged pictures, and grow the composer by one row the same way.
    × takes one back; the source rides the message when it is sent. */
-.composer.has-quotes { height: 112px; }
-.composer.has-staged.has-quotes { height: 178px; }
+.composer.has-quotes { height: calc(112px + var(--composer-grow, 0px)); }
+.composer.has-staged.has-quotes { height: calc(178px + var(--composer-grow, 0px)); }
 @media (max-width: 1200px) {
-  .composer.has-quotes { height: 138px; }
-  .composer.has-staged.has-quotes { height: 204px; }
+  .composer.has-quotes { height: calc(138px + var(--composer-grow, 0px)); }
+  .composer.has-staged.has-quotes { height: calc(204px + var(--composer-grow, 0px)); }
 }
 .composer-quotes {
   order: -1;
@@ -9150,4 +9900,1509 @@ button.message-quote__label:hover { text-decoration: underline; text-underline-o
   overflow-wrap: anywhere;
   max-height: 4.5em;
   overflow: hidden;
+}
+
+/* ── Keyboard (ADR 0082) ────────────────────────────────────────────── */
+/* The keycap, locked from the mockup the owner adopted (soft fill, §9): one
+   cap per key, 3px between caps, a little more between alternatives. */
+.keycaps {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+}
+.keycaps__or {
+  width: 3px;
+}
+.keycap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  box-sizing: border-box;
+  border-radius: 5px;
+  font: 11px/1 var(--mono, ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, monospace);
+  background: var(--ink-a06);
+  color: var(--ink-2);
+  user-select: none;
+}
+/* After a tooltip's label (§8). */
+.tooltip .keycaps {
+  margin-left: 8px;
+  vertical-align: middle;
+}
+.tooltip.has-keys {
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+/* The sidebar's Settings row names itself: its key sits at the right and
+   shows on hover and keyboard focus, as a menu item's would. */
+.sidebar-settings__keys {
+  margin-left: auto;
+  opacity: 0;
+  transition: opacity var(--dur-micro) ease;
+}
+.sidebar-settings:hover .sidebar-settings__keys,
+.sidebar-settings:focus-visible .sidebar-settings__keys {
+  opacity: 1;
+}
+/* The approval's keys, BEFORE the label (§6). The digits fade in when they
+   arm; Esc on Deny is there from the start (Escape always worked). */
+.approval-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  /* With a keycap before it, a label split mid-word (任务内同 / 意): each
+     button takes its label's width on one line, the row's spare width is
+     shared out, and when four do not fit the ROW wraps, not the label. */
+  flex: 1 1 auto;
+  white-space: nowrap;
+}
+.approval-panel__actions {
+  flex-wrap: wrap;
+}
+.approval-btn .keycaps--digit {
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+.approval-panel.is-armed .approval-btn .keycaps--digit {
+  opacity: 1;
+}
+.approval-btn--allow .keycap {
+  background: transparent;
+  border: 1px solid rgba(127, 127, 127, 0.55);
+  color: var(--ink-inverse);
+  opacity: 0.8;
+}
+/* The cheat sheet (§7): over Settings and the lightbox, two columns. */
+.shortcuts-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 66;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--backdrop);
+  backdrop-filter: blur(15px) saturate(140%);
+  -webkit-backdrop-filter: blur(15px) saturate(140%);
+  animation: settings-backdrop-in 160ms ease both;
+}
+.shortcuts-card {
+  width: 560px;
+  max-width: calc(100vw - 56px);
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
+  box-sizing: border-box;
+  padding: 18px 20px 14px;
+  background: var(--panel-solid);
+  border: 1px solid var(--hairline);
+  border-radius: 16px;
+  box-shadow: 0 18px 50px rgba(18, 28, 42, 0.3);
+  animation: settings-card-in 200ms var(--ease-signature) both;
+}
+.shortcuts-card:focus {
+  outline: none;
+}
+.shortcuts-card__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 12px;
+}
+.shortcuts-card__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.shortcuts-card__hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.shortcuts-card__cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0 28px;
+}
+@media (max-width: 640px) {
+  .shortcuts-card__cols {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.shortcuts-group {
+  margin-bottom: 12px;
+}
+.shortcuts-group__label {
+  margin: 0 0 4px;
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--label-soft);
+}
+.shortcuts-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+  padding: 4px 0;
+  font-size: 13px;
+  color: var(--ink);
+}
+/* Sending moves the focus here (the textarea is disabled for the turn):
+   the arrows and PgUp/PgDn scroll the conversation. A programmatic focus,
+   so no ring (§11). */
+.conversation:focus {
+  outline: none;
+}
+
+/* The browser page tab (ADR 0083 §2, §4): the controls over the area main's
+   page is laid on. The still frame stands in for the page while it moves or
+   an overlay covers it. */
+.page-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.page-view__bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 10px 6px 12px;
+  border-bottom: 1px solid var(--hairline);
+}
+.page-view__bar .file-viewer__action:disabled {
+  opacity: 0.35;
+  cursor: default;
+  background: transparent;
+}
+.page-view__address {
+  flex: 1;
+  min-width: 0;
+  margin: 0 4px;
+}
+.page-view__url {
+  width: 100%;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--input-border);
+  border-radius: 8px;
+  background: var(--surface-pop);
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--slate-deep);
+  outline: none;
+}
+.page-view__url:focus { border-color: var(--input-border-focus); }
+/* Inset from the panel's edges: the native page would otherwise cover the
+   divider (a 9px strip on the panel's left edge) and take its drag; rounded
+   to match the view's own corners (main sets the same radius). */
+.page-view__body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  margin: 0 9px 9px;
+  border-radius: 10px;
+  overflow: hidden;
+}
+.page-view__still {
+  position: absolute;
+  left: 0;
+  top: 0;
+  max-width: none;
+  pointer-events: none;
+  user-select: none;
+}
+.page-view__empty {
+  margin: 0;
+  padding: 24px 18px;
+  font-size: 12.5px;
+  color: var(--muted-slate);
+}
+
+/* A screenshot 板砖 took (ADR 0083 §11; owner's pick A): a small thumbnail at
+   the row's end, the lightbox on a click. Bounded to the row's scale — a
+   phone shot stands about 30x64, a desktop one about 64x48. */
+.activity-step__thumb {
+  flex: none;
+  margin-left: 8px;
+  padding: 0;
+  border: 1px solid var(--hairline);
+  border-radius: 5px;
+  background: var(--ink-a05);
+  overflow: hidden;
+  line-height: 0;
+  cursor: zoom-in;
+  -webkit-app-region: no-drag;
+}
+.activity-step__thumb img {
+  display: block;
+  max-width: 64px;
+  max-height: 64px;
+  width: auto;
+  height: auto;
+}
+.activity-step__thumb:hover { border-color: var(--ink-a22); }
+
+/* The page tab's new-tab page (ADR 0083 §4; the owner's pick B): a card per
+   launcher entry with Run / Stop, the confirm for an ask-class command
+   inside its card. */
+.page-servers {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  padding: 14px 12px;
+  font-size: 12.5px;
+}
+.page-server__cmd {
+  font-family: ui-monospace, "SF Mono", Menlo, "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.page-server {
+  padding: 9px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  background: var(--surface-pop);
+}
+.page-server__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.page-server__dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ink-a22);
+}
+.page-server__dot.is-ready { background: #4fbf8b; }
+.page-server__dot.is-starting {
+  background: var(--accent);
+  animation: page-server-pulse 1.2s ease-in-out infinite;
+}
+.page-server__dot.is-exited { background: #d9704f; }
+@keyframes page-server-pulse { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) {
+  .page-server__dot.is-starting { animation: none; }
+}
+.page-server__name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 500;
+  color: var(--ink);
+}
+.page-server__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border: 1px solid var(--input-border);
+  border-radius: 7px;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink);
+  cursor: pointer;
+}
+.page-server__btn:hover:not(:disabled) { background: var(--ink-a06); }
+.page-server__btn:disabled { opacity: 0.5; cursor: default; }
+.page-server__btn.is-primary {
+  border-color: transparent;
+  background: var(--accent);
+  color: var(--ink-inverse);
+}
+.page-server__cmd {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted-slate);
+}
+.page-server__meta {
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--muted-slate);
+}
+.page-server__ask {
+  min-width: 0;
+  border: 0;
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--ink-a05);
+  font-size: 12px;
+  color: var(--ink);
+}
+.page-server__ask p { margin: 0; }
+.page-server__ask-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 8px;
+}
+.page-server__failure {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: #d9704f;
+  overflow-wrap: anywhere;
+}
+
+/* ── Flow (ADR 0084): a panel of its own over the main area ───────────
+   Under the approval card (z 40), which still draws above it; the page view
+   parks while it is open (PageView `coveredNow`). The look is the tuner's
+   round 1 (owner 2026-10-30): one-line masthead, day tabs. The cards are
+   round 2 (owner: "too huge … too normal"): a lead story with a short wide
+   picture and the title over it, then numbered rows with a small picture
+   beside, and her word as a note in her own hand. Motion follows the usual
+   card numbers: a staggered rise, a 2px hover lift, a press-in before the
+   open, a 300–500 ms spring to grow. Transform, opacity and filter only. */
+/* The panel takes focus when it opens (so the composer under it does not
+   keep the keyboard); the panel itself draws no ring. */
+.flow-panel:focus {
+  outline: none;
+}
+.flow-panel {
+  --flow-herta: #6a4bd8;
+  --flow-spring: cubic-bezier(0.16, 1, 0.3, 1);
+  position: absolute;
+  /* A card like the sidebar: inset from the window by the sidebar's own
+     18px, every corner round, and everything inside clipped to them. It ran
+     to the window's edge, cut square at the bottom, and an opened post
+     covered its rounded corner with a square one (owner 2026-10-30). */
+  inset: 0 18px 18px 14px;
+  z-index: 30;
+  background: var(--shell);
+  backdrop-filter: blur(22px) saturate(1.2);
+  border: 1px solid var(--ink-a06);
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow:
+    0 8px 24px rgba(34, 45, 57, 0.08),
+    -8px 0 32px var(--shadow-pop);
+  transform: translateX(104%);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    transform 520ms var(--ease-signature),
+    opacity 380ms ease,
+    visibility 0s linear 520ms;
+}
+.flow-panel.is-open {
+  transform: none;
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition:
+    transform 520ms var(--ease-signature),
+    opacity 380ms ease,
+    visibility 0s;
+}
+:root[data-theme="dark"] .flow-panel {
+  --flow-herta: #a48bff;
+}
+.flow-scroll {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+}
+/* Under an opened post the list steps aside once the post has faded in:
+   its scrollbar showed through the frosted page. */
+.flow-panel.is-reading .flow-scroll {
+  visibility: hidden;
+  transition: visibility 0s linear 280ms;
+}
+.flow-col {
+  width: min(560px, calc(100% - 48px));
+  margin: 0 auto;
+  padding: 22px 0 48px;
+  display: grid;
+  gap: 16px;
+}
+.flow-mast {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 10px;
+  font-size: 12px;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+}
+/* The station's line drawing, its night version on the dark shell. */
+.flow-station {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+}
+.flow-station-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+/* Its thin lines thin out further at this size: darkened to hold. */
+.flow-station-img--day {
+  filter: brightness(0.45);
+}
+.flow-station-img--night {
+  display: none;
+}
+:root[data-theme="dark"] .flow-station-img--day {
+  display: none;
+}
+:root[data-theme="dark"] .flow-station-img--night {
+  display: block;
+}
+.flow-mast-name {
+  font-family: "Noto Serif SC", "Songti SC", SimSun, Georgia, serif;
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  color: var(--ink);
+}
+.flow-mast > :not(.flow-mast-rule) {
+  white-space: nowrap;
+}
+.flow-mast-rule {
+  flex: 1 0 24px;
+  height: 1px;
+  background: var(--hairline);
+}
+.flow-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.flow-tab {
+  position: relative;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 999px;
+  padding: 5px 12px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--muted-strong);
+  background: transparent;
+  cursor: pointer;
+  transition:
+    border-color var(--dur-micro) ease,
+    background var(--dur-micro) ease;
+}
+.flow-tab:hover {
+  border-color: var(--accent);
+}
+.flow-tab.is-unseen::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  right: 3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--flow-herta);
+}
+.flow-tab.is-gathering {
+  animation: flow-pulse 1.6s ease-in-out infinite;
+}
+@keyframes flow-pulse {
+  50% {
+    border-color: var(--flow-herta);
+  }
+}
+.flow-day {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.flow-day b {
+  font-size: 13px;
+  color: var(--ink);
+}
+.flow-day::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--hairline);
+}
+.flow-post {
+  position: relative;
+  border-radius: 16px;
+  background: var(--card-solid);
+  cursor: pointer;
+  box-shadow:
+    0 1px 2px var(--shadow-pop),
+    0 10px 30px -18px var(--shadow-pop);
+  animation: flow-in 640ms var(--flow-spring) backwards;
+  animation-delay: calc(var(--i, 0) * 70ms);
+  transition:
+    transform 280ms var(--flow-spring),
+    box-shadow 280ms ease;
+}
+.flow-post:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    0 1px 2px var(--shadow-pop),
+    0 20px 40px -20px var(--shadow-pop);
+}
+.flow-post:active {
+  transform: scale(0.985);
+  transition-duration: 120ms;
+}
+.flow-post:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+@keyframes flow-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.98);
+    filter: blur(4px);
+  }
+}
+.flow-post-meta {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.flow-mark {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  background: hsl(var(--hue, 200) 55% 42%);
+  color: #fff;
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.flow-post-site {
+  overflow: hidden;
+  font-weight: 600;
+  color: var(--muted-strong);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.flow-post-when {
+  flex: none;
+}
+.flow-post-when::before {
+  content: "·";
+  margin-right: 7px;
+}
+.flow-pic {
+  position: relative;
+  overflow: hidden;
+  background: hsl(var(--hue, 200) 40% 92%);
+}
+:root[data-theme="dark"] .flow-pic {
+  background: hsl(var(--hue, 200) 25% 16%);
+}
+.flow-pic-halftone {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background-image: radial-gradient(
+    circle,
+    hsl(var(--hue, 200) 45% 38% / 0.5) 1.2px,
+    transparent 1.6px
+  );
+  background-size: 9px 9px;
+  transition:
+    opacity 700ms ease,
+    transform 1400ms var(--flow-spring);
+}
+.flow-pic-halftone span {
+  font: 700 40px/1 Inter, sans-serif;
+  letter-spacing: 0.02em;
+  color: hsl(var(--hue, 200) 50% 32%);
+}
+:root[data-theme="dark"] .flow-pic-halftone span {
+  color: hsl(var(--hue, 200) 45% 72%);
+}
+.flow-pic img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transform: scale(1.04);
+  transition:
+    opacity 700ms ease,
+    transform 1400ms var(--flow-spring);
+}
+.flow-pic.is-loaded img {
+  opacity: 1;
+  transform: none;
+}
+.flow-pic.is-loaded .flow-pic-halftone {
+  opacity: 0;
+  transform: scale(1.02);
+}
+/* The picture drifts in a little while the card is under the pointer. */
+.flow-post:hover .flow-pic.is-loaded img,
+.flow-post:hover .flow-pic.is-cover .flow-pic-halftone {
+  transform: scale(1.05);
+}
+.flow-post-body {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.flow-post-title {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.4;
+  color: var(--ink);
+  text-wrap: balance;
+  transition: color 200ms ease;
+}
+.flow-post-summary {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--muted-strong);
+}
+.flow-chip {
+  justify-self: start;
+  border-radius: 999px;
+  padding: 2px 9px;
+  font-size: 11px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 11%, transparent);
+}
+/* The lead: the day's front page. */
+.flow-lead {
+  overflow: hidden;
+}
+.flow-lead-pic {
+  position: relative;
+}
+.flow-lead .flow-pic {
+  aspect-ratio: 2.3 / 1;
+}
+.flow-lead .flow-pic-halftone span {
+  font-size: 72px;
+  opacity: 0.4;
+}
+.flow-lead-over {
+  position: absolute;
+  inset: auto 0 0;
+  display: grid;
+  gap: 6px;
+  padding: 44px 16px 14px;
+  background: linear-gradient(
+    to top,
+    rgb(14 10 28 / 0.82),
+    rgb(14 10 28 / 0.4) 62%,
+    transparent
+  );
+}
+.flow-lead-over .flow-post-meta,
+.flow-lead-over .flow-post-site {
+  color: rgb(255 255 255 / 0.86);
+}
+.flow-lead .flow-post-title {
+  font-size: 19px;
+  line-height: 1.35;
+  color: #fff;
+  text-shadow: 0 1px 14px rgb(0 0 0 / 0.35);
+}
+.flow-lead > .flow-post-body {
+  padding: 12px 16px 2px;
+}
+.flow-lead > .flow-word {
+  margin: 10px 16px 14px;
+}
+/* The rest: numbered rows, the picture small beside the words. */
+.flow-list {
+  display: grid;
+  gap: 10px;
+}
+.flow-row {
+  padding: 14px 14px 12px;
+}
+.flow-row-main {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) 104px;
+  gap: 12px;
+  align-items: start;
+}
+.flow-row-num {
+  padding-top: 1px;
+  font:
+    600 19px/1 "Noto Serif SC",
+    "Songti SC",
+    Georgia,
+    serif;
+  font-variant-numeric: tabular-nums;
+  color: color-mix(in srgb, var(--flow-herta) 60%, var(--muted));
+}
+.flow-row .flow-pic {
+  width: 104px;
+  aspect-ratio: 4 / 3;
+  border-radius: 10px;
+}
+.flow-row .flow-pic-halftone {
+  background-size: 6px 6px;
+}
+.flow-row .flow-pic-halftone span {
+  font-size: 17px;
+}
+.flow-row:hover .flow-post-title {
+  color: var(--flow-herta);
+}
+/* Her word: a note in her own hand, her mark beside its first line. */
+.flow-word {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--hairline-strong);
+  animation: flow-word-in 560ms var(--flow-spring) backwards;
+  animation-delay: calc(var(--i, 0) * 70ms + 280ms);
+}
+@keyframes flow-word-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+.flow-word-av {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  object-fit: cover;
+  box-shadow:
+    0 0 0 2px var(--card-solid),
+    0 0 0 3px color-mix(in srgb, var(--flow-herta) 45%, transparent);
+  transition: transform 460ms var(--flow-spring);
+}
+.flow-post:hover .flow-word-av {
+  transform: rotate(-6deg) scale(1.06);
+}
+/* 5 + half of 21.6 puts the note's first line on the mark's middle. */
+.flow-word-note {
+  min-width: 0;
+  padding: 5px 11px 6px;
+  border-radius: 4px 12px 12px;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--flow-herta) 8%, transparent);
+}
+.flow-word b {
+  margin-right: 6px;
+  font-weight: 700;
+  color: var(--flow-herta);
+}
+.flow-word-text.is-typing::after {
+  content: "▍";
+  margin-left: 1px;
+  color: var(--flow-herta);
+  animation: flow-blink 0.9s steps(2) infinite;
+}
+@keyframes flow-blink {
+  50% {
+    opacity: 0;
+  }
+}
+.flow-end,
+.flow-thin {
+  margin: 0;
+  padding: 18px 0 6px;
+  text-align: center;
+  font-size: 12.5px;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.flow-state {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  padding: 24px 22px;
+  border-radius: 16px;
+  text-align: center;
+  background: var(--card-solid);
+  box-shadow: 0 8px 28px -14px var(--shadow-pop);
+}
+.flow-state h3 {
+  margin: 0;
+  font-size: 16px;
+  color: var(--ink);
+}
+.flow-state p {
+  max-width: 42ch;
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--muted-strong);
+}
+.flow-state button {
+  border: 0;
+  border-radius: 10px;
+  padding: 8px 16px;
+  font: inherit;
+  font-weight: 600;
+  color: var(--ink-inverse);
+  background: var(--btn-ink);
+  cursor: pointer;
+}
+.flow-state button:hover {
+  background: var(--btn-ink-hover);
+}
+/* An issue being gathered (owner 2026-10-30: "looks like a draft"): the
+   signal sending, the step in words, a bar across the five stages, the
+   stages as a tracker, and placeholder posts shimmering where posts land.
+   In the app's own blue, as the Settings toggles are. */
+.flow-gather {
+  display: grid;
+  gap: 16px;
+  padding: 18px 20px 16px;
+  border-radius: 16px;
+  background: var(--card-solid);
+  box-shadow: 0 8px 28px -14px var(--shadow-pop);
+  animation: flow-in 520ms var(--flow-spring) backwards;
+}
+.flow-gather-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.flow-gather-head h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--ink);
+}
+.flow-gather-head p {
+  margin: 3px 0 0;
+  font-size: 13px;
+  color: var(--muted-strong);
+  font-variant-numeric: tabular-nums;
+}
+.flow-gather-signal {
+  position: relative;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  color: var(--banzhuan-led);
+  background: color-mix(in srgb, var(--banzhuan-led) 12%, transparent);
+}
+.flow-gather-signal .flow-station {
+  width: 32px;
+  height: 32px;
+}
+/* Two rings sent out from the signal, one after the other. */
+.flow-gather-signal::before,
+.flow-gather-signal::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1.5px solid var(--banzhuan-led);
+  opacity: 0;
+  animation: flow-send 2.2s ease-out infinite;
+}
+.flow-gather-signal::after {
+  animation-delay: 1.1s;
+}
+@keyframes flow-send {
+  from {
+    opacity: 0.55;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.7);
+  }
+}
+.flow-gather-bar {
+  position: relative;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--soft-gray);
+}
+.flow-gather-bar i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: inherit;
+  background: var(--banzhuan-led);
+  transition: width 700ms var(--flow-spring);
+}
+.flow-gather-bar i::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgb(255 255 255 / 0.55),
+    transparent
+  );
+  transform: translateX(-100%);
+  animation: flow-sweep 1.6s ease-in-out infinite;
+}
+@keyframes flow-sweep {
+  to {
+    transform: translateX(100%);
+  }
+}
+.flow-gather-steps {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.flow-gather-steps li {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+/* The line between one step's dot and the next. */
+.flow-gather-steps li + li::before {
+  content: "";
+  position: absolute;
+  top: 5px;
+  right: 50%;
+  width: 100%;
+  height: 1.5px;
+  background: var(--hairline-strong);
+}
+.flow-gather-steps li.is-done + li::before,
+.flow-gather-steps li.is-done + li.is-now::before {
+  background: var(--banzhuan-led);
+}
+.flow-gather-dot {
+  position: relative;
+  z-index: 1;
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid var(--hairline-strong);
+  border-radius: 50%;
+  background: var(--card-solid);
+  transition:
+    background 300ms ease,
+    border-color 300ms ease;
+}
+.flow-gather-steps li.is-done {
+  color: var(--muted-strong);
+}
+.flow-gather-steps li.is-done .flow-gather-dot {
+  border-color: var(--banzhuan-led);
+  background: var(--banzhuan-led);
+}
+.flow-gather-steps li.is-now {
+  font-weight: 650;
+  color: var(--ink);
+}
+.flow-gather-steps li.is-now .flow-gather-dot {
+  border-color: var(--banzhuan-led);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--banzhuan-led) 18%, transparent);
+  animation: flow-now 1.4s ease-in-out infinite;
+}
+@keyframes flow-now {
+  50% {
+    box-shadow: 0 0 0 7px color-mix(in srgb, var(--banzhuan-led) 6%, transparent);
+  }
+}
+/* Placeholder posts: a lead and two rows, shimmering. */
+.flow-skeleton {
+  display: grid;
+  gap: 10px;
+}
+.flow-skel-lead,
+.flow-skel-row {
+  border-radius: 16px;
+  background: var(--card-solid);
+  box-shadow: 0 1px 2px var(--shadow-pop);
+}
+.flow-skel-lead {
+  display: grid;
+  gap: 10px;
+  overflow: hidden;
+  padding-bottom: 16px;
+}
+.flow-skel-lead .flow-skel-line {
+  margin-left: 16px;
+}
+.flow-skel-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 104px;
+  gap: 14px;
+  padding: 14px;
+}
+.flow-skel-row > div {
+  display: grid;
+  gap: 9px;
+  align-content: start;
+}
+.flow-skel-pic,
+.flow-skel-thumb,
+.flow-skel-line {
+  display: block;
+  background: linear-gradient(
+    100deg,
+    var(--soft-gray) 30%,
+    color-mix(in srgb, var(--soft-gray) 40%, var(--card-solid)) 50%,
+    var(--soft-gray) 70%
+  );
+  background-size: 300% 100%;
+  animation: flow-shimmer 1.5s linear infinite;
+}
+.flow-skel-pic {
+  aspect-ratio: 2.3 / 1;
+}
+.flow-skel-thumb {
+  aspect-ratio: 4 / 3;
+  border-radius: 10px;
+}
+.flow-skel-line {
+  height: 11px;
+  border-radius: 6px;
+}
+@keyframes flow-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0 0;
+  }
+}
+.flow-open {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  overflow-y: auto;
+  background: var(--shell);
+  animation: flow-fade 260ms ease both;
+}
+@keyframes flow-fade {
+  from {
+    opacity: 0;
+  }
+}
+/* Going back: the page fades while its card shrinks into the post. */
+/* Its own keyframes: switching the fade-in off made the page jump to
+   transparent instead of fading. */
+.flow-open.is-closing {
+  pointer-events: none;
+  animation: flow-fade-out 340ms ease forwards;
+}
+@keyframes flow-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+.flow-open-bar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  padding: 10px 16px;
+  background: var(--shell);
+  backdrop-filter: blur(12px);
+}
+.flow-open-bar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  border: 0;
+  border-radius: 9px;
+  padding: 6px 12px 6px 8px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--soft-gray);
+  cursor: pointer;
+}
+.flow-open-card {
+  width: min(680px, calc(100% - 48px));
+  margin: 6px auto 40px;
+  overflow: hidden;
+  border-radius: 18px;
+  background: var(--card-solid);
+  box-shadow: 0 18px 48px -18px var(--shadow-pop);
+  transform-origin: 0 0;
+  transition: transform 480ms var(--flow-spring);
+}
+.flow-open-card .flow-pic {
+  aspect-ratio: 2.2 / 1;
+}
+.flow-open-body > * {
+  animation: flow-in 560ms var(--flow-spring) backwards;
+}
+.flow-open-body > :nth-child(2) {
+  animation-delay: 50ms;
+}
+.flow-open-body > :nth-child(3) {
+  animation-delay: 100ms;
+}
+.flow-open-body > :nth-child(4) {
+  animation-delay: 150ms;
+}
+.flow-open-body > :nth-child(n + 5) {
+  animation-delay: 200ms;
+}
+.flow-open-body {
+  display: grid;
+  gap: 12px;
+  padding: 16px 22px 22px;
+}
+.flow-open-body h2 {
+  margin: 0;
+  font-size: 22px;
+  line-height: 1.35;
+  color: var(--ink);
+  text-wrap: balance;
+}
+.flow-open-meta {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+/* The key points first, as a summary box; then the write-up as an article
+   (owner 2026-10-30: one block of text was "hard to read"). */
+.flow-open-points {
+  padding: 12px 16px 12px 14px;
+  border-left: 3px solid var(--banzhuan-led);
+  border-radius: 4px 12px 12px 4px;
+  background: color-mix(in srgb, var(--banzhuan-led) 6%, transparent);
+}
+.flow-open-points h3 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.flow-open-points ul {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding-left: 18px;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--ink);
+}
+.flow-article {
+  font-size: 15px;
+  line-height: 1.85;
+  color: var(--muted-strong);
+  overflow-wrap: anywhere;
+}
+.flow-article > :first-child {
+  margin-top: 0;
+}
+.flow-article > :last-child {
+  margin-bottom: 0;
+}
+.flow-article p {
+  margin: 0 0 14px;
+}
+/* The lead paragraph reads a little larger, in the ink. */
+.flow-article > p:first-child {
+  font-size: 16px;
+  color: var(--ink);
+}
+.flow-article h1,
+.flow-article h2,
+.flow-article h3 {
+  margin: 22px 0 8px;
+  font-size: 16px;
+  font-weight: 650;
+  line-height: 1.45;
+  color: var(--ink);
+}
+.flow-article strong {
+  font-weight: 650;
+  color: var(--ink);
+}
+.flow-article ul,
+.flow-article ol {
+  display: grid;
+  gap: 4px;
+  margin: 0 0 14px;
+  padding-left: 20px;
+}
+.flow-article table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  margin: 4px 0 16px;
+  border-collapse: collapse;
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+.flow-article th,
+.flow-article td {
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--hairline);
+  text-align: left;
+  vertical-align: top;
+}
+.flow-article th {
+  font-weight: 650;
+  color: var(--ink);
+  background: var(--soft-gray);
+}
+.flow-article tbody tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--soft-gray) 45%, transparent);
+}
+.flow-open-card .flow-word {
+  margin: 0;
+  animation-delay: 150ms;
+}
+.flow-open-acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 4px;
+}
+.flow-open-acts button {
+  border: 1px solid var(--hairline-strong);
+  border-radius: 10px;
+  padding: 8px 14px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  background: transparent;
+  cursor: pointer;
+}
+.flow-open-acts button.is-primary {
+  border-color: transparent;
+  color: var(--ink-inverse);
+  background: var(--btn-ink);
+}
+.flow-button {
+  position: relative;
+}
+/* The radio: at rest the shared icon treatment. Gathering, it takes the
+   app's blue and its waves pulse outward in turn, the near one first, for as
+   long as the work runs. Ready, the waves light up outward once and hold
+   still, and the dot marks the unread issue: motion means "still gathering"
+   and nothing else. */
+.flow-radio.is-gathering,
+.flow-radio.is-ready {
+  color: var(--banzhuan-led);
+}
+.flow-radio.is-gathering .flow-radio-wave {
+  animation: flow-radio-wave 2.4s ease-in-out infinite;
+}
+.flow-radio.is-gathering .flow-radio-wave--far {
+  animation-delay: 0.35s;
+}
+.flow-radio.is-gathering .flow-radio-core,
+.flow-radio.is-ready .flow-radio-core {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.flow-radio.is-gathering .flow-radio-core {
+  animation: flow-radio-core 2.4s ease-in-out infinite;
+}
+.flow-radio.is-ready .flow-radio-wave {
+  animation: flow-radio-land 0.5s ease-out both;
+}
+.flow-radio.is-ready .flow-radio-wave--far {
+  animation-delay: 0.18s;
+}
+.flow-radio.is-ready .flow-radio-core {
+  animation: flow-radio-core 0.6s ease-out 1;
+}
+@keyframes flow-radio-land {
+  from {
+    opacity: 0.15;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes flow-radio-wave {
+  0%,
+  100% {
+    opacity: 0.2;
+  }
+  30% {
+    opacity: 1;
+  }
+  65% {
+    opacity: 0.2;
+  }
+}
+@keyframes flow-radio-core {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  20% {
+    transform: scale(1.35);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .flow-radio .flow-radio-wave,
+  .flow-radio .flow-radio-core {
+    animation: none;
+  }
+}
+/* In the button's corner, clear of the far wave's tip. */
+.flow-button-dot {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--banzhuan-led);
+  box-shadow: 0 0 0 2px var(--surface-pop);
+}
+@media (prefers-reduced-motion: reduce) {
+  .flow-panel,
+  .flow-panel.is-open,
+  .flow-pic img,
+  .flow-pic-halftone {
+    transition-duration: 120ms;
+  }
+  .flow-post,
+  .flow-word,
+  .flow-open,
+  .flow-open-body > *,
+  .flow-tab.is-gathering,
+  .flow-word-text.is-typing::after,
+  .flow-gather,
+  .flow-gather-signal::before,
+  .flow-gather-signal::after,
+  .flow-gather-bar i::after,
+  .flow-gather-steps li.is-now .flow-gather-dot,
+  .flow-skel-pic,
+  .flow-skel-thumb,
+  .flow-skel-line {
+    animation: none;
+  }
+  .flow-post,
+  .flow-word-av,
+  .flow-topic-chip {
+    transition-duration: 1ms;
+  }
+}
+.flow-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+/* Settings → Flow's topics (ADR 0084 §4, amendment "topics are picked"):
+   keywords by group, a check sliding in on the picked ones. */
+.flow-topic-groups {
+  display: grid;
+  gap: 12px;
+  margin-top: 10px;
+}
+.flow-topic-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.flow-topic-group legend {
+  float: left;
+  width: 100%;
+  margin-bottom: 2px;
+  padding: 0;
+  font-size: 11.5px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.flow-topic-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 999px;
+  padding: 5px 11px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--muted-strong);
+  background: transparent;
+  cursor: pointer;
+  transition:
+    background 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease,
+    transform 160ms var(--ease-pop),
+    gap 220ms ease,
+    padding 220ms ease;
+}
+.flow-topic-chip:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--banzhuan-led) 55%, transparent);
+}
+.flow-topic-chip:active:not(:disabled) {
+  transform: scale(0.95);
+}
+/* Picked: the app's own selected blue, the Settings toggle's LED, as a
+   tint with its border and text (owner 2026-10-30: violet did not match). */
+.flow-topic-chip.is-on {
+  gap: 5px;
+  padding-left: 8px;
+  border-color: color-mix(in srgb, var(--banzhuan-led) 70%, transparent);
+  color: var(--banzhuan-led);
+  background: color-mix(in srgb, var(--banzhuan-led) 10%, transparent);
+}
+.flow-topic-chip:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.flow-topic-check {
+  width: 0;
+  height: 12px;
+  opacity: 0;
+  transition:
+    width 220ms ease,
+    opacity 180ms ease;
+}
+.flow-topic-chip.is-on .flow-topic-check {
+  width: 12px;
+  opacity: 1;
+}
+/* The viewer's narrow-window overlay is z 40, level with the approval card:
+   while Flow is open it stays out of sight (and open), so Flow covers the
+   whole main area as §2 says. The viewer follows Flow in the body, so a
+   sibling selector reaches it without :has(). */
+.workspace-body.viewer-overlay .flow-panel.is-open ~ .file-viewer {
+  visibility: hidden;
 }

@@ -1,12 +1,16 @@
 import type {
   AgentEvent,
   ApprovalOverlayState,
+  BrowserHost,
+  PickedElement,
   RepoContextSnapshot,
+  ServerHost,
   SessionTopic,
   TerminalRecord,
   TerminalRecordBlock,
   UndoFileResult,
 } from "@herta/core";
+import type { ServerNote } from "@herta/herta";
 import type {
   BranchList,
   CommitDescription,
@@ -65,6 +69,13 @@ export interface AppServerConfig {
   readonly projectMemoryDir: string;
   /** Absolute. User-scoped memory dir. Typically `~/.herta/memory`. */
   readonly userMemoryDir: string;
+  /** Absolute. Where the owner's automatic-review choices are kept, for
+   *  every workspace: `<home>/.herta/review-choices.json`
+   *  (`reviewChoicesFileFor`, ADR 0064 amendment 2026-11-12) — outside every
+   *  workspace, so a folder cannot carry a choice in. Optional: without it a
+   *  choice holds for the session only and nothing on the machine is
+   *  touched, which is what a manually built test config wants. */
+  readonly reviewChoicesFile?: string;
   /** Absolute. 废案 narrative corpus root. Typically
    *  `<workspaceRoot>/.herta/narrative`. */
   readonly narrativeDir: string;
@@ -98,16 +109,6 @@ export interface AppServerConfig {
    *  block disabled. Settings → Coprocessor persists this (GUI,
    *  restart-to-apply); default "high". */
   readonly thinking?: ThinkingEffort;
-  /**
-   * 板砖's model-facing tool contract (ADR 0040). `standard` (default) = the
-   * 15-tool set + BACKEND_EXECUTION_CONTRACT; `minimal` = persistent `bash`
-   * + `str_replace_editor` (+ report_finding / show_excerpt) with the short
-   * 板砖 prompt. `minimal` requires a bash on the machine (`findBash()`);
-   * when none is found the session falls back to `standard` and projects a
-   * `→ 系统` line saying so. Settings → 差分协处理器 persists this
-   * (GUI, restart-to-apply).
-   */
-  readonly backendContract?: "standard" | "minimal";
   /** Automatic context-compaction threshold for the 1M-token actor window.
    * Defaults to `standard` (600K) when absent. */
   readonly compactionLevel?:
@@ -452,8 +453,8 @@ export type RecordEvent =
       /** Full-record replacement — the subscriber drops its mirror and adopts
        *  `record` wholesale. Emitted by `rewindLastTurn` after the latest turn is
        *  withdrawn; the only event that SHRINKS the record. Long-session
-       *  windowing (2026-07-12): `record` is the trailing RECORD_TAIL_BLOCKS
-       *  window and `start` is the absolute index it begins at (older blocks
+       *  windowing (2026-07-12): `record` is the trailing window (see
+       *  `recordTail`) and `start` is the absolute index it begins at (older blocks
        *  page in via `session:recordSlice`). Absent `start` means 0 — the
        *  window is the whole record. */
       readonly kind: "reset";
@@ -614,6 +615,14 @@ export type RenameSessionResult =
 
 // ───── SessionHost / Session interfaces ─────
 
+/** The live model choice (ADR 0081): seeded from `AppServerConfig`, changed
+ *  by `SessionHost.setModels`. */
+export interface SessionModels {
+  readonly actorModel: string;
+  readonly backendModel: string;
+  readonly thinking?: ThinkingEffort;
+}
+
 export interface SessionHost {
   createSession(opts: CreateSessionOpts): Promise<Session>;
   openSession(opts: OpenSessionOpts): Promise<Session>;
@@ -663,6 +672,38 @@ export interface SessionHost {
    *  finished turn, in any session, reads it — no restart. On until set.
    *  Persistence is the caller's job. */
   setComposerPredictions(enabled: boolean): void;
+  /** The desktop's browser pages (ADR 0083): each session opened after this
+   *  gets its own page from the provider, and the page steps with it. Null
+   *  takes the provider away. OPTIONAL: a host without pages (the CLI's)
+   *  has no provider to take. */
+  setBrowserProvider?(
+    provider: ((sessionId: string) => BrowserHost) | null,
+  ): void;
+  /** The desktop's launcher (ADR 0083 §5): each session opened after this
+   *  gets its dev servers from the provider, and `dev_server` with them.
+   *  OPTIONAL, as above. */
+  setServerProvider?(
+    provider: ((sessionId: string) => ServerHost) | null,
+  ): void;
+  /** Where the launcher journals each server it starts (ADR 0083 §5), so a
+   *  relaunch ends what an exit left running. OPTIONAL, as above. */
+  serverJournal?(): {
+    spawned(s: {
+      readonly pid: number;
+      readonly startedAt: number;
+      readonly name: string;
+      readonly sessionId: string;
+    }): Promise<void>;
+    exited(pid: number): Promise<void>;
+  };
+  /** Update the models and 板砖's effort live (ADR 0081): Herta's model
+   *  applies from the next turn, 板砖's model and effort from the next
+   *  dispatch — in this session or any later one. A field left out keeps its
+   *  value. Persistence is the caller's job. */
+  setModels(models: Partial<SessionModels>): void;
+  /** The models the next turn and dispatch read. Flow speaks her word on
+   *  Herta's (ADR 0084 §7). Optional: a host's fakes need not carry it. */
+  models?(): SessionModels;
   /** The user did something in the window that is not a turn (a rewind, an
    *  attachment, a search, a file opened in the viewer): it counts as
    *  activity for the dream trigger, and a running pass steps aside at its
@@ -709,6 +750,12 @@ export type SteerTextResult =
   | { readonly accepted: string }
   | { readonly queued: true };
 
+/** What `talkText` answers (ADR 0085 step 3). `accepted`: a run is working,
+ *  the words are in the record as talk, and she answers them. `queued`: no
+ *  run is working — the turn is her own speech, or none runs — so the
+ *  caller keeps the text for the next turn. Never an error. */
+export type TalkTextResult = SteerTextResult;
+
 /** Whether a 继续 is on offer changed (ADR 0071 §1.4). */
 export type ResumeEvent =
   | { readonly kind: "offer"; readonly resumable: boolean }
@@ -738,6 +785,9 @@ export interface Session {
    *  Read once on subscribe; consume `subscribeRecord()` to stay
    *  current. */
   readonly record: TerminalRecord;
+  /** The record as the chat was sent it, stamps included: what a page of
+   *  older blocks answers from. Absent: `record`. */
+  readonly shownRecord?: TerminalRecord;
   /** Synchronous snapshot of the current pending overlay, or null when idle. */
   readonly overlay: ApprovalOverlayState | null;
   /** Current session title (generated after the first turn, or the user's
@@ -776,7 +826,15 @@ export interface Session {
    *  blocks land right after the user block, inside this turn's span. */
   submitText(
     text: string,
-    opts?: { readonly stagedImageIds?: readonly string[] },
+    opts?: {
+      readonly stagedImageIds?: readonly string[];
+      /** Paths mentioned with the composer's `@` (ADR 0072 amendment
+       *  2026-10-20), recorded on the user block. */
+      readonly mentions?: readonly string[];
+      /** Elements picked on the page (ADR 0083 §4), each `line` in the
+       *  text, recorded on the user block. */
+      readonly picks?: readonly PickedElement[];
+    },
   ): Promise<SubmitTextResult>;
   /** Returns the current actor-prompt estimate for the active session. */
   getContextUsage?(): ContextUsage;
@@ -816,7 +874,24 @@ export interface Session {
    * submits it as the next turn. OPTIONAL: fakes and the website demo omit
    * it; the composer then offers no steer.
    */
-  steerText?(text: string): Promise<SteerTextResult>;
+  steerText?(
+    text: string,
+    picks?: readonly PickedElement[],
+  ): Promise<SteerTextResult>;
+  /**
+   * A message to HERTA while 板砖 works (ADR 0085 step 3): talk, not a steer.
+   * Accepted only while a backend run works: the words enter the record as
+   * talk and she answers them, while the run goes on. Outside a run the
+   * answer is `queued` and nothing is recorded — the caller holds the text
+   * for the next turn. OPTIONAL like `steerText`.
+   */
+  talkText?(
+    text: string,
+    opts?: {
+      readonly mentions?: readonly string[];
+      readonly picks?: readonly PickedElement[];
+    },
+  ): Promise<TalkTextResult>;
   /**
    * 继续 (ADR 0071 §1.4): continue the interrupted 板砖 run. OPTIONAL like
    * `steerText`: fakes and the website demo omit it, and no offer is shown.
@@ -871,6 +946,27 @@ export interface Session {
    *  `turn_in_progress` while a turn is in flight — the underlying
    *  appendSystemNote is only safe between turns. */
   setWorkspace(workspace: string): Promise<WorkspaceSetResult>;
+  /** A launcher event outside 板砖's steps (ADR 0083 §5, §10) — the
+   *  Trailblazer's Run or Stop, or servers a relaunch ended — as a `→ 系统`
+   *  row: the world Herta shares changed. Appended between turns; one sent
+   *  mid-turn waits for the turn's end. OPTIONAL: a session without a
+   *  launcher has none to note. */
+  noteServer?(note: ServerNote): void;
+  /** The launcher's entries and what runs (ADR 0083 §4's new-tab page).
+   *  OPTIONAL: a session without a launcher has none. */
+  listServers?(): Promise<ServerListing>;
+  /** The Trailblazer's Run (§5, question 8): classified as run_command
+   *  would classify the entry's argv, at every start. An ask-class command
+   *  needs `confirmed` on its first start in the session — the `shown` of
+   *  the card the Trailblazer answered, which confirms that argv in that
+   *  directory and nothing the entry says since; a block-class one is
+   *  refused. The start is noted in the record. */
+  startServer?(
+    name: string,
+    opts?: { readonly confirmed?: string },
+  ): Promise<StartServerResult>;
+  /** The Trailblazer's Stop, noted in the record when it stopped one. */
+  stopServer?(name: string): Promise<{ readonly ok: boolean }>;
   /** Restore the managed-sandbox default backend workspace. Persisted +
    *  broadcast (with `isDefault: true`). Idle-only, like setWorkspace. */
   resetWorkspace(): Promise<WorkspaceSetResult>;
@@ -949,3 +1045,58 @@ export interface Session {
 
   close(): Promise<void>;
 }
+
+/** One launcher entry as the new-tab page shows it (ADR 0083 §4). */
+export interface ServerEntryView {
+  readonly name: string;
+  /** `npm run dev`, as the entry wrote it. */
+  readonly command: string;
+  readonly port: number;
+  readonly url: string;
+  /** `idle`: never started in this session. */
+  readonly state: "starting" | "ready" | "exited" | "stopped" | "idle";
+  readonly by?: "banzhuan" | "trailblazer";
+  /** The log, workspace-relative, once it ran. */
+  readonly logPath?: string;
+  readonly exitCode?: number | null;
+}
+
+export type ServerListing =
+  | { readonly ok: true; readonly entries: readonly ServerEntryView[] }
+  | {
+      readonly ok: false;
+      readonly reason: "no_launch_file" | "bad_launch_file" | "no_launcher";
+      readonly message?: string;
+    };
+
+export type StartServerResult =
+  | { readonly ok: true; readonly already: boolean; readonly url: string }
+  /** An ask-class command, not yet confirmed in this session: the page
+   *  shows the command and why it asks. */
+  | {
+      readonly ok: false;
+      readonly reason: "confirm";
+      readonly command: string;
+      readonly code?: string;
+      /** What the card stands for — the argv and its directory — sent back
+       *  as `confirmed` with the Trailblazer's Run. */
+      readonly shown: string;
+    }
+  /** A block-class command: never runs. */
+  | { readonly ok: false; readonly reason: "refused"; readonly message: string }
+  /** It did not come up (exited, timed out, could not spawn). */
+  | {
+      readonly ok: false;
+      readonly reason: "failed";
+      readonly code: string;
+      readonly message: string;
+    }
+  | {
+      readonly ok: false;
+      readonly reason:
+        | "no_entry"
+        | "no_launch_file"
+        | "bad_launch_file"
+        | "no_launcher";
+      readonly message?: string;
+    };

@@ -33,9 +33,13 @@ describe("@herta/app-server — public API surface", () => {
         "mergeMcpConfigs",
         "parseMcpConfig",
         "parseMcpServerConfig",
+        // Flow (ADR 0084): the desktop main owns one service and reads its
+        // settings section through the normalizer.
+        "DEFAULT_FLOW_SETTINGS",
+        "FlowService",
+        "normalizeFlowSettings",
         // Long-session windowing (2026-07-12): the shared tail-slice helper
         // used by every full-record payload to the renderer.
-        "RECORD_TAIL_BLOCKS",
         "recordTail",
         "writeGlobalMcpConfig",
         "writeMcpConfig",

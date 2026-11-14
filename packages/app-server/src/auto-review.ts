@@ -40,6 +40,8 @@ import {
 import { type ApiKey, deepseekProvider } from "@herta/providers";
 import {
   bodyUnreadable,
+  harnessHomeWriteDenial,
+  hertaStateWriteDenial,
   maxReviewRisk,
   namesHertaState,
   type ReviewRisk,
@@ -166,6 +168,7 @@ export function defaultReviewModel(
 ): ReviewModel {
   return reviewModelFrom(
     deepseekProvider({
+      site: "review",
       apiKey,
       model: "deepseek-flash",
       thinking: "low",
@@ -436,10 +439,10 @@ export function reviewAnswer(
 }
 
 /**
- * The command a request would show on its card: `run_command`'s argv
- * joined with spaces, or the minimal contract's `bash` line verbatim.
- * Undefined for any other tool or a malformed input — such a request is
- * not a command, and no reviewer takes it.
+ * The command a request would show on its card: `bash`'s line verbatim, or
+ * a dev server's argv joined with spaces. Undefined for any other tool or a
+ * malformed input — such a request is not a command, and no reviewer takes
+ * it.
  */
 export function requestCommand(request: PermissionRequest): string | undefined {
   const input = request.call.input;
@@ -450,11 +453,14 @@ export function requestCommand(request: PermissionRequest): string | undefined {
       ? command
       : undefined;
   }
-  if (request.call.tool !== "run_command") return undefined;
-  const argv = (input as { argv?: unknown }).argv;
-  if (!Array.isArray(argv) || argv.length === 0) return undefined;
-  const parts = argv.filter((a): a is string => typeof a === "string");
-  return parts.length > 0 ? parts.join(" ") : undefined;
+  // A dev server's start runs its launcher entry's argv, which the rule
+  // derived and handed over (ADR 0083 §5): the card shows it, and a review
+  // reads it as it reads a command line.
+  if (request.call.tool === "dev_server") {
+    const argv = request.argv ?? [];
+    return argv.length > 0 ? argv.join(" ") : undefined;
+  }
+  return undefined;
 }
 
 /** The request's ask classes, `code` first. */
@@ -481,7 +487,28 @@ function ownerOnly(
   return (
     codes.includes("command_ask_harness_state") ||
     namesHertaState(withoutHertaExclusions(command), workspace) ||
+    runsInHertaState(request, workspace) ||
     bodyUnreadable(codes, request.reason, command)
+  );
+}
+
+/** The command runs from a directory inside `.herta`, where every relative
+ *  path lands in the harness's own state, whatever the text names (release
+ *  review 2026-10-22: `npm install` or `tar xf` after `cd .herta` named no
+ *  `.herta` and went to the reviewer). Judged as spelled and through links;
+ *  without the workspace, any `.herta` in the path — the stricter reading. */
+function runsInHertaState(
+  request: PermissionRequest,
+  workspace: string,
+): boolean {
+  const cwd = request.cwd;
+  if (cwd === undefined) return false;
+  return (
+    namesHertaState(cwd, workspace) ||
+    (workspace !== "" && hertaStateWriteDenial(workspace, cwd) !== null) ||
+    // The harness's home, by a spelling that names no `.herta` (a link, an
+    // 8.3 name): the automatic-review choices are kept there.
+    harnessHomeWriteDenial(cwd) !== null
   );
 }
 
@@ -525,6 +552,20 @@ function withoutHertaExclusions(command: string): string {
     out = out.replace(re, (m) => (/\.herta/i.test(m) ? " " : m));
   }
   return out;
+}
+
+/**
+ * Whether only the owner answers this request, every time (`ownerOnly`):
+ * neither a review nor a remember (`ApprovalPolicy`'s `ownerOnly`, review
+ * 2026-10-30). Not a command → no.
+ */
+export function ownerAnswers(
+  request: PermissionRequest,
+  /** The workspace root, as `reviewTakes` reads it. */
+  workspace = "",
+): boolean {
+  const command = requestCommand(request);
+  return command !== undefined && ownerOnly(request, command, workspace);
 }
 
 /**

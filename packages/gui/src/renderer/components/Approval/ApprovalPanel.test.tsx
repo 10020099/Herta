@@ -761,3 +761,161 @@ describe("ApprovalPanel — automatic review (ADR 0064 amendment 2026-10-10)", (
     ).toBeNull();
   });
 });
+
+describe("ApprovalPanel — number keys (ADR 0082 §6)", () => {
+  afterEach(() => vi.useRealTimers());
+
+  const panel = (): HTMLElement => screen.getByTestId("approval-panel");
+
+  it("1 / 2 / 3 press the allow buttons left to right — only once the keys arm", async () => {
+    vi.useFakeTimers();
+    const mock = setup();
+    await settle();
+    act(() => {
+      mock.emitOverlay({
+        kind: "pending",
+        overlay: {
+          kind: "pending-permission",
+          requestId: "req-k",
+          risk: "workspace_write",
+          tool: "bash",
+          summary: "git commit changes the repository",
+          command: "git commit -m x",
+          cacheable: true,
+          offerAutoReview: true,
+        },
+      });
+    });
+    // The keycaps say which digit: before each label, hidden from the
+    // buttons' names (the buttons carry aria-keyshortcuts instead).
+    expect(
+      screen.getByRole("button", { name: "Allow for this task" }),
+    ).toHaveAttribute("aria-keyshortcuts", "2");
+    expect(
+      screen.getByRole("button", { name: "Turn on auto-review" }),
+    ).toHaveAttribute("aria-keyshortcuts", "3");
+    expect(screen.getByRole("button", { name: "Deny" })).toHaveAttribute(
+      "aria-keyshortcuts",
+      "Escape",
+    );
+    // Not armed yet: a digit is a key meant for something else.
+    fireEvent.keyDown(panel(), { key: "3" });
+    expect(mock.calls.resolveApproval).toEqual([]);
+    expect(panel().classList.contains("is-armed")).toBe(false);
+    act(() => vi.advanceTimersByTime(800));
+    expect(panel().classList.contains("is-armed")).toBe(true);
+    // A repeat never answers: a held key is nobody reading, and the wait
+    // starts again from it.
+    fireEvent.keyDown(panel(), { key: "3", repeat: true });
+    expect(mock.calls.resolveApproval).toEqual([]);
+    expect(panel().classList.contains("is-armed")).toBe(false);
+    act(() => vi.advanceTimersByTime(800));
+    fireEvent.keyDown(panel(), { key: "3" });
+    expect(mock.calls.resolveApproval).toEqual([
+      { requestId: "req-k", decision: "allow", persistence: "auto_review" },
+    ]);
+  });
+
+  it("a digit counts only the buttons shown, works only in the panel, and never denies", async () => {
+    vi.useFakeTimers();
+    const mock = setup();
+    await settle();
+    emitPending(mock); // Allow, Allow for this task, Deny
+    act(() => vi.advanceTimersByTime(800));
+    // From outside the panel (a held message being typed): nothing — and
+    // the typing starts the wait again.
+    const field = document.createElement("textarea");
+    document.body.append(field);
+    fireEvent.keyDown(field, { key: "1" });
+    field.remove();
+    expect(mock.calls.resolveApproval).toEqual([]);
+    expect(panel().classList.contains("is-armed")).toBe(false);
+    act(() => vi.advanceTimersByTime(800));
+    // A third allow button is not there.
+    fireEvent.keyDown(panel(), { key: "3" });
+    expect(mock.calls.resolveApproval).toEqual([]);
+    act(() => vi.advanceTimersByTime(800));
+    fireEvent.keyDown(panel(), { key: "1" });
+    expect(mock.calls.resolveApproval).toEqual([
+      { requestId: "req-9", decision: "allow", persistence: "once" },
+    ]);
+  });
+
+  it("typing straight on keeps the keys from arming — a digit in a sentence never approves (release review 2026-10-22)", async () => {
+    vi.useFakeTimers();
+    const mock = setup();
+    await settle();
+    emitPending(mock);
+    // The card took the focus; the Trailblazer types on, a key every 300 ms,
+    // well past the 800 ms the old clock counted from the card's mount.
+    for (const key of ["第", " ", "2", " ", "个", "1"]) {
+      act(() => vi.advanceTimersByTime(300));
+      fireEvent.keyDown(panel(), { key });
+      expect(panel().classList.contains("is-armed")).toBe(false);
+    }
+    expect(mock.calls.resolveApproval).toEqual([]);
+    // Tab and arrows are not typing: they move through the card.
+    act(() => vi.advanceTimersByTime(500));
+    fireEvent.keyDown(panel(), { key: "Tab" });
+    act(() => vi.advanceTimersByTime(300));
+    expect(panel().classList.contains("is-armed")).toBe(true);
+    fireEvent.keyDown(panel(), { key: "1" });
+    expect(mock.calls.resolveApproval).toEqual([
+      { requestId: "req-9", decision: "allow", persistence: "once" },
+    ]);
+  });
+
+  it("a card that waited under a dialog arms from when it comes into view, not from when it arrived (release review 2026-10-22)", async () => {
+    vi.useFakeTimers();
+    const mock = setup();
+    await settle();
+    act(() => pushOverlay("settings", OVERLAY_Z.settings));
+    try {
+      emitPending(mock);
+      act(() => vi.advanceTimersByTime(5000));
+      expect(panel().classList.contains("is-armed")).toBe(false);
+    } finally {
+      act(() => popOverlay("settings"));
+    }
+    // In view now, the focus on it: the first digit is too early.
+    fireEvent.keyDown(panel(), { key: "1" });
+    expect(mock.calls.resolveApproval).toEqual([]);
+    act(() => vi.advanceTimersByTime(800));
+    expect(panel().classList.contains("is-armed")).toBe(true);
+    // The window shown again after a while away: the wait starts over.
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    expect(panel().classList.contains("is-armed")).toBe(false);
+    act(() => vi.advanceTimersByTime(800));
+    fireEvent.keyDown(panel(), { key: "1" });
+    expect(mock.calls.resolveApproval).toEqual([
+      { requestId: "req-9", decision: "allow", persistence: "once" },
+    ]);
+  });
+
+  it("a fresh request arms again from zero", async () => {
+    vi.useFakeTimers();
+    const mock = setup();
+    await settle();
+    emitPending(mock);
+    act(() => vi.advanceTimersByTime(800));
+    act(() => {
+      mock.emitOverlay({
+        kind: "pending",
+        overlay: {
+          kind: "pending-permission",
+          requestId: "req-10",
+          risk: "network",
+          tool: "run_command",
+          summary: "fetch a page",
+          command: "curl https://example.com",
+          cacheable: false,
+        },
+      });
+    });
+    expect(panel().classList.contains("is-armed")).toBe(false);
+    fireEvent.keyDown(panel(), { key: "1" });
+    expect(mock.calls.resolveApproval).toEqual([]);
+  });
+});

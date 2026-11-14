@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { classifyCommand } from "../run-command/classifier.js";
+import { runCommandWriteGuard } from "../run-command/rule.js";
 import {
   classifyShellCommand,
   classifyShellCommandDetailed,
@@ -108,6 +109,28 @@ describe("classifyShellCommand — the harness's own state (.herta) is not comma
     expect(kind(cmd)).toBe("block");
   });
 
+  // The pre-release review of 2026-10-30: `time`'s `-p` was read as the
+  // command, and the wrappers it found missing hid the write.
+  it.each([
+    "time -p cp x .herta/permissions.json",
+    "time -p -- cp x .herta/permissions.json",
+    "chrt -f 1 cp x .herta/permissions.json",
+    "unbuffer rm -rf .herta",
+    "pnpm exec cp x .herta/permissions.json",
+    "nice timeout 5 nohup sudo stdbuf -oL cp x .herta/permissions.json",
+    // GNU sed reads the `''` as the script and rewrites the file; at v0.1.9
+    // these blocked.
+    "sed -i '' .herta/permissions.json",
+    "sed -i .bak .herta/permissions.json",
+  ])("blocks %s (review 2026-10-30)", (cmd) => {
+    expect(kind(cmd)).toBe("block");
+  });
+
+  it("time -p reads the command behind it, not the flag (review 2026-10-30)", () => {
+    expect(kind("time -p ls")).toBe(kind("time ls"));
+    expect(kind("time -p rm -rf /")).toBe("block");
+  });
+
   it("leaves the honest shapes alone — no .herta target, or only mentioned in a sed script", () => {
     expect(ask("echo x > out.txt").code).toBe("command_ask_write");
     expect(ask("cp a.json b.json").code).toBe("command_ask_fs");
@@ -147,6 +170,18 @@ describe("classifyShellCommand — the harness's own state (.herta) is not comma
     expect(ask("echo x > '.her?a/p.json'").code).toBe("command_ask_write");
     expect(ask("echo x > .her\\?a/p.json").code).toBe("command_ask_write");
     expect(ask("echo x >| out.txt").code).toBe("command_ask_write");
+  });
+
+  it("cd or pushd into .herta asks as the owner's alone — the shell keeps that directory for the calls after it (release review 2026-10-22)", () => {
+    const state = "command_ask_harness_state";
+    expect(ask("cd .herta").code).toBe(state);
+    expect(ask("pushd .herta/memory").code).toBe(state);
+    expect(ask("cd src/../.herta && ls").code).toBe(state);
+    expect(ask(`cd ${wsShell}/.herta`).code).toBe(state);
+    expect(kind("cd src && ls")).toBe("allow");
+    expect(kind("cd .herta-notes && ls")).toBe("allow");
+    // A write from there is still the block it was.
+    expect(kind("cd .herta && echo x > permissions.json")).toBe("block");
   });
 
   it("a find with an action from a directory holding .herta asks in a class trust never covers", () => {
@@ -1423,5 +1458,300 @@ describe("stripShellComments — what a reviewer reads (ADR 0075, 2026-10-09)", 
     expect(stripShellComments("cat <<-EOF\n\t# kept\n\tEOF\n# gone")).toBe(
       "cat <<-EOF\n\t# kept\n\tEOF",
     );
+  });
+});
+
+describe("classifyShellCommand — another spelling of the workspace is the workspace (Mac findings 2026-10-24, item 3)", () => {
+  // The command lanes judged containment by spelling: a path into the
+  // workspace through a link from outside — or, on a Mac, in another case of
+  // the root — read as "outside", so `.herta` was not refused, `.git` lost
+  // its class, and a `find … -delete` from it went to the reviewer as a
+  // plain write.
+  async function fixture(
+    spell: (base: string, root: string) => Promise<string | null>,
+  ) {
+    const { mkdtemp, mkdir } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const base = await mkdtemp(join(tmpdir(), "herta-spelling-"));
+    const root = join(base, "verify", "ws");
+    await mkdir(join(root, ".herta"), { recursive: true });
+    await mkdir(join(root, ".git", "hooks"), { recursive: true });
+    return { base, root, other: await spell(base, root) };
+  }
+  const verdicts = (root: string, other: string) => {
+    const local = { workspaceRoot: root, paths };
+    const at = paths.toShell(other);
+    const code = (cmd: string): string => {
+      const v = classifyShellCommand(cmd, local);
+      return v.kind === "ask" ? v.code : v.kind;
+    };
+    expect(code(`echo x > ${at}/.herta/permissions.json`)).toBe("block");
+    expect(code(`cp x ${at}/.herta/permissions.json`)).toBe("block");
+    expect(code(`echo x > ${at}/.git/hooks/pre-commit`)).toBe(
+      "command_ask_git_internals",
+    );
+    expect(code(`find ${at} -name permissions.json -delete`)).toBe(
+      "command_ask_harness_state",
+    );
+    expect(code(`cd ${at}/.herta`)).toBe("command_ask_harness_state");
+    // An ordinary file there is an ordinary write in the workspace.
+    expect(code(`echo x > ${at}/notes.txt`)).toBe("command_ask_write");
+    // run_command's guard draws the same line for the find.
+    const v = classifyCommand(
+      ["find", other, "-name", "permissions.json", "-delete"],
+      { writeGuard: runCommandWriteGuard(root, root) },
+    );
+    expect(v.kind === "ask" ? v.code : v.kind).toBe(
+      "command_ask_harness_state",
+    );
+  };
+
+  it("a link from outside into the root", async () => {
+    const { rm, symlink } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    const f = await fixture(async (base, root) => {
+      const alias = join(base, "alias");
+      await symlink(
+        root,
+        alias,
+        process.platform === "win32" ? "junction" : "dir",
+      );
+      return alias;
+    });
+    try {
+      verdicts(f.root, f.other as string);
+    } finally {
+      await rm(f.base, { recursive: true, force: true });
+    }
+  });
+
+  it.runIf(process.platform === "darwin")(
+    "another case of the root, on a case-insensitive disk",
+    async () => {
+      const { existsSync } = await import("node:fs");
+      const { rm } = await import("node:fs/promises");
+      const { join } = await import("node:path");
+      const f = await fixture(async (base) => join(base, "VERIFY", "WS"));
+      try {
+        // A case-sensitive volume has no such folder: nothing to show.
+        if (!existsSync(f.other as string)) return;
+        verdicts(f.root, f.other as string);
+      } finally {
+        await rm(f.base, { recursive: true, force: true });
+      }
+    },
+  );
+});
+
+describe("classifyShellCommand — macOS's wrappers and writers (Mac findings 2026-10-24, items 1–2)", () => {
+  it.each([
+    "caffeinate rm -rf /",
+    "arch -arm64 rm -rf /",
+    "arch -arm64 security dump-keychain",
+    "sandbox-exec -p '(version 1)' rm -rf /",
+    "script -q /dev/null rm -rf /",
+    "env -P /bin rm -rf /",
+    "env -S 'rm -rf /'",
+    "caffeinate cp x .herta/permissions.json",
+    "ditto x .herta/permissions.json",
+    "plutil -convert json -o .herta/permissions.json x.plist",
+    "rsync -a x .herta/",
+  ])("blocks %s", (cmd) => {
+    expect(kind(cmd)).toBe("block");
+  });
+
+  it("`sed -i ''` keeps its outside-the-workspace class, and .herta stays refused (item 8)", () => {
+    expect(ask("sed -i '' 's/a/b/' ~/.zshrc").code).toBe("command_ask_outside");
+    expect(ask("sed -i '' 's/a/b/' src/x.ts").code).toBe("command_ask_write");
+    expect(kind("sed -i '' 's/a/b/' .herta/permissions.json")).toBe("block");
+    expect(ask("sed -i '' 's/a/b/' .git/config").code).toBe(
+      "command_ask_git_internals",
+    );
+  });
+
+  it("a key spelled with APFS's long s is read as the key (item 5)", () => {
+    expect(kind("cat < .ſſh/id_rſa")).toBe("ask");
+    expect(kind("cat ~/.ſſh/id_rſa")).toBe("ask");
+  });
+
+  it("a wrapped line names no program to remember; ditto into .git is git's class", () => {
+    expect(ask("ditto x .git/hooks/pre-commit").code).toBe(
+      "command_ask_git_internals",
+    );
+    expect(ask("caffeinate cp x .git/hooks/pre-commit").code).toBe(
+      "command_ask_git_internals",
+    );
+    for (const cmd of [
+      "caffeinate -i npm run build",
+      "arch -x86_64 npm test",
+      "sandbox-exec -f build.sb make",
+    ]) {
+      expect(kind(cmd), cmd).toBe("ask");
+      expect(singleProgramArgv(cmd, opts), cmd).toBeNull();
+    }
+  });
+});
+
+describe("classifyShellCommand — a name given a value without `K=V` (review 2026-11-10)", () => {
+  const envAsks = (cmd: string): boolean => {
+    const d = classifyShellCommandDetailed(cmd, opts);
+    return (
+      d.verdict.kind === "ask" &&
+      (d.codes ?? [d.verdict.code]).includes("command_ask_env")
+    );
+  };
+
+  it("a loop's variable is an assignment: an environment name asks", () => {
+    for (const line of [
+      "for NODE_OPTIONS in --require=./x.js; do npm test; done",
+      "for NODE_OPTIONS in --require=./x.js; do export NODE_OPTIONS; npm test; done",
+      "for PATH in ./bin; do git status; done",
+      "select PATH in ./bin; do git status; done",
+      "for npm_config_script_shell in ./x.sh; do npm test; done",
+      "for http_proxy in http://127.0.0.1:9; do npm test; done",
+      "for FILE in a b c; do echo $FILE; done",
+      "for GIT_EXTERNAL_DIFF; do git diff; done",
+    ])
+      expect(envAsks(line), line).toBe(true);
+    expect(ask("for PATH in ./bin; do git status; done").reason).toContain(
+      "PATH",
+    );
+  });
+
+  it("…and a script's own name, or an allow-listed one, does not", () => {
+    for (const line of [
+      "for f in a b c; do echo $f; done",
+      "for i in 1 2 3; do npm test; done",
+      "for _ in 1 2 3; do npm test; done",
+      "for f; do echo $f; done",
+      "for pkg_dir in packages/tools packages/core; do ls $pkg_dir; done",
+      "for PORT in 3000 3001; do echo $PORT; done",
+      "select f in a b; do echo $f; done",
+    ])
+      expect(kind(line), line).toBe("allow");
+  });
+
+  it("a bare name under an exporting form goes through the allow-list", () => {
+    for (const line of [
+      "export NODE_OPTIONS",
+      "export f",
+      "export -- NODE_OPTIONS",
+      "declare -x NODE_OPTIONS",
+      "declare -gx NODE_OPTIONS",
+      "typeset -x PATH",
+      "local -x NODE_OPTIONS",
+    ])
+      expect(envAsks(line), line).toBe(true);
+    expect(ask("export NODE_OPTIONS").reason).toContain(
+      "exports the environment variable NODE_OPTIONS",
+    );
+  });
+
+  it("…and the forms that export nothing stay as they were", () => {
+    for (const line of [
+      "export NODE_ENV",
+      "export -n NODE_OPTIONS",
+      "export -p",
+      "declare -p PATH",
+      "declare -r NODE_OPTIONS",
+      "readonly NODE_OPTIONS",
+      "local count",
+    ])
+      expect(kind(line), line).toBe("allow");
+  });
+
+  it("`NAME+=value` and `NAME[0]=value` are assignments", () => {
+    for (const line of [
+      "export NODE_OPTIONS+=--require=./x.js",
+      "export PATH+=:./bin",
+      "declare -x PATH+=:./bin",
+      "declare PATH[0]=./bin",
+      "readonly NODE_OPTIONS+=x",
+    ])
+      expect(envAsks(line), line).toBe(true);
+    expect(kind("export NODE_ENV+=x")).toBe("allow");
+  });
+
+  it("`set -a` asks, however it is spelled", () => {
+    for (const line of [
+      "set -a",
+      "set -ea",
+      "set -e -a",
+      "set -o allexport",
+      "set -eo allexport",
+      "set -eu -o allexport",
+      "set -$flags",
+    ])
+      expect(envAsks(line), line).toBe(true);
+    expect(ask("set -a").reason).toContain("exports every variable");
+  });
+
+  it("…and the ordinary `set` lines do not", () => {
+    for (const line of [
+      "set -e",
+      "set -euo pipefail",
+      "set -eu -o pipefail",
+      "set +a",
+      "set +o allexport",
+      "set -- -a",
+      "set -- a b",
+      "set -e a -a",
+      "set -x",
+    ])
+      expect(kind(line), line).toBe("allow");
+  });
+
+  it("`getopts`' target is an assignment", () => {
+    expect(envAsks("getopts ab NODE_OPTIONS")).toBe(true);
+    expect(envAsks("while getopts ab PATH; do git status; done")).toBe(true);
+    expect(kind('getopts "ab" opt')).toBe("allow");
+    expect(kind('while getopts "ab" opt; do echo $opt; done')).toBe("allow");
+  });
+
+  it("`read -a` names a target like any other", () => {
+    expect(envAsks("read -a PATH")).toBe(true);
+    expect(envAsks("read -r -a NODE_OPTIONS")).toBe(true);
+    // The words the other options take are still not targets.
+    expect(kind("read -p PATH -t 1 TERM")).toBe("allow");
+  });
+});
+
+// 2026-11-12. `cd .h* && echo x > permissions.json` asked as an ordinary
+// write: the pattern was a directory name to the cwd tracker, and the write
+// after it named no `.herta`. With automatic review on, such a write is
+// answered by the reviewer, or runs with no review where undo can take it
+// back — and it landed in the harness's own state.
+describe("a cd through a pattern into .herta is the owner's alone, as `cd .herta` is", () => {
+  const codes = (cmd: string): readonly string[] => {
+    const r = classifyShellCommandDetailed(cmd, opts);
+    return r.verdict.kind === "ask"
+      ? (r.codes ?? [r.verdict.code])
+      : [r.verdict.kind];
+  };
+
+  it("a pattern that could be .herta asks as a reach into the harness's state", () => {
+    for (const line of [
+      "cd .h* && echo x > permissions.json",
+      "cd .h* && printf '{}' > perm*",
+      "cd .her?a && rm -f *",
+      "pushd .[h]erta && echo x > y",
+      "cd src/../.h* && echo x > y",
+      "cd .* && echo x > y",
+    ]) {
+      expect(codes(line), line).toContain("command_ask_harness_state");
+    }
+  });
+
+  it("a pattern that cannot be .herta is an ordinary cd: a leading dot must be spelled", () => {
+    for (const line of [
+      "cd s* && ls",
+      "cd * && ls",
+      "cd ?herta && ls",
+      "cd src && ls",
+      'cd ".h*" && ls',
+    ]) {
+      expect(codes(line), line).not.toContain("command_ask_harness_state");
+    }
   });
 });

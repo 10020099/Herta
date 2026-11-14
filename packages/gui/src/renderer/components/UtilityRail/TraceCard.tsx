@@ -1,11 +1,15 @@
 import { useEffect, useMemo, useReducer, useRef } from "react";
+import { useHertaBridge } from "../../context/HertaBridgeContext.js";
 import { useSessionLang } from "../../hooks/useActiveSession.js";
 import { useListTransitions } from "../../hooks/useListTransitions.js";
 import { usePresence } from "../../hooks/usePresence.js";
 import { useReducedMotion } from "../../hooks/useReducedMotion.js";
 import { makeT, type TFn } from "../../i18n/LocaleProvider.js";
 import type { LiveToolView } from "../../ipc/bridge-types.js";
+import { renderBanzhuanText } from "../../lib/banzhuan-text.js";
+import { runShortcut } from "../../lib/shortcut-registry.js";
 import { hoverTipProps } from "../common/hover-tip.js";
+import { SpeakerAvatar } from "../common/SpeakerAvatar.js";
 import { VERB_KEY } from "../Workspace/step-display.js";
 import {
   type TraceNote,
@@ -66,18 +70,47 @@ export function TraceCard(): JSX.Element | null {
   const lang = useSessionLang();
   const t = useMemo(() => makeT(lang), [lang]);
   const { trace, live, open, waiting, settled } = useTraceCard();
+  const { bridge, sessionStore } = useHertaBridge();
+  // 插话 (ADR 0085 §9): tags the composer, so what is sent next goes to the
+  // run as a steer; the tag's × gives it back to Herta.
+  const canSteer = bridge.steerText !== undefined;
+  const startSteer = (): void => {
+    sessionStore.setComposerSteer(true);
+    runShortcut("focusComposer");
+  };
   const reduced = useReducedMotion();
   const listRef = useRef<HTMLOListElement>(null);
   const edges = useScrollEdges(listRef, trace);
 
-  const keyed = useMemo(
-    () =>
-      (trace?.segments ?? EMPTY).map((segment) => ({
-        id: String(segment.ordinal),
-        segment,
-      })),
-    [trace],
-  );
+  // The timeline's rows: the phase nodes, and the steers 板砖 took between
+  // them (ADR 0085 amendment 2026-11-04).
+  const keyed = useMemo((): readonly CardRow[] => {
+    if (trace === null) return EMPTY;
+    const rows: CardRow[] = [];
+    const steersBefore = (ordinal: number, last: boolean): void => {
+      for (const steer of trace.steers) {
+        if (
+          last
+            ? steer.beforeSegment >= ordinal
+            : steer.beforeSegment === ordinal
+        ) {
+          rows.push({
+            id: `t${steer.key}`,
+            kind: "steer",
+            text: steer.text,
+            speaker: steer.speaker,
+          });
+        }
+      }
+    };
+    for (const segment of trace.segments) {
+      steersBefore(segment.ordinal, false);
+      rows.push({ id: `s${segment.ordinal}`, kind: "segment", segment });
+    }
+    const after = trace.segments[trace.segments.length - 1];
+    steersBefore(after === undefined ? 0 : after.ordinal + 1, true);
+    return rows;
+  }, [trace]);
   const rows = useListTransitions(
     keyed,
     keyOf,
@@ -153,6 +186,25 @@ export function TraceCard(): JSX.Element | null {
         }${edges.bottom ? " has-fog-bottom" : ""}`}
       >
         {rows.map((row) => {
+          if (row.item.kind === "steer") {
+            // The Trailblazer's words, where 板砖 took them: their avatar,
+            // ringed in their colour, then the words — no label.
+            return (
+              <li
+                key={row.key}
+                className={`trace-card__steer${rowPhaseClass(row.phase)}`}
+                aria-hidden={row.phase === "leave" || undefined}
+              >
+                <SpeakerAvatar speaker={row.item.speaker} t={t} />
+                <span
+                  className="trace-card__text"
+                  {...hoverTipProps(row.item.text, { whenClipped: true })}
+                >
+                  {renderBanzhuanText(row.item.text, "bubble", lang)}
+                </span>
+              </li>
+            );
+          }
           const segment =
             (row.phase !== "leave"
               ? now.get(row.item.segment.ordinal)
@@ -209,9 +261,45 @@ export function TraceCard(): JSX.Element | null {
           );
         })}
       </ol>
+      {/* Live control (ADR 0085 amendment 2026-11-04): the run's record
+          lives on its row in the chat, since this card leaves after it. */}
+      {trace.live && open && (
+        <div className="trace-card__actions">
+          {canSteer && (
+            <button
+              type="button"
+              className="trace-card__action"
+              onClick={startSteer}
+            >
+              {t("run.steer")}
+            </button>
+          )}
+          <button
+            type="button"
+            className="trace-card__action"
+            onClick={() => runShortcut("stopRun")}
+          >
+            {t("run.stop")}
+          </button>
+        </div>
+      )}
     </section>
   );
 }
+
+/** A row of the card's timeline: a phase node, or a steer. */
+type CardRow =
+  | {
+      readonly id: string;
+      readonly kind: "segment";
+      readonly segment: TraceSegment;
+    }
+  | {
+      readonly id: string;
+      readonly kind: "steer";
+      readonly text: string;
+      readonly speaker: "trailblazer" | "herta";
+    };
 
 /**
  * The node in flight: its phase and current step, and how many lines the
@@ -391,7 +479,7 @@ function useTickerFrame(
   return frame;
 }
 
-const EMPTY: readonly TraceSegment[] = [];
+const EMPTY: readonly CardRow[] = [];
 const keyOf = (k: { readonly id: string }): string => k.id;
 
 /** Localized verb via the record rows' own map; an unknown verb (a newer
@@ -480,6 +568,45 @@ export function segmentSummary(segment: TraceSegment, t: T): string {
     if (n === 0) return;
     parts.push(n === 1 ? t(one) : t(many, { n: String(n) }));
   };
+  counted(
+    tally.webSearches,
+    "trace.sum.webSearchOne",
+    "trace.sum.webSearchMany",
+  );
+  const [firstPage] = tally.pages;
+  if (firstPage !== undefined) {
+    parts.push(
+      tally.pages.length === 1
+        ? t("trace.sum.webReadOne", { host: firstPage })
+        : t("trace.sum.webReadMany", {
+            host: firstPage,
+            n: String(tally.pages.length),
+          }),
+    );
+  }
+  const [firstAppPage] = tally.appPages;
+  if (firstAppPage !== undefined) {
+    parts.push(
+      tally.appPages.length === 1
+        ? t("trace.sum.pageOne", { route: firstAppPage })
+        : t("trace.sum.pageMany", {
+            route: firstAppPage,
+            n: String(tally.appPages.length),
+          }),
+    );
+  }
+  counted(tally.pageSteps, "trace.sum.pageStepOne", "trace.sum.pageStepMany");
+  const [firstServer] = tally.servers;
+  if (firstServer !== undefined) {
+    parts.push(
+      tally.servers.length === 1
+        ? t("trace.sum.serverOne", { name: firstServer })
+        : t("trace.sum.serverMany", {
+            name: firstServer,
+            n: String(tally.servers.length),
+          }),
+    );
+  }
   counted(tally.digests, "trace.sum.digestOne", "trace.sum.digestMany");
   counted(tally.memories, "trace.sum.memoryOne", "trace.sum.memoryMany");
   counted(tally.stops, "trace.sum.stopOne", "trace.sum.stopMany");

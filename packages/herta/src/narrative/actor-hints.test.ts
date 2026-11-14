@@ -16,10 +16,9 @@ describe("loadActorHints (compiled assets, M-prompts-1)", () => {
       hints.phase2Speech,
       ...hints.speechRetry,
       ...hints.thoughtRetry,
-      hints.beatPatchPreview,
       hints.beatVerification,
       hints.beatToolFail,
-      hints.beatSteer,
+      hints.beatTalk,
       hints.supervisorVetoTemplate,
     ]) {
       expect(value.length).toBeGreaterThan(0);
@@ -35,14 +34,21 @@ describe("loadActorHints (compiled assets, M-prompts-1)", () => {
     const hints = loadActorHints();
     const clause = PROMPT_ASSETS.hints.beat_no_banzhuan_clause?.trimEnd() ?? "";
     expect(clause.length).toBeGreaterThan(0);
-    for (const beat of [
-      hints.beatPatchPreview,
-      hints.beatVerification,
-      hints.beatToolFail,
-      hints.beatSteer,
-    ]) {
+    for (const beat of [hints.beatVerification, hints.beatToolFail]) {
       expect(beat).not.toContain("{{no_banzhuan}}");
       expect(beat).toContain(clause);
+    }
+  });
+
+  it("the talk hint has no {{no_banzhuan}} clause: her @板砖 mid-run is a steer (ADR 0085 §4)", () => {
+    for (const lang of ["zh", "en"] as const) {
+      const hints = loadActorHints(lang);
+      const bundle = lang === "zh" ? PROMPT_ASSETS : PROMPT_ASSETS_EN;
+      const clause = bundle.hints.beat_no_banzhuan_clause?.trimEnd() ?? "";
+      expect(hints.beatTalk).toBe(bundle.hints.beat_talk?.trimEnd());
+      expect(hints.beatTalk).not.toContain(clause);
+      expect(hints.beatTalk).toContain("@板砖");
+      expect(hints.beatTalk).toContain("（我 说）");
     }
   });
 
@@ -87,12 +93,7 @@ describe("loadActorHints — interaction language (slice 4)", () => {
     const clause =
       PROMPT_ASSETS_EN.hints.beat_no_banzhuan_clause?.trimEnd() ?? "";
     expect(clause.length).toBeGreaterThan(0);
-    for (const beat of [
-      hints.beatPatchPreview,
-      hints.beatVerification,
-      hints.beatToolFail,
-      hints.beatSteer,
-    ]) {
+    for (const beat of [hints.beatVerification, hints.beatToolFail]) {
       expect(beat).not.toContain("{{no_banzhuan}}");
       expect(beat).toContain(clause);
     }
@@ -112,10 +113,9 @@ describe("defaultActorHintsFor (slice 4)", () => {
     expect(en.phase2Speech).toBe(t.phase2Speech);
     expect(en.speechRetry).toEqual(t.speechRetry);
     expect(en.thoughtRetry).toEqual(t.thoughtRetry);
-    expect(en.beatPatchPreview).toBe(t.beatPatchPreview);
     expect(en.beatVerification).toBe(t.beatVerification);
     expect(en.beatToolFail).toBe(t.beatToolFail);
-    expect(en.beatSteer).toBe(t.beatSteer);
+    expect(en.beatTalk).toBe(t.beatTalk);
     expect(en.supervisorVetoTemplate).toContain("{{reason}}");
     expect(en.supervisorVetoTemplate).not.toBe(
       DEFAULT_ACTOR_HINTS.supervisorVetoTemplate,
@@ -126,7 +126,6 @@ describe("defaultActorHintsFor (slice 4)", () => {
 describe("selectBeatHint", () => {
   it("maps signatures to the matching hint, else phase2Speech", () => {
     const h = DEFAULT_ACTOR_HINTS;
-    expect(selectBeatHint(h, "patch.preview:first")).toBe(h.beatPatchPreview);
     expect(selectBeatHint(h, "verification.finished")).toBe(h.beatVerification);
     expect(selectBeatHint(h, "tool.fail:write_new_file:EACCES")).toBe(
       h.beatToolFail,
@@ -134,21 +133,58 @@ describe("selectBeatHint", () => {
     expect(selectBeatHint(h, "something.else")).toBe(h.phase2Speech);
   });
 
-  it("a steer (ADR 0063) gets its own hint, in Herta's voice, and never the generic speech hint", () => {
+  it("the checkpoints keep their hints; a patch preview or a steer no longer earns a beat (ADR 0085 step 4)", () => {
     const h = DEFAULT_ACTOR_HINTS;
-    const hint = selectBeatHint(h, "steer:6d1c0a9e");
-    expect(hint).toBe(h.beatSteer);
-    expect(hint).not.toBe(h.phase2Speech);
-    // Her own account of the moment, not an order: 板砖 reads the line at
-    // its next step, she does not relay it or answer for it.
-    expect(hint).toContain("不用我转达，也不需要我替它处理");
-    expect(hint).toContain("我也简单附和一下他");
-    expect(hint).toContain("不装作已经做完");
-    expect(hint).toContain("必须以（我 说）开始，以（/我 说）结束");
-    // The compiled asset carries the same, with the shared clause spliced.
-    const compiled = loadActorHints().beatSteer;
-    expect(compiled).toContain("不用我转达");
-    expect(compiled).not.toContain("{{no_banzhuan}}");
-    expect(loadActorHints("en").beatSteer).toContain("I don't relay it");
+    // Were they ever staged, they would read as a plain speech, not a
+    // reaction to progress.
+    expect(selectBeatHint(h, "patch.preview:first")).toBe(h.phase2Speech);
+    expect(selectBeatHint(h, "steer:6d1c0a9e")).toBe(h.phase2Speech);
+    expect(Object.keys(h)).not.toContain("beatSteer");
+    expect(Object.keys(h)).not.toContain("beatPatchPreview");
+  });
+
+  it("her answer to talk has its own hint, not the speech hint (ADR 0085 step 5)", () => {
+    const h = DEFAULT_ACTOR_HINTS;
+    expect(selectBeatHint(h, "talk")).toBe(h.beatTalk);
+    expect(h.beatTalk).not.toBe(h.phase2Speech);
+  });
+});
+
+describe("what the lab's runs taught the hints (ADR 0085, 2026-11-05)", () => {
+  const zh = loadActorHints("zh");
+  const en = loadActorHints("en");
+
+  it("a word waiting does not eat the verdict: the run's result is owed first", () => {
+    expect(zh.phase2Speech).toContain("结果就是头一件");
+    expect(en.phase2Speech).toContain("that result comes first");
+    // What she answered mid-run she does not answer again.
+    expect(zh.phase2Speech).toContain("答过的别再答");
+    expect(en.phase2Speech).toContain("never answer it twice");
+  });
+
+  it("a failed step is a failed step: nobody says 板砖 crashed", () => {
+    expect(zh.beatToolFail).not.toContain("板砖崩了");
+    expect(zh.beatToolFail).toContain("没成的是这一步");
+    expect(en.beatToolFail).not.toContain("板砖 crashed");
+    expect(en.beatToolFail).toContain("the step failed, not 板砖");
+  });
+
+  it("the thought is about the newest thing in the record, and asks for no line he did not say", () => {
+    for (const hint of [zh.phase2Thought, zh.thoughtRetry[0]]) {
+      expect(hint).not.toContain("冲着他刚说的那句");
+      expect(hint).toContain("记录里最新的东西");
+    }
+    for (const hint of [en.phase2Thought, en.thoughtRetry[0]]) {
+      expect(hint).not.toContain("about what they just said");
+      expect(hint).not.toContain("aimed at what they just said");
+      expect(hint).toContain("the newest thing in the record");
+    }
+  });
+
+  it("how she calls 板砖 is hers: the rule is not for his screen, or for 板砖", () => {
+    expect(zh.beatTalk).toContain("别讲给他听");
+    expect(zh.beatTalk).not.toContain("写全 @板砖");
+    expect(en.beatTalk).toContain("don't explain it to them");
+    expect(en.beatTalk).not.toContain("spell out @板砖");
   });
 });

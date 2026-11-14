@@ -7,7 +7,9 @@
   "sideEffects": false,
   "exports": {
     ".": "./dist/index.js",
-    "./wiring": "./dist/session-wiring.js"
+    "./wiring": "./dist/session-wiring.js",
+    "./flow-topics": "./dist/flow/flow-topics.js",
+    "./document-worker": "./dist/document-worker.js"
   },
   "files": [
     "dist"

@@ -7,9 +7,14 @@ import {
   activitySteps,
   activitySummary,
   groupRecord,
+  groupRuns,
+  lastTurnIndex,
   liftUserImages,
+  openRun,
+  type RenderItem,
   type SystemBlock,
   shareRunIdentity,
+  undoTarget,
 } from "./group-record.js";
 
 const user = (text: string): TerminalRecordBlock => ({ kind: "user", text });
@@ -482,5 +487,276 @@ describe("shareRunIdentity — an unchanged run keeps its ARRAY (ADR 0068 §8)",
     ];
     const plain = liftUserImages(groupRecord(record));
     expect(shareRunIdentity(plain)).toEqual(plain);
+  });
+});
+
+describe("groupRuns — one row per dispatch (ADR 0085 §6)", () => {
+  const steer = (text: string): TerminalRecordBlock => ({
+    kind: "user",
+    text,
+    steer: true,
+  });
+  const done = sys("完成 · 1 file", "差分协处理器", "done-marker");
+  const runs = (record: TerminalRecordBlock[]) =>
+    groupRuns(liftUserImages(groupRecord(record)));
+  const kinds = (items: readonly RenderItem[]) =>
+    items.map((i) =>
+      i.kind === "block" ? `${i.block.kind}` : `${i.kind}@${i.startIndex}`,
+    );
+
+  it("folds the parts her beats split into one run, at the first part, the beats left in place", () => {
+    const reading = sys("Reading a.ts");
+    const writing = sys("Writing a.ts");
+    const items = runs([
+      user("fix it"),
+      { ...herta("交给它"), at: "2026-11-04T08:00:00.000Z" },
+      reading,
+      herta("它在读。"),
+      writing,
+      done,
+      herta("好了。"),
+    ]);
+    expect(kinds(items)).toEqual(["user", "herta", "run@2", "herta", "herta"]);
+    const run = items[2];
+    if (run?.kind !== "run") throw new Error("not a run");
+    expect(run.blocks).toEqual([reading, writing, done]);
+    expect(run.entries.map((e) => e.kind)).toEqual(["row", "row", "row"]);
+    // Timed from her dispatching bubble.
+    expect(run.dispatchedAt).toBe("2026-11-04T08:00:00.000Z");
+  });
+
+  describe("a run whose first call is a write that asks (review 2026-11-05, N7)", () => {
+    const preview: TerminalRecordBlock = {
+      kind: "system",
+      label: "系统",
+      body: "patch preview: notes.md (+1 -0)",
+      digest: { kind: "patch", files: ["notes.md"], add: 1, del: 0 },
+    };
+
+    it("is the run from its preview, while the card is up", () => {
+      const items = runs([user("新建 notes.md"), herta("交给它"), preview]);
+      expect(kinds(items)).toEqual(["user", "herta", "run@2"]);
+    });
+
+    it("stays one run through what is said under the card", () => {
+      const items = runs([
+        user("新建 notes.md"),
+        herta("交给它"),
+        preview,
+        { kind: "user", text: "快点", duringRun: true },
+        sys("Writing notes.md"),
+        done,
+      ]);
+      expect(kinds(items)).toEqual(["user", "herta", "run@2", "user"]);
+      const run = items[2];
+      if (run?.kind !== "run") throw new Error("not a run");
+      expect(run.blocks).toContain(preview);
+    });
+  });
+
+  it("a steer is a bubble where it was sent and an entry of the run where 板砖 took it", () => {
+    const items = runs([
+      user("fix it"),
+      herta("交给它"),
+      sys("Reading a.ts"),
+      steer("先别动 api 目录"),
+      sys("Writing b.ts"),
+      done,
+    ]);
+    expect(kinds(items)).toEqual(["user", "herta", "run@2", "user"]);
+    const run = items[2];
+    if (run?.kind !== "run") throw new Error("not a run");
+    expect(run.entries.map((e) => e.kind)).toEqual([
+      "row",
+      "steer",
+      "row",
+      "row",
+    ]);
+  });
+
+  it("a message that is not a steer ends a run cut short; the next dispatch is a new run", () => {
+    const items = runs([
+      user("one"),
+      sys("Reading a.ts"),
+      user("two"),
+      herta("again"),
+      sys("Reading b.ts"),
+      done,
+    ]);
+    expect(kinds(items)).toEqual(["user", "run@1", "user", "herta", "run@4"]);
+  });
+
+  it("blocks after a marker in the same group belong to the next dispatch", () => {
+    const items = runs([
+      user("go"),
+      sys("Reading a.ts"),
+      done,
+      sys("Reading b.ts"),
+    ]);
+    expect(kinds(items)).toEqual(["user", "run@1", "run@3"]);
+  });
+
+  it("a group that stands alone keeps its line, even inside a run", () => {
+    const attach: SystemBlock = {
+      kind: "system",
+      label: "系统",
+      body: "附件 a.txt",
+      digest: {
+        kind: "attachment",
+        name: "a.txt",
+        path: ".herta/attachments/s/a.txt",
+        lines: 1,
+        chars: 1,
+      },
+    } as SystemBlock;
+    const server: SystemBlock = {
+      kind: "system",
+      label: "系统",
+      body: "开拓者停了开发服务器 web",
+      digest: {
+        kind: "server",
+        action: "stop",
+        by: "trailblazer",
+        name: "web",
+        wasRunning: true,
+      },
+    } as SystemBlock;
+    const items = runs([
+      user("go"),
+      attach,
+      herta("交给它"),
+      sys("Reading a.ts"),
+      herta("beat"),
+      server,
+      herta("beat"),
+      sys("Writing a.ts"),
+      done,
+    ]);
+    expect(kinds(items)).toEqual([
+      "user",
+      "activity@1",
+      "herta",
+      "run@3",
+      "herta",
+      "activity@5",
+      "herta",
+    ]);
+    const run = items[3];
+    if (run?.kind !== "run") throw new Error("not a run");
+    expect(run.blocks).toHaveLength(3);
+  });
+
+  it("a system group with no coprocessor block is not a run", () => {
+    const items = runs([user("go"), sys("系统 note", "系统")]);
+    expect(kinds(items)).toEqual(["user", "activity@1"]);
+  });
+});
+
+describe("the latest turn's runs: its start, its open run, its 撤销", () => {
+  const steer: TerminalRecordBlock = { kind: "user", text: "s", steer: true };
+  const done = sys("完成 · 1 file", "差分协处理器", "done-marker");
+
+  it("a steer opens no turn", () => {
+    expect(lastTurnIndex([user("a"), sys("x"), steer])).toBe(0);
+    expect(lastTurnIndex([herta("x")])).toBe(-1);
+  });
+
+  it("the open run is the latest turn's last run with no marker", () => {
+    const record = [
+      user("a"),
+      sys("Reading"),
+      user("b"),
+      herta("@"),
+      sys("Writing"),
+    ];
+    const items = groupRuns(groupRecord(record));
+    expect(openRun(items, lastTurnIndex(record))).toBe(4);
+    // An earlier turn's run cut short is not open.
+    const earlier = [user("a"), sys("Reading"), user("b")];
+    expect(
+      openRun(groupRuns(groupRecord(earlier)), lastTurnIndex(earlier)),
+    ).toBe(-1);
+    // Ended.
+    const ended = [user("a"), sys("Reading"), done];
+    expect(openRun(groupRuns(groupRecord(ended)), lastTurnIndex(ended))).toBe(
+      -1,
+    );
+  });
+
+  it("撤销 goes to the latest turn's last finished run; an undo line says it is done", () => {
+    const record = [
+      user("a"),
+      sys("Writing a.ts"),
+      done,
+      herta("@"),
+      sys("Writing b.ts"),
+      done,
+    ];
+    const items = groupRuns(groupRecord(record));
+    expect(undoTarget(items, lastTurnIndex(record))).toEqual({
+      card: 3,
+      undone: false,
+    });
+    const undone = [
+      ...record,
+      {
+        kind: "system",
+        label: "系统",
+        body: "已撤销",
+        digest: {
+          kind: "undo",
+          files: [],
+          commands: [],
+          commandsUnknown: false,
+          incomplete: false,
+        },
+      } as SystemBlock,
+    ];
+    expect(
+      undoTarget(groupRuns(groupRecord(undone)), lastTurnIndex(undone)).undone,
+    ).toBe(true);
+  });
+});
+
+describe("talk and her steer in a run (ADR 0085 step 3)", () => {
+  const done = sys("完成 · 1 file", "差分协处理器", "done-marker");
+  const talk: TerminalRecordBlock = {
+    kind: "user",
+    text: "几点？",
+    duringRun: true,
+  };
+  const answer: TerminalRecordBlock = {
+    kind: "herta",
+    surface: "speech",
+    text: "三点。@板砖 先补测试。",
+    duringRun: true,
+    steered: "@板砖 先补测试。",
+  };
+
+  it("talk is a bubble that does not end the run; her answer that steered is an entry of it", () => {
+    const record = [
+      user("修"),
+      herta("交给它"),
+      sys("Reading a.ts"),
+      talk,
+      answer,
+      sys("Writing a.ts"),
+      done,
+    ];
+    const items = groupRuns(groupRecord(record));
+    expect(
+      items.map((i) => (i.kind === "block" ? i.block.kind : i.kind)),
+    ).toEqual(["user", "herta", "run", "user", "herta"]);
+    const run = items[2];
+    if (run?.kind !== "run") throw new Error("not a run");
+    expect(run.blocks).toHaveLength(3);
+    expect(run.entries.map((e) => e.kind)).toEqual([
+      "row",
+      "steer",
+      "row",
+      "row",
+    ]);
+    // Talk opens no turn: rewind and undo look past it.
+    expect(lastTurnIndex(record)).toBe(0);
   });
 });

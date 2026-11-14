@@ -167,8 +167,12 @@ export function selectBoundary(
   cfg: CompactionConfig,
 ): number {
   const userIdx: number[] = [];
+  // Talk and steers during a run (ADR 0085) open no turn: a cut there would
+  // split the run they fell in.
   record.forEach((b, i) => {
-    if (b.kind === "user") userIdx.push(i);
+    if (b.kind === "user" && b.duringRun !== true && b.steer !== true) {
+      userIdx.push(i);
+    }
   });
   if (userIdx.length === 0) return 0;
 

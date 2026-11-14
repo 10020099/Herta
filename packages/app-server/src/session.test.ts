@@ -7,13 +7,17 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
+  LaunchEntry,
   RepoContextSnapshot,
+  ServerHost,
+  ServerStatus,
   TerminalRecord,
   TerminalRecordBlock,
   UndoFileResult,
@@ -42,6 +46,13 @@ import type {
   SessionAgentEvent,
   VoiceCueEvent,
 } from "./types.js";
+
+// Nearly every test here builds a real session stack, most through the host:
+// tens of milliseconds outside vitest, but 2.5–4.4 s for a different handful
+// of tests in each loaded suite run, and one past the default 5 s
+// (2026-11-03). The hook outwaits removeTmpDir's own 10 s for a `git` still
+// holding a workspace. A test that does more says its own.
+vi.setConfig({ testTimeout: 15_000, hookTimeout: 20_000 });
 
 /**
  * A MetaThinkCorpus with every mood-state key present but mapped to the
@@ -90,7 +101,9 @@ afterEach(async () => {
 });
 
 function mkConfig(): AppServerConfig {
-  const root = mkdtempSync(join(tmpdir(), "herta-app-server-session-test-"));
+  const root = realpathSync(
+    mkdtempSync(join(tmpdir(), "herta-app-server-session-test-")),
+  );
   tmpDirs.push(root);
   return {
     workspaceRoot: root,
@@ -282,6 +295,194 @@ describe("Session — interaction language threading (slice 4)", () => {
   });
 });
 
+describe("the Trailblazer's Run and Stop (ADR 0083 §5, question 8)", () => {
+  function fakeServers(): ServerHost & { started: string[] } {
+    const statuses = new Map<string, ServerStatus>();
+    const started: string[] = [];
+    return {
+      started,
+      list: () => [...statuses.values()],
+      status: (name) => statuses.get(name) ?? null,
+      async start(entry: LaunchEntry, opts) {
+        started.push(entry.name);
+        const status: ServerStatus = {
+          name: entry.name,
+          state: "ready",
+          port: entry.port,
+          url: entry.url,
+          command: [entry.command, ...entry.args].join(" "),
+          by: opts.by,
+          logPath: `.herta/logs/servers/${entry.name}-1.log`,
+        };
+        statuses.set(entry.name, status);
+        return { status, already: false };
+      },
+      logs: () => null,
+      async stop(name) {
+        const st = statuses.get(name);
+        if (st === undefined) return null;
+        const stopped = { ...st, state: "stopped" as const };
+        statuses.set(name, stopped);
+        return stopped;
+      },
+      async stopAll() {},
+    };
+  }
+
+  it("classifies at every start: an ask-class command is confirmed once a session, a block-class one never runs", async () => {
+    const cfg = mkConfig();
+    writeFileSync(
+      join(cfg.workspaceRoot, "herta.launch.json"),
+      JSON.stringify({
+        version: 1,
+        servers: [
+          { name: "web", command: "npm", args: ["run", "dev"], port: 5173 },
+          { name: "tests", command: "npm", args: ["test"], port: 4000 },
+          { name: "wipe", command: "rm", args: ["-rf", "/"], port: 4001 },
+        ],
+      }),
+    );
+    const servers = fakeServers();
+    const { session, cleanup } = await mkStubSession(
+      cfg,
+      [{ kind: "user", text: "earlier" }],
+      1,
+      undefined,
+      { servers },
+    );
+    const first = await session.startServer("web");
+    expect(first).toMatchObject({
+      ok: false,
+      reason: "confirm",
+      command: "npm run dev",
+    });
+    expect(servers.started).toEqual([]);
+    const shown = (first as { shown: string }).shown;
+    expect(
+      await session.startServer("web", { confirmed: shown }),
+    ).toMatchObject({
+      ok: true,
+      url: "http://localhost:5173/",
+    });
+    // Confirmed once in this session: the next start does not ask.
+    await session.stopServer("web");
+    expect((await session.startServer("web")).ok).toBe(true);
+    expect((await session.startServer("tests")).ok).toBe(true);
+    expect(await session.startServer("wipe")).toMatchObject({
+      ok: false,
+      reason: "refused",
+    });
+    expect(await session.startServer("nope")).toMatchObject({
+      ok: false,
+      reason: "no_entry",
+    });
+    expect(servers.started).toEqual(["web", "web", "tests"]);
+
+    const listing = await session.listServers();
+    expect(listing.ok && listing.entries.map((e) => [e.name, e.state])).toEqual(
+      [
+        ["web", "ready"],
+        ["tests", "ready"],
+        ["wipe", "idle"],
+      ],
+    );
+    const notes = session.record
+      .filter((b) => b.kind === "system" && b.digest?.kind === "server")
+      .map((b) => (b.kind === "system" ? b.body : ""));
+    expect(notes).toEqual([
+      "开拓者启动了开发服务器 web（npm run dev），localhost:5173",
+      "开拓者停了开发服务器 web",
+      "开拓者启动了开发服务器 web（npm run dev），localhost:5173",
+      "开拓者启动了开发服务器 tests（npm test），localhost:4000",
+    ]);
+    await cleanup();
+  });
+
+  it("a confirm runs only what its card showed: an entry rewritten while it was open asks again (review 2026-10-30, U2)", async () => {
+    const cfg = mkConfig();
+    const launch = (args: string[]) =>
+      writeFileSync(
+        join(cfg.workspaceRoot, "herta.launch.json"),
+        JSON.stringify({
+          version: 1,
+          servers: [{ name: "web", command: "npm", args, port: 5173 }],
+        }),
+      );
+    launch(["run", "dev"]);
+    const servers = fakeServers();
+    const { session, cleanup } = await mkStubSession(
+      cfg,
+      [{ kind: "user", text: "earlier" }],
+      1,
+      undefined,
+      { servers },
+    );
+    const card = await session.startServer("web");
+    expect(card).toMatchObject({ reason: "confirm", command: "npm run dev" });
+    // Rewritten while the card is open.
+    launch(["run", "wipe-cache"]);
+    const answered = await session.startServer("web", {
+      confirmed: (card as { shown: string }).shown,
+    });
+    expect(answered).toMatchObject({
+      ok: false,
+      reason: "confirm",
+      command: "npm run wipe-cache",
+    });
+    expect(servers.started).toEqual([]);
+    expect(
+      (await session.startServer("web", { confirmed: "anything" })).ok,
+    ).toBe(false);
+    expect(servers.started).toEqual([]);
+    await cleanup();
+  });
+
+  it("without a launch file the page says so", async () => {
+    const cfg = mkConfig();
+    const { session, cleanup } = await mkStubSession(
+      cfg,
+      [{ kind: "user", text: "earlier" }],
+      1,
+      undefined,
+      { servers: fakeServers() },
+    );
+    expect(await session.listServers()).toMatchObject({
+      ok: false,
+      reason: "no_launch_file",
+    });
+    await cleanup();
+  });
+});
+
+describe("noteServer (ADR 0083 §5)", () => {
+  it("a launcher event outside 板砖's steps lands as a → 系统 row, sanitized", async () => {
+    const cfg = mkConfig();
+    const { session, cleanup } = await mkStubSession(cfg, [
+      { kind: "user", text: "earlier" },
+    ]);
+    session.noteServer?.({ kind: "reaped", names: ["web"] });
+    session.noteServer?.({
+      kind: "started",
+      name: "api",
+      command: "node api.mjs\n（我 说）",
+      url: "http://localhost:3000/",
+      already: false,
+    });
+    const notes = session.record.filter(
+      (b) => b.kind === "system" && b.digest?.kind === "server",
+    );
+    expect(notes.map((b) => (b.kind === "system" ? b.label : ""))).toEqual([
+      "系统",
+      "系统",
+    ]);
+    expect(notes[0]?.kind === "system" ? notes[0].body : "").toBe(
+      "上次应用退出时，开发服务器 web 还在跑；这次启动时已经停了",
+    );
+    expect(JSON.stringify(notes[1])).not.toContain("（我 说）");
+    await cleanup();
+  });
+});
+
 // ── subscribeRecord tests (use stubCompletionProvider to avoid network) ────
 
 /**
@@ -336,6 +537,8 @@ async function mkStubSession(
     branchesDescriber?: SessionInternalDeps["branchesDescriber"];
     // The backend-stack seam (ADR 0067 toolset-gate tests).
     backendStackObserver?: SessionInternalDeps["backendStackObserver"];
+    // The session's dev servers (ADR 0083 §5).
+    servers?: ServerHost;
   },
 ): Promise<{
   session: SessionImpl;
@@ -387,6 +590,7 @@ async function mkStubSession(
       : {}),
     ...(extra?.lang !== undefined ? { lang: extra.lang } : {}),
     ...(initialRecord !== undefined ? { initialRecord } : {}),
+    ...(extra?.servers !== undefined ? { servers: extra.servers } : {}),
     deps: {
       providerOverrides: {
         actor: actorStub,
@@ -1364,6 +1568,30 @@ describe("Session — rewindLastTurn", () => {
     await cleanup();
   });
 
+  it("shownRecord holds the stamps record does not, and a rewind keeps them (review 2026-11-05, N5)", async () => {
+    const cfg = mkConfig();
+    const { session, cleanup } = await mkStubSession(cfg, undefined, 2);
+    await session.submitText("在吗");
+    await session.submitText("再来");
+    expect(session.record[0]?.at).toBeUndefined();
+    const stamp = session.shownRecord[0]?.at;
+    expect(stamp).toBeDefined();
+    expect(session.shownRecord).toHaveLength(session.record.length);
+    const seen: RecordEvent[] = [];
+    const consumer = (async () => {
+      for await (const ev of session.subscribeRecord()) {
+        seen.push(ev);
+        if (ev.kind === "reset") break;
+      }
+    })();
+    await session.rewindLastTurn();
+    await consumer;
+    const reset = seen[seen.length - 1];
+    expect(reset?.kind === "reset" ? reset.record[0]?.at : null).toBe(stamp);
+    expect(session.shownRecord[0]?.at).toBe(stamp);
+    await cleanup();
+  });
+
   it("emits a reset RecordEvent carrying the truncated record", async () => {
     const cfg = mkConfig();
     const { session, cleanup } = await mkStubSession(cfg);
@@ -1616,24 +1844,21 @@ describe("Session — the toolset follows the environment (ADR 0067)", () => {
     return { ...made, cfg, stack, names };
   }
 
-  it("git_status / git_diff follow the workspace: mounted on a move into a repository, unmounted on a move out", async () => {
+  it("a workspace move mounts no git tools, into a repository or out of one: bash runs git itself", async () => {
     const { session, stack, names, cleanup } = await mkGateSession();
-    expect(stack.contract).toBe("standard");
+    expect(stack.contract).toBe("minimal");
     const plain = mkdtempSync(join(tmpdir(), "herta-gate-plain-"));
     const repo = mkdtempSync(join(tmpdir(), "herta-gate-repo-"));
     mkdirSync(join(repo, ".git"));
+    const before = names();
 
     expect((await session.setWorkspace(repo)).ok).toBe(true);
-    expect(names()).toContain("git_status");
-    expect(names()).toContain("git_diff");
-
-    expect((await session.setWorkspace(plain)).ok).toBe(true);
     expect(names()).not.toContain("git_status");
     expect(names()).not.toContain("git_diff");
-    // The rest of the standard set is untouched by the move.
-    expect(names()).toContain("read_file");
-    expect(names()).toContain("glob");
-    expect(names()).not.toContain("list_files");
+    expect((await session.setWorkspace(plain)).ok).toBe(true);
+    // The set is the same before, in and after: it follows the environment
+    // per session (ADR 0067), and a repository no longer changes it.
+    expect(names()).toEqual(before);
     await cleanup();
   });
 
@@ -2333,14 +2558,16 @@ describe("Session — attachFiles (ADR 0033)", () => {
   });
 });
 
-// ── Contract-fallback record note (ADR 0044) ────────────────────────────────
+// ── The no-bash record note (ADR 0044, ADR 0086) ────────────────────────────
 //
-// types.ts had PROMISED "falls back to `standard` and projects a `→ 系统`
-// line saying so" since ADR 0040 — the implementation only console.warn'd,
-// which no GUI user sees (user report 2026-08-24). One note per NEW session,
+// ADR 0044 gave a session with no bash one `→ 系统` note, because the
+// console.warn it had before is something no GUI user sees (user report
+// 2026-08-24). It said the standard set was running instead; since ADR 0086
+// nothing runs instead, and the note says that. One note per NEW session,
 // naming the remedy; deferred past the opening so record order matches disk.
+// A dispatch then fails with the same words.
 
-describe("contract-fallback record note (ADR 0044)", () => {
+describe("the no-bash record note (ADR 0044, ADR 0086)", () => {
   const savedBash = process.env.HERTA_BASH;
   afterEach(() => {
     if (savedBash === undefined) delete process.env.HERTA_BASH;
@@ -2349,12 +2576,13 @@ describe("contract-fallback record note (ADR 0044)", () => {
 
   function noteBlocks(record: TerminalRecord) {
     return record.filter(
-      (b) => b.kind === "system" && b.body.includes("Git for Windows"),
+      // The remedy every platform's wording names.
+      (b) => b.kind === "system" && b.body.includes("HERTA_BASH"),
     );
   }
-  /** minimal configured + deterministic no-bash (findBash override miss). */
+  /** A machine with no bash, deterministically (findBash override miss). */
   function minimalCfg(): AppServerConfig {
-    const cfg = { ...mkConfig(), backendContract: "minimal" as const };
+    const cfg = mkConfig();
     process.env.HERTA_BASH = join(cfg.workspaceRoot, "no-such-bash.exe");
     return cfg;
   }
@@ -2376,7 +2604,11 @@ describe("contract-fallback record note (ADR 0044)", () => {
     const note = notes[0];
     if (note?.kind !== "system") throw new Error("no note block");
     expect(note.label).toBe("系统");
-    expect(note.body).toContain("极简");
+    // It says what is missing and what that costs, not which tool set runs.
+    expect(note.body).toContain("板砖无法执行任务");
+    // Marked as a notice, so a renderer that folds system notes behind a
+    // click shows this one open (owner 2026-11-12).
+    expect(note.notice).toBe("backend_unavailable");
     // The opening streamed first; the note is the record's last block.
     expect(record.length).toBeGreaterThanOrEqual(2);
     expect(record[record.length - 1]).toBe(note);
@@ -2417,25 +2649,184 @@ describe("contract-fallback record note (ADR 0044)", () => {
     await resumed.cleanup();
   });
 
-  it("no note when the standard contract was configured, or when bash exists", async () => {
-    const cfgStd = { ...mkConfig(), backendContract: "standard" as const };
-    process.env.HERTA_BASH = join(cfgStd.workspaceRoot, "no-such-bash.exe");
-    const std = await mkStubSession(cfgStd);
-    await std.session.playOpening();
-    expect(noteBlocks(std.session.record)).toHaveLength(0);
-    await std.cleanup();
+  it("a dispatch ends at once as a failed run that names the remedy, and no model is asked to work", async () => {
+    const { session, cleanup } = await mkNoopBanzhuanSession(minimalCfg());
+    await session.submitText("看看公开资料");
+    const record = session.record;
+    const markers = record.filter(
+      (b) =>
+        b.kind === "system" && (b as { role?: string }).role === "done-marker",
+    );
+    // One run, one ending: failed, with the reason on it for both readers
+    // (her prompt reads `evidenceDetail`, the chat's row reads `evidence`).
+    expect(markers).toHaveLength(1);
+    const marker = markers[0] as {
+      body: string;
+      evidenceDetail?: string;
+      evidence?: readonly { kind: string; message?: string }[];
+    };
+    expect(marker.body.startsWith("失败")).toBe(true);
+    expect(marker.evidenceDetail).toContain("板砖无法执行任务");
+    expect(marker.evidenceDetail).toContain("HERTA_BASH");
+    expect(marker.evidence?.[0]?.message).toContain("HERTA_BASH");
+    // Not the "did nothing" ending: that would read as his choice.
+    expect(
+      record.some(
+        (b) =>
+          b.kind === "system" &&
+          (b as { role?: string }).role === "noop-marker",
+      ),
+    ).toBe(false);
+    // She speaks after it, as after any failed run.
+    expect(record[record.length - 1]?.kind).toBe("herta");
+    await cleanup();
+  }, 15_000);
 
+  it("no note when bash exists", async () => {
     // "bash exists": any existing path satisfies findBash's override check.
-    const cfgMin = { ...mkConfig(), backendContract: "minimal" as const };
-    process.env.HERTA_BASH = cfgMin.workspaceRoot;
-    const min = await mkStubSession(cfgMin);
-    await min.session.playOpening();
-    expect(noteBlocks(min.session.record)).toHaveLength(0);
-    await min.cleanup();
+    const cfg = mkConfig();
+    process.env.HERTA_BASH = cfg.workspaceRoot;
+    const { session, cleanup } = await mkStubSession(cfg);
+    await session.playOpening();
+    expect(noteBlocks(session.record)).toHaveLength(0);
+    await cleanup();
   });
 });
 
 // ── The repository card's stream (ADR 0058) ──────────────────────────────────
+
+describe("Session — talkText, a message to Herta while 板砖 works (ADR 0085 step 3)", () => {
+  it("answers `queued` when idle and during Herta's own turn, recording nothing", async () => {
+    const cfg = mkConfig();
+    const { session, cleanup } = await mkStubSession(cfg);
+    expect(await session.talkText("later")).toEqual({ queued: true });
+    const turn = session.submitText("hi");
+    expect(await session.talkText("also")).toEqual({ queued: true });
+    await turn;
+    expect(
+      session.record.some((b) => b.kind === "user" && b.text === "also"),
+    ).toBe(false);
+    expect(await session.talkText("   ")).toEqual({ queued: true });
+    await cleanup();
+  }, 15_000);
+
+  it("while 板砖 runs: accepted, recorded as talk, answered by her before the run's marker, and never handed to 板砖", async () => {
+    const cfg = mkConfig();
+    const { V2RecordPersister } = await import("@herta/core");
+    const { randomUUID } = await import("node:crypto");
+    const sessionId = randomUUID();
+    const persister = V2RecordPersister.forNewSession({
+      sessionId,
+      workspaceRoot: cfg.workspaceRoot,
+      startedAt: new Date(),
+      transcriptDir: cfg.transcriptDir,
+    });
+    // Actor: the dispatch, her answer to the talk, the beat the failed read
+    // earns once the run goes on, the verdict.
+    const actorStub = stubCompletionProvider([
+      { deltas: ["@板砖 看看 nope.txt。（/我 说）"], stopReason: "stop" },
+      { deltas: ["三点。（/我 说）"], stopReason: "stop" },
+      { deltas: ["没这个文件。（/我 说）"], stopReason: "stop" },
+      { deltas: ["看完了。（/我 说）"], stopReason: "stop" },
+    ]);
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let firstCallStarted: () => void = () => {};
+    const firstCall = new Promise<void>((r) => {
+      firstCallStarted = r;
+    });
+    const frames: string[] = [];
+    type Adapter = import("@herta/core").ProviderAdapter;
+    type Ev = import("@herta/core").ProviderEvent;
+    const backendStub: Adapter = {
+      streamChat(frame) {
+        frames.push(JSON.stringify(frame));
+        const n = frames.length;
+        return (async function* () {
+          if (n === 1) {
+            firstCallStarted();
+            await gate;
+            yield {
+              type: "tool-call-request",
+              // A read of a file that is not there: it fails, with no shell.
+              call: {
+                id: "c1",
+                tool: "str_replace_editor",
+                input: {
+                  command: "view",
+                  path: join(cfg.workspaceRoot, "nope.txt"),
+                },
+              },
+            } as Ev;
+            yield { type: "finish", reason: "tool_calls" } as Ev;
+          } else {
+            yield { type: "finish", reason: "stop" } as Ev;
+          }
+        })();
+      },
+    };
+    const session = await SessionImpl.create({
+      sessionId,
+      workspaceRoot: cfg.workspaceRoot,
+      effectiveWorkspace: cfg.workspaceRoot,
+      isDefaultWorkspace: false,
+      config: cfg,
+      persister,
+      deps: {
+        providerOverrides: {
+          actor: actorStub,
+          backend: backendStub,
+          router: stubChatProvider([
+            {
+              events: [
+                { type: "text-delta", text: "默认" },
+                { type: "finish", reason: "stop" },
+              ],
+            },
+          ]),
+          title: stubChatProvider([]),
+        },
+        staticPrefixOverride: { bio: "[test-bio]", env: "", fewShots: [] },
+        metaThinkOverride: emptyMetaThinkCorpus(),
+        supervisorReferenceOverride: "",
+        openingOverride: null,
+      },
+    });
+
+    const turn = session.submitText("看看 nope.txt");
+    await firstCall;
+    const answer = await session.talkText("周末那个会几点？");
+    expect("accepted" in answer).toBe(true);
+    release();
+    await turn;
+
+    // 板砖 never reads it: talk is hers.
+    expect(frames.some((f) => f.includes("周末那个会几点"))).toBe(false);
+    const record = session.record;
+    const at = (pred: (b: (typeof record)[number]) => boolean): number =>
+      record.findIndex(pred);
+    const talkAt = at(
+      (b) => b.kind === "user" && b.text === "周末那个会几点？",
+    );
+    const answerAt = at((b) => b.kind === "herta" && b.text === "三点。");
+    const markerAt = record.findIndex(
+      (b) => b.kind === "system" && b.role === "done-marker",
+    );
+    expect(record[talkAt]).toMatchObject({ kind: "user", duringRun: true });
+    expect(record[answerAt]).toMatchObject({ kind: "herta", duringRun: true });
+    expect(answerAt).toBeGreaterThan(talkAt);
+    expect(markerAt).toBeGreaterThan(answerAt);
+    // The verdict follows the run.
+    expect(record[record.length - 1]).toMatchObject({
+      kind: "herta",
+      text: "看完了。",
+    });
+    expect(record[record.length - 1]).not.toHaveProperty("duringRun");
+    await session.close();
+  }, 20_000);
+});
 
 describe("Session — steerText, a message while 板砖 works (ADR 0063)", () => {
   it("answers `queued` when idle and during Herta's own turn, recording nothing", async () => {
@@ -2500,10 +2891,14 @@ describe("Session — steerText, a message while 板砖 works (ADR 0063)", () =>
             await gate;
             yield {
               type: "tool-call-request",
+              // A read of a file that is not there: it fails, with no shell.
               call: {
                 id: "c1",
-                tool: "read_file",
-                input: { path: "nope.txt" },
+                tool: "str_replace_editor",
+                input: {
+                  command: "view",
+                  path: join(cfg.workspaceRoot, "nope.txt"),
+                },
               },
             } as Ev;
             yield { type: "finish", reason: "tool_calls" } as Ev;
@@ -2681,6 +3076,138 @@ describe("Session — steerText, a message while 板砖 works (ADR 0063)", () =>
     expect(
       record.filter((b) => b.kind === "user" && b.text === "也把测试文件改名"),
     ).toHaveLength(1);
+    await session.close();
+  }, 20_000);
+});
+
+describe("Session — words around a run's end (review 2026-11-05)", () => {
+  type Adapter = import("@herta/core").ProviderAdapter;
+  type Ev = import("@herta/core").ProviderEvent;
+
+  /** A session whose first backend call is held open until `release()`. */
+  async function heldRun(opts: {
+    actor: Array<{ deltas: string[]; stopReason: "stop" }>;
+    afterGate: () => AsyncGenerator<Ev>;
+    later?: () => AsyncGenerator<Ev>;
+  }) {
+    const cfg = mkConfig();
+    const { V2RecordPersister } = await import("@herta/core");
+    const { randomUUID } = await import("node:crypto");
+    const sessionId = randomUUID();
+    const persister = V2RecordPersister.forNewSession({
+      sessionId,
+      workspaceRoot: cfg.workspaceRoot,
+      startedAt: new Date(),
+      transcriptDir: cfg.transcriptDir,
+    });
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let firstCallStarted: () => void = () => {};
+    const firstCall = new Promise<void>((r) => {
+      firstCallStarted = r;
+    });
+    const frames: string[] = [];
+    const backend: Adapter = {
+      streamChat(frame) {
+        frames.push(JSON.stringify(frame));
+        const n = frames.length;
+        return (async function* () {
+          if (n === 1) {
+            firstCallStarted();
+            await gate;
+            yield* opts.afterGate();
+          } else if (opts.later !== undefined) {
+            yield* opts.later();
+          } else {
+            yield { type: "finish", reason: "stop" } as Ev;
+          }
+        })();
+      },
+    };
+    const session = await SessionImpl.create({
+      sessionId,
+      workspaceRoot: cfg.workspaceRoot,
+      effectiveWorkspace: cfg.workspaceRoot,
+      isDefaultWorkspace: false,
+      config: cfg,
+      persister,
+      deps: {
+        providerOverrides: {
+          actor: stubCompletionProvider(opts.actor),
+          backend,
+          router: stubChatProvider([
+            {
+              events: [
+                { type: "text-delta", text: "默认" },
+                { type: "finish", reason: "stop" },
+              ],
+            },
+          ]),
+          title: stubChatProvider([]),
+        },
+        staticPrefixOverride: { bio: "[test-bio]", env: "", fewShots: [] },
+        metaThinkOverride: emptyMetaThinkCorpus(),
+        supervisorReferenceOverride: "",
+        openingOverride: null,
+      },
+    });
+    return { session, firstCall, release, frames };
+  }
+
+  it("right after Stop a message and a steer are held, not accepted: nobody would read them", async () => {
+    const { session, firstCall, release } = await heldRun({
+      actor: [{ deltas: ["@板砖 看看 a.txt。（/我 说）"], stopReason: "stop" }],
+      afterGate: async function* () {
+        yield { type: "finish", reason: "stop" } as Ev;
+      },
+    });
+    const turn = session.submitText("看看 a.txt").catch(() => undefined);
+    await firstCall;
+    // Anti-vacuous: the same window accepts them before Stop.
+    expect(session.backendActive).toBe(true);
+    expect("accepted" in (await session.talkText("进展如何？"))).toBe(true);
+    await session.interrupt();
+    // 板砖's call is still out: the loop has not seen the abort.
+    expect(session.backendActive).toBe(true);
+    expect(await session.talkText("停了吗？")).toEqual({ queued: true });
+    expect(await session.steerText("算了")).toEqual({ queued: true });
+    release();
+    await turn;
+    expect(
+      session.record.filter(
+        (b) => b.kind === "user" && ["停了吗？", "算了"].includes(b.text),
+      ),
+    ).toEqual([]);
+    await session.close();
+  }, 20_000);
+
+  it("a steer the run never read does not open the next dispatch in the turn", async () => {
+    const { session, firstCall, release, frames } = await heldRun({
+      actor: [
+        { deltas: ["@板砖 看看 a.txt。（/我 说）"], stopReason: "stop" },
+        { deltas: ["@板砖 再看看 b.txt。（/我 说）"], stopReason: "stop" },
+        { deltas: ["都看完了。（/我 说）"], stopReason: "stop" },
+      ],
+      afterGate: async function* () {
+        // The provider fails on the call the steer waited behind.
+        yield* [] as Ev[];
+        throw new Error("provider exploded");
+      },
+    });
+    const turn = session.submitText("看看 a.txt");
+    await firstCall;
+    expect("accepted" in (await session.steerText("先别动 api 目录"))).toBe(
+      true,
+    );
+    release();
+    await turn;
+    expect(frames.length).toBeGreaterThan(1);
+    // Run 2 read the record's history, but no steer opened its loop: the
+    // message from nowhere was the channel's text in `messages`.
+    const second = JSON.parse(frames[1] as string) as { messages: unknown[] };
+    expect(JSON.stringify(second.messages)).not.toContain("先别动 api 目录");
     await session.close();
   }, 20_000);
 });

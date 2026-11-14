@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -178,5 +178,118 @@ describe("settings IPC — attention (ADR 0072 §1)", () => {
       notifications: true,
       keepAwake: false,
     });
+  });
+});
+
+describe("settings IPC — models and effort apply live (ADR 0081)", () => {
+  function setup(): {
+    handlers: Map<string, Handler>;
+    applied: unknown[];
+  } {
+    userData.dir = mkdtempSync(join(tmpdir(), "herta-settings-"));
+    const handlers = new Map<string, Handler>();
+    const applied: unknown[] = [];
+    registerSettingsHandlers({
+      handle: ((channel: string, fn: Handler) => {
+        handlers.set(channel, fn);
+      }) as never,
+      hooks: {},
+      host: () => ({ setModels: (m: unknown) => applied.push(m) }) as never,
+      workspaceRoot: () => userData.dir,
+      voice: {
+        synthesizer: null,
+        voiceModel: null,
+        minimaxVoice: null,
+        engine: "local",
+        realtimeEnabled: false,
+        minimaxFetch: (async () => new Response("")) as never,
+        anyMiniMaxKey: () => false,
+        minimaxRefusal: () => null,
+        stopSpeech: () => {},
+      },
+    });
+    return { handlers, applied };
+  }
+
+  it("a model pick is saved and reaches the running host at once", async () => {
+    const { handlers, applied } = setup();
+    await handlers.get(CMD.setModelConfig)?.(null, {
+      actor: "deepseek-flash",
+      backend: "deepseek-v4-pro",
+    });
+    expect(await handlers.get(CMD.getModelConfig)?.(null)).toEqual({
+      actor: "deepseek-flash",
+      backend: "deepseek-v4-pro",
+    });
+    expect(applied).toEqual([
+      { actorModel: "deepseek-flash", backendModel: "deepseek-v4-pro" },
+    ]);
+  });
+
+  it("an effort pick reaches the host; a pick of the retired tool set is ignored (ADR 0086)", async () => {
+    const { handlers, applied } = setup();
+    await handlers.get(CMD.setBackendConfig)?.(null, { thinking: "max" });
+    expect(applied).toEqual([{ thinking: "max" }]);
+    // An older renderer could still send the choice: it is neither applied
+    // nor saved, and the config it reads back has no such field.
+    await handlers.get(CMD.setBackendConfig)?.(null, { contract: "standard" });
+    expect(applied).toEqual([{ thinking: "max" }]);
+    const read = (await handlers.get(CMD.getBackendConfig)?.(null)) as Record<
+      string,
+      unknown
+    >;
+    expect(read.thinking).toBe("max");
+    expect("contract" in read).toBe(false);
+    expect(typeof read.bashFound).toBe("boolean");
+    expect(
+      readFileSync(join(userData.dir, ".herta", "settings.json"), "utf-8"),
+    ).not.toContain("contract");
+  });
+
+  it("an env override still wins over a live pick, as at a fresh start", async () => {
+    const { handlers, applied } = setup();
+    vi.stubEnv("HERTA_ACTOR_MODEL", "deepseek-v4-pro");
+    try {
+      await handlers.get(CMD.setModelConfig)?.(null, {
+        actor: "deepseek-flash",
+        backend: "deepseek-flash",
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(applied).toEqual([
+      { actorModel: "deepseek-v4-pro", backendModel: "deepseek-flash" },
+    ]);
+  });
+
+  it("a model pick and an effort pick in flight together are both saved (release review 2026-10-22)", async () => {
+    const { handlers } = setup();
+    await Promise.all([
+      handlers.get(CMD.setModelConfig)?.(null, {
+        actor: "deepseek-flash",
+        backend: "deepseek-v4-pro",
+      }),
+      handlers.get(CMD.setBackendConfig)?.(null, { thinking: "max" }),
+      handlers.get(CMD.setDreamConfig)?.(null, { enabled: false }),
+    ]);
+    expect(await handlers.get(CMD.getModelConfig)?.(null)).toEqual({
+      actor: "deepseek-flash",
+      backend: "deepseek-v4-pro",
+    });
+    expect(await handlers.get(CMD.getBackendConfig)?.(null)).toMatchObject({
+      thinking: "max",
+    });
+    expect(await handlers.get(CMD.getDreamConfig)?.(null)).toMatchObject({
+      enabled: false,
+    });
+  });
+
+  it("an off-list model is refused and nothing reaches the host", async () => {
+    const { handlers, applied } = setup();
+    await handlers.get(CMD.setModelConfig)?.(null, {
+      actor: "gpt-9",
+      backend: "deepseek-flash",
+    });
+    expect(applied).toEqual([]);
   });
 });

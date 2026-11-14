@@ -1,3 +1,5 @@
+import { mapOutsideQuotation, quotationRanges } from "@herta/core";
+
 /**
  * Structured view of a Herta-authored finalized block.
  *
@@ -21,36 +23,35 @@ export interface ParsedHertaBlock {
 const BANZHUAN_TRIGGER = "@板砖";
 
 /**
- * A `…` inline code span (single backticks, no inner backtick).
- * A `@板砖` inside such a span is quotation, not dispatch — this keeps
- * the supervisor §8 backtick exemption factually true (2026-06-11
- * trigger discipline). Unpaired backticks form no span, so the text
- * after them still counts as outside.
+ * A `@板砖` inside quotation is a mention, not a dispatch: a `…` inline
+ * code span (single backticks, no inner backtick) — this keeps the
+ * supervisor §8 backtick exemption factually true (2026-06-11 trigger
+ * discipline) — and, since 2026-10-21, a CLOSED fenced code block
+ * (`quotationRanges`, ADR 0078 amendment 2026-10-21): a quoted file
+ * passage holding `` `@板砖` `` dispatched 板砖 by itself, because inside a
+ * fence the span rule mis-paired. Unpaired backticks form no span and an
+ * unclosed fence quotes nothing, so the text after them still counts as
+ * outside.
  */
-const INLINE_CODE_SPAN = /`[^`]*`/g;
-
 export function parseHertaBlock(text: string): ParsedHertaBlock {
-  // Spans are replaced with a space, not deleted: deleting would splice
-  // the surrounding text and could fabricate a trigger that was never
-  // in the input (e.g. "@`x`板砖").
-  const hasBanzhuanTrigger = text
-    .replace(INLINE_CODE_SPAN, " ")
-    .includes(BANZHUAN_TRIGGER);
-  return { text, hasBanzhuanTrigger };
+  // Quotation is replaced with a space, not deleted: deleting would
+  // splice the surrounding text and could fabricate a trigger that was
+  // never in the input (e.g. "@`x`板砖").
+  let outside = "";
+  let last = 0;
+  for (const [s, e] of quotationRanges(text)) {
+    outside += `${text.slice(last, s)} `;
+    last = e;
+  }
+  outside += text.slice(last);
+  return { text, hasBanzhuanTrigger: outside.includes(BANZHUAN_TRIGGER) };
 }
 
-/** Replace every `@板砖` OUTSIDE inline code spans; spans pass through. */
+/** Replace every `@板砖` OUTSIDE quotation; quotation passes through. */
 function replaceBareTrigger(text: string, replacement: string): string {
-  let result = "";
-  let last = 0;
-  for (const match of text.matchAll(INLINE_CODE_SPAN)) {
-    result +=
-      text.slice(last, match.index).split(BANZHUAN_TRIGGER).join(replacement) +
-      match[0];
-    last = match.index + match[0].length;
-  }
-  result += text.slice(last).split(BANZHUAN_TRIGGER).join(replacement);
-  return result;
+  return mapOutsideQuotation(text, (seg) =>
+    seg.split(BANZHUAN_TRIGGER).join(replacement),
+  );
 }
 
 /**
@@ -115,4 +116,86 @@ export function stripBanzhuanTrigger(text: string): string {
     result = next;
   }
   return result;
+}
+
+/** Whether the character at `i` ends a sentence: 。！？ always, `!` and `?`
+ *  before a space (`if (!x)` goes on), and a line break unless a colon leads
+ *  into the next line. A semicolon joins clauses of one sentence. */
+function endsSentence(text: string, i: number): boolean {
+  const c = text[i];
+  if (c === "。" || c === "！" || c === "？") return true;
+  if (c === "!" || c === "?") return /\s/.test(text[i + 1] ?? " ");
+  return c === "\n" && text[i - 1] !== "：" && text[i - 1] !== ":";
+}
+
+/**
+ * The sentences of her speech that carry a live `@板砖` — what reaches the
+ * running 板砖 when she writes one during a run (ADR 0085 §4; owner
+ * 2026-11-04: "the sentence with @板砖", not the whole reply, so her talk to
+ * the Trailblazer stays out of 板砖's run). Quotation is read over the whole
+ * speech (review 2026-11-05): cut first, a fence or a code span opened in one
+ * piece and closed in another quoted nothing, and the `@板砖` inside went out
+ * as an instruction. Nothing inside quotation ends a sentence or carries a
+ * call. A sentence that is only the token runs on to what it is for. Joined
+ * as she wrote them; empty when none does.
+ */
+export function banzhuanSentences(text: string): string {
+  return banzhuanSentenceSpans(text)
+    .map(([start, end]) => text.slice(start, end).trim())
+    .join(" ")
+    .trim();
+}
+
+/**
+ * Her speech without those sentences (ADR 0085 amendment 2026-11-06): what
+ * stands of an answer once the recheck refuses the `@板砖` in it. Left in as a
+ * mention, a sentence addressed to 板砖 stays on the Trailblazer's screen as
+ * an instruction nobody received.
+ */
+export function withoutBanzhuanSentences(text: string): string {
+  let kept = "";
+  let from = 0;
+  for (const [start, end] of banzhuanSentenceSpans(text)) {
+    kept += text.slice(from, start);
+    from = end;
+  }
+  return `${kept}${text.slice(from)}`.replace(/\n{3,}/gu, "\n\n").trim();
+}
+
+function banzhuanSentenceSpans(text: string): Array<[number, number]> {
+  const ranges = quotationRanges(text);
+  const quoted = (i: number): boolean =>
+    ranges.some(([start, end]) => i >= start && i < end);
+  const calls = (from: number, to: number): boolean => {
+    let at = text.indexOf(BANZHUAN_TRIGGER, from);
+    while (at !== -1 && at < to) {
+      if (!quoted(at)) return true;
+      at = text.indexOf(BANZHUAN_TRIGGER, at + 1);
+    }
+    return false;
+  };
+  const ends: number[] = [];
+  for (let i = 0; i < text.length; i += 1) {
+    if (!quoted(i) && endsSentence(text, i)) ends.push(i + 1);
+  }
+  ends.push(text.length);
+  const spans: Array<[number, number]> = [];
+  let start = 0;
+  for (let k = 0; k < ends.length; k += 1) {
+    let end = ends[k] as number;
+    if (calls(start, end)) {
+      while (k + 1 < ends.length && !saysAnything(text.slice(start, end))) {
+        k += 1;
+        end = ends[k] as number;
+      }
+      spans.push([start, end]);
+    }
+    start = end;
+  }
+  return spans;
+}
+
+/** Whether a sentence says more than the token and its punctuation. */
+function saysAnything(sentence: string): boolean {
+  return /[\p{L}\p{N}]/u.test(sentence.replaceAll(BANZHUAN_TRIGGER, ""));
 }

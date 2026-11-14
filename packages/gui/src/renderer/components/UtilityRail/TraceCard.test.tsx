@@ -3,6 +3,8 @@ import { act } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LiveToolSnapshot, LiveToolView } from "../../ipc/bridge-types.js";
 import { renderWithSession } from "../../testing/renderWithSession.js";
+import { Composer } from "../Workspace/Composer.js";
+import { WorkspaceRefsProvider } from "../Workspace/WorkspaceRefs.js";
 import {
   CARD_HOLD_MS,
   CARD_SLIDE_MS,
@@ -502,11 +504,11 @@ describe("TraceCard — the ticker (ADR 0073)", () => {
     push(h, user(), op("Reading", "a.ts"));
     live(h, [
       view({
-        tool: "read_file",
+        tool: "str_replace_editor",
         streams: false,
         started: true,
         ordinal: 0,
-        summary: "a.ts",
+        summary: "view a.ts",
       }),
     ]);
     expect(lines()).toEqual(["Explore* Reading a.ts"]);
@@ -554,11 +556,11 @@ describe("TraceCard — the ticker (ADR 0073)", () => {
     });
     const reading = view({
       id: "c3",
-      tool: "read_file",
+      tool: "str_replace_editor",
       streams: false,
       started: true,
       ordinal: 2,
-      summary: "fib.js",
+      summary: "view fib.js",
     });
     // Two steps past the record: the command that failed, then a read.
     live(h, [ran, reading]);
@@ -669,9 +671,9 @@ describe("TraceCard — the ticker (ADR 0073)", () => {
           }),
           view({
             id: "c3",
-            tool: "read_file",
+            tool: "str_replace_editor",
             ordinal: 2,
-            summary: "fib.js",
+            summary: "view fib.js",
             ...done,
           }),
         ],
@@ -759,10 +761,10 @@ describe("stepOf", () => {
     expect(
       stepOf(
         view({
-          tool: "read_file",
+          tool: "str_replace_editor",
           streams: false,
           started: true,
-          summary: "a.ts",
+          summary: "view a.ts",
         }),
       ),
     ).toEqual({
@@ -817,11 +819,11 @@ describe("pendingSteps", () => {
   const read = (id: string, ordinal: number, summary: string) =>
     view({
       id,
-      tool: "read_file",
+      tool: "str_replace_editor",
       streams: false,
       started: true,
       ordinal,
-      summary,
+      summary: `view ${summary}`,
     });
 
   it("appends exactly the dispatched steps the record has not counted yet, in order — however far it lags", () => {
@@ -886,5 +888,76 @@ describe("pendingSteps", () => {
       steps: [],
       focus: null,
     });
+  });
+});
+
+describe("the card's steers and its stop (ADR 0085 amendment 2026-11-04)", () => {
+  const steer = (text: string): TerminalRecordBlock =>
+    ({ kind: "user", text, steer: true }) as TerminalRecordBlock;
+
+  it("a steer stands between the nodes where 板砖 took it: its speaker's avatar, then the words", () => {
+    const h = renderWithSession(<TraceCard />);
+    push(
+      h,
+      user(),
+      op("Reading", "a.ts"),
+      steer("先别动 api 目录"),
+      op("Reading", "b.ts"),
+    );
+    const list = h.container.querySelector(".trace-card__list") as Element;
+    expect(
+      Array.from(list.children).map((li) =>
+        li.classList.contains("trace-card__steer") ? "steer" : "node",
+      ),
+    ).toEqual(["node", "steer", "node"]);
+    const row = list.querySelector(".trace-card__steer") as HTMLElement;
+    // In the session's language, as the card is; no 插话 label.
+    expect(
+      row.querySelector(
+        '.speaker-avatar.is-trailblazer[aria-label="开拓者"] img',
+      ),
+    ).not.toBeNull();
+    expect(row.textContent).toBe("先别动 api 目录");
+  });
+
+  it("her steer in an English session names Brick, as her bubble does", () => {
+    const h = renderCard({ locale: "en", lang: "en" });
+    push(h, user(), op("Reading", "a.ts"), {
+      kind: "herta",
+      surface: "speech",
+      text: "Decent question.\n\n@板砖 stay read-only.",
+      steered: "@板砖 stay read-only.",
+    } as TerminalRecordBlock);
+    const row = h.container.querySelector(".trace-card__steer") as HTMLElement;
+    expect(row.textContent).toBe("@Brick stay read-only.");
+  });
+
+  it("停止运行 while the run works is the composer's Stop; the card held after the run has none", async () => {
+    const h = renderWithSession(
+      <WorkspaceRefsProvider>
+        <TraceCard />
+        <Composer />
+      </WorkspaceRefsProvider>,
+    );
+    h.startTurn();
+    h.startBackend();
+    push(h, user(), op("Reading", "a.ts"));
+    const actions = Array.from(
+      h.container.querySelectorAll(".trace-card__action"),
+    ) as HTMLElement[];
+    expect(actions.map((b) => b.textContent)).toEqual(["插话", "停止运行"]);
+    // 插话 tags the composer: what is sent next goes to the run.
+    act(() => {
+      actions[0]?.click();
+    });
+    // The composer's chrome is in the app's language, the card in the session's.
+    expect(h.container.textContent).toContain("Steer · Coprocessor");
+    const stop = actions[1] as HTMLElement;
+    await act(async () => {
+      stop.click();
+    });
+    expect(h.mock.calls.interrupt).toHaveLength(1);
+    push(h, doneMarker);
+    expect(h.container.querySelector(".trace-card__action")).toBeNull();
   });
 });

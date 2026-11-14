@@ -1,3 +1,5 @@
+import type { TerminalRecord, TerminalRecordBlock } from "@herta/app-server";
+import { RECORD_WINDOW_WEIGHT } from "@herta/core/record-window";
 import {
   act,
   cleanup,
@@ -19,7 +21,6 @@ import {
   IN_FLIGHT_MIN_VISIBLE_MS,
   SUPERVISOR_HINT_DELAY_MS,
   UNPINNED_TRIM_AT,
-  UNPINNED_TRIM_KEEP_TAIL,
 } from "./Conversation.js";
 import { SHADOW_SETTLE_MS } from "./conversation-timing.js";
 import { SCROLL_GLIDE_MAX_MS } from "./scroll-glide.js";
@@ -1836,7 +1837,7 @@ describe("Conversation", () => {
     expect(mock.calls.submitText).toContain("你好呀 黑塔");
   });
 
-  it("renders a backend run as one activity block", () => {
+  it("renders a backend run as one row under her dispatching bubble, however her beats split it (ADR 0085 §6)", () => {
     const mock = createMockHertaBridge();
     const { container } = renderWithLocale(
       <WorkspaceRefsProvider>
@@ -1861,12 +1862,22 @@ describe("Conversation", () => {
       });
       mock.emitRecord({
         kind: "block",
+        blockId: "d",
+        block: { kind: "herta", surface: "speech", text: "交给它去办。" },
+      });
+      mock.emitRecord({
+        kind: "block",
         blockId: "2",
         block: {
           kind: "system",
           label: "差分协处理器",
           body: "Reading scripts",
         },
+      });
+      mock.emitRecord({
+        kind: "block",
+        blockId: "b",
+        block: { kind: "herta", surface: "speech", text: "它在读了。" },
       });
       mock.emitRecord({
         kind: "block",
@@ -1879,12 +1890,26 @@ describe("Conversation", () => {
         },
       });
     });
+    const rows = container.querySelectorAll('[data-testid="run-row"]');
+    expect(rows).toHaveLength(1);
+    // The run's rows are not drawn in the chat: they open in its tab.
     expect(
       container.querySelectorAll('[data-testid="activity-block"]'),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
+    // Under the bubble that sent it, the beat after it.
+    const row = rows[0] as Element;
+    const dispatch = screen.getByText("交给它去办。");
+    const beat = screen.getByText("它在读了。");
+    expect(
+      dispatch.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      row.compareDocumentPosition(beat) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(row.textContent).toContain("完成 · 1 file");
   });
 
-  it("shows pending-activity placeholder when backendActive and no activity block yet; replaced when a system block lands", () => {
+  it("shows pending-activity placeholder when backendActive and no run yet; replaced by the run's row, which stays the run's status under her beats", () => {
     const mock = createMockHertaBridge();
     const { container } = renderWithLocale(
       <WorkspaceRefsProvider>
@@ -1920,11 +1945,12 @@ describe("Conversation", () => {
       });
     });
     expect(screen.getByTestId("pending-activity")).toBeInTheDocument();
-    expect(
-      container.querySelectorAll('[data-testid="activity-block"]'),
-    ).toHaveLength(0);
+    expect(container.querySelectorAll('[data-testid="run-row"]')).toHaveLength(
+      0,
+    );
 
-    // First backend system block lands → activity block appears, pending placeholder should be gone
+    // First backend system block lands → the run's row appears, live, and
+    // the placeholder is gone
     act(() => {
       mock.emitRecord({
         kind: "block",
@@ -1936,10 +1962,24 @@ describe("Conversation", () => {
         },
       });
     });
-    expect(
-      container.querySelectorAll('[data-testid="activity-block"]'),
-    ).toHaveLength(1);
+    const row = container.querySelector('[data-testid="run-row"]');
+    expect(row?.classList.contains("is-active")).toBe(true);
     expect(screen.queryByTestId("pending-activity")).not.toBeInTheDocument();
+    // A beat lands below it: the run is still that row, not a new
+    // placeholder at the bottom.
+    act(() => {
+      mock.emitRecord({
+        kind: "block",
+        blockId: "b1",
+        block: { kind: "herta", surface: "speech", text: "它在读。" },
+      });
+    });
+    expect(screen.queryByTestId("pending-activity")).not.toBeInTheDocument();
+    expect(
+      container
+        .querySelector('[data-testid="run-row"]')
+        ?.classList.contains("is-active"),
+    ).toBe(true);
   });
 
   it("under reduced motion, a sent message shows as a flow bubble (no clone)", () => {
@@ -2217,14 +2257,14 @@ describe("Conversation", () => {
 });
 
 describe("Conversation live-turn threading", () => {
-  it("live-turn timestamps reach only the live turn's groups — born-done parts keep their duration, history stays quiet", () => {
-    // perf review 2026-07-31: turnStartedAt/backendStartedAt used to be
-    // handed to EVERY group, defeating ActivityBlock's memo for the whole
-    // mounted history at each turn boundary — and letting a historical done
-    // group (blocks without timestamps of their own) freeze a bogus duration
-    // from the LIVE run's anchor. The gate: groups after the last user block
-    // — which includes the born-done parts a beat split minted, whose
-    // whole-run freeze still needs backendStartedAt while it is set.
+  it("the backend's start reaches only the live turn's runs — an ended run reads its own stamps (ADR 0085 §6)", () => {
+    // perf review 2026-07-31: the live-turn anchors used to be handed to
+    // EVERY group, defeating the row memo for the whole mounted history at
+    // each turn boundary — and letting a historical run freeze a bogus
+    // duration from the LIVE run's anchor. A run's time now comes from its
+    // own stamps once it ended; only the live one counts from the backend.
+    const t0 = Date.parse("2026-11-04T08:00:00.000Z");
+    const at = (s: number): string => new Date(t0 + s * 1000).toISOString();
     const mock = createMockHertaBridge();
     const { container } = renderWithLocale(
       <WorkspaceRefsProvider>
@@ -2238,24 +2278,32 @@ describe("Conversation live-turn threading", () => {
         sessionId: "s",
         workspaceRoot: "/r",
         record: [
-          { kind: "user", text: "先前的事" },
-          { kind: "system", label: "差分协处理器", body: "旧活" },
+          { kind: "user", text: "先前的事", at: at(0) },
+          { kind: "herta", surface: "speech", text: "@板砖 去办", at: at(1) },
+          { kind: "system", label: "差分协处理器", body: "旧活", at: at(3) },
           {
             kind: "system",
             label: "差分协处理器",
             body: "完成 · 1 file",
             role: "done-marker",
+            at: at(6),
           },
-          { kind: "herta", surface: "speech", text: "那是上次。" },
-          { kind: "user", text: "fix the parser @板砖" },
-          { kind: "system", label: "差分协处理器", body: "Reading parser.ts" },
+          { kind: "herta", surface: "speech", text: "那是上次。", at: at(7) },
+          { kind: "user", text: "fix the parser @板砖", at: at(60) },
+          {
+            kind: "system",
+            label: "差分协处理器",
+            body: "Reading parser.ts",
+            at: at(61),
+          },
           {
             kind: "system",
             label: "差分协处理器",
             body: "完成 · 1 file",
             role: "done-marker",
+            at: at(64),
           },
-          { kind: "herta", surface: "speech", text: "先说一句。" },
+          { kind: "herta", surface: "speech", text: "先说一句。", at: at(65) },
           { kind: "system", label: "差分协处理器", body: "Running tests" },
         ],
         overlay: null,
@@ -2272,15 +2320,20 @@ describe("Conversation live-turn threading", () => {
         } as never,
       });
     });
-    const groups = container.querySelectorAll('[data-testid="activity-block"]');
-    expect(groups).toHaveLength(3);
-    // Historical (before the last user block): its blocks carry no timing,
-    // and the live run's anchor must not reach it.
-    expect(groups[0]?.querySelector(".activity-line__duration")).toBeNull();
-    // Born-done part of the live run: frozen whole-run duration.
-    expect(groups[1]?.querySelector(".activity-line__duration")).not.toBeNull();
-    // The active continuation: live duration.
-    expect(groups[2]?.querySelector(".activity-line__duration")).not.toBeNull();
+    const runs = container.querySelectorAll('[data-testid="run-row"]');
+    expect(runs).toHaveLength(3);
+    const took = (i: number): string | null | undefined =>
+      runs[i]?.querySelector(".activity-line__duration")?.textContent;
+    // History: from her dispatching bubble to its marker, 5s — not the live
+    // run's anchor.
+    expect(took(0)).toBe("用时 5s");
+    // This turn's ended run, dispatched by a typed @板砖: its first row to
+    // its marker.
+    expect(took(1)).toBe("用时 3s");
+    // The live one counts from the backend's start, a moment ago.
+    expect(runs[2]?.classList.contains("is-active")).toBe(true);
+    expect(took(2)).toMatch(/^\d+s$/);
+    expect(Number.parseInt(took(2) ?? "", 10)).toBeLessThan(10);
   });
 });
 
@@ -3570,19 +3623,80 @@ describe("Conversation load-earlier paging (long sessions)", () => {
         backendWorkspaceIsDefault: true,
       });
     });
-    // The row names how much older history exists.
-    const btn = screen.getByText("Load 2 earlier entries");
+    const btn = screen.getByText("Load earlier entries");
     expect(screen.queryByText("an older message")).not.toBeInTheDocument();
     await act(async () => {
       fireEvent.click(btn);
       await Promise.resolve();
     });
-    expect(mock.calls.recordSlice).toEqual([["s", 2, 200]]);
+    expect(mock.calls.recordSlice).toEqual([["s", 2, RECORD_WINDOW_WEIGHT]]);
     // The older block renders ABOVE the tail; one older block remains, so
-    // the row stays with the updated count.
+    // the row stays.
     expect(screen.getByText("an older message")).toBeInTheDocument();
     expect(screen.getByText("the visible tail")).toBeInTheDocument();
-    expect(screen.getByText("Load 1 earlier entries")).toBeInTheDocument();
+    expect(screen.getByText("Load earlier entries")).toBeInTheDocument();
+  });
+
+  describe("the live trim weighs what the chat draws (ADR 0085 amendment 2026-11-05)", () => {
+    const step: TerminalRecordBlock = {
+      kind: "system",
+      label: "差分协处理器",
+      body: "Reading a.ts",
+    };
+    const turn = (steps: number): TerminalRecord => [
+      { kind: "user", text: "修一下" },
+      { kind: "herta", surface: "speech", text: "@板砖 修" },
+      ...Array.from({ length: steps }, () => step),
+      { kind: "herta", surface: "speech", text: "好了" },
+    ];
+    function mountWith(record: TerminalRecord) {
+      const mock = createMockHertaBridge();
+      const { container } = renderWithLocale(
+        <WorkspaceRefsProvider>
+          <HertaBridgeProvider bridge={mock.bridge}>
+            <Conversation />
+          </HertaBridgeProvider>
+        </WorkspaceRefsProvider>,
+      );
+      act(() => {
+        mock.emitReset({
+          sessionId: "s",
+          workspaceRoot: "/r",
+          record,
+          overlay: null,
+          backendWorkspace: "/r",
+          backendWorkspaceIsDefault: true,
+        });
+      });
+      act(() => {
+        mock.emitRecord({
+          kind: "block",
+          blockId: "b-next",
+          block: { kind: "user", text: "the next message" },
+        });
+      });
+      return container;
+    }
+
+    it("a short conversation does not fold, however long its runs: the owner's 264 blocks", () => {
+      const record = [...turn(60), ...turn(60), ...turn(60), ...turn(72)];
+      expect(record).toHaveLength(264);
+      mountWith(record);
+      expect(screen.queryByText(/earlier entries/)).not.toBeInTheDocument();
+    });
+
+    it("a trim lands on a message that opens a turn: no run is cut in half", () => {
+      const record = Array.from({ length: 120 }, () => turn(20)).flat();
+      const container = mountWith(record);
+      expect(screen.getByText("Load earlier entries")).toBeInTheDocument();
+      // The first thing drawn is a message: a window cut inside a run opens
+      // on the tail of that run, its row counting only the steps left.
+      const message = container.querySelector("[data-abs-index]") as Element;
+      const run = container.querySelector('[data-testid="run-row"]') as Element;
+      expect(message.compareDocumentPosition(run)).toBe(
+        Node.DOCUMENT_POSITION_FOLLOWING,
+      );
+    });
   });
 
   it("hides the row when the whole record is loaded", () => {
@@ -3614,6 +3728,9 @@ describe("Conversation unpinned live-window trim", () => {
    *  and the scroll position — which is all the trim's binary search reads. */
   const ROW_PX = 40;
   const VIEW_PX = 600;
+  /** Messages only, each weighing 10: the window just past the unpinned
+   *  trim's weight. */
+  const TRIMMABLE_ROWS = UNPINNED_TRIM_AT / 10 + 1;
 
   /**
    * A conversation whose geometry is faked well enough for the trim's two
@@ -3754,7 +3871,7 @@ describe("Conversation unpinned live-window trim", () => {
 
   it("trims history above an unpinned reader and holds the viewport still", () => {
     // Reading deep in the history of a long window, far above the fold.
-    const s = setup({ blocks: UNPINNED_TRIM_AT + 1, readAt: 12_000 });
+    const s = setup({ blocks: TRIMMABLE_ROWS, readAt: 12_000 });
     const before = s.rows();
     const scrollBefore = s.scrollTop();
     s.append("live append");
@@ -3769,32 +3886,32 @@ describe("Conversation unpinned live-window trim", () => {
   });
 
   it("keeps the newest blocks whatever the cut (scrolling back down lands on history, not a paging button)", () => {
-    const s = setup({ blocks: UNPINNED_TRIM_AT + 1, readAt: 12_000 });
+    const s = setup({ blocks: TRIMMABLE_ROWS, readAt: 12_000 });
     const before = s.rows();
     s.append("live append");
     // A cut really happened (else the tail bound below proves nothing)…
     expect(s.rows()).toBeLessThan(before + 1);
     // …the tail bound held…
-    expect(s.rows()).toBeGreaterThanOrEqual(UNPINNED_TRIM_KEEP_TAIL);
+    expect(s.rows()).toBeGreaterThanOrEqual(RECORD_WINDOW_WEIGHT / 10);
     // …and the newest blocks — the live append and the ones before it — are
     // the survivors, so scrolling back down lands on real history.
     expect(screen.getByText("live append")).toBeInTheDocument();
     expect(
-      screen.getByText(`m${UNPINNED_TRIM_AT}`), // the last pre-append block
+      screen.getByText(`m${TRIMMABLE_ROWS - 1}`), // the last pre-append block
     ).toBeInTheDocument();
   });
 
   it("never trims rows the reader can see — the cut stays a viewport above the fold", () => {
     // Scrolled up only slightly: less than one viewport of content sits
     // above the fold, so no cut respects the margin and none is made.
-    const s = setup({ blocks: UNPINNED_TRIM_AT + 1, readAt: VIEW_PX - 10 });
+    const s = setup({ blocks: TRIMMABLE_ROWS, readAt: VIEW_PX - 10 });
     const before = s.rows();
     s.append("live append");
     expect(s.rows()).toBe(before + 1);
   });
 
   it("does not trim a window that is merely long — the threshold is mounted rows", () => {
-    const s = setup({ blocks: UNPINNED_TRIM_AT - 100, readAt: 5_000 });
+    const s = setup({ blocks: TRIMMABLE_ROWS - 101, readAt: 5_000 });
     const before = s.rows();
     s.append("live append");
     expect(s.rows()).toBe(before + 1);

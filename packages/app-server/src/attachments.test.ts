@@ -278,7 +278,12 @@ describe("ingestAttachment", () => {
   });
 });
 
-describe("document attachments — PDF / Word (ADR 0038)", () => {
+// The document tests run the real decoders — pdfjs's first load in this file
+// among them, and 80-page PDFs: under a second each alone, past the default
+// 5 s in a loaded suite (2026-11-03). document-text.test.ts's 30 s tier.
+describe("document attachments — PDF / Word (ADR 0038)", {
+  timeout: 30_000,
+}, () => {
   it("a PDF is decoded once and the TEXT is what gets stored, under a .pdf.txt name", async () => {
     const r = await ingest(
       seed("report.pdf", makePdf([["Findings", "Line two"], ["Page two"]])),
@@ -749,17 +754,6 @@ describe("attachmentDirFor", () => {
   });
 });
 
-describe("cross-package lockstep (review 2026-08-10)", () => {
-  it("the search cap equals the storage ceiling", async () => {
-    // Two packages, one promise: every file the ingest stores must be
-    // searchable, so search_text's attachment cap and the ingest's storage
-    // ceiling are the same number by contract, not coincidence. tools cannot
-    // import app-server (dependency direction), so this test is the coupling.
-    const { ATTACHMENT_SEARCH_MAX_BYTES } = await import("@herta/tools");
-    expect(ATTACHMENT_SEARCH_MAX_BYTES).toBe(MAX_ATTACHMENT_STORE_BYTES);
-  });
-});
-
 describe("ingest into a nested workspace dir", () => {
   it("creates the session directory on demand", async () => {
     const nested = join(ws, "deep");
@@ -1022,7 +1016,10 @@ describe("boundCaption", () => {
   });
 });
 
-describe("document attachments — a PDF's pictures (2026-09-30)", () => {
+// The real decoder again, pictures and all: the same tier.
+describe("document attachments — a PDF's pictures (2026-09-30)", {
+  timeout: 30_000,
+}, () => {
   // "(a)" at y=660, "(b)" at 600; each picture sits between them.
   const handout = (pictures: PdfPictureFixture[]) =>
     makePdf([["Question 1.", "(a)", "(b)"]], {

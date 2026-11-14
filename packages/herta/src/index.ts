@@ -55,6 +55,17 @@ export {
 } from "./narrative/escape.js";
 export { checkFewShot, type FewShotCheck } from "./narrative/few-shot-guard.js";
 export {
+  type FlowWordDeps,
+  type FlowWordJudge,
+  type FlowWordPost,
+  flowJudgeVerdict,
+  flowWordJudge,
+  flowWordPrompt,
+  hertaWordOn,
+  inertFlowWord,
+  normalizeFlowWord,
+} from "./narrative/flow-word.js";
+export {
   type ClassifyIntentInput,
   type ClassifyIntentResult,
   classifyIntent,
@@ -112,6 +123,10 @@ export {
   writeRecapCache,
 } from "./narrative/recap-cache.js";
 export {
+  foldedRunLine,
+  systemRowForHerta,
+} from "./narrative/record-voice.js";
+export {
   createRevealDriver,
   type RevealDriver,
   type RevealDriverDeps,
@@ -121,6 +136,12 @@ export {
   serializeBlock,
   serializeTerminalRecord,
 } from "./narrative/serialize.js";
+// The launcher's notes outside 板砖's steps (ADR 0083 §5): built by the
+// session, sanitized there like every block made outside the bridge.
+export {
+  type ServerNote,
+  serverNoteBlock,
+} from "./narrative/server-record-projection.js";
 export {
   type CompactionConfig,
   DEFAULT_COMPACTION_CONFIG,

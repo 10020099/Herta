@@ -29,6 +29,7 @@ import {
   type WorkspacePermissions,
 } from "@herta/core";
 import {
+  ownerAnswers,
   type ReviewDeps,
   requestCommand,
   reviewBeforeCard,
@@ -55,7 +56,8 @@ export interface OverlayAskResolverDeps {
    */
   readonly cache: SessionApprovalCache;
   /**
-   * The workspace's permission choices (`.herta/permissions.json`): whether
+   * The owner's permission choices for the workspace (kept in the harness's
+   * home, `~/.herta/review-choices.json`, not in the workspace): whether
    * automatic review is on. Written when a request resolves with
    * persistence "auto_review". Optional: a hand-built test resolver without
    * one has only the host's default.
@@ -75,6 +77,10 @@ export interface OverlayAskResolverDeps {
    * shows the card.
    */
   readonly review?: ReviewDeps;
+  /** The current backend workspace root, for what only the owner answers
+   *  (`.herta` is the workspace's own). Absent → the review's, else none:
+   *  any `.herta` then counts — the stricter reading. */
+  readonly workspace?: () => string;
 }
 
 export type ResolveExternalResult =
@@ -100,7 +106,10 @@ export class OverlayAskResolver implements AskResolver {
   private readonly policy: ApprovalPolicy;
 
   constructor(private readonly deps: OverlayAskResolverDeps) {
+    const workspace = (): string =>
+      deps.workspace?.() ?? deps.review?.workspace() ?? "";
     this.policy = new ApprovalPolicy(deps.cache, deps.permissions, {
+      ownerOnly: (request) => ownerAnswers(request, workspace()),
       ...(deps.defaultAutoReview !== undefined
         ? { defaultAutoReview: deps.defaultAutoReview }
         : {}),

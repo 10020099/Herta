@@ -1,5 +1,5 @@
 import type { TerminalRecordBlock } from "@herta/app-server";
-import type { SystemBlock } from "./group-record.js";
+import { type SteerBlock, type SystemBlock, steerOf } from "./group-record.js";
 import { opPhase, type TracePhase } from "./op-phase.js";
 
 export type { TracePhase } from "./op-phase.js";
@@ -34,6 +34,16 @@ export interface TraceOp {
   readonly status: "running" | "ok" | "fail" | "queued";
   readonly note?: TraceNote;
   readonly phase: TracePhase;
+}
+
+/** A steer the Trailblazer sent into the run (ADR 0063), where 板砖 took
+ *  it: after the run's first `beforeOp` ops. The card draws it there (ADR
+ *  0085 amendment 2026-11-04). */
+export interface TraceSteer {
+  readonly beforeOp: number;
+  readonly text: string;
+  /** Who steered: the Trailblazer, or Herta's `@板砖` during the run. */
+  readonly speaker: "trailblazer" | "herta";
 }
 
 /**
@@ -103,6 +113,17 @@ export interface TraceContext {
    *  steps written behind it wait their turn. Between steps, while 板砖
    *  thinks, the newest. Null once settled. */
   readonly current: { readonly segment: number; readonly op: number } | null;
+  /** The steers within the window, each before the segment whose ordinal is
+   *  `beforeSegment` (the next ordinal: after the last). `key` is the
+   *  steer's index in the run, stable as rows arrive. */
+  readonly steers: readonly TraceSteerAt[];
+}
+
+export interface TraceSteerAt {
+  readonly key: number;
+  readonly beforeSegment: number;
+  readonly text: string;
+  readonly speaker: "trailblazer" | "herta";
 }
 
 /**
@@ -113,6 +134,8 @@ export type TraceScope =
   | {
       readonly kind: "trace";
       readonly ops: readonly TraceOp[];
+      /** The steers 板砖 took, where it took them. */
+      readonly steers: readonly TraceSteer[];
       /** The scan reached the dispatch's start (a user block or an earlier
        *  marker): `ops` is the whole dispatch, not the tail a truncated
        *  record window left — so its length counts the dispatch's op rows. */
@@ -125,6 +148,7 @@ export type TraceScope =
        *  a commit earlier (lab 2026-09-30). Empty when the window holds
        *  none of them. */
       readonly ops: readonly TraceOp[];
+      readonly steers: readonly TraceSteer[];
     }
   | { readonly kind: "absent" }
   | { readonly kind: "unknown" };
@@ -139,7 +163,8 @@ export type TraceScope =
  *   - herta blocks do NOT stop the scan (a beat splits one run into several
  *     activity groups; the trace is a property of the dispatch);
  *   - a user block stops it (turn boundary) — ops found → trace, none →
- *     absent; a steer (ADR 0063 §1.10) sits inside the run it interrupted;
+ *     absent; a steer (ADR 0063 §1.10) sits inside the run it interrupted,
+ *     and the card draws it there (ADR 0085 amendment 2026-11-04);
  *   - a terminal marker stops it — ops found ABOVE it belong to a NEWER
  *     chained dispatch → trace; none → ended;
  *   - running off the start of the windowed array concludes nothing: ops in
@@ -152,29 +177,34 @@ export type TraceScope =
  * settles the previous one as "ok" if no result row claimed otherwise.
  */
 export function traceScope(record: readonly TerminalRecordBlock[]): TraceScope {
-  const collected: SystemBlock[] = [];
+  const collected: (SystemBlock | SteerBlock)[] = [];
   for (let i = record.length - 1; i >= 0; i -= 1) {
     const block = record[i];
     if (block === undefined) continue;
-    if (block.kind === "user" && block.steer === true) continue;
+    if (isSteer(block)) {
+      collected.push(block as SteerBlock);
+      continue;
+    }
+    // Talk during the run (ADR 0085 step 3) is inside it, not a turn.
+    if (block.kind === "user" && block.duringRun === true) continue;
     if (block.kind === "user") {
-      const ops = collectOps(collected);
+      const { ops, steers } = collectOps(collected);
       return ops.length > 0
-        ? { kind: "trace", ops, complete: true }
+        ? { kind: "trace", ops, steers, complete: true }
         : { kind: "absent" };
     }
     if (block.kind !== "system") continue;
     if (block.role === "done-marker" || block.role === "noop-marker") {
-      const ops = collectOps(collected);
+      const { ops, steers } = collectOps(collected);
       return ops.length > 0
-        ? { kind: "trace", ops, complete: true }
-        : { kind: "ended", ops: endedOps(record, i) };
+        ? { kind: "trace", ops, steers, complete: true }
+        : { kind: "ended", ...endedOps(record, i) };
     }
     collected.push(block);
   }
-  const ops = collectOps(collected);
+  const { ops, steers } = collectOps(collected);
   return ops.length > 0
-    ? { kind: "trace", ops, complete: false }
+    ? { kind: "trace", ops, steers, complete: false }
     : { kind: "unknown" };
 }
 
@@ -183,12 +213,19 @@ export function traceScope(record: readonly TerminalRecordBlock[]): TraceScope {
 function endedOps(
   record: readonly TerminalRecordBlock[],
   markerAt: number,
-): TraceOp[] {
-  const collected: SystemBlock[] = [];
+): { ops: TraceOp[]; steers: TraceSteer[] } {
+  const collected: (SystemBlock | SteerBlock)[] = [];
   for (let i = markerAt - 1; i >= 0; i -= 1) {
     const block = record[i];
     if (block === undefined) continue;
-    if (block.kind === "user" && block.steer !== true) break;
+    if (isSteer(block)) {
+      collected.push(block as SteerBlock);
+      continue;
+    }
+    if (block.kind === "user") {
+      if (block.duringRun !== true) break;
+      continue;
+    }
     if (block.kind !== "system") continue;
     if (block.role === "done-marker" || block.role === "noop-marker") break;
     collected.push(block);
@@ -196,16 +233,39 @@ function endedOps(
   return collectOps(collected);
 }
 
+/** A run's ops from its blocks, oldest first — the run row reads them as
+ *  the card does (ADR 0085 §6). */
+export function runOps(blocks: readonly SystemBlock[]): readonly TraceOp[] {
+  return collectOps([...blocks].reverse()).ops;
+}
+
+/** A steer the run took: the Trailblazer's, or her answer that steered.
+ *  Not a type guard: a user block that is no steer is still a user block. */
+function isSteer(block: TerminalRecordBlock): boolean {
+  return block.kind === "user"
+    ? block.steer === true
+    : block.kind === "herta" && block.steered !== undefined;
+}
+
 /** Collected newest-first; processed oldest-first. */
-function collectOps(collectedNewestFirst: readonly SystemBlock[]): TraceOp[] {
+function collectOps(
+  collectedNewestFirst: readonly (SystemBlock | SteerBlock)[],
+): { ops: TraceOp[]; steers: TraceSteer[] } {
   const ops: TraceOp[] = [];
+  const steers: TraceSteer[] = [];
   const amendLast = (patch: Partial<TraceOp>): void => {
     const last = ops[ops.length - 1];
     if (last === undefined) return;
     ops[ops.length - 1] = { ...last, ...patch };
   };
   for (let i = collectedNewestFirst.length - 1; i >= 0; i -= 1) {
-    const d = collectedNewestFirst[i]?.digest;
+    const block = collectedNewestFirst[i];
+    if (block === undefined) continue;
+    if (block.kind !== "system") {
+      steers.push({ beforeOp: ops.length, ...steerOf(block) });
+      continue;
+    }
+    const d = block.digest;
     if (d === undefined) continue;
     switch (d.kind) {
       case "op": {
@@ -260,7 +320,7 @@ function collectOps(collectedNewestFirst: readonly SystemBlock[]): TraceOp[] {
         break; // bg / excerpt / finding / attachment / skip / legacy todo
     }
   }
-  return ops;
+  return { ops, steers };
 }
 
 /**
@@ -284,6 +344,9 @@ export function buildTrace(
     readonly pending?: readonly PendingOp[];
     readonly focus?: TraceFocus | null;
     readonly settled?: boolean;
+    /** The record's steers: each closes the segment it lands in, so the
+     *  card can draw it between the steps before and after it. */
+    readonly steers?: readonly TraceSteer[];
   } = {},
 ): TraceContext {
   let ops: readonly TraceOp[] = recordOps;
@@ -340,8 +403,13 @@ export function buildTrace(
       failures: current.filter((o) => o.status === "fail").length,
     });
   };
+  const steerOps = opts.steers ?? [];
+  const breaks = new Set(steerOps.map((s) => s.beforeOp));
   ops.forEach((op, i) => {
-    if (current.length > 0 && current[0]?.phase !== op.phase) {
+    if (
+      current.length > 0 &&
+      (current[0]?.phase !== op.phase || breaks.has(i))
+    ) {
       close();
       current = [];
       firstOp = i;
@@ -349,6 +417,15 @@ export function buildTrace(
     current.push(op);
   });
   close();
+  // Each steer before the first segment that starts at or after it.
+  const steersAt: TraceSteerAt[] = steerOps.map((s, key) => ({
+    key,
+    beforeSegment:
+      segments.find((g) => g.firstOpOrdinal >= s.beforeOp)?.ordinal ??
+      segments.length,
+    text: s.text,
+    speaker: s.speaker,
+  }));
 
   const live = opts.settled !== true;
   let inFlight: TraceContext["current"] = null;
@@ -371,11 +448,14 @@ export function buildTrace(
     if (segment !== undefined) inFlight = { segment: segment.ordinal, op };
   }
 
+  const shown =
+    segments.length > TRACE_MAX_SEGMENTS
+      ? segments.slice(-TRACE_MAX_SEGMENTS)
+      : segments;
+  const firstShown = shown[0]?.ordinal ?? 0;
   return {
-    segments:
-      segments.length > TRACE_MAX_SEGMENTS
-        ? segments.slice(-TRACE_MAX_SEGMENTS)
-        : segments,
+    segments: shown,
+    steers: steersAt.filter((s) => s.beforeSegment >= firstShown),
     steps: ops.length,
     writes: new Set(
       ops.filter((op) => op.verb === "Writing").map((op) => op.arg),
@@ -399,6 +479,16 @@ export interface SegmentTally {
   readonly digests: number;
   readonly memories: number;
   readonly stops: number;
+  /** Web searches (ADR 0080). */
+  readonly webSearches: number;
+  /** Hosts of the pages read, in first-read order. */
+  readonly pages: readonly string[];
+  /** Routes of the app's pages opened (ADR 0083), in first-open order. */
+  readonly appPages: readonly string[];
+  /** The other page steps: reads, clicks, typing, screenshots. */
+  readonly pageSteps: number;
+  /** Dev servers started (ADR 0083 §5), by name, in first-start order. */
+  readonly servers: readonly string[];
 }
 
 export function tallySegment(ops: readonly TraceOp[]): SegmentTally {
@@ -410,6 +500,11 @@ export function tallySegment(ops: readonly TraceOp[]): SegmentTally {
   let digests = 0;
   let memories = 0;
   let stops = 0;
+  let webSearches = 0;
+  const pages: string[] = [];
+  const appPages: string[] = [];
+  let pageSteps = 0;
+  const servers: string[] = [];
   for (const op of ops) {
     switch (op.verb) {
       case "Reading":
@@ -436,9 +531,62 @@ export function tallySegment(ops: readonly TraceOp[]): SegmentTally {
       case "Stopping":
         stops += 1;
         break;
+      case "Searching the web":
+        webSearches += 1;
+        break;
+      case "Reading web page": {
+        const host = hostOf(op.arg);
+        if (!pages.includes(host)) pages.push(host);
+        break;
+      }
+      case "Opening page":
+        // A history step (`back`) names no page of its own.
+        if (op.arg.includes(":") || op.arg.includes("/")) {
+          if (!appPages.includes(op.arg)) appPages.push(op.arg);
+        } else pageSteps += 1;
+        break;
+      case "Reading page":
+      case "Finding on page":
+      case "Reading console":
+      case "Reading network":
+      case "Clicking":
+      case "Typing":
+      case "Pressing":
+      case "Scrolling":
+      case "Choosing":
+      case "Resizing page":
+      case "Taking screenshot":
+        pageSteps += 1;
+        break;
+      case "Starting dev server":
+        if (!servers.includes(op.arg)) servers.push(op.arg);
+        break;
       default:
         break;
     }
   }
-  return { reads, searches, inspects, writes, runs, digests, memories, stops };
+  return {
+    reads,
+    searches,
+    inspects,
+    writes,
+    runs,
+    digests,
+    memories,
+    stops,
+    webSearches,
+    pages,
+    appPages,
+    pageSteps,
+    servers,
+  };
+}
+
+/** A URL's host — a page reads by its site on the card. */
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return url;
+  }
 }

@@ -57,9 +57,13 @@ jobs:
     # what actually caps a stall; this just has to be larger than it.
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v5
-      - uses: actions/setup-node@v7
+      # Pinned by commit, not by tag (review 2026-11-10): this is the workflow
+      # that holds the signing secrets, and a tag can be moved to other code.
+      # To move to a newer release, look its commit up and change both the
+      # hash and the comment: gh api repos/<owner>/<repo>/commits/<tag> --jq .sha
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 22
           cache: pnpm
@@ -79,6 +83,19 @@ jobs:
       # fails to boot for an unrelated reason.
       - name: extractor tests under macOS Node (ADR 0038)
         run: pnpm exec vitest run packages/app-server/src/document-text.test.ts packages/app-server/src/attachments.test.ts
+
+      # ADR 0040 amendment 2026-11-12: a test result is read from the shell's
+      # PIPESTATUS, and that was probed on bash 5.3 (Git for Windows) only. A
+      # Mac's own bash is 3.2: it is the one an app started from the Finder
+      # finds, and no other machine of ours has it. `HERTA_BASH` pins it here,
+      # whatever Homebrew put on the runner's PATH. These files run a real
+      # shell; a red one stops the run before anything is signed.
+      - name: the shell's pipe-status reading under macOS's own bash (ADR 0040)
+        env:
+          HERTA_BASH: /bin/bash
+        run: |
+          /bin/bash --version | head -1
+          pnpm exec vitest run packages/tools/src/bash/persistent-shell.test.ts packages/tools/src/bash/index.test.ts packages/tools/src/bash/last-pipeline.test.ts packages/tools/src/bash/test-hint.test.ts
 
       # The App Store Connect key has to be a FILE on disk — electron-builder
       # passes APPLE_API_KEY to notarytool as a path, not as key material. Kept
@@ -565,7 +582,7 @@ jobs:
 
       - name: upload screenshots + boot log
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: mac-first-look
           path: /tmp/shots
@@ -578,7 +595,7 @@ jobs:
       # assets; this one only has to outlive the build-to-release gap.
       - name: upload the installer
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: mac-dist
           path: |
@@ -595,3 +612,10 @@ jobs:
         run: |
           rm -rf "$RUNNER_TEMP/asc" "$RUNNER_TEMP/cert.p12" || true
           security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
+
+      # The guard tests that run only on darwin (the 0.1.10 pre-release review,
+      # H1): CI's suite is Linux, so they had never run. They come last, after
+      # the installer is uploaded, so a failure turns the run red without
+      # holding the build back.
+      - name: darwin-only guard tests (shell classifier, path safety, workspace root)
+        run: pnpm exec vitest run packages/tools/src/bash/shell-classifier.test.ts packages/tools/src/path-safety.test.ts packages/tools/src/validate-workspace-root.test.ts

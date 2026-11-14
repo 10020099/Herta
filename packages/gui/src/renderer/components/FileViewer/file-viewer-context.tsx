@@ -3,12 +3,16 @@ import {
   type ReactNode,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
 import { useHertaBridge } from "../../context/HertaBridgeContext.js";
 import { useSessionScoped } from "../../hooks/useSessionScoped.js";
+import { useSessionSelector } from "../../hooks/useSessionSelector.js";
+import type { QuoteUnit } from "../../lib/quote-format.js";
+import { useShortcut } from "../../lib/shortcut-registry.js";
 
 /**
  * The file-viewer panel's state (ADR 0050). Two contexts on purpose:
@@ -28,6 +32,10 @@ import { useSessionScoped } from "../../hooks/useSessionScoped.js";
 export interface ViewerAnchor {
   readonly from: number;
   readonly to: number;
+  /** The range counts a PDF's pages or a Word document's paragraphs, not
+   *  lines (a quote's label, ADR 0078 amendments 2026-10-21 and 2026-10-29):
+   *  the view scrolls to the first. */
+  readonly unit?: QuoteUnit;
 }
 
 /** One open file: the record-spelled path to read, plus an optional
@@ -36,9 +44,30 @@ export interface ViewerAnchor {
  *  internals in the tab (owner 2026-08-31) — and an optional line anchor
  *  from a finding cite. */
 /** What a non-file tab shows (ADR 0059): a commit by id, a path's
- *  working-tree diff against HEAD, or the repository's history (§6).
- *  Absent = the file itself. */
-export type ViewerTabKind = "commit" | "diff" | "log";
+ *  working-tree diff against HEAD, or the repository's history (§6); the
+ *  page (ADR 0083); a run's full record (ADR 0085 §9). Absent = the file
+ *  itself. */
+export type ViewerTabKind = "commit" | "diff" | "log" | "page" | "run";
+
+/** The page tab's path: a page tab is not a file, and there is one per
+ *  session (ADR 0083 §2). */
+export const PAGE_TAB_PATH = "page:";
+
+/** A run's 完整记录 tab (ADR 0085 §9): one per run, named by its first
+ *  block — the block's absolute record index and its stamp, so a rewind
+ *  that puts another run at the same index does not answer for this one. */
+export function runTabPath(index: number, at: string | undefined): string {
+  return `run:${index}:${at ?? ""}`;
+}
+
+/** A run tab's path read back; null for any other path. */
+export function parseRunTabPath(
+  path: string,
+): { readonly index: number; readonly at: string } | null {
+  const m = /^run:(\d+):(.*)$/.exec(path);
+  if (m === null) return null;
+  return { index: Number(m[1]), at: m[2] ?? "" };
+}
 
 export interface FileViewerTarget {
   /** The path to read — or, on a `commit` tab, the commit id (ADR 0059). */
@@ -218,12 +247,17 @@ export function FileViewerProvider({
           const tabs = s.tabs.map((t, i) => (i === existing ? next : t));
           return { tabs, active: existing };
         }
+        // The page tab is pinned first (ADR 0083 §2).
+        if (opts?.kind === "page")
+          return { tabs: [next, ...s.tabs], active: 0 };
         let tabs = [...s.tabs, next];
         let active = tabs.length - 1;
         if (tabs.length > MAX_VIEWER_TABS) {
-          // Evict the OLDEST tab (index 0 — never the one just opened).
-          tabs = tabs.slice(1);
-          active -= 1;
+          // Evict the OLDEST tab that is not the page (never the one just
+          // opened); the page is never evicted.
+          const oldest = tabs.findIndex((t) => t.kind !== "page");
+          tabs = tabs.filter((_, i) => i !== oldest);
+          if (oldest < active) active -= 1;
         }
         return { tabs, active };
       });
@@ -233,6 +267,27 @@ export function FileViewerProvider({
   const close = useCallback(
     () => setTabState({ tabs: [], active: 0 }),
     [setTabState],
+  );
+  // Ctrl/⌘+Shift+B opens the panel on the page tab (ADR 0083 §2), where the
+  // bridge has a page to show.
+  const pageAvailable = bridge.pageShow !== undefined;
+  // 板砖 opened a page in this session: the Trailblazer is shown it, in the
+  // pinned tab (ADR 0083 §6 — "opens the page tab if none is open").
+  const sessionId = useSessionSelector((s) => s.sessionId);
+  useEffect(
+    () =>
+      bridge.onPageOpen?.((sid) => {
+        if (sid === sessionId) openRef(PAGE_TAB_PATH, { kind: "page" });
+      }),
+    [bridge, sessionId, openRef],
+  );
+  useShortcut(
+    "openBrowser",
+    () => {
+      openRef(PAGE_TAB_PATH, { kind: "page" });
+      return true;
+    },
+    pageAvailable,
   );
   const activateTab = useCallback(
     (index: number) =>
@@ -245,7 +300,11 @@ export function FileViewerProvider({
     [setTabState],
   );
   const closeTab = useCallback(
-    (index: number) =>
+    (index: number) => {
+      // Closing the page tab ends the page (owner 2026-10-23), so the tab
+      // opens next on the server list.
+      if (tabState.tabs[index]?.path === PAGE_TAB_PATH && sessionId !== null)
+        bridge.pageClose?.(sessionId);
       setTabState((s) => {
         if (index < 0 || index >= s.tabs.length) return s;
         const tabs = s.tabs.filter((_, i) => i !== index);
@@ -257,8 +316,9 @@ export function FileViewerProvider({
                 tabs.length - 1,
               );
         return { tabs, active };
-      }),
-    [setTabState],
+      });
+    },
+    [setTabState, tabState, sessionId, bridge],
   );
   // The latest width lives in a ref too, so the persist reads the value the
   // drag ended on rather than the render it was captured in.

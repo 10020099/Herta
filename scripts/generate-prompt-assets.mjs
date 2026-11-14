@@ -37,6 +37,22 @@ const outFile = join(
 
 const stem = (f) => f.replace(/\.txt$/, "");
 
+/** EnvSet's two hosts (R5, owner 2026-11-03): one source per language, with
+ *  `⟦desktop:…⟧` and `⟦cli:…⟧` spans — the desktop keeps the first, the CLI
+ *  the second. The CLI mounts no browser, so its envSet says 板砖 has none
+ *  there; the shared text stays one copy and cannot drift. */
+const HOST_SPAN = /⟦(desktop|cli):([^⟦⟧]*)⟧/g;
+function forHost(text, host) {
+  const out = text.replace(HOST_SPAN, (_m, h, body) =>
+    h === host ? body : "",
+  );
+  if (/[⟦⟧]/.test(out))
+    throw new Error(
+      `prompt-assets codegen FAILED: an unclosed or nested host span is left in EnvSet (${host})`,
+    );
+  return out;
+}
+
 /** Compile one prompt tree (`packages/herta/<dirName>/**`) into an assets
  *  object. */
 function compileTree(dirName) {
@@ -64,7 +80,8 @@ function compileTree(dirName) {
 
   return {
     hertaBio: read("HertaBio.txt"),
-    envSet: read("EnvSet.txt"),
+    envSet: forHost(read("EnvSet.txt"), "desktop"),
+    envSetCli: forHost(read("EnvSet.txt"), "cli"),
     hertaGuide: read("HertaGuide.txt"),
     hints: dirRecord("hints", stem),
     metaThink: {
@@ -77,6 +94,9 @@ function compileTree(dirName) {
     // Keyed by FULL filename: materialization writes these files verbatim
     // into a fresh workspace's .herta/narrative/.
     feianSeeds: dirRecord("feian-seeds"),
+    // Flow (ADR 0084 §7): the frame her word on a post is completed in, and
+    // the judge that reads it.
+    flow: dirRecord("flow", stem),
   };
 }
 
@@ -139,6 +159,7 @@ checkKeyParity(
 );
 checkKeyParity("openings", assets.openings, assetsEn.openings);
 checkKeyParity("feianSeeds", assets.feianSeeds, assetsEn.feianSeeds);
+checkKeyParity("flow", assets.flow, assetsEn.flow);
 
 const body = `// GENERATED FILE — DO NOT EDIT BY HAND.
 // Source of truth: packages/herta/prompts/** (zh) and
@@ -150,7 +171,11 @@ const body = `// GENERATED FILE — DO NOT EDIT BY HAND.
 
 export interface PromptAssets {
   readonly hertaBio: string;
+  /** The office and 板砖, as the desktop has them (its page included). */
   readonly envSet: string;
+  /** The same, for a host that mounts no browser (the CLI): 板砖 runs the
+   *  app and reads its logs, and cannot open its pages. */
+  readonly envSetCli: string;
   readonly hertaGuide: string;
   /** Actor format hints, keyed by hint name (filename stem). */
   readonly hints: Readonly<Record<string, string>>;
@@ -173,6 +198,10 @@ export interface PromptAssets {
    *  bodies that ever shipped under that name. A live copy matching one is
    *  archived rather than left to duplicate its successor (ADR 0053). */
   readonly retiredFeian: Readonly<Record<string, readonly string[]>>;
+  /** Flow (ADR 0084 §7), keyed by filename stem: word — the frame her
+   *  word on a post is completed in, its worked examples included;
+   *  judge — the system message of the judge that reads it. */
+  readonly flow: Readonly<Record<string, string>>;
 }
 
 export const PROMPT_ASSETS: PromptAssets = ${JSON.stringify(assets, null, 2)};

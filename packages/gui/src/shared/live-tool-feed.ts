@@ -1,6 +1,6 @@
 import type { AgentEvent, SessionAgentEvent } from "@herta/app-server";
 import { opVerbOf } from "./op-verb.js";
-import { type JsonStringField, scanJsonStrings } from "./partial-json.js";
+import { JsonStringScanner } from "./partial-json.js";
 
 /**
  * One call's live view (ADR 0073): the step 板砖 is on — and, for a call
@@ -80,12 +80,10 @@ export const EMPTY_LIVE: LiveToolSnapshot = { views: [], startedOps: 0 };
  *  writes, and a shell line (a heredoc is a file being written). */
 const DRAFT_TOOLS: ReadonlySet<string> = new Set([
   "str_replace_editor",
-  "write_new_file",
-  "edit_file",
   "bash",
 ]);
 /** Calls whose OUTPUT streams while they run. */
-const OUTPUT_TOOLS: ReadonlySet<string> = new Set(["bash", "run_command"]);
+const OUTPUT_TOOLS: ReadonlySet<string> = new Set(["bash"]);
 
 export const LIVE_FEED_INTERVAL_MS = 100;
 export const TAIL_LINES = 40;
@@ -104,7 +102,9 @@ interface CallState {
   readonly order: number;
   tool: string;
   ordinal: number | undefined;
-  args: string;
+  /** The arguments as they stream, read once as they arrive: their
+   *  string values so far. */
+  readonly args: JsonStringScanner;
   output: string;
   outputDroppedLines: number;
   stage: "writing" | "running";
@@ -115,9 +115,6 @@ interface CallState {
   summary: string | undefined;
   runsTests: boolean;
   seq: number;
-  /** The arguments' string values, as of `fieldsLen` characters. */
-  fields: JsonStringField[];
-  fieldsLen: number;
 }
 
 export interface LiveToolFeedOpts {
@@ -280,7 +277,7 @@ export function createLiveToolFeed(
         // then on (lab 2026-10-12).
         if (!DRAFT_TOOLS.has(ev.tool)) return;
         const c = calls.get(ev.id) ?? create(ev.id, ev.tool);
-        c.args += ev.argsDelta;
+        c.args.push(ev.argsDelta);
         touch(c);
         return;
       }
@@ -379,7 +376,7 @@ function newCall(id: string, tool: string, order: number): CallState {
     order,
     tool,
     ordinal: undefined,
-    args: "",
+    args: new JsonStringScanner(),
     output: "",
     outputDroppedLines: 0,
     stage: "writing",
@@ -390,8 +387,6 @@ function newCall(id: string, tool: string, order: number): CallState {
     summary: undefined,
     runsTests: false,
     seq: 0,
-    fields: [],
-    fieldsLen: 0,
   };
 }
 
@@ -405,13 +400,9 @@ function countNewlines(s: string): number {
  *  shows only that it is a step; only the FOCUSED call carries its stream —
  *  the ticker follows one call, and a run keeps up to KEEP_CALLS. */
 function viewOf(c: CallState, focused: boolean): LiveToolView {
-  // Parsed once per growth of the arguments: a flush looks at every call
-  // the run keeps, and a finished call's arguments no longer change.
-  if (c.fieldsLen !== c.args.length) {
-    c.fields = scanJsonStrings(c.args);
-    c.fieldsLen = c.args.length;
-  }
-  const fields = c.fields;
+  // Read as they arrived (`JsonStringScanner`): a flush looks at every
+  // call the run keeps, and scans none of them again.
+  const fields = c.args.fields;
   const first = (key: string): string | undefined =>
     fields.find((f) => f.key === key)?.value;
   const path = fields.find((f) => f.key === "path" && f.complete)?.value;
@@ -464,20 +455,6 @@ function viewOf(c: CallState, focused: boolean): LiveToolView {
       const { tail, lines } = boundTail(splitLines(first("command") ?? ""));
       return { ...base, mode: "text", tail, lines };
     }
-    case "write_new_file": {
-      const { tail, lines } = boundTail(splitLines(first("content") ?? ""));
-      return { ...base, mode: "text", tail, lines };
-    }
-    case "edit_file": {
-      // Hunk by hunk, in the order written: what goes, then what comes.
-      const diff: string[] = [];
-      for (const f of fields) {
-        if (f.key === "search") diff.push(...prefix("-", f.value));
-        else if (f.key === "replace") diff.push(...prefix("+", f.value));
-      }
-      const { tail, lines } = boundTail(diff);
-      return { ...base, mode: "diff", tail, lines };
-    }
     case "str_replace_editor": {
       const command = first("command");
       const fileText = first("file_text");
@@ -485,6 +462,7 @@ function viewOf(c: CallState, focused: boolean): LiveToolView {
         const { tail, lines } = boundTail(splitLines(fileText ?? ""));
         return { ...base, mode: "text", tail, lines };
       }
+      // What goes, then what comes, in the order written.
       const diff: string[] = [];
       for (const f of fields) {
         if (f.key === "old_str") diff.push(...prefix("-", f.value));
@@ -494,7 +472,7 @@ function viewOf(c: CallState, focused: boolean): LiveToolView {
       return { ...base, mode: "diff", tail, lines };
     }
     default:
-      // run_command before its output: nothing yet.
+      // No draft of its own to show: nothing yet.
       return { ...base, mode: "text", tail: "", lines: 0 };
   }
 }

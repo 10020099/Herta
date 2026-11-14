@@ -58,7 +58,172 @@ export const VERB_KEY: Record<string, MessageKey> = {
   Searching: "activity.verb.searching",
   Stopping: "activity.verb.stopping",
   Digesting: "activity.verb.digesting",
+  "Searching the web": "activity.verb.searchingWeb",
+  "Reading web page": "activity.verb.readingWeb",
+  // The page steps (ADR 0083 §10).
+  "Opening page": "activity.verb.openingPage",
+  "Reading page": "activity.verb.readingPage",
+  "Finding on page": "activity.verb.findingOnPage",
+  "Reading console": "activity.verb.readingConsole",
+  "Reading network": "activity.verb.readingNetwork",
+  Clicking: "activity.verb.clicking",
+  Typing: "activity.verb.typing",
+  Pressing: "activity.verb.pressing",
+  Scrolling: "activity.verb.scrolling",
+  Choosing: "activity.verb.choosing",
+  "Resizing page": "activity.verb.resizingPage",
+  "Taking screenshot": "activity.verb.takingScreenshot",
+  // The launcher (ADR 0083 §5).
+  "Starting dev server": "activity.verb.startingServer",
+  "Stopping dev server": "activity.verb.stoppingServer",
+  "Reading server log": "activity.verb.readingServerLog",
+  "Listing dev servers": "activity.verb.listingServers",
 };
+
+type ServerDigest = Extract<
+  NonNullable<SystemBlock["digest"]>,
+  { kind: "server" }
+>;
+
+/** A launcher row (ADR 0083 §5), localized from its digest: the server's
+ *  name, command and address are data and stay verbatim. Its ↳ marks the
+ *  result of the step above it, so only 板砖's rows carry one: the
+ *  Trailblazer's Run and Stop and the app's reap stand alone in the chat
+ *  (owner 2026-11-05). */
+function serverStepBody(
+  d: ServerDigest,
+  t: (key: MessageKey) => string,
+): string {
+  const label = t("activity.server.label");
+  switch (d.action) {
+    case "start": {
+      const lead = d.by === "trailblazer" ? "" : "↳ ";
+      return d.already
+        ? `${lead}${label} ${d.name} · ${t("activity.server.already").replace("{route}", d.route)}`
+        : `${lead}${label} ${d.name} · ${
+            d.by === "trailblazer"
+              ? t("activity.server.startedByYou")
+              : t("activity.server.ready")
+          } · ${d.route}`;
+    }
+    case "stop":
+      return `${d.by === "trailblazer" ? "" : "↳ "}${label} ${d.name} · ${
+        !d.wasRunning
+          ? t("activity.server.notRunning")
+          : d.by === "trailblazer"
+            ? t("activity.server.stoppedByYou")
+            : t("activity.server.stopped")
+      }`;
+    case "logs":
+      return `↳ ${label} ${d.name} · ${t(`activity.server.state.${d.state}`)}${
+        d.state === "exited" && d.exitCode != null ? ` (${d.exitCode})` : ""
+      }`;
+    case "list":
+      return `↳ ${d.entries
+        .map((e) => `${e.name} · ${t(`activity.server.state.${e.state}`)}`)
+        .join(" / ")}`;
+    case "reaped":
+      return t("activity.server.reaped").replace("{names}", d.names.join(", "));
+  }
+}
+
+type PageDigest = Extract<
+  NonNullable<SystemBlock["digest"]>,
+  { kind: "page-open" | "page-read" | "page-act" | "page-shot" }
+>;
+
+/** `N word`, the count localized. */
+const counted = (n: number, word: string): string =>
+  `${n.toLocaleString()} ${word}`;
+
+/**
+ * A page step's result row (ADR 0083 §10), localized from its digest. The
+ * page's own words — its route, title, element names — and what 板砖 typed
+ * are data and stay verbatim; only the chrome translates.
+ */
+function pageStepBody(d: PageDigest, t: (key: MessageKey) => string): string {
+  const errors = (n: number): string[] =>
+    n > 0 ? [counted(n, t("activity.result.consoleErrors"))] : [];
+  switch (d.kind) {
+    case "page-open":
+      return [
+        `↳ ${d.route}`,
+        ...(d.title !== "" ? [d.title] : []),
+        ...(d.status !== null && d.status >= 400 ? [`HTTP ${d.status}`] : []),
+        ...errors(d.errors),
+      ].join(" · ");
+    case "page-read":
+      switch (d.mode) {
+        case "tree":
+          return `↳ ${counted(d.count, t("activity.result.elements"))}`;
+        case "find":
+          return `↳ ${counted(d.count, t("activity.result.elements"))} · "${d.query ?? ""}"`;
+        case "text":
+          return `↳ ${counted(d.count, t("activity.attachment.chars"))}`;
+        case "console":
+          return `↳ ${counted(d.count, t("activity.result.messages"))} · ${counted(d.failures ?? 0, t("activity.result.errors"))}`;
+        case "network":
+          return `↳ ${counted(d.count, t("activity.result.requests"))} · ${counted(d.failures ?? 0, t("activity.result.failedRequests"))}`;
+      }
+      return `↳ ${d.route}`;
+    case "page-act": {
+      const target = d.target ?? "";
+      let what: string;
+      switch (d.action) {
+        case "click":
+          what =
+            d.target !== undefined
+              ? t("activity.page.click").replace("{target}", target)
+              : t("activity.page.clickPoint");
+          break;
+        case "type":
+          what = (
+            d.target !== undefined
+              ? t("activity.page.type").replace("{target}", target)
+              : t("activity.page.typeBare")
+          ).replace("{text}", `"${d.typed ?? ""}"`);
+          if (d.submit === true) what += t("activity.page.submit");
+          break;
+        case "key":
+          what = t("activity.page.key").replace("{key}", d.key ?? "");
+          break;
+        case "scroll":
+          what =
+            d.direction === "up"
+              ? t("activity.page.scrollUp")
+              : t("activity.page.scrollDown");
+          break;
+        case "select":
+          what =
+            d.value !== undefined
+              ? t("activity.page.select")
+                  .replace("{target}", target)
+                  .replace("{value}", `"${d.value}"`)
+              : t("activity.page.toggle").replace("{target}", target);
+          break;
+        case "resize":
+          what = [
+            t(`activity.page.resize.${d.preset ?? "desktop"}`),
+            ...(d.scheme !== undefined ? [t(`activity.page.${d.scheme}`)] : []),
+          ].join(" · ");
+          break;
+      }
+      return [
+        `↳ ${what}${d.navigated ? ` → ${d.route}` : ""}`,
+        ...(d.hit !== undefined
+          ? [t("activity.page.landed").replace("{hit}", d.hit)]
+          : []),
+        ...errors(d.errors),
+      ].join(" · ");
+    }
+    case "page-shot":
+      return [
+        `↳ ${d.route}`,
+        ...(d.region ? [t("activity.page.region")] : []),
+        `${d.width}×${d.height}`,
+      ].join(" · ");
+  }
+}
 
 /**
  * Display body for one activity step (2026-07-10: the projected chrome —
@@ -227,6 +392,27 @@ export function stepDisplayBody(
         d.format !== undefined ? [t("activity.attachment.extracted")] : [];
       return [head, ...extracted, lines, chars, ...outline].join(" · ");
     }
+    case "web-search":
+      // "↳ web results: 8" → "↳ 8 条结果" (ADR 0080). The titles are in the
+      // detail pane.
+      return d.results.length === 0
+        ? `↳ ${t("activity.result.webNone")}`
+        : `↳ ${d.results.length} ${t("activity.result.webResults")}`;
+    case "web-fetch":
+      // The host is the click target that opens the stored page; the title
+      // is the page's own words, verbatim.
+      return [
+        `↳ ${t("activity.result.page")} ${d.host}`,
+        ...(d.title !== "" ? [d.title] : []),
+        `${d.chars.toLocaleString()} ${t("activity.attachment.chars")}`,
+      ].join(" · ");
+    case "page-open":
+    case "page-read":
+    case "page-act":
+    case "page-shot":
+      return pageStepBody(d, t);
+    case "server":
+      return serverStepBody(d, t);
     case "digest":
       // "↳ digest <path> · 27 chunks (cached)" → localized chrome; the path is
       // data (ADR 0043).
@@ -306,7 +492,11 @@ export function stepDisplayDetail(
         case "todos":
           return `↳ ${t("evidence.todos")}: ${s.items.join("; ")}`;
         case "evidence":
-          return `↳ ${t("evidence.evidence")}: ${s.items.join("; ")}`;
+          return `↳ ${t("evidence.evidence")}: ${
+            s.earlier !== undefined
+              ? `${t("evidence.earlier").replace("{n}", String(s.earlier))} `
+              : ""
+          }${s.items.join("; ")}`;
         case "findings":
           return `↳ ${t("evidence.findings")}: ${s.items.join("; ")}`;
         case "attachment": {
@@ -339,6 +529,23 @@ export function stepDisplayDetail(
               ? `\n${t("evidence.matches.omitted").replace("{n}", String(s.omitted))}`
               : "";
           return `↳ ${t("evidence.matches")} /${s.pattern}/:\n${s.items.join("\n")}${more}`;
+        }
+        case "web-results":
+          // Each result's URL on its own line, where the row makes it a
+          // link to the OS browser (ADR 0080 §5).
+          return `↳ ${t("evidence.webResults")}:\n${s.items
+            .map((i) => `- ${i.title}（${i.site}）\n  ${i.url}`)
+            .join("\n")}`;
+        case "web-page":
+          return `↳ ${t("evidence.webPage")} ${s.title}\n${s.url}\n${s.text}`;
+        case "page": {
+          // A page step's read, bounded (ADR 0083 §10); what the bound left
+          // out is counted, or the list reads as the whole page.
+          const omitted =
+            s.omitted > 0 && s.mode !== "text"
+              ? `\n${t("evidence.page.omitted").replace("{n}", String(s.omitted))}`
+              : "";
+          return `↳ ${t(`evidence.page.${s.mode}`)}:\n${s.text}${omitted}`;
         }
         case "error":
           return `↳ ${t("evidence.error")}: ${s.message}`;

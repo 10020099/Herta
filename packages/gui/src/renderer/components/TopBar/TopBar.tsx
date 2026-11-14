@@ -7,9 +7,16 @@ import {
 } from "../../hooks/useSessionSelector.js";
 import { useT } from "../../i18n/LocaleProvider.js";
 import { isRepeatClick } from "../../lib/repeat-click.js";
+import { runShortcut, useShortcut } from "../../lib/shortcut-registry.js";
 import { TitleText } from "../TitleText.js";
 import { Tooltip } from "../Tooltip/Tooltip.js";
-import { NewSessionIcon, PanelToggleIcon, SearchIcon } from "./icons.js";
+import {
+  FlowRadioIcon,
+  GlobeIcon,
+  NewSessionIcon,
+  PanelToggleIcon,
+  SearchIcon,
+} from "./icons.js";
 
 export interface TopBarProps {
   /** Current sidebar collapsed state — drives the toggle's aria-expanded. */
@@ -21,6 +28,14 @@ export interface TopBarProps {
   /** Forwarded to the search button so the parent can return focus to it
    *  when the search field closes. */
   readonly searchButtonRef?: Ref<HTMLButtonElement>;
+  /** Flow's button (ADR 0084 §2), beside the browser's; absent where the
+   *  bridge has no Flow. */
+  readonly flow?: {
+    readonly open: boolean;
+    readonly unread: boolean;
+    /** An issue is being gathered right now. */
+    readonly gathering: boolean;
+  };
 }
 
 /**
@@ -46,6 +61,9 @@ export function TopBar(props: TopBarProps): JSX.Element {
   // warning, the icon tints), a second click within the window proceeds.
   // Auto-disarms on the timer or when the turn ends.
   const NEW_ARM_RESET_MS = 4000;
+  /** A key press this soon after the arm is not its confirm. */
+  const NEW_CONFIRM_MIN_MS = 400;
+  const newArmedAt = useRef(0);
   const turnInFlight = useSessionSelector((s) => s.status !== "idle");
   const [newArmed, setNewArmed] = useState(false);
   const newArmTimer = useRef<number | null>(null);
@@ -65,6 +83,7 @@ export function TopBar(props: TopBarProps): JSX.Element {
     setNewArmed(false);
   }, [turnInFlight]);
   const armNew = (): void => {
+    newArmedAt.current = Date.now();
     setNewArmed(true);
     if (newArmTimer.current !== null) window.clearTimeout(newArmTimer.current);
     newArmTimer.current = window.setTimeout(() => {
@@ -72,6 +91,39 @@ export function TopBar(props: TopBarProps): JSX.Element {
       setNewArmed(false);
     }, NEW_ARM_RESET_MS);
   };
+  /** The button's press, and Ctrl/⌘+N's (ADR 0082): the same guards. */
+  const newSession = (): void => {
+    if (creating.current || gatePending) return;
+    if (turnInFlight && !newArmed) {
+      armNew();
+      return;
+    }
+    if (newArmTimer.current !== null) {
+      window.clearTimeout(newArmTimer.current);
+      newArmTimer.current = null;
+    }
+    setNewArmed(false);
+    creating.current = true;
+    // A failed create answers null (main points the window at whatever the
+    // host has open); a rejected invoke is caught so it never surfaces as
+    // an unhandled rejection.
+    void bridge
+      .createSession({})
+      .catch(() => null)
+      .finally(() => {
+        creating.current = false;
+      });
+  };
+  useShortcut("newSession", () => {
+    // A second Ctrl+N hard on the first — a bounce, a "did it take?" press —
+    // is not the arm's confirm: it interrupted the reply the arm protects.
+    // The button refuses its double-click the same way (UX review
+    // 2026-09-22, item 3; release review 2026-10-22).
+    if (newArmed && Date.now() - newArmedAt.current < NEW_CONFIRM_MIN_MS)
+      return true;
+    newSession();
+    return true;
+  });
   // A tray "New Chat" was refused mid-turn (2026-07-13): main fronted the
   // window and signalled the refusal — arm the icon the way a first direct
   // click would, so the refusal explains itself here too.
@@ -97,7 +149,11 @@ export function TopBar(props: TopBarProps): JSX.Element {
   );
   return (
     <div className="topbar" data-testid="topbar">
-      <Tooltip label={t("topbar.toggleSidebar")} align="start">
+      <Tooltip
+        label={t("topbar.toggleSidebar")}
+        keys="toggleSidebar"
+        align="start"
+      >
         <button
           type="button"
           className="sidebar-header-icon"
@@ -108,7 +164,7 @@ export function TopBar(props: TopBarProps): JSX.Element {
           <PanelToggleIcon />
         </button>
       </Tooltip>
-      <Tooltip label={t("topbar.search")} align="start">
+      <Tooltip label={t("topbar.search")} keys="searchSessions" align="start">
         <button
           ref={props.searchButtonRef}
           type="button"
@@ -127,6 +183,7 @@ export function TopBar(props: TopBarProps): JSX.Element {
               ? t("session.switchInterrupts")
               : t("topbar.newSession")
         }
+        keys="newSession"
         align="start"
       >
         <button
@@ -135,30 +192,11 @@ export function TopBar(props: TopBarProps): JSX.Element {
           aria-label={t("topbar.newSession")}
           disabled={gatePending}
           onClick={(e) => {
-            if (creating.current) return;
             // The second click of a double-click is never the arm's confirm:
             // it interrupted the reply the arm exists to protect (UX review
             // 2026-09-22, item 3). A fresh click after the tint confirms.
             if (isRepeatClick(e)) return;
-            if (turnInFlight && !newArmed) {
-              armNew();
-              return;
-            }
-            if (newArmTimer.current !== null) {
-              window.clearTimeout(newArmTimer.current);
-              newArmTimer.current = null;
-            }
-            setNewArmed(false);
-            creating.current = true;
-            // A failed create answers null (main points the window at
-            // whatever the host has open); a rejected invoke is caught so it
-            // never surfaces as an unhandled rejection.
-            void bridge
-              .createSession({})
-              .catch(() => null)
-              .finally(() => {
-                creating.current = false;
-              });
+            newSession();
           }}
         >
           <NewSessionIcon />
@@ -180,6 +218,57 @@ export function TopBar(props: TopBarProps): JSX.Element {
             animate={titleAnimate && title !== null}
           />
         </h1>
+      )}
+      {/* The browser's page tab (ADR 0083 §2; owner's pick B: on the right).
+          Windows and Linux end the bar before OUR caption buttons, so it sits
+          just left of them; macOS has its lights on the left and no buttons
+          here, so the bar runs to the window's edge (`.app.is-mac .topbar`).
+          A session's page: shown only with one open, on the desktop. */}
+      {(props.flow !== undefined ||
+        (sessionId !== null && bridge.pageShow !== undefined)) && (
+        <span className="topbar-spacer" />
+      )}
+      {sessionId !== null && bridge.pageShow !== undefined && (
+        <Tooltip
+          label={t("shortcut.openBrowser")}
+          keys="openBrowser"
+          align="end"
+        >
+          <button
+            type="button"
+            className="sidebar-header-icon"
+            aria-label={t("shortcut.openBrowser")}
+            onClick={() => runShortcut("openBrowser")}
+          >
+            <GlobeIcon />
+          </button>
+        </Tooltip>
+      )}
+      {props.flow !== undefined && (
+        <Tooltip label={t("shortcut.openFlow")} keys="openFlow" align="end">
+          <button
+            type="button"
+            className={`sidebar-header-icon flow-button${props.flow.open ? " is-active" : ""}`}
+            aria-label={t("shortcut.openFlow")}
+            aria-pressed={props.flow.open}
+            onClick={() => runShortcut("openFlow")}
+          >
+            <FlowRadioIcon
+              state={
+                props.flow.open
+                  ? "rest"
+                  : props.flow.gathering
+                    ? "gathering"
+                    : props.flow.unread
+                      ? "ready"
+                      : "rest"
+              }
+            />
+            {props.flow.unread && !props.flow.open && (
+              <i className="flow-button-dot" aria-hidden="true" />
+            )}
+          </button>
+        </Tooltip>
       )}
     </div>
   );

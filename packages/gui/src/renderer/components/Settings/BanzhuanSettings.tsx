@@ -4,10 +4,7 @@ import { useDemoDeviceCycle } from "../../hooks/useDemoDeviceCycle.js";
 import type { BanzhuanDeviceState } from "../../hooks/useDeviceState.js";
 import type { MessageKey } from "../../i18n/keys.js";
 import { useLocale, useT } from "../../i18n/LocaleProvider.js";
-import type {
-  BackendContractChoice,
-  BackendThinking,
-} from "../../ipc/bridge-types.js";
+import type { BackendThinking } from "../../ipc/bridge-types.js";
 import { BanzhuanDemoCard } from "../UtilityRail/BanzhuanDemoCard.js";
 import { Select } from "./Select.js";
 import { SettingRow } from "./SettingRow.js";
@@ -24,7 +21,8 @@ type DemoState =
 interface StateMeta {
   readonly stateKey: MessageKey;
   readonly legendKey: MessageKey;
-  /** Legend swatch color — approximates the state's glow. Decorative. */
+  /** The state's colour: the legend's swatch, and what the ring in the
+   *  drawing takes while the demo shows this state. Decorative. */
   readonly dot: string;
 }
 
@@ -75,11 +73,12 @@ function metaFor(state: BanzhuanDeviceState): StateMeta {
  * backend, the backend thinking-effort Select (low/high/max,
  * restart-to-apply), then a read-only device card that auto-cycles through
  * its lifecycle (pause on hover) with a synced caption, plus a static
- * 5-state legend. The visual reuses the live rail card; only the meaning
- * text lives here. Per-workspace permission choices (automatic review) do
- * NOT live in this pane: they're managed in the device card's ⋯ menu next to
- * the workspace they bind to (owner 2026-08-04, for the command rules that
- * were removed on 2026-10-10).
+ * 5-state legend. The visual is the pane's own line drawing of the device
+ * (`BanzhuanDemoCard`, ADR 0057 §2.4 as amended 2026-11-13); its ring takes
+ * the colour of the legend's swatch. Per-workspace permission choices
+ * (automatic review) do NOT live in this pane: they're managed in the device
+ * card's ⋯ menu next to the workspace they bind to (owner 2026-08-04, for
+ * the command rules that were removed on 2026-10-10).
  *
  * Layout rules (owner feedback 2026-08-03, "re-design — it changed the
  * panel height"): the pane must stay inside `.settings-content`'s stable
@@ -96,6 +95,84 @@ function metaFor(state: BanzhuanDeviceState): StateMeta {
  * to persist and send the choice as-is regardless). The UI deliberately
  * says nothing about server-side handling of the tiers.
  */
+/** The page partition's data, cleared (ADR 0083 §8). It signs the
+ *  Trailblazer and 板砖 out of every page, so a first press arms it and a
+ *  second one, within a few seconds, clears. */
+const LABEL = {
+  idle: "banzhuan.browserData.clear",
+  armed: "banzhuan.browserData.confirm",
+  done: "banzhuan.browserData.done",
+  failed: "banzhuan.browserData.failed",
+} as const satisfies Record<string, MessageKey>;
+
+function ClearBrowserData(props: {
+  readonly clear: () => Promise<boolean>;
+}): JSX.Element {
+  const t = useT();
+  const [state, setState] = useState<
+    "idle" | "armed" | "busy" | "done" | "failed"
+  >("idle");
+  const button = useRef<HTMLButtonElement>(null);
+  // While it clears, the confirm it was given stays on the button.
+  const shown = state === "busy" ? "armed" : state;
+  useEffect(() => {
+    if (state !== "armed" && state !== "done" && state !== "failed") return;
+    const timer = window.setTimeout(() => setState("idle"), 4000);
+    return () => window.clearTimeout(timer);
+  }, [state]);
+  // Armed, a press anywhere else takes it back at once (owner 2026-10-24:
+  // it waited out the timer).
+  useEffect(() => {
+    if (state !== "armed") return;
+    const away = (e: PointerEvent): void => {
+      if (!(e.target instanceof Node && button.current?.contains(e.target)))
+        setState("idle");
+    };
+    document.addEventListener("pointerdown", away, true);
+    return () => document.removeEventListener("pointerdown", away, true);
+  }, [state]);
+  return (
+    <button
+      ref={button}
+      type="button"
+      className={`settings-btn${state === "armed" ? " settings-btn--danger" : ""}`}
+      disabled={state === "busy"}
+      onBlur={() => {
+        if (state === "armed") setState("idle");
+      }}
+      onClick={() => {
+        // Cleared is an answer, not a new start (owner 2026-10-24: a press
+        // on 已清除 armed it again).
+        if (state === "done") return;
+        if (state !== "armed") {
+          setState("armed");
+          return;
+        }
+        setState("busy");
+        void props.clear().then(
+          (ok) => setState(ok ? "done" : "failed"),
+          () => setState("failed"),
+        );
+      }}
+    >
+      {/* Every label in one cell, the others hidden: the button keeps the
+          widest one's width, so the row's text beside it does not re-wrap
+          as the label changes (owner 2026-10-24). */}
+      <span className="settings-btn__stack">
+        {(["idle", "armed", "done", "failed"] as const).map((k) => (
+          <span
+            key={k}
+            className={k === shown ? undefined : "is-off"}
+            aria-hidden={k === shown ? undefined : true}
+          >
+            {t(LABEL[k])}
+          </span>
+        ))}
+      </span>
+    </button>
+  );
+}
+
 export function BanzhuanSettings(): JSX.Element {
   const t = useT();
   const { bridge } = useHertaBridge();
@@ -123,34 +200,15 @@ export function BanzhuanSettings(): JSX.Element {
   // stale value — only the newest write may revert.
   const writeSeqRef = useRef(0);
 
-  // Tool-contract row (ADR 0040). Same optimistic / latest-wins discipline as
-  // the thinking row, and on screen from the FIRST paint like it: the row
-  // used to wait for the config read to prove the bridge carries
-  // `contract`, so every switch into this pane painted two rows and then
-  // three, pushing the demo card down a beat later (owner 2026-09-07). The
-  // case it waited for does not exist — the preload ships with the
-  // renderer, and the website demo omits `setBackendConfig` altogether,
-  // which hides every row here. `bashFound` comes from main and is folded
-  // into the row description — the fallback is stated where the choice is
-  // made.
-  // Pre-load optimistic state = the real handler's default (minimal —
-  // owner flip 2026-08-17), so the pill never flashes 标准 while the
-  // config is in flight. The last-known values win over both defaults
-  // (settings-snapshot.ts): a user on 标准 no longer sees 极简 for a beat,
-  // and the no-bash sentence is in the description on the first frame.
-  const [contract, setContract] = useRememberedSetting(
-    bridge,
-    "banzhuan.contract",
-    "minimal",
-  );
+  // Whether 板砖 can run here at all (ADR 0086): it needs a bash, and where
+  // there is none the pane says so, with what to install. The tool-set
+  // choice that used to sit here is gone with the standard set. The
+  // last-known value is on the first frame (settings-snapshot.ts).
   const [bashFound, setBashFound] = useRememberedSetting(
     bridge,
     "banzhuan.bashFound",
     undefined,
   );
-  const [contractFailed, setContractFailed] = useState(false);
-  const contractTouchedRef = useRef(false);
-  const contractSeqRef = useRef(0);
 
   useEffect(() => {
     let alive = true;
@@ -158,8 +216,6 @@ export function BanzhuanSettings(): JSX.Element {
       (c) => {
         if (!alive) return;
         if (!touchedRef.current) setThinking(c.thinking);
-        if (c.contract !== undefined && !contractTouchedRef.current)
-          setContract(c.contract);
         setBashFound(c.bashFound);
       },
       () => {
@@ -169,26 +225,13 @@ export function BanzhuanSettings(): JSX.Element {
     return () => {
       alive = false;
     };
-  }, [bridge, setThinking, setContract, setBashFound]);
-
-  const onContract = (next: BackendContractChoice): void => {
-    const prev = contract;
-    contractSeqRef.current += 1;
-    const seq = contractSeqRef.current;
-    contractTouchedRef.current = true;
-    setContract(next);
-    setContractFailed(false);
-    void bridge.setBackendConfig?.({ thinking, contract: next }).catch(() => {
-      if (seq !== contractSeqRef.current) return;
-      setContract(prev);
-      setContractFailed(true);
-    });
-  };
+  }, [bridge, setThinking, setBashFound]);
 
   // There is no 3D device row (owner 2026-10-01, ADR 0057 §2.7 amended):
   // the rail card draws the lit device wherever the GPU allows and the flat
-  // art everywhere else, with nothing to choose. The demo card below stays
-  // on the flat renders on purpose — one GPU scene per app, in the rail.
+  // art everywhere else, with nothing to choose. The demo card below is a
+  // line drawing (ADR 0057 §2.4 as amended 2026-11-13): no image and no GPU
+  // context, so the one scene per app stays the rail's.
 
   // PDF picture transcription (2026-10-01). Live (main applies it to the next
   // attach), per user, default on; the first frame shows the last-known value
@@ -288,28 +331,11 @@ export function BanzhuanSettings(): JSX.Element {
             }
           />
         )}
-        {thinkingSupported && (
+        {thinkingSupported && bashFound === false && (
           <SettingRow
-            title={t("banzhuan.contract")}
-            description={
-              bashFound === false
-                ? `${t("banzhuan.contractDesc")} ${t("banzhuan.contract.noBash")}`
-                : t("banzhuan.contractDesc")
-            }
-            control={
-              <Select<BackendContractChoice>
-                value={contract}
-                ariaLabel={t("banzhuan.contract")}
-                options={[
-                  {
-                    value: "standard",
-                    label: t("banzhuan.contract.standard"),
-                  },
-                  { value: "minimal", label: t("banzhuan.contract.minimal") },
-                ]}
-                onChange={onContract}
-              />
-            }
+            title={t("banzhuan.noBash")}
+            description={t("banzhuan.noBashDesc")}
+            control={null}
           />
         )}
         {pdfSupported && (
@@ -325,20 +351,28 @@ export function BanzhuanSettings(): JSX.Element {
             }
           />
         )}
+        {/* The page tab's own data (ADR 0083 §8). */}
+        {bridge.pageClearData !== undefined && (
+          <SettingRow
+            title={t("banzhuan.browserData")}
+            description={t("banzhuan.browserDataDesc")}
+            control={<ClearBrowserData clear={bridge.pageClearData} />}
+          />
+        )}
       </div>
-      {((thinkingSupported && (failed || contractFailed)) || pdfFailed) && (
+      {((thinkingSupported && failed) || pdfFailed) && (
         <p className="settings-note">{t("common.couldntSave")}</p>
       )}
-      {thinkingSupported &&
-        !failed &&
-        !contractFailed &&
-        !pdfFailed &&
-        loadFailed && (
-          <p className="settings-note">{t("settings.loadFailed")}</p>
-        )}
+      {thinkingSupported && !failed && !pdfFailed && loadFailed && (
+        <p className="settings-note">{t("settings.loadFailed")}</p>
+      )}
 
       <div className="settings-bz-demo">
-        <BanzhuanDemoCard state={state} onHoverChange={setPaused} />
+        <BanzhuanDemoCard
+          state={state}
+          led={meta.dot}
+          onHoverChange={setPaused}
+        />
         <div className="settings-bz-caption">
           <span className="settings-bz-caption-name">{t(meta.stateKey)}</span>
           <span className="settings-bz-caption-meaning">

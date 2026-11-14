@@ -4,7 +4,8 @@ import type {
   CompletionRequest,
 } from "@herta/core";
 import { ProviderError } from "../errors.js";
-import { type ProviderUsage, reportProviderUsage } from "../usage.js";
+import { observedCall, type ProviderUsage } from "../usage.js";
+import { throwIfAborted } from "./abort.js";
 import type { ApiKey } from "./api-key.js";
 import { postCompletions } from "./completion-http.js";
 import { mapCompletionStream } from "./completion-stream.js";
@@ -28,6 +29,9 @@ export interface OpenAICompatibleCompletionProviderOpts {
   /** SSE idle watchdog: max ms between body chunks before the stream is
    * treated as stalled. Default 90s; 0 disables. See `ParseSSEOpts`. */
   idleTimeoutMs?: number;
+  /** Which of the harness's roles this provider serves; rides its usage
+   *  lines (`ProviderUsage.site`). */
+  site?: string;
   /** Told each call's token usage as the API states it — in addition to the
    *  process-wide sink (`usage.ts`). */
   onUsage?: (usage: ProviderUsage) => void;
@@ -38,11 +42,28 @@ export class OpenAICompatibleCompletionProvider
 {
   constructor(private readonly opts: OpenAICompatibleCompletionProviderOpts) {}
 
-  async *streamCompletion(
+  streamCompletion(
     request: CompletionRequest,
     signal: AbortSignal,
   ): AsyncGenerator<CompletionEvent, void, void> {
-    signal.throwIfAborted();
+    return observedCall(
+      {
+        endpoint: "completion",
+        model: request.model,
+        ...(this.opts.site !== undefined ? { site: this.opts.site } : {}),
+      },
+      (stated) => this.stream(request, signal, stated),
+      this.opts.onUsage,
+      signal,
+    );
+  }
+
+  private async *stream(
+    request: CompletionRequest,
+    signal: AbortSignal,
+    stated: (usage: Omit<ProviderUsage, "endpoint" | "model">) => void,
+  ): AsyncGenerator<CompletionEvent, void, void> {
+    throwIfAborted(signal);
 
     const httpOpts: Parameters<typeof postCompletions>[0] = {
       baseUrl: this.opts.baseUrl,
@@ -96,15 +117,7 @@ export class OpenAICompatibleCompletionProvider
           : {},
       ),
       signal,
-      (usage) => {
-        const stated: ProviderUsage = {
-          endpoint: "completion",
-          model: request.model,
-          ...usage,
-        };
-        this.opts.onUsage?.(stated);
-        reportProviderUsage(stated);
-      },
+      stated,
     );
   }
 }

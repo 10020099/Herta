@@ -15,7 +15,13 @@ import { renderWithLocale } from "../../i18n/test-util.js";
 import { createMockHertaBridge } from "../../ipc/mock-bridge.js";
 import type { SessionStore } from "../../store/session-store.js";
 import { isVoicePlaying, playVoiceClip } from "../../voice/play-voice.js";
-import { Composer } from "./Composer.js";
+import {
+  COMPOSER_MAX_LINES,
+  COMPOSER_MIN_LINES,
+  Composer,
+  composerLinePx,
+  composerLines,
+} from "./Composer.js";
 import {
   peekPendingAttachForTest,
   resetPendingAttachForTest,
@@ -57,6 +63,58 @@ function renderComposer(mock = createMockHertaBridge()) {
     ...rendered,
   };
 }
+
+describe("the composer grows with its draft (owner 2026-11-03)", () => {
+  it("shows two lines at least and eight at most", () => {
+    expect(composerLines(0, 22.5)).toBe(COMPOSER_MIN_LINES);
+    expect(composerLines(45, 22.5)).toBe(2);
+    expect(composerLines(135, 22.5)).toBe(6);
+    expect(composerLines(2000, 22.5)).toBe(COMPOSER_MAX_LINES);
+  });
+
+  it("keeps a line a whole number of device pixels at every scale, so lines move as one", () => {
+    expect(composerLinePx(1)).toBe(23);
+    expect(composerLinePx(2)).toBe(22.5);
+    for (const dpr of [1, 1.25, 1.5, 1.75, 2, 2.5, 3]) {
+      const device = composerLinePx(dpr) * dpr;
+      expect(Math.abs(device - Math.round(device))).toBeLessThan(1e-9);
+      expect(Math.abs(composerLinePx(dpr) - 22.5)).toBeLessThanOrEqual(0.5);
+    }
+    expect(composerLinePx(Number.NaN)).toBe(23);
+  });
+
+  it("sets the lines past two as the draft grows, and takes them back as it shrinks", () => {
+    // jsdom lays nothing out: the unseen copy is a line tall per line of
+    // its text, as Chromium lays out an unwrapped draft (23px at 1x).
+    const height = vi
+      .spyOn(HTMLElement.prototype, "offsetHeight", "get")
+      .mockImplementation(function (this: HTMLElement) {
+        if (!this.classList.contains("composer-measure")) return 0;
+        return (this.textContent ?? "").split("\n").length * 23;
+      });
+    try {
+      const { container } = renderComposer();
+      const form = container.querySelector("form.composer") as HTMLElement;
+      const extra = () => form.style.getPropertyValue("--composer-extra-lines");
+      const input = screen.getByPlaceholderText("Message Herta…");
+      expect(form.style.getPropertyValue("--composer-line")).toBe("23px");
+      expect(extra()).toBe("0");
+      fireEvent.change(input, { target: { value: "1\n2\n3\n4\n5\n6" } });
+      expect(extra()).toBe("4");
+      // A trailing newline opens a line, as the textarea shows it.
+      fireEvent.change(input, { target: { value: "1\n2\n3\n" } });
+      expect(extra()).toBe("2");
+      fireEvent.change(input, {
+        target: { value: Array.from({ length: 20 }, (_, i) => i).join("\n") },
+      });
+      expect(extra()).toBe(String(COMPOSER_MAX_LINES - COMPOSER_MIN_LINES));
+      fireEvent.change(input, { target: { value: "one line" } });
+      expect(extra()).toBe("0");
+    } finally {
+      height.mockRestore();
+    }
+  });
+});
 
 describe("Composer", () => {
   it("renders the input with placeholder + send button", () => {
@@ -635,10 +693,14 @@ describe("Composer — a message while 板砖 works (ADR 0063)", () => {
     layer: "backend",
     summary: { durationMs: 1, toolCallCount: 0, messageCount: 0, endedAt: "" },
   };
-  /** A commission in flight: the turn started and 板砖 is running. */
+  /** A commission in flight: the turn started and 板砖 is running. These
+   *  cases are the hold, which stands where talk to Herta does not (ADR 0085
+   *  step 3: a bridge without `talkText`, the website demo) and catches a
+   *  message the run could no longer take. */
   function startCommission(
     mock: ReturnType<typeof createMockHertaBridge>,
   ): void {
+    delete (mock.bridge as { talkText?: unknown }).talkText;
     act(() => {
       mock.emitReset({
         sessionId: "s",
@@ -857,6 +919,8 @@ describe("Composer — a message while 板砖 works (ADR 0063)", () => {
 
   it("the EN alias applies at delivery, not at the hold: @brick is held as typed and sent as @板砖", () => {
     const { mock } = renderComposer();
+    // The hold: a bridge without talk (ADR 0085 step 3).
+    delete (mock.bridge as { talkText?: unknown }).talkText;
     act(() => {
       mock.emitReset({
         sessionId: "s-en",
@@ -884,6 +948,8 @@ describe("Composer — a message while 板砖 works (ADR 0063)", () => {
 
   it("no hold outside 板砖's window: Herta's own turn keeps the textarea disabled, and once 板砖 finishes mid-turn the interject goes while the held text stays", () => {
     const { mock } = renderComposer();
+    // The hold: a bridge without talk (ADR 0085 step 3).
+    delete (mock.bridge as { talkText?: unknown }).talkText;
     act(() => {
       mock.emitReset({
         sessionId: "s",
@@ -1029,6 +1095,158 @@ describe("Composer — a message while 板砖 works (ADR 0063)", () => {
     hold("also rename the test file");
     expect(screen.getByTestId("composer-held")).toBeInTheDocument();
     expect(screen.queryByText("Interject now")).toBeNull();
+  });
+});
+
+describe("Composer — talking to Herta while 板砖 works (ADR 0085 step 3)", () => {
+  const backendStarted: AgentEvent = {
+    type: "turn.started",
+    layer: "backend",
+    userText: "task",
+  };
+  const backendFinished: AgentEvent = {
+    type: "turn.finished",
+    layer: "backend",
+    summary: { durationMs: 1, toolCallCount: 0, messageCount: 0, endedAt: "" },
+  };
+  function startRun(mock: ReturnType<typeof createMockHertaBridge>): void {
+    act(() => {
+      mock.emitReset({
+        sessionId: "s",
+        workspaceRoot: "/r",
+        record: [],
+        overlay: null,
+        backendWorkspace: "/r",
+        backendWorkspaceIsDefault: true,
+      });
+      mock.emitTurn({ kind: "started", turnId: "t1" });
+      mock.emitAgent({ kind: "agent", event: backendStarted });
+    });
+  }
+  function send(text: string): HTMLTextAreaElement {
+    const input = screen.getByPlaceholderText(
+      /Message Herta…|Steer the coprocessor…/,
+    ) as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: text } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    return input;
+  }
+
+  it("Enter sends the words to her at once: echoed, nothing held, nothing to 板砖", async () => {
+    const { mock, store } = renderComposer();
+    startRun(mock);
+    const input = send("周末那个会几点？");
+    expect(input.value).toBe("");
+    await waitFor(() =>
+      expect(mock.calls.talkText).toEqual(["周末那个会几点？"]),
+    );
+    expect(store().getSnapshot().pendingUser).toBe("周末那个会几点？");
+    expect(screen.queryByTestId("composer-held")).toBeNull();
+    expect(mock.calls.steerText).toHaveLength(0);
+    expect(mock.calls.submitText).toHaveLength(0);
+  });
+
+  it("with the 插话 tag on, Enter steers the run instead; × gives the composer back to her", async () => {
+    const { mock, store } = renderComposer();
+    startRun(mock);
+    act(() => store().setComposerSteer(true));
+    expect(screen.getByText("Steer · Coprocessor")).toBeInTheDocument();
+    // Inside the composer, on the quotes' row, which makes room for it — and
+    // the box says who the words are for.
+    expect(document.querySelector(".composer.has-quotes")).not.toBeNull();
+    expect(document.querySelectorAll(".composer-quotes")).toHaveLength(1);
+    expect(screen.getByPlaceholderText("Steer the coprocessor…")).toBeTruthy();
+    send("先别动 api 目录");
+    await waitFor(() =>
+      expect(mock.calls.steerText).toEqual(["先别动 api 目录"]),
+    );
+    expect(mock.calls.talkText).toHaveLength(0);
+    fireEvent.click(screen.getByLabelText("Send to Herta instead"));
+    expect(screen.queryByText("Steer · Coprocessor")).toBeNull();
+    expect(screen.getByPlaceholderText("Message Herta…")).toBeTruthy();
+    send("那几点？");
+    await waitFor(() => expect(mock.calls.talkText).toEqual(["那几点？"]));
+  });
+
+  describe("an approval in the middle of a steer (review 2026-11-05)", () => {
+    const gate = {
+      kind: "pending",
+      overlay: {
+        kind: "pending-permission",
+        requestId: "req-1",
+        risk: "workspace_write",
+        tool: "bash",
+        summary: "writes a file",
+        cacheable: false,
+      },
+    } as const;
+
+    it("keeps the tag: the draft still goes to the run", async () => {
+      const { mock, store } = renderComposer();
+      startRun(mock);
+      act(() => store().setComposerSteer(true));
+      const input = screen.getByPlaceholderText(
+        "Steer the coprocessor…",
+      ) as HTMLTextAreaElement;
+      fireEvent.change(input, { target: { value: "先别动 api 目录" } });
+      // 板砖 reaches a command that asks: the box closes for the card.
+      act(() => mock.emitOverlay(gate));
+      expect(input.disabled).toBe(true);
+      expect(input.value).toBe("先别动 api 目录");
+      act(() => mock.emitOverlay({ kind: "resolved", requestId: "req-1" }));
+      expect(input.disabled).toBe(false);
+      expect(screen.getByText("Steer · Coprocessor")).toBeInTheDocument();
+      fireEvent.keyDown(input, { key: "Enter" });
+      await waitFor(() =>
+        expect(mock.calls.steerText).toEqual(["先别动 api 目录"]),
+      );
+      expect(mock.calls.talkText).toHaveLength(0);
+    });
+
+    it("the tag set on the card while the approval is up waits for it", () => {
+      const { mock, store } = renderComposer();
+      startRun(mock);
+      act(() => mock.emitOverlay(gate));
+      act(() => store().setComposerSteer(true));
+      expect(store().getSnapshot().composerSteer).toBe(true);
+      act(() => mock.emitOverlay({ kind: "resolved", requestId: "req-1" }));
+      expect(screen.getByText("Steer · Coprocessor")).toBeInTheDocument();
+    });
+
+    it("a run that ends under the card takes the tag with it", () => {
+      const { mock, store } = renderComposer();
+      startRun(mock);
+      act(() => store().setComposerSteer(true));
+      act(() => mock.emitOverlay(gate));
+      act(() => {
+        mock.emitAgent({ kind: "agent", event: backendFinished });
+      });
+      expect(store().getSnapshot().composerSteer).toBe(false);
+    });
+  });
+
+  it("the tag belongs to its run: it goes when the run ends", () => {
+    const { mock, store } = renderComposer();
+    startRun(mock);
+    act(() => store().setComposerSteer(true));
+    act(() => {
+      mock.emitAgent({ kind: "agent", event: backendFinished });
+    });
+    expect(store().getSnapshot().composerSteer).toBe(false);
+  });
+
+  it("words the run could no longer take (it ended first) are held for the next turn", async () => {
+    const { mock, store } = renderComposer(
+      createMockHertaBridge({ talkTextResult: { queued: true } }),
+    );
+    startRun(mock);
+    send("周末那个会几点？");
+    await waitFor(() =>
+      expect(screen.getByTestId("composer-held").textContent).toContain(
+        "周末那个会几点？",
+      ),
+    );
+    expect(store().getSnapshot().pendingUser).toBeNull();
   });
 });
 
@@ -1830,10 +2048,10 @@ describe("Composer — @-file mentions (ADR 0072 §2)", () => {
 
   function mentionComposer(
     lang: "zh" | "en" = "zh",
-    opts: { readonly listing?: boolean } = {},
+    opts: { readonly listing?: boolean; readonly files?: string[] } = {},
   ) {
     const mock = createMockHertaBridge(
-      opts.listing === false ? {} : { workspaceFiles: FILES },
+      opts.listing === false ? {} : { workspaceFiles: opts.files ?? FILES },
     );
     const r = renderComposer(mock);
     act(() =>
@@ -1854,14 +2072,18 @@ describe("Composer — @-file mentions (ADR 0072 §2)", () => {
       fireEvent.change(input, {
         target: { value, selectionStart: value.length },
       });
+    // A row's words, its name and folder, without the type icon's badge.
     const options = () =>
-      [...document.querySelectorAll(".composer-mentions__item")].map(
-        (li) => li.textContent,
+      [...document.querySelectorAll(".composer-mentions__item")].map((li) =>
+        [...li.children]
+          .filter((c) => c.tagName.toLowerCase() !== "svg")
+          .map((c) => c.textContent)
+          .join(""),
       );
     return { ...r, mock, input, type, options };
   }
 
-  it("lists the matching workspace files and inserts the plain path, replacing @query", async () => {
+  it("lists the matching workspace files and inserts a chip, replacing @query (ADR 0072 amendment 2026-10-20)", async () => {
     const { input, type, options, mock } = mentionComposer();
     type("看看 @pars");
     await waitFor(() =>
@@ -1870,10 +2092,21 @@ describe("Composer — @-file mentions (ADR 0072 §2)", () => {
     expect(mock.calls.listWorkspaceFiles).toBe(1);
     fireEvent.keyDown(input, { key: "ArrowDown" });
     fireEvent.keyDown(input, { key: "Enter" });
-    expect(input.value).toBe("看看 docs/parsers.md ");
+    // The text holds the chip's token; the highlight draws it as a chip.
+    expect(input.value).toBe("看看 @parsers.md ");
+    expect(document.querySelector(".composer-chip")?.textContent).toBe(
+      "@parsers.md",
+    );
     expect(document.querySelector(".composer-mentions")).toBeNull();
     // Enter picked; it did not send.
     expect(mock.calls.submitText).toHaveLength(0);
+    // Sent, the chip is its path, and the path rides along as a mention.
+    fireEvent.change(input, {
+      target: { value: "看看 @parsers.md 的结构", selectionStart: 18 },
+    });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(mock.calls.submitText).toEqual(["看看 docs/parsers.md 的结构"]);
+    expect(mock.calls.submitTextMentions).toEqual([["docs/parsers.md"]]);
   });
 
   it("the highlight survives the selection React re-reports after a key (live check 2026-09-29)", async () => {
@@ -1887,7 +2120,7 @@ describe("Composer — @-file mentions (ADR 0072 §2)", () => {
       document.querySelector(".composer-mentions__item.is-active")?.textContent,
     ).toBe("parsers.mddocs");
     fireEvent.keyDown(input, { key: "Enter" });
-    expect(input.value).toBe("看看 docs/parsers.md ");
+    expect(input.value).toBe("看看 @parsers.md ");
   });
 
   it("Tab inserts too, and the list is fetched once while typing", async () => {
@@ -1898,7 +2131,7 @@ describe("Composer — @-file mentions (ADR 0072 §2)", () => {
     type("@par");
     await waitFor(() => expect(options()[0]).toBe("parser.tssrc"));
     fireEvent.keyDown(input, { key: "Tab" });
-    expect(input.value).toBe("src/parser.ts ");
+    expect(input.value).toBe("@parser.ts ");
     expect(mock.calls.listWorkspaceFiles).toBe(1);
   });
 
@@ -1922,6 +2155,10 @@ describe("Composer — @-file mentions (ADR 0072 §2)", () => {
     await waitFor(() =>
       expect(options()).toEqual([
         "@板砖Delegate to the coprocessor",
+        // The top-level folders, then the files (ADR 0072 amendment
+        // 2026-10-20).
+        "docs",
+        "src",
         "README.md",
         "parser.tssrc",
         "parsers.mddocs",
@@ -1947,17 +2184,18 @@ describe("Composer — @-file mentions (ADR 0072 §2)", () => {
   it("a highlight moved onto a file hides the ghost, and Tab takes the file", async () => {
     const { input, type, options } = mentionComposer();
     type("@");
-    await waitFor(() => expect(options().length).toBe(5));
+    await waitFor(() => expect(options().length).toBe(7));
     fireEvent.keyDown(input, { key: "ArrowDown" });
     expect(document.querySelector(".composer-ghost")).toBeNull();
     fireEvent.keyDown(input, { key: "Tab" });
-    expect(input.value).toBe("README.md ");
+    // The first row after the token is a folder now: it goes in as a chip.
+    expect(input.value).toBe("@docs ");
   });
 
   it("Esc at a bare @ dismisses the list and the ghost together", async () => {
     const { input, type, options } = mentionComposer();
     type("hi @");
-    await waitFor(() => expect(options().length).toBe(5));
+    await waitFor(() => expect(options().length).toBe(7));
     fireEvent.keyDown(input, { key: "Escape" });
     expect(document.querySelector(".composer-mentions")).toBeNull();
     expect(document.querySelector(".composer-ghost")).toBeNull();
@@ -2001,8 +2239,8 @@ describe("Composer — @-file mentions (ADR 0072 §2)", () => {
       }),
     );
     type("@");
-    await waitFor(() => expect(options().length).toBe(5));
-    expect(options().slice(1, 3)).toEqual(["build.ts", "README.md"]);
+    await waitFor(() => expect(options().length).toBe(7));
+    expect(options().slice(1, 3)).toEqual(["build.ts", "docs"]);
   });
 
   it("a query that can still be @板砖 / @brick offers the token first, then its files; typed out, nothing", async () => {
@@ -2033,11 +2271,167 @@ describe("Composer — @-file mentions (ADR 0072 §2)", () => {
   it("an IME's pre-edit keeps its keys: the arrows walk its candidates, not the list", async () => {
     const { input, type, options } = mentionComposer();
     type("@");
-    await waitFor(() => expect(options().length).toBe(5));
+    await waitFor(() => expect(options().length).toBe(7));
     fireEvent.keyDown(input, { key: "ArrowDown", keyCode: 229 });
     expect(
       document.querySelector(".composer-mentions__item.is-active")?.textContent,
     ).toBe("@板砖Delegate to the coprocessor");
+  });
+
+  it("a chip goes whole: Backspace at its end takes the token, and the mention with it", async () => {
+    const { input, type, options, mock } = mentionComposer();
+    type("看看 @pars");
+    await waitFor(() => expect(options().length).toBe(2));
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(input.value).toBe("看看 @parser.ts ");
+    // The caret right after the token (the space removed by hand first).
+    fireEvent.change(input, {
+      target: { value: "看看 @parser.ts", selectionStart: 13 },
+    });
+    input.setSelectionRange(13, 13);
+    fireEvent.keyDown(input, { key: "Backspace" });
+    expect(input.value).toBe("看看 ");
+    expect(document.querySelector(".composer-chip")).toBeNull();
+    fireEvent.change(input, {
+      target: { value: "看看 parser", selectionStart: 9 },
+    });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(mock.calls.submitTextMentions).toEqual([undefined]);
+  });
+
+  describe("two files of one name (release review 2026-10-22)", () => {
+    const SAME = ["a/index.ts", "b/index.ts"];
+    /** `@index.ts @index.ts `: a/index.ts, then b/index.ts. */
+    async function pickBoth() {
+      const m = mentionComposer("zh", { files: SAME });
+      m.type("@index");
+      await waitFor(() =>
+        expect(m.options()).toEqual(["index.tsa", "index.tsb"]),
+      );
+      fireEvent.keyDown(m.input, { key: "Enter" });
+      m.type("@index.ts @index");
+      await waitFor(() => expect(m.options()).toHaveLength(2));
+      fireEvent.keyDown(m.input, { key: "ArrowDown" });
+      fireEvent.keyDown(m.input, { key: "Enter" });
+      expect(m.input.value).toBe("@index.ts @index.ts ");
+      return m;
+    }
+
+    it("deleting the first chip by selection leaves the second its own path", async () => {
+      const { input, mock } = await pickBoth();
+      fireEvent.change(input, {
+        target: { value: "@index.ts ", selectionStart: 0 },
+      });
+      fireEvent.keyDown(input, { key: "Enter" });
+      expect(mock.calls.submitText).toEqual(["b/index.ts"]);
+      expect(mock.calls.submitTextMentions).toEqual([["b/index.ts"]]);
+    });
+
+    it("Backspace over the first chip takes that one", async () => {
+      const { input, mock } = await pickBoth();
+      input.setSelectionRange(9, 9);
+      fireEvent.keyDown(input, { key: "Backspace" });
+      expect(input.value).toBe(" @index.ts ");
+      fireEvent.keyDown(input, { key: "Enter" });
+      expect(mock.calls.submitText).toEqual(["b/index.ts"]);
+    });
+
+    it("a pick in front of a same-name chip keeps each its path", async () => {
+      const { input, type, options, mock } = mentionComposer("zh", {
+        files: SAME,
+      });
+      type("@index");
+      await waitFor(() => expect(options()).toHaveLength(2));
+      fireEvent.keyDown(input, { key: "ArrowDown" });
+      fireEvent.keyDown(input, { key: "Enter" });
+      expect(input.value).toBe("@index.ts ");
+      // A space at the start, the caret back to it, and `@index` typed.
+      fireEvent.change(input, {
+        target: { value: " @index.ts ", selectionStart: 1 },
+      });
+      fireEvent.change(input, {
+        target: { value: "@index @index.ts ", selectionStart: 6 },
+      });
+      await waitFor(() => expect(options()).toHaveLength(2));
+      fireEvent.keyDown(input, { key: "Enter" });
+      expect(input.value).toBe("@index.ts @index.ts ");
+      fireEvent.keyDown(input, { key: "Enter" });
+      expect(mock.calls.submitText).toEqual(["a/index.ts b/index.ts"]);
+      expect(mock.calls.submitTextMentions).toEqual([
+        ["a/index.ts", "b/index.ts"],
+      ]);
+    });
+  });
+
+  it("a press on a chip opens its menu; Remove takes the chip out", async () => {
+    const { input, type, options } = mentionComposer();
+    type("看看 @pars");
+    await waitFor(() => expect(options().length).toBe(2));
+    fireEvent.keyDown(input, { key: "Enter" });
+    // No red squiggle under the chip's name (owner 2026-10-20): the
+    // textarea is not spellchecked.
+    expect(input.getAttribute("spellcheck")).toBe("false");
+    const chip = document.querySelector(".composer-chip") as HTMLElement;
+    // jsdom lays nothing out: give the chip the box a browser would.
+    chip.getClientRects = () =>
+      [{ left: 40, right: 120, top: 10, bottom: 30 }] as unknown as DOMRectList;
+    chip.getBoundingClientRect = () =>
+      ({ left: 40, right: 120, top: 10, bottom: 30 }) as DOMRect;
+    fireEvent.mouseDown(input, { button: 0, clientX: 60, clientY: 20 });
+    expect(document.querySelector(".composer-chip-menu")).not.toBeNull();
+    const labels = [
+      ...document.querySelectorAll(".composer-chip-menu__item"),
+    ].map((b) => b.textContent);
+    expect(labels[0]).toContain("Copy");
+    expect(labels).toContain("Remove");
+    // Copy opens its three choices.
+    fireEvent.mouseEnter(
+      document.querySelector(".composer-chip-menu__sub-wrap") as Element,
+    );
+    expect(
+      [...document.querySelectorAll(".composer-chip-menu--sub button")].map(
+        (b) => b.textContent,
+      ),
+    ).toEqual(["Relative path", "Absolute path", "File name"]);
+    fireEvent.click(
+      [...document.querySelectorAll(".composer-chip-menu__item")].find(
+        (b) => b.textContent === "Remove",
+      ) as Element,
+    );
+    expect(input.value).toBe("看看 ");
+    expect(document.querySelector(".composer-chip-menu")).toBeNull();
+  });
+
+  it("Shift+F10 at a chip opens its menu focused; the arrows walk it, → opens Copy, Escape gives the caret back (ADR 0082 §10)", async () => {
+    const { input, type, options } = mentionComposer();
+    type("看看 @pars");
+    await waitFor(() => expect(options().length).toBe(2));
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(input.value).toBe("看看 @parser.ts ");
+    // The caret right after the token.
+    input.setSelectionRange(13, 13);
+    fireEvent.keyDown(input, { key: "F10", shiftKey: true });
+    const menu = document.querySelector(".composer-chip-menu") as HTMLElement;
+    expect(menu).not.toBeNull();
+    const items = (): HTMLElement[] => [
+      ...menu.querySelectorAll<HTMLElement>(
+        ':scope > [role="menuitem"], :scope > .composer-chip-menu__sub-wrap > [role="menuitem"]',
+      ),
+    ];
+    expect(document.activeElement).toBe(items()[0]);
+    fireEvent.keyDown(document.activeElement as Element, { key: "ArrowUp" });
+    expect(document.activeElement?.textContent).toBe("Remove");
+    fireEvent.keyDown(document.activeElement as Element, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(items()[0]);
+    fireEvent.keyDown(document.activeElement as Element, { key: "ArrowRight" });
+    await waitFor(() =>
+      expect(document.activeElement?.textContent).toBe("Relative path"),
+    );
+    fireEvent.keyDown(document.activeElement as Element, { key: "ArrowLeft" });
+    expect(document.activeElement).toBe(items()[0]);
+    fireEvent.keyDown(document.activeElement as Element, { key: "Escape" });
+    expect(document.querySelector(".composer-chip-menu")).toBeNull();
+    expect(document.activeElement).toBe(input);
   });
 
   it("without a file listing on the bridge, @ offers @板砖 alone", async () => {

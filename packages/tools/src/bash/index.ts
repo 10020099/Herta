@@ -13,21 +13,18 @@ import { formatInputIssues } from "../input-issues.js";
 import { splitShellSegments } from "../run-command/classifier.js";
 import { LiveOutput } from "../run-command/live-output.js";
 import { writeRunLog } from "../run-command/logger.js";
-import { checkReaderArgvPaths } from "../run-command/reader-guard.js";
 import { redactSecrets } from "../run-command/redactor.js";
 import { detectTestRun, isTestCommand } from "../run-command/test-detector.js";
+import { type Pipeline, pipelinesOf } from "./last-pipeline.js";
 import { PersistentShell, SHELL_BG_ID } from "./persistent-shell.js";
 import {
   readRedirectTargets,
   settleRedirectTargets,
   writesAccounted,
 } from "./redirect-writes.js";
+import { checkLineReads } from "./rule.js";
 import { bashInputSchema, bashJsonSchema } from "./schema.js";
-import {
-  classifyShellCommandDetailed,
-  peelReaderHead,
-  tokenize,
-} from "./shell-classifier.js";
+import { classifyShellCommandDetailed, tokenize } from "./shell-classifier.js";
 import { shellPathsFor } from "./shell-paths.js";
 
 export { findBash } from "./find-bash.js";
@@ -100,6 +97,9 @@ function clipForModel(text: string): { out: string; truncated: boolean } {
 
 /** The shell's own spelling of the workspace, for the 板砖 prompt line —
  *  spawns nothing (mapping only) until a shell has run. */
+/** A leading `cd <dir> &&`, as a model writes it ahead of the command. */
+const CD_PREFIX = /^cd\s+(?:"[^"]*"|'[^']*'|\S+)\s*&&\s*/u;
+
 export function shellWorkspaceHint(
   bashPath: string | null,
   workspaceRoot: string,
@@ -117,12 +117,11 @@ export function shellWorkspaceHint(
 /**
  * `bash(command)` — the minimal contract's shell (ADR 0040).
  *
- * One PersistentShell per brief, registered as an INTERNAL background entry
- * so the runtime's brief-end `stopAll()` reaps it. Output is redacted,
- * persisted to `.herta/logs` like run_command's, and returned to the model
- * as plain text (`modelText`) with `[exit code: N]` on non-zero, while the
- * harness gets RunCommandData (exit, duration, tail, testRun) so the record
- * shows the same rows a run_command would.
+ * One PersistentShell per brief, registered with the brief's
+ * BackgroundHost so the runtime's brief-end `stopAll()` reaps it. Output is
+ * redacted, persisted to `.herta/logs`, and returned to the model as plain
+ * text (`modelText`) with `[exit code: N]` on non-zero, while the harness
+ * gets RunCommandData (exit, duration, tail, testRun) for the record's rows.
  */
 /** The first part of a shell line that IS a test runner (`cd x && npm
  *  test` → `npm test`), or null. One walk for both readers — the result's
@@ -133,6 +132,85 @@ function testSegment(command: string): string[] | null {
     if (words.length > 0 && isTestCommand(words)) return words;
   }
   return null;
+}
+
+/** The exit status that speaks for a line's test run, when one does. */
+export type RunnerExit =
+  | { readonly read: true; readonly exit: number | null }
+  | { readonly read: false };
+
+const UNREAD: RunnerExit = { read: false };
+
+/**
+ * Whose exit status speaks for a line's test run — and whether any does.
+ *
+ * It was the line's own, always. But a line's exit code is its last
+ * command's: `npm test 2>&1 | tee log` ends in `tee`, and `npm test; echo
+ * done` in `echo`. Two of three tests failed and the record said `tests:
+ * passed (exit 0)` (real run 2026-11-12). The rule now (ADR 0040 amendment
+ * 2026-11-12): a test run is evidence only when the status in hand is
+ * provably the runner's own, and is otherwise left out of the evidence. "A
+ * missed test is recoverable; a fabricated one is not" (`test-detector.ts`).
+ *
+ * Read, for a line `pipelinesOf` reads:
+ * - the runner is the LAST stage of the line's last pipeline: the line's
+ *   exit code is its own;
+ * - the runner is an earlier stage of the last pipeline: the status the
+ *   shell reported for that stage, if it reported exactly as many statuses
+ *   as the pipeline has stages;
+ * - only `&&` joins follow the runner's pipeline, and the runner is that
+ *   pipeline's last stage: the line's exit code. Zero proves the run passed.
+ *   Non-zero is the run's or a later command's, and reads as a failure as
+ *   it always did: it claims no pass.
+ *
+ * Not read: anything else after the runner (`;`, a new line, `||`), a pipe
+ * after the runner with more commands behind it, and a `||` before the
+ * runner (it may not have run at all).
+ *
+ * A line `pipelinesOf` does not read (a subshell, a heredoc, a comment, a
+ * keyword…) is read only when the test run is its last segment.
+ *
+ * A line with no exit code (a timeout, a dead shell) is the runner's
+ * failure, as before.
+ */
+export function testRunnerExit(
+  command: string,
+  lineExit: number | null,
+  pipeStatus: readonly number[] | undefined,
+): RunnerExit {
+  if (lineExit === null) return { read: true, exit: null };
+  const line = pipelinesOf(command);
+  if (line === null) {
+    const segments = splitShellSegments(command);
+    const at = segments.findIndex((seg) => testSegment(seg) !== null);
+    return at !== -1 && at === segments.length - 1
+      ? { read: true, exit: lineExit }
+      : UNREAD;
+  }
+  let at = -1;
+  let stage = -1;
+  for (let k = 0; k < line.length && at === -1; k += 1) {
+    const i = (line[k] as Pipeline).stages.findIndex(
+      (text) => testSegment(text) !== null,
+    );
+    if (i !== -1) {
+      at = k;
+      stage = i;
+    }
+  }
+  if (at === -1) return UNREAD;
+  const mine = line[at] as Pipeline;
+  // A `||` in front: the runner ran only if what stands before it failed.
+  if (line.slice(0, at).some((p) => p.join === "||")) return UNREAD;
+  const lastStage = stage === mine.stages.length - 1;
+  if (at === line.length - 1) {
+    if (lastStage) return { read: true, exit: lineExit };
+    return pipeStatus !== undefined && pipeStatus.length === mine.stages.length
+      ? { read: true, exit: pipeStatus[stage] ?? lineExit }
+      : UNREAD;
+  }
+  const onlyAnds = line.slice(at, -1).every((p) => p.join === "&&");
+  return lastStage && onlyAnds ? { read: true, exit: lineExit } : UNREAD;
 }
 
 export function bashTool(opts: BashToolOpts): HertaTool {
@@ -184,7 +262,7 @@ export function bashTool(opts: BashToolOpts): HertaTool {
       }
       const command = parsed.data.command;
 
-      let shell = ctx.bg.getInternal(SHELL_BG_ID);
+      let shell = ctx.bg.get(SHELL_BG_ID);
       if (!(shell instanceof PersistentShell)) {
         // The shell lives for the brief; the run's journal learns each bash
         // it starts (ADR 0071 §1.6).
@@ -225,9 +303,8 @@ export function bashTool(opts: BashToolOpts): HertaTool {
         paths: shellPathsFor(opts.bashPath),
         cwd: sh.cwd,
       };
-      const readOnly =
-        classifyShellCommandDetailed(command, classifyOpts).verdict.kind ===
-        "allow";
+      const classified = classifyShellCommandDetailed(command, classifyOpts);
+      const readOnly = classified.verdict.kind === "allow";
       // What the line's redirections are about to overwrite, read while it
       // is still there (ADR 0074 amendment, 2026-10-08): this contract
       // writes its files with `cat > f <<'EOF'` and `printf … > f`, and undo
@@ -237,31 +314,31 @@ export function bashTool(opts: BashToolOpts): HertaTool {
         : await readRedirectTargets(command, classifyOpts);
 
       // Execution-time reader realpath backstop (TOCTOU, mirrors run_command).
-      // Peeled exactly as the RULE peels (`rule.ts`): the rule learned on
-      // 2026-08-24 that an un-peeled `time cat x` hands the guard a first
-      // word that is no reader and switches it off; this second look kept
-      // the old spelling, so behind one harmless word it re-checked nothing
-      // (perf audit 2026-09-20, found in passing).
-      for (const segment of splitShellSegments(command)) {
-        const { words } = tokenize(segment);
-        if (words.length === 0) continue;
-        const denial = await checkReaderArgvPaths(
-          ctx.workspaceRoot,
-          sh.cwd,
-          peelReaderHead(words),
-        );
-        if (denial !== null) {
-          return {
-            ok: false,
-            error: {
-              code: denial.code,
-              message: denial.message,
-              retryable: false,
-            },
-            summary: `failed: ${denial.code}`,
-            modelText: `Command refused by the harness: ${denial.message}`,
-          };
-        }
+      // The RULE's own check (`checkLineReads`): this second look once kept
+      // an older peel, so behind one harmless word it re-checked nothing
+      // (perf audit 2026-09-20, found in passing). Only for a line the rule
+      // ALLOWED, as the rule checks only those: a line the owner approved
+      // on its card was refused here for reading what the card showed —
+      // `psql db < C:/Windows/win.ini`, an approved `npm test < /dev/null`
+      // (review 2026-10-30).
+      const denial = readOnly
+        ? await checkLineReads(
+            ctx.workspaceRoot,
+            classified.steps ?? [],
+            classifyOpts.paths,
+          )
+        : null;
+      if (denial !== null) {
+        return {
+          ok: false,
+          error: {
+            code: denial.code,
+            message: denial.message,
+            retryable: false,
+          },
+          summary: `failed: ${denial.code}`,
+          modelText: `Command refused by the harness: ${denial.message}`,
+        };
       }
 
       // The live view (ADR 0073): whole lines, redacted as the result is.
@@ -308,14 +385,38 @@ export function bashTool(opts: BashToolOpts): HertaTool {
       } else if (r.exitCode !== 0 && r.exitCode !== null) {
         notes.push(`[exit code: ${r.exitCode}]`);
       }
+      const testWords = testSegment(command);
+      const runner =
+        testWords === null
+          ? null
+          : testRunnerExit(command, r.exitCode, r.pipeStatus);
+      if (runner !== null && !r.timedOut && !r.shellExited) {
+        if (!runner.read) {
+          // The model is told, so that it can run the tests where their
+          // result is read; the record just has no test row for this line.
+          notes.push(
+            "[test result not recorded: the line's exit code is not the test run's own — a command follows it, or it may not have run. To have a result recorded, run the tests as the last command of the line (a pipe after them is fine).]",
+          );
+        } else if (runner.exit !== null && runner.exit !== r.exitCode) {
+          // A runner that failed upstream of a pipe: the line exited 0, so
+          // nothing above says so, and the model reads a red run as green.
+          notes.push(
+            `[the test runner exited ${runner.exit}; the line's exit code ${r.exitCode} is the last command of its pipe]`,
+          );
+        }
+      }
       const modelBody = clipForModel(redacted);
       const modelText = [modelBody.out, ...notes]
         .filter((s) => s.length > 0)
         .join("\n");
 
       const firstLine = command.trimStart().split(/\r?\n/)[0] ?? command;
+      // The bound is the command's, not the `cd` in front of it: a workspace
+      // path left a receipt 22 characters of what it ran (live run 2026-11-06).
+      const cd = CD_PREFIX.exec(firstLine)?.[0] ?? "";
+      const ran = firstLine.slice(cd.length);
       const displayCmd = redactSecrets(
-        firstLine.length > 120 ? `${firstLine.slice(0, 119)}…` : firstLine,
+        `${cd}${ran.length > 120 ? `${ran.slice(0, 119)}…` : ran}`,
       );
       const logPath = await writeRunLog(
         ctx.workspaceRoot,
@@ -369,12 +470,13 @@ export function bashTool(opts: BashToolOpts): HertaTool {
           : {}),
       };
       // Test evidence: the first segment that IS a test runner names the run
-      // (`cd x && npm test` → npm test); the shell's exit is the pipeline's.
-      const testWords = testSegment(command);
-      if (testWords !== null) {
+      // (`cd x && npm test` → npm test), and its verdict is the runner's own
+      // exit status. A run whose own status is not in hand is no evidence:
+      // the line keeps its ordinary exit row (`testRunnerExit`).
+      if (testWords !== null && runner?.read === true) {
         const testRun = detectTestRun({
           argv: testWords,
-          exitCode: r.exitCode,
+          exitCode: runner.exit,
           durationMs: r.durationMs,
           timedOut: r.timedOut,
         });

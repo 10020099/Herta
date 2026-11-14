@@ -13,16 +13,22 @@ function subscribe<T>(channel: string, cb: (e: T) => void): () => void {
   return () => ipcRenderer.off(channel, handler);
 }
 
-const bridge: HertaBridge = {
+// `Required`: most of the bridge's members are optional in its type, so that
+// a test or an older preload can leave one out. This is the real one, and a
+// member forgotten here compiled into a button that did nothing (review
+// 2026-11-10). Now it does not compile.
+const bridge: Required<HertaBridge> = {
   platform: process.platform,
-  submitText: (text, stagedImageIds) =>
-    ipcRenderer.invoke(CMD.submitText, text, stagedImageIds),
+  submitText: (text, stagedImageIds, mentions, picks) =>
+    ipcRenderer.invoke(CMD.submitText, text, stagedImageIds, mentions, picks),
   interrupt: (turnId) => ipcRenderer.invoke(CMD.interrupt, turnId),
   getContextUsage: (sessionId) =>
     ipcRenderer.invoke(CMD.getContextUsage, sessionId),
   requestContextCompaction: (sessionId) =>
     ipcRenderer.invoke(CMD.requestContextCompaction, sessionId),
-  steerText: (text) => ipcRenderer.invoke(CMD.steerText, text),
+  steerText: (text, picks) => ipcRenderer.invoke(CMD.steerText, text, picks),
+  talkText: (text, mentions, picks) =>
+    ipcRenderer.invoke(CMD.talkText, text, mentions, picks),
   continueInterrupted: () => ipcRenderer.invoke(CMD.continueInterrupted),
   rewindLastTurn: (sessionId) =>
     ipcRenderer.invoke(CMD.rewindLastTurn, sessionId),
@@ -33,6 +39,8 @@ const bridge: HertaBridge = {
   searchSessions: (query) => ipcRenderer.invoke(CMD.search, query),
   recordSlice: (sessionId, before, count) =>
     ipcRenderer.invoke(CMD.recordSlice, sessionId, before, count),
+  recordWindow: (sessionId, req) =>
+    ipcRenderer.invoke(CMD.recordWindow, sessionId, req),
   openSession: (id) => ipcRenderer.invoke(CMD.open, id),
   createSession: (opts) => ipcRenderer.invoke(CMD.create, opts),
   deleteSession: (id) => ipcRenderer.invoke(CMD.deleteSession, id),
@@ -83,6 +91,8 @@ const bridge: HertaBridge = {
     ipcRenderer.invoke(CMD.readWorkspaceBranches, sessionId),
   openWorkspaceFile: (sessionId, path) =>
     ipcRenderer.invoke(CMD.openWorkspaceFile, sessionId, path),
+  revealWorkspaceFile: (sessionId, path) =>
+    ipcRenderer.invoke(CMD.revealWorkspaceFile, sessionId, path),
   // Electron 43 removed `File.path`, and this preload is CJS + sandboxed
   // (main/index.ts:266 records why it must stay that way), so a dropped
   // file's real path is only reachable through webUtils here. The renderer
@@ -142,6 +152,8 @@ const bridge: HertaBridge = {
   setMiniMaxKey: (key) => ipcRenderer.invoke(CMD.setMiniMaxKey, key),
   clearMiniMaxKey: () => ipcRenderer.invoke(CMD.clearMiniMaxKey),
   openExternal: (url) => ipcRenderer.invoke(CMD.openExternal, url),
+  openWebPage: (sessionId, url) =>
+    ipcRenderer.invoke(CMD.openWebPage, sessionId, url),
   getMiniMaxPlanKeyStatus: () =>
     ipcRenderer.invoke(CMD.getMiniMaxPlanKeyStatus),
   setMiniMaxPlanKey: (key) => ipcRenderer.invoke(CMD.setMiniMaxPlanKey, key),
@@ -170,6 +182,41 @@ const bridge: HertaBridge = {
   windowIsFullScreen: () => ipcRenderer.invoke(CMD.windowIsFullScreen),
   onWindowFullScreen: (cb) => subscribe(EVT.windowFullScreen, cb),
   onOpenSettings: (cb) => subscribe(EVT.openSettings, () => cb()),
+  onCloseRequested: (cb) => subscribe(EVT.closeRequested, () => cb()),
+  pageShow: (sessionId, bounds) =>
+    ipcRenderer.send(CMD.pageShow, sessionId, bounds),
+  pageHide: () => ipcRenderer.send(CMD.pageHide),
+  pageFreeze: () => ipcRenderer.invoke(CMD.pageFreeze),
+  pageNavigate: (sessionId, to) =>
+    ipcRenderer.send(CMD.pageNavigate, sessionId, to),
+  pageState: (sessionId) => ipcRenderer.invoke(CMD.pageState, sessionId),
+  pageOpenExternal: (sessionId) =>
+    ipcRenderer.invoke(CMD.pageOpenExternal, sessionId),
+  pageClearData: () => ipcRenderer.invoke(CMD.pageClearData),
+  pageClose: (sessionId) => ipcRenderer.send(CMD.pageClose, sessionId),
+  pagePick: (sessionId, on) => ipcRenderer.send(CMD.pagePick, sessionId, on),
+  onPagePicked: (cb) => subscribe(EVT.pagePicked, cb),
+  serversList: (sessionId) => ipcRenderer.invoke(CMD.serversList, sessionId),
+  serversStart: (sessionId, name, confirmed) =>
+    ipcRenderer.invoke(CMD.serversStart, sessionId, name, confirmed),
+  serversStop: (sessionId, name) =>
+    ipcRenderer.invoke(CMD.serversStop, sessionId, name),
+  onServersChanged: (cb) => subscribe(EVT.serversChanged, cb),
+  flowState: () => ipcRenderer.invoke(CMD.flowState),
+  flowIssues: () => ipcRenderer.invoke(CMD.flowIssues),
+  flowRefresh: () => ipcRenderer.invoke(CMD.flowRefresh),
+  flowMarkRead: (issueId) => {
+    void ipcRenderer.invoke(CMD.flowMarkRead, issueId).catch(() => undefined);
+  },
+  flowOpenSource: (url) => {
+    void ipcRenderer.invoke(CMD.flowOpenSource, url).catch(() => undefined);
+  },
+  flowSettings: () => ipcRenderer.invoke(CMD.flowSettings),
+  flowSetSettings: (next) => ipcRenderer.invoke(CMD.flowSetSettings, next),
+  onFlow: (cb) => subscribe(EVT.flow, cb),
+  onPageState: (cb) => subscribe(EVT.pageState, cb),
+  onPageCommand: (cb) => subscribe(EVT.pageCommand, cb),
+  onPageOpen: (cb) => subscribe(EVT.pageOpen, cb),
   onWorkspace: (cb) => subscribe(EVT.workspace, cb),
   onRepo: (cb) => subscribe(EVT.repo, cb),
   onResume: (cb) => subscribe(EVT.resume, cb),

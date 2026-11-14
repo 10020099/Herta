@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { SUPERVISOR_VETO_TEMPLATE } from "./actor-hints.js";
 import {
   actorHintTexts,
-  BEAT_HINT_PATCH_PREVIEW,
+  BEAT_HINT_TALK,
   BEAT_HINT_TOOL_FAIL,
   BEAT_HINT_VERIFICATION_FINISHED,
   BEAT_NO_BANZHUAN_CLAUSE,
@@ -250,19 +250,12 @@ describe("formatSelfCorrectionText (N8/N8b, 2026-05-23)", () => {
 
 describe("BEAT_HINT_* — N9 (2026-05-23): forbid @板砖 in beats", () => {
   it("explicitly tells Herta not to write @板砖 in any beat hint", async () => {
-    const {
-      BEAT_HINT_PATCH_PREVIEW,
-      BEAT_HINT_VERIFICATION_FINISHED,
-      BEAT_HINT_TOOL_FAIL,
-    } = await import("./thought-hint.js");
+    const { BEAT_HINT_VERIFICATION_FINISHED, BEAT_HINT_TOOL_FAIL } =
+      await import("./thought-hint.js");
     // Each hint must contain the "no @板砖" clause AND must mention
     // both `@板砖` (the prohibited token) and "板砖正在工作中"
     // (the reason it's prohibited).
-    for (const hint of [
-      BEAT_HINT_PATCH_PREVIEW,
-      BEAT_HINT_VERIFICATION_FINISHED,
-      BEAT_HINT_TOOL_FAIL,
-    ]) {
+    for (const hint of [BEAT_HINT_VERIFICATION_FINISHED, BEAT_HINT_TOOL_FAIL]) {
       expect(hint).toContain("@板砖");
       expect(hint).toContain("板砖正在工作中");
       expect(hint).toContain("新任务等它做完再说");
@@ -278,9 +271,9 @@ describe("actorHintTexts (EN interaction slice 3b)", () => {
       expect(texts.speechRetry).toEqual(PHASE_TWO_SPEECH_RETRY_HINTS);
       expect(texts.thoughtRetry).toEqual(PHASE_TWO_THOUGHT_RETRY_HINTS);
       expect(texts.beatNoBanzhuanClause).toBe(BEAT_NO_BANZHUAN_CLAUSE);
-      expect(texts.beatPatchPreview).toBe(BEAT_HINT_PATCH_PREVIEW);
       expect(texts.beatVerification).toBe(BEAT_HINT_VERIFICATION_FINISHED);
       expect(texts.beatToolFail).toBe(BEAT_HINT_TOOL_FAIL);
+      expect(texts.beatTalk).toBe(BEAT_HINT_TALK);
     }
   });
 
@@ -296,9 +289,9 @@ describe("actorHintTexts (EN interaction slice 3b)", () => {
       en.phase2Speech,
       ...en.speechRetry,
       ...en.thoughtRetry,
-      en.beatPatchPreview,
       en.beatVerification,
       en.beatToolFail,
+      en.beatTalk,
     ];
     for (const hint of all) {
       expect(hint.startsWith("〔")).toBe(true);
@@ -308,7 +301,7 @@ describe("actorHintTexts (EN interaction slice 3b)", () => {
     }
     // Speech-surface hints name the speech fences; thought-surface
     // hints name the thought fences.
-    for (const hint of [en.phase2Speech, ...en.speechRetry]) {
+    for (const hint of [en.phase2Speech, ...en.speechRetry, en.beatTalk]) {
       expect(hint).toContain("（我 说）");
       expect(hint).toContain("（/我 说）");
     }
@@ -328,11 +321,7 @@ describe("actorHintTexts (EN interaction slice 3b)", () => {
     const en = actorHintTexts("en");
     expect(en.beatNoBanzhuanClause).toContain("@板砖");
     expect(en.beatNoBanzhuanClause).toContain("mid-job");
-    for (const hint of [
-      en.beatPatchPreview,
-      en.beatVerification,
-      en.beatToolFail,
-    ]) {
+    for (const hint of [en.beatVerification, en.beatToolFail]) {
       expect(hint).toContain("板砖");
       expect(hint).toContain(en.beatNoBanzhuanClause);
       expect(hint).toContain("（我 说）");

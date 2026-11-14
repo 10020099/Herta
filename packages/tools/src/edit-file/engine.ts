@@ -1,161 +1,23 @@
-export interface Hunk {
-  search: string;
-  replace: string;
+/**
+ * What is left of `edit_file`'s engine (ADR 0086): the unified diff every
+ * write is previewed with, and the two helpers that say whether a file is a
+ * Windows file. The hunk parser, validator and applier that were here went
+ * with the tool; `str_replace_editor` plans its own edits.
+ */
+
+/**
+ * Whether every line break in `text` is `\r\n` — a Windows file. One bare
+ * `\n` and the file is taken exactly as it stands: nothing says which of its
+ * two endings a new line should have.
+ */
+export function isCrlfOnly(text: string): boolean {
+  return text.includes("\r\n") && !/(?:^|[^\r])\n/.test(text);
 }
 
-export type ParsePatchResult =
-  | { ok: true; hunks: Hunk[] }
-  | { ok: false; code: "parse_failed"; message: string };
-
-export type ValidateResult =
-  | { ok: true }
-  | {
-      ok: false;
-      code: "hunk_not_found" | "hunk_ambiguous" | "hunk_overlap";
-      message: string;
-    };
-
-export function parsePatch(input: unknown): ParsePatchResult {
-  if (!Array.isArray(input)) {
-    return {
-      ok: false,
-      code: "parse_failed",
-      message: "hunks must be an array",
-    };
-  }
-  if (input.length === 0) {
-    return {
-      ok: false,
-      code: "parse_failed",
-      message: "hunks must be non-empty",
-    };
-  }
-  const hunks: Hunk[] = [];
-  for (let i = 0; i < input.length; i++) {
-    const h = input[i] as unknown;
-    if (typeof h !== "object" || h === null) {
-      return {
-        ok: false,
-        code: "parse_failed",
-        message: `hunk[${i}] must be an object`,
-      };
-    }
-    const rec = h as Record<string, unknown>;
-    if (typeof rec.search !== "string") {
-      return {
-        ok: false,
-        code: "parse_failed",
-        message: `hunk[${i}].search must be a string`,
-      };
-    }
-    if (typeof rec.replace !== "string") {
-      return {
-        ok: false,
-        code: "parse_failed",
-        message: `hunk[${i}].replace must be a string`,
-      };
-    }
-    if (rec.search.length === 0) {
-      return {
-        ok: false,
-        code: "parse_failed",
-        message: `hunk[${i}].search must be non-empty`,
-      };
-    }
-    hunks.push({ search: rec.search, replace: rec.replace });
-  }
-  return { ok: true, hunks };
-}
-
-interface ApplyTrace {
-  hunkIndex: number;
-  postStart: number;
-  postEnd: number;
-}
-
-function countOccurrences(haystack: string, needle: string): number {
-  if (needle.length === 0) return 0;
-  let count = 0;
-  let idx = 0;
-  while (true) {
-    const found = haystack.indexOf(needle, idx);
-    if (found < 0) return count;
-    count += 1;
-    idx = found + needle.length;
-  }
-}
-
-export function validateHunks(
-  content: string,
-  hunks: ReadonlyArray<Hunk>,
-): ValidateResult {
-  let current = content;
-  const replacementRanges: ApplyTrace[] = [];
-  for (let i = 0; i < hunks.length; i++) {
-    const h = hunks[i] as Hunk;
-    const occurrences = countOccurrences(current, h.search);
-    if (occurrences === 0) {
-      return {
-        ok: false,
-        code: "hunk_not_found",
-        message: `hunk[${i}] search not found`,
-      };
-    }
-    if (occurrences > 1) {
-      return {
-        ok: false,
-        code: "hunk_ambiguous",
-        message: `hunk[${i}] search matches ${occurrences} places; need 1`,
-      };
-    }
-    const matchStart = current.indexOf(h.search);
-    const matchEnd = matchStart + h.search.length;
-    for (const r of replacementRanges) {
-      const overlaps = !(matchEnd <= r.postStart || matchStart >= r.postEnd);
-      if (overlaps) {
-        return {
-          ok: false,
-          code: "hunk_overlap",
-          message: `hunk[${i}] match overlaps hunk[${r.hunkIndex}] replacement region`,
-        };
-      }
-    }
-    const newPostStart = matchStart;
-    const newPostEnd = matchStart + h.replace.length;
-    const delta = h.replace.length - h.search.length;
-    for (const r of replacementRanges) {
-      if (r.postStart >= matchEnd) {
-        r.postStart += delta;
-        r.postEnd += delta;
-      }
-    }
-    replacementRanges.push({
-      hunkIndex: i,
-      postStart: newPostStart,
-      postEnd: newPostEnd,
-    });
-    current =
-      current.slice(0, matchStart) + h.replace + current.slice(matchEnd);
-  }
-  return { ok: true };
-}
-
-export function applyHunks(
-  content: string,
-  hunks: ReadonlyArray<Hunk>,
-): string {
-  let current = content;
-  for (const h of hunks) {
-    const idx = current.indexOf(h.search);
-    if (idx < 0) {
-      throw new Error(
-        "applyHunks invariant violated: hunk search missing — call validateHunks first",
-      );
-    }
-    current =
-      current.slice(0, idx) + h.replace + current.slice(idx + h.search.length);
-  }
-  return current;
+/** What the model wrote, its line breaks spelled as a `\r\n` file spells
+ *  them. A break already written `\r\n` stays one. */
+export function withCrlf(text: string): string {
+  return text.replace(/\r?\n/g, "\r\n");
 }
 
 export function computeUnifiedDiff(
@@ -210,18 +72,27 @@ interface DiffOp {
  * preview stops being worth a main-process stall.
  */
 const MAX_LCS_CELLS = 2_000_000;
-/** Unchanged lines kept either side of the changed span once trimming starts. */
+/** Unchanged lines kept either side of the changed span. */
 const TRIM_CONTEXT = 3;
 
 /**
  * The diff body, computed within a bounded budget.
  *
- * Under the budget this is exactly the whole-file walk it has always been, so
- * ordinary edits are byte-identical to before. Over it, the identical head and
- * tail are peeled first — a one-line replacement in a 30,000-line file has a
- * tiny middle, which is the case that used to be fatal — and only the middle is
- * walked. If even the middle is too large, the span is emitted as one complete
- * replacement.
+ * The identical head and tail are peeled first, at every size, and only the
+ * middle is walked — a one-line replacement has a tiny middle whatever the
+ * file's length. If even the middle is too large, the span is emitted as one
+ * complete replacement.
+ *
+ * Until the review of 2026-11-10 a file under the budget took the whole-file
+ * walk instead, and it paid twice. The table is quadratic right up to the
+ * budget: one changed line in a 1,400-line file cost some 45 ms on the main
+ * thread, in the permission rule and again in the tool. And the diff carried every
+ * unchanged line of the file, so the record held the file once per edit and
+ * the prompt's and the terminal's collapse (`collapseLongDiffs`, which keeps
+ * a diff's FIRST lines) kept the unchanged head and dropped the change. The
+ * counts are the same either way: a common head and tail are part of some
+ * longest common subsequence, so peeling them changes no `+N -M`. Unchanged
+ * lines BETWEEN two changes are still shown in full.
  *
  * The coarse form is deliberately NOT truncated: `countDiffLines` derives the
  * report's `+N -M` from this text, so dropping lines here would fabricate the
@@ -229,10 +100,6 @@ const TRIM_CONTEXT = 3;
  * allocation was the failure.
  */
 function diffBody(a: string[], b: string[]): string {
-  if (a.length * b.length <= MAX_LCS_CELLS) {
-    return render(diffOps(a, b, longestCommonSubsequence(a, b)));
-  }
-
   let prefix = 0;
   while (prefix < a.length && prefix < b.length && a[prefix] === b[prefix]) {
     prefix += 1;

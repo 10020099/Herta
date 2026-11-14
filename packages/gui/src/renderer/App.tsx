@@ -1,11 +1,24 @@
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import type { FlowPostView } from "../shared/flow.js";
 import { HoverTipLayer } from "./components/common/HoverTipLayer.js";
 import { ErrorBoundary } from "./components/ErrorBoundary.js";
-import { FileViewerProvider } from "./components/FileViewer/file-viewer-context.js";
+import {
+  FileViewerProvider,
+  useFileViewerState,
+} from "./components/FileViewer/file-viewer-context.js";
 import { WorkspaceBodyShell } from "./components/FileViewer/WorkspaceBodyShell.js";
+import { FlowPanel } from "./components/Flow/FlowPanel.js";
+import { useFlow } from "./components/Flow/useFlow.js";
 import { OpeningAscii } from "./components/Opening/OpeningAscii.js";
 import { KeyPrompt } from "./components/Settings/KeyPrompt.js";
 import { SettingsModal } from "./components/Settings/SettingsModal.js";
+import { ShortcutsSheet } from "./components/Shortcuts/ShortcutsSheet.js";
 import { Sidebar } from "./components/Sidebar/Sidebar.js";
 import { TopBar } from "./components/TopBar/TopBar.js";
 import { UtilityRail } from "./components/UtilityRail/UtilityRail.js";
@@ -25,11 +38,22 @@ import { useVoiceCues } from "./hooks/useVoiceCues.js";
 import { useWindowFullScreen } from "./hooks/useWindowFullScreen.js";
 import { useWindowHidden } from "./hooks/useWindowHidden.js";
 import { useWindowSnap } from "./hooks/useWindowSnap.js";
-import { LocaleProvider, useT } from "./i18n/LocaleProvider.js";
+import { LocaleProvider, useLocale, useT } from "./i18n/LocaleProvider.js";
 import { en } from "./i18n/messages/en.js";
 import { zh } from "./i18n/messages/zh.js";
 import type { HertaBridge, Locale } from "./ipc/bridge-types.js";
 import { journeyMarkAfterPaint } from "./lib/journey.js";
+import {
+  OVERLAY_Z,
+  overlayOpenAbove,
+  topOverlayZ,
+} from "./lib/overlay-stack.js";
+import { postQuote } from "./lib/quote-format.js";
+import {
+  runShortcut,
+  useShortcut,
+  useShortcutDispatcher,
+} from "./lib/shortcut-registry.js";
 import { initTheme } from "./lib/theme.js";
 import { ReferenceView } from "./ReferenceView.js";
 
@@ -108,7 +132,8 @@ function Workbench({ booting }: { readonly booting: boolean }): JSX.Element {
   // web contents without the OS chrome). WindowControls already returns null
   // on darwin, but that only drops OUR buttons on the right; nothing was
   // reserving the left. See .app.is-mac .topbar in reference-ux.css.
-  const { bridge } = useHertaBridge();
+  const { bridge, sessionStore } = useHertaBridge();
+  const { locale } = useLocale();
   const isMac = bridge.platform === "darwin";
   // …except in full screen, where macOS hides the lights (2026-09-23).
   const fullScreen = useWindowFullScreen();
@@ -125,12 +150,97 @@ function Workbench({ booting }: { readonly booting: boolean }): JSX.Element {
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  // Flow (ADR 0084): a panel of its own over the main area.
+  const flow = useFlow();
+  const [flowOpen, setFlowOpen] = useState(false);
+  const closeFlow = useCallback(() => setFlowOpen(false), []);
+  const turnFlowOn = useCallback(() => {
+    void bridge
+      .flowSettings?.()
+      .then((s) => bridge.flowSetSettings?.({ ...s, enabled: true }))
+      .catch(() => undefined);
+  }, [bridge]);
+  // Ask Herta (§9): Flow closes and the post goes into the open session's
+  // composer as a quote, or into a new session's when none is open. The
+  // quote is in the session's language; a new session's is the window's.
+  const askHerta = useCallback(
+    (post: FlowPostView) => {
+      const s = sessionStore.getSnapshot();
+      const open = s.sessionId !== null;
+      const issue = flow.issues.find((i) =>
+        i.posts.some((p) => p.id === post.id),
+      );
+      const quote = postQuote(post, open ? s.lang : locale, issue?.number);
+      if (quote === undefined) return;
+      setFlowOpen(false);
+      if (open) {
+        const staged = s.composerQuotes.some(
+          (q) => q.kind === "post" && q.url === quote.url,
+        );
+        if (!staged) sessionStore.addComposerQuote(quote);
+        requestAnimationFrame(() => runShortcut("focusComposer"));
+        return;
+      }
+      sessionStore.quoteIntoNextSession(quote);
+      void bridge.createSession({}).then(
+        (created) => {
+          if (created === null) sessionStore.dropNextSessionQuotes();
+        },
+        () => sessionStore.dropNextSessionQuotes(),
+      );
+    },
+    [bridge, sessionStore, locale, flow.issues],
+  );
   const searchButtonRef = useRef<HTMLButtonElement>(null);
-  // The application menu's Settings… (Cmd+, on macOS; 2026-09-23).
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  // The application menu's Settings… (Cmd+, on macOS since 2026-09-23;
+  // Ctrl+, everywhere, ADR 0082). From over the cheat sheet, the sheet
+  // gives way. Over the key prompt, the lightbox or a menu it does nothing:
+  // Settings opened BEHIND them and took the focus from the visible one
+  // (release review 2026-10-22), as Ctrl+W already knew.
   useEffect(
-    () => bridge.onOpenSettings?.(() => setSettingsOpen(true)),
+    () =>
+      bridge.onOpenSettings?.(() => {
+        if (overlayOpenAbove(OVERLAY_Z.approval, ["shortcuts", "settings"]))
+          return;
+        setShortcutsOpen(false);
+        setSettingsOpen(true);
+      }),
     [bridge],
   );
+  // The keyboard (ADR 0082): one listener for the whole app, and the
+  // commands that belong to the workbench itself.
+  useShortcutDispatcher(isMac);
+  // A key pressed while the browser page has the focus reaches main first
+  // (ADR 0083 §3): an app command comes back here and runs as its key would.
+  useEffect(
+    () => bridge.onPageCommand?.((id) => void runShortcut(id)),
+    [bridge],
+  );
+  useShortcut(
+    "openFlow",
+    () => {
+      setFlowOpen((v) => !v);
+      return true;
+    },
+    flow.available,
+  );
+  useShortcut("showShortcuts", () => {
+    setShortcutsOpen((v) => !v);
+    return true;
+  });
+  useShortcut("toggleSidebar", () => {
+    // Collapsing hides whatever in the sidebar holds the focus, and the focus
+    // fell to the page, where the next Escape stopped the run (release review
+    // 2026-10-22). It goes to the top bar's search button first; the search
+    // and its words stay as they were.
+    const active = document.activeElement;
+    if (!collapsed && active instanceof Element && active.closest(".sidebar"))
+      searchButtonRef.current?.focus({ preventScroll: true });
+    toggleCollapsed();
+    return true;
+  });
 
   const closeSearch = (): void => {
     setSearchOpen(false);
@@ -149,6 +259,23 @@ function Workbench({ booting }: { readonly booting: boolean }): JSX.Element {
     // list is actually visible (not a dead search over a hidden list).
     if (collapsed) toggleCollapsed();
   };
+  // Ctrl+K opens the search, or takes the caret back to it when open — in
+  // a collapsed sidebar too, which it expands first: the hidden field took
+  // no focus, and Ctrl+K did nothing (release review 2026-10-22).
+  const focusSearchOnExpand = useRef(false);
+  useShortcut("searchSessions", () => {
+    if (!searchOpen) toggleSearch();
+    else if (collapsed) {
+      focusSearchOnExpand.current = true;
+      toggleCollapsed();
+    } else searchInputRef.current?.focus({ preventScroll: true });
+    return true;
+  });
+  useEffect(() => {
+    if (collapsed || !focusSearchOnExpand.current) return;
+    focusSearchOnExpand.current = false;
+    searchInputRef.current?.focus({ preventScroll: true });
+  }, [collapsed]);
 
   if (error !== null) {
     return (
@@ -169,6 +296,15 @@ function Workbench({ booting }: { readonly booting: boolean }): JSX.Element {
         searchActive={searchOpen}
         onToggleSearch={toggleSearch}
         searchButtonRef={searchButtonRef}
+        {...(flow.available
+          ? {
+              flow: {
+                open: flowOpen,
+                unread: flow.state.unreadIssueId !== null,
+                gathering: flow.state.gathering !== null,
+              },
+            }
+          : {})}
       />
       <Sidebar
         searchOpen={searchOpen}
@@ -176,11 +312,25 @@ function Workbench({ booting }: { readonly booting: boolean }): JSX.Element {
         onQueryChange={setQuery}
         onCloseSearch={closeSearch}
         onOpenSettings={() => setSettingsOpen(true)}
+        searchInputRef={searchInputRef}
       />
       <FileViewerProvider>
+        <CloseRequests />
         <WorkspaceBodyShell>
           <Workspace />
           <UtilityRail />
+          {flow.available && (
+            <FlowPanel
+              open={flowOpen}
+              onClose={closeFlow}
+              state={flow.state}
+              issues={flow.issues}
+              onRefresh={flow.refresh}
+              onMarkRead={flow.markRead}
+              onTurnOn={turnFlowOn}
+              onAsk={askHerta}
+            />
+          )}
         </WorkspaceBodyShell>
       </FileViewerProvider>
       <SettingsModal
@@ -188,10 +338,43 @@ function Workbench({ booting }: { readonly booting: boolean }): JSX.Element {
         onClose={() => setSettingsOpen(false)}
       />
       <KeyPrompt />
+      <ShortcutsSheet
+        open={shortcutsOpen}
+        onClose={() => setShortcutsOpen(false)}
+      />
       {/* The one hover tip, above everything it may anchor to. */}
       <HoverTipLayer />
     </div>
   );
+}
+
+/**
+ * Ctrl/⌘+W (ADR 0082 §2): the menu's Close asks the renderer, which closes
+ * the viewer's active tab when the viewer is open and the window otherwise
+ * (`windowClose`, the close-to-tray path). Under an overlay that owns the
+ * keyboard (Settings, the cheat sheet…) it does nothing — closing the window
+ * from inside a dialog would surprise.
+ */
+function CloseRequests(): null {
+  const { bridge } = useHertaBridge();
+  const viewer = useFileViewerState();
+  const viewerRef = useRef(viewer);
+  viewerRef.current = viewer;
+  useEffect(
+    () =>
+      bridge.onCloseRequested?.(() => {
+        const z = topOverlayZ();
+        if (z !== null && z > OVERLAY_Z.approval) return;
+        const v = viewerRef.current;
+        if (v?.open === true) {
+          v.closeTab(v.active);
+          return;
+        }
+        bridge.windowClose();
+      }),
+    [bridge],
+  );
+  return null;
 }
 
 function navigatorLocale(): Locale {

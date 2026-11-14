@@ -24,6 +24,8 @@ import {
   legacyMcpConfigPath,
   mainNavigationBlock,
   pickLatest,
+  recordPage,
+  recordWindowFor,
   resolveWorkspaceRoot,
   sanitizeCreateOpts,
   sanitizeLogQuery,
@@ -74,6 +76,7 @@ describe("countsAsUserActivity — what tells a running dream pass the user is b
       CMD.readWorkspaceFile,
       CMD.readWorkspaceLog,
       CMD.recordSlice,
+      CMD.recordWindow,
       CMD.setDreamConfig,
       CMD.setLocale,
       // The session menu (ADR 0072 §3).
@@ -221,7 +224,7 @@ describe("sanitizeCreateOpts (IPC boundary, audit 2026-07-13 T1.2)", () => {
   });
 
   it("resolves and passes a legitimate override", () => {
-    const ws = mkdtempSync(join(tmpdir(), "herta-create-ws-"));
+    const ws = realpathSync(mkdtempSync(join(tmpdir(), "herta-create-ws-")));
     expect(sanitizeCreateOpts({ backendWorkspace: ws }, home)).toEqual({
       backendWorkspace: ws,
     });
@@ -430,35 +433,26 @@ describe("buildConfig", () => {
     expect(cfg.providers.backendModel).toBe("deepseek-flash");
   });
 
-  it("backendContract (ADR 0040): default MINIMAL (owner flip 2026-08-17); setting honored; env beats setting; off-enum → default", async () => {
-    vi.stubEnv("HERTA_BACKEND_CONTRACT", undefined);
+  it("the config carries no tool-set choice: a settings file or a variable naming the deleted set changes nothing (ADR 0086)", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "herta-bc-contract-"));
     const home = mkdtempSync(join(tmpdir(), "herta-bc-contracth-"));
-    expect((await buildConfig(cwd, home, "sk")).backendContract).toBe(
-      "minimal",
-    );
+    const plain = await buildConfig(cwd, home, "sk");
+    expect("backendContract" in plain).toBe(false);
+    // A settings file from a build that still had the choice.
     mkdirSync(join(cwd, ".herta"), { recursive: true });
     writeFileSync(
       join(cwd, ".herta", "settings.json"),
       JSON.stringify({ backend: { thinking: "high", contract: "standard" } }),
       "utf-8",
     );
-    expect((await buildConfig(cwd, home, "sk")).backendContract).toBe(
-      "standard",
-    );
-    vi.stubEnv("HERTA_BACKEND_CONTRACT", "minimal");
-    expect((await buildConfig(cwd, home, "sk")).backendContract).toBe(
-      "minimal",
-    );
+    const withFile = await buildConfig(cwd, home, "sk");
+    expect("backendContract" in withFile).toBe(false);
+    // And the knob that used to override it.
+    vi.stubEnv("HERTA_BACKEND_CONTRACT", "standard");
+    const withEnv = await buildConfig(cwd, home, "sk");
     vi.stubEnv("HERTA_BACKEND_CONTRACT", undefined);
-    writeFileSync(
-      join(cwd, ".herta", "settings.json"),
-      JSON.stringify({ backend: { contract: "极简" } }),
-      "utf-8",
-    );
-    expect((await buildConfig(cwd, home, "sk")).backendContract).toBe(
-      "minimal",
-    );
+    expect("backendContract" in withEnv).toBe(false);
+    expect(JSON.stringify(withEnv)).toBe(JSON.stringify(withFile));
   });
 
   it("falls back to 'high' for an off-enum hand-edited thinking value", async () => {
@@ -584,6 +578,128 @@ describe("resolveWorkspaceRoot", () => {
     }
     vi.stubEnv("HERTA_WORKSPACE_ROOT", link);
     expect(resolveWorkspaceRoot()).toBe(real);
+  });
+});
+
+describe("recordPage — a page of older blocks (review 2026-11-05, N5)", () => {
+  it("answers from what the chat was sent, stamps and all, when the session has it", () => {
+    const at = "2026-11-06T08:00:00.000Z";
+    const page = recordPage(
+      {
+        ...fakeSession(),
+        record: [{ kind: "user", text: "a" }],
+        shownRecord: [
+          { kind: "user", text: "a", at },
+          { kind: "user", text: "b", at },
+        ],
+      } as Session,
+      2,
+      100,
+    );
+    expect(page).toEqual({
+      start: 0,
+      blocks: [
+        { kind: "user", text: "a", at },
+        { kind: "user", text: "b", at },
+      ],
+    });
+  });
+
+  it("falls back to the record", () => {
+    const page = recordPage(
+      { ...fakeSession(), record: [{ kind: "user", text: "a" }] } as Session,
+      1,
+      100,
+    );
+    expect(page.blocks).toEqual([{ kind: "user", text: "a" }]);
+  });
+});
+
+describe("recordWindowFor — a jump's window and a later page (owner 2026-11-12)", () => {
+  // 1 000 plain messages: each weighs ten and opens a turn.
+  const chat = Array.from({ length: 1000 }, (_, i) => ({
+    kind: "user" as const,
+    text: `m${i}`,
+  }));
+  const session = { ...fakeSession(), record: chat } as Session;
+  const range = (r: { start: number; blocks: readonly unknown[] }) => [
+    r.start,
+    r.start + r.blocks.length,
+  ];
+
+  it("a near jump is the blocks between; a far one is a window around the target", () => {
+    const tail = { kind: "jump", start: 800, end: 1000 };
+    expect(range(recordWindowFor(session, { ...tail, to: 700 }))).toEqual([
+      700, 800,
+    ]);
+    // 760 messages lie between block 40 and what the chat holds; the
+    // answer is 190.
+    expect(range(recordWindowFor(session, { ...tail, to: 40 }))).toEqual([
+      0, 190,
+    ]);
+    expect(range(recordWindowFor(session, { ...tail, to: 400 }))).toEqual([
+      350, 550,
+    ]);
+  });
+
+  it("a later page runs a window's weight on from where the chat ends", () => {
+    expect(
+      range(
+        recordWindowFor(session, { kind: "later", after: 550, count: 2000 }),
+      ),
+    ).toEqual([550, 750]);
+    // Never more than a window, whatever is asked for.
+    expect(
+      range(recordWindowFor(session, { kind: "later", after: 0, count: 1e9 })),
+    ).toEqual([0, 200]);
+    expect(
+      range(
+        recordWindowFor(session, { kind: "later", after: 950, count: 2000 }),
+      ),
+    ).toEqual([950, 1000]);
+  });
+
+  it("answers from what the chat was sent, when the session has it", () => {
+    const at = "2026-11-12T08:00:00.000Z";
+    const shown = chat.map((b) => ({ ...b, at }));
+    const r = recordWindowFor(
+      {
+        ...fakeSession(),
+        record: chat.slice(0, 5),
+        shownRecord: shown,
+      } as Session,
+      { kind: "later", after: 800, count: 2000 },
+    );
+    expect(r.start).toBe(800);
+    expect(r.blocks).toHaveLength(200);
+    expect(r.blocks[0]).toEqual({ kind: "user", text: "m800", at });
+  });
+
+  it("a request that is neither of the two, or names no block, is answered with nothing", () => {
+    const none = { start: 0, blocks: [] };
+    for (const req of [
+      null,
+      undefined,
+      "later",
+      { kind: "latest" },
+      7,
+      {},
+      { kind: "all" },
+      { kind: "jump", start: 800, end: 1000 },
+      { kind: "jump", start: 800, end: 1000, to: "40" },
+      { kind: "jump", start: "800", end: 1000, to: 40 },
+      { kind: "jump", start: 800, end: 1000, to: 5000 },
+      { kind: "jump", start: 800, end: 1000, to: -1 },
+      { kind: "jump", start: 800, end: 1000, to: 900 },
+      { kind: "later", after: 1000, count: 2000 },
+      { kind: "later", after: -1, count: 2000 },
+      { kind: "later", after: 1.5, count: 2000 },
+      { kind: "later", after: 10, count: 0 },
+      { kind: "later", after: "10", count: 2000 },
+      { kind: "later", after: 10 },
+    ]) {
+      expect(recordWindowFor(session, req), JSON.stringify(req)).toEqual(none);
+    }
   });
 });
 

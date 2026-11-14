@@ -8,6 +8,7 @@ import {
   createBackendStack,
   defaultDigestModel,
   defaultReviewModel,
+  defaultWebClient,
   installUsageLog,
   prepareBackendStack,
 } from "@herta/app-server/wiring";
@@ -15,9 +16,12 @@ import {
   ensureHertaGitignore,
   errorMessage,
   InMemoryToolRegistry,
+  importLegacyReviewChoices,
   listSessions,
+  type ProviderAdapter,
   readSessionFile,
   resolveEffectiveWorkspace,
+  reviewChoicesFileFor,
   SessionFileError,
   type TerminalRecord,
 } from "@herta/core";
@@ -30,6 +34,7 @@ import { CliAskResolver } from "../render/permission-prompt.js";
 import { makeStyle } from "../render/style.js";
 import { Input } from "../repl/input.js";
 import { repl } from "../repl/repl.js";
+import type { CliModels } from "../repl/slash-commands.js";
 import { V2RecordPersister } from "../repl/v2-record-persister.js";
 import {
   parseArgs,
@@ -231,12 +236,38 @@ export async function main(
   // accepts low/high/max/false; default "high"), the wiring supplies
   // everything the GUI session would spell the same.
   const thinking = parseThinking(process.env.HERTA_BACKEND_THINKING, stderr);
-  const backendProvider = createBackendProvider({
-    apiKey,
-    model: backendModel,
+  // The live choice (ADR 0081): the env seeds it, `/model` and `/effort`
+  // change it for this run. Herta reads her model at a turn's start, 板砖
+  // its model and effort at a dispatch's — never inside a call.
+  //
+  // The actor defaults to deepseek-v4-pro: the actor is the user's primary
+  // touchpoint with Herta — voice fidelity and Chinese nuance matter more
+  // here than per-turn latency. The completion endpoint accepts only
+  // `deepseek-flash` or `deepseek-v4-pro` (DeepSeek doc, 2026-09-10); any
+  // other name is a 400 "supported API model names are…".
+  const cliModels: CliModels = {
+    actorModel: process.env.HERTA_ACTOR_MODEL ?? "deepseek-v4-pro",
+    backendModel,
     ...(thinking !== undefined ? { thinking } : {}),
-    ...baseUrl,
-  });
+  };
+  // One provider per model and effort, built when a dispatch first needs it.
+  let backendProviderKey = "";
+  let backendProviderBuilt: ProviderAdapter | null = null;
+  const backendProvider = (): ProviderAdapter => {
+    const key = `${cliModels.backendModel}|${String(cliModels.thinking)}`;
+    if (backendProviderBuilt === null || key !== backendProviderKey) {
+      backendProviderBuilt = createBackendProvider({
+        apiKey,
+        model: cliModels.backendModel,
+        ...(cliModels.thinking !== undefined
+          ? { thinking: cliModels.thinking }
+          : {}),
+        ...baseUrl,
+      });
+      backendProviderKey = key;
+    }
+    return backendProviderBuilt;
+  };
   const isTty =
     typeof (stdout as { isTTY?: boolean }).isTTY === "boolean" &&
     (stdout as { isTTY?: boolean }).isTTY === true;
@@ -266,13 +297,11 @@ export async function main(
   // Backend stack (shared wiring with the app-server host — see
   // @herta/app-server's session-wiring.ts): tools for the contract asked
   // for, permission engine + rules, context builder, per-dispatch runtime
-  // factory, the shared bus. The contract knob (ADR 0040): the trained
-  // two-tool shape (+ the two record channels) is the DEFAULT when a bash
-  // exists on this machine (owner flip 2026-08-17, parity with the GUI); the
-  // standard 15-tool set otherwise, or with HERTA_BACKEND_CONTRACT=standard.
-  // The CLI takes the knob from the environment like its model knobs.
-  const wantMinimal = process.env.HERTA_BACKEND_CONTRACT !== "standard";
-  await prepareBackendStack({ wantMinimal });
+  // factory, the shared bus. 板砖 runs on the trained two-tool shape (+ the
+  // record channels) over this machine's bash (ADR 0040), and on nothing
+  // else: the standard set and its HERTA_BACKEND_CONTRACT knob are gone
+  // (ADR 0086). Without a bash there is no backend, said below.
+  await prepareBackendStack();
   // ADR 0075: the automatic reviewer, as the desktop mounts it — it answers
   // only where automatic review is on (`/permissions auto-review on`, or [r]
   // on a prompt; off by default in the CLI, which has no managed sandbox). It reads
@@ -281,20 +310,32 @@ export async function main(
   const autoReviewer = new AutoReviewer(defaultReviewModel(apiKey, baseUrl));
   const turnInput: { text: string | null } = { text: null };
   let reviewDriver: { getRecord(): TerminalRecord } | null = null;
+  // The automatic-review choices live outside every workspace (ADR 0064
+  // amendment 2026-11-12). Once, the choices of the old per-workspace files
+  // are carried over — for the workspaces THIS folder's own session records
+  // name, never for a folder because it is the one the CLI was started in.
+  const reviewChoicesFile = reviewChoicesFileFor(deps?.homedir ?? homedir());
+  await importLegacyReviewChoices({
+    file: reviewChoicesFile,
+    surface: "cli",
+    transcriptDir,
+  });
   const backend = createBackendStack({
     wsHolder,
+    reviewChoicesFile,
     workspaceRoot,
     lang,
-    wantMinimal,
     backendProvider,
     // ADR 0048 §5: the stack mounts `view_image` only when this model can
     // actually see — one rule for both hosts (isVisionModel in the wiring);
     // without it an operator on the vision model would pay its latency and
-    // still be told it has no eyes.
-    backendModel,
+    // still be told it has no eyes. Read at each dispatch (ADR 0081).
+    backendModel: () => cliModels.backendModel,
     // The digest tool's side model (ADR 0043) — the same flash sidecar the
     // GUI host builds.
     digestModel: defaultDigestModel(apiKey, baseUrl),
+    // The web tools (ADR 0080 §4) — the same seam the GUI host mounts.
+    webClient: defaultWebClient(apiKey, baseUrl),
     makeAsk: ({ cache, workspacePermissions }) =>
       new CachingAskResolver(
         new CliAskResolver(stdin as NodeJS.ReadStream, stdout, style),
@@ -316,13 +357,10 @@ export async function main(
         },
       ),
   });
-  if (
-    process.env.HERTA_BACKEND_CONTRACT === "minimal" &&
-    backend.bashPath === null
-  ) {
-    // Warn only on an EXPLICIT request; the default falls back silently.
+  if (backend.unavailable !== null) {
+    // Said once at start; a dispatch says it again in the record.
     stderr.write(
-      "herta: HERTA_BACKEND_CONTRACT=minimal but no bash found (install Git for Windows or set HERTA_BASH); running the standard contract\n",
+      "herta: no bash found (install Git for Windows or set HERTA_BASH): 板砖 cannot run coding tasks; chat still works\n",
     );
   }
   const { bus, approvalCache, workspacePermissions } = backend;
@@ -378,6 +416,8 @@ export async function main(
     workspaceRoot,
     sessionId: actorSessionId,
     lang,
+    // The CLI mounts no browser (ADR 0083): her envSet says 板砖 has none.
+    browser: false,
     initialRecord: resumeTarget?.record ?? [],
     apiKey,
     ...baseUrl,
@@ -393,20 +433,6 @@ export async function main(
       stderr.write(style.dim(`herta: ${note}\n`));
     },
   });
-
-  // Default to deepseek-v4-pro for the v0.2 narrative-completion actor.
-  // The actor is the user's primary touchpoint with Herta — voice fidelity
-  // and Chinese nuance matter more here than per-turn latency. Operators
-  // can override via HERTA_ACTOR_MODEL=deepseek-flash to trade quality for
-  // speed and cost.
-  //
-  // NOTE: per the DeepSeek doc (2026-09-10) the completion endpoint accepts
-  // only `deepseek-flash` or `deepseek-v4-pro` (the retired
-  // `deepseek-v4-flash` is still served, as V4.1 Flash). Any other model
-  // identifier produces a 400 "supported API model names are..." error.
-  // DeepSeek retires V4 Pro on 2026-09-14: the name stays accepted, served
-  // by V4.1 Flash at the Flash price.
-  const model = process.env.HERTA_ACTOR_MODEL ?? "deepseek-v4-pro";
 
   // `lang` selects the reveal cadence (EN word-paced, zh per code point) and
   // the 板砖→Brick display alias — session-constant, so a constructor opt.
@@ -426,7 +452,8 @@ export async function main(
 
   const driver = new V2ActorDriver({
     provider: actor.actorProvider,
-    model,
+    // Read at each turn's start (ADR 0081): `/model actor …` lands next turn.
+    model: () => cliModels.actorModel,
     staticPrefix: actor.staticPrefix,
     bus,
     runtimeFactory: backend.runtimeFactory,
@@ -485,6 +512,7 @@ export async function main(
     transcriptDir,
     currentWorkspaceRoot: workspaceRoot,
     workspaceHolder: wsHolder,
+    models: cliModels,
     persister,
     home: deps?.homedir ?? homedir(),
     sessionId: actorSessionId,

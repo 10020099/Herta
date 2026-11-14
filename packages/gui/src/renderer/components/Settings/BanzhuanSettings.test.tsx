@@ -55,6 +55,34 @@ describe("BanzhuanSettings", () => {
       expect(container.querySelector("code")?.textContent).toBe("@Brick");
     });
 
+    it("the ring in the drawing takes the legend's swatch for the state on show", () => {
+      // One colour per state, said once (STATE_META): the drawing cannot
+      // drift from the legend under it.
+      const { container } = renderPane();
+      const card = container.querySelector(".settings-bz-card") as HTMLElement;
+      const led = (): string => {
+        const hex = card.style.getPropertyValue("--bz-led");
+        const [r, g, b] = [1, 3, 5].map((i) =>
+          Number.parseInt(hex.slice(i, i + 2), 16),
+        );
+        return `rgb(${r}, ${g}, ${b})`;
+      };
+      const swatch = (label: string): string => {
+        const item = [
+          ...container.querySelectorAll(".settings-bz-legend-item"),
+        ].find((el) => el.textContent === label);
+        return (item?.querySelector(".settings-bz-dot") as HTMLElement).style
+          .backgroundColor;
+      };
+      expect(led()).toBe(swatch("Idle"));
+      act(() => vi.advanceTimersByTime(1600));
+      expect(card.getAttribute("data-state")).toBe("delegated");
+      expect(led()).toBe(swatch("Working"));
+      act(() => vi.advanceTimersByTime(2600));
+      expect(card.getAttribute("data-state")).toBe("waitingApproval");
+      expect(led()).toBe(swatch("Awaiting approval"));
+    });
+
     it("advances the caption as the cycle runs, and hover pauses it", () => {
       const { container } = renderPane();
       act(() => vi.advanceTimersByTime(1600));
@@ -88,10 +116,15 @@ describe("BanzhuanSettings", () => {
       fireEvent.click(screen.getByRole("option", { name: "Max" }));
       expect(mock.calls.setBackendConfig).toEqual([{ thinking: "max" }]);
       // No appearing note — it re-flowed the pane height (owner 2026-08-03);
-      // "Applies on the next launch" lives in the row description instead.
+      // when it applies lives in the row descriptions instead: the effort
+      // from the next delegation (ADR 0081).
       expect(queryByText("Restart to apply")).toBeNull();
-      // (both the thinking and the tool-contract descriptions carry it)
-      expect(screen.queryAllByText(/next launch/).length).toBeGreaterThan(0);
+      expect(screen.queryAllByText(/next delegation/).length).toBeGreaterThan(
+        0,
+      );
+      // Nothing in this pane waits for a restart any more (ADR 0086): the
+      // row that did, the tool-set choice, is gone.
+      expect(screen.queryAllByText(/next launch/)).toHaveLength(0);
     });
 
     it("the row sits ABOVE the demo card so the Select menu opens into the demo's space", async () => {
@@ -135,75 +168,42 @@ describe("BanzhuanSettings", () => {
     });
   });
 
-  describe("tool-contract row (ADR 0040)", () => {
-    it("loads the persisted contract; a pick persists {thinking, contract} together", async () => {
+  describe("a machine with no bash (ADR 0086)", () => {
+    it("has no tool-set choice any more, with or without a bash", async () => {
       const mock = createMockHertaBridge({
-        getBackendConfigResult: {
-          thinking: "low",
-          contract: "minimal",
-          bashFound: true,
-        },
+        getBackendConfigResult: { thinking: "low", bashFound: true },
       });
-      const { queryByText } = renderPane(mock);
-      // The row appears once the config (with `contract`) has loaded.
-      const trigger = await screen.findByLabelText("Tool contract");
-      await waitFor(() => expect(trigger.textContent).toContain("Minimal"));
-      // bash present → no fallback sentence
-      expect(queryByText(/No bash was found/)).toBeNull();
-      fireEvent.click(trigger);
-      fireEvent.click(screen.getByRole("option", { name: "Standard" }));
-      expect(mock.calls.setBackendConfig).toEqual([
-        { thinking: "low", contract: "standard" },
-      ]);
+      const { container, queryByText } = renderPane(mock);
+      const thinking = screen.getByLabelText("Thinking effort");
+      await waitFor(() => expect(thinking.textContent).toContain("Low"));
+      expect(screen.queryByLabelText("Tool contract")).toBeNull();
+      expect(queryByText(/No bash on this machine/)).toBeNull();
+      // One backend row on this mock: the effort.
+      expect(container.querySelectorAll(".settings-row")).toHaveLength(1);
     });
 
-    it("says so in the description when no bash was found (Minimal would run as Standard)", async () => {
+    it("says that 板砖 cannot run, and what to install", async () => {
       const mock = createMockHertaBridge({
-        getBackendConfigResult: {
-          thinking: "high",
-          contract: "standard",
-          bashFound: false,
-        },
+        getBackendConfigResult: { thinking: "high", bashFound: false },
       });
       const { queryByText } = renderPane(mock);
       await waitFor(() =>
-        expect(queryByText(/No bash on this machine/)).toBeTruthy(),
+        expect(queryByText("No bash on this machine")).toBeTruthy(),
       );
-      // ADR 0044: the sentence names the remedy, not just the problem.
-      expect(queryByText(/Install Git for Windows/)).toBeTruthy();
+      // The sentence names the remedy, not just the problem.
+      expect(queryByText(/Git for Windows/)).toBeTruthy();
+      expect(queryByText(/takes no coding work/)).toBeTruthy();
     });
 
-    it("is on the FIRST paint beside the thinking row — never two rows then three (owner 2026-09-07); a config without `contract` keeps the default", async () => {
+    it("says nothing until it knows: a config that does not report it draws no warning", async () => {
       const mock = createMockHertaBridge({
         getBackendConfigResult: { thinking: "high" },
       });
-      const { container } = renderPane(mock);
-      // Synchronously, before the config read resolves: both backend rows
-      // (the 3D row hides on this mock, which lacks its surface).
-      expect(screen.getByLabelText("Tool contract")).toBeInTheDocument();
-      expect(container.querySelectorAll(".settings-row")).toHaveLength(2);
+      const { container, queryByText } = renderPane(mock);
       const thinking = screen.getByLabelText("Thinking effort");
       await waitFor(() => expect(thinking.textContent).toContain("High"));
-      // The row stays, on the handler's default, when the config says nothing.
-      expect(screen.getByLabelText("Tool contract").textContent).toContain(
-        "Minimal",
-      );
-      expect(container.querySelectorAll(".settings-row")).toHaveLength(2);
-    });
-
-    it("a failed write snaps back and surfaces the error", async () => {
-      const mock = createMockHertaBridge({ failSetBackendConfig: true });
-      const { queryByText } = renderPane(mock);
-      const trigger = await screen.findByLabelText("Tool contract");
-      // Default minimal (owner flip 2026-08-17); the failed pick of
-      // Standard snaps back to it.
-      await waitFor(() => expect(trigger.textContent).toContain("Minimal"));
-      fireEvent.click(trigger);
-      fireEvent.click(screen.getByRole("option", { name: "Standard" }));
-      await waitFor(() =>
-        expect(queryByText("Could not save — try again.")).toBeTruthy(),
-      );
-      expect(trigger.textContent).toContain("Minimal");
+      expect(queryByText("No bash on this machine")).toBeNull();
+      expect(container.querySelectorAll(".settings-row")).toHaveLength(1);
     });
   });
 
@@ -219,15 +219,16 @@ describe("BanzhuanSettings", () => {
       expect(container.textContent).not.toContain("3D device");
     });
 
-    it("the demo card below stays on the flat renders — one GPU scene per app", () => {
+    it("the demo card below is a line drawing: no scene, no canvas, no image (§2.4 amended 2026-11-13)", () => {
+      // One GPU scene per app, in the rail. The pane's picture of the
+      // device is inline SVG, so it opens no context of any kind.
       const mock = createMockHertaBridge({ deviceSceneResult: true });
       const { container } = renderPane(mock);
-      expect(
-        container.querySelector(".settings-bz-card .device-scene-canvas"),
-      ).toBeNull();
-      expect(
-        container.querySelector(".settings-bz-card img.agent-device-img"),
-      ).not.toBeNull();
+      const card = container.querySelector(".settings-bz-card");
+      expect(card?.querySelector(".device-scene-canvas")).toBeNull();
+      expect(card?.querySelector("canvas")).toBeNull();
+      expect(card?.querySelector("img")).toBeNull();
+      expect(card?.querySelector("svg.bz-art .bz-art-led")).not.toBeNull();
     });
   });
 
@@ -268,6 +269,76 @@ describe("BanzhuanSettings", () => {
         expect(queryByText("Could not save — try again.")).toBeTruthy(),
       );
       expect(toggle.getAttribute("aria-checked")).toBe("true");
+    });
+  });
+
+  describe("browser data (ADR 0083 §8)", () => {
+    it("a first press arms, a second clears the page tab's data", async () => {
+      const mock = createMockHertaBridge();
+      const clear = vi.fn(async () => true);
+      const bridge: HertaBridge = { ...mock.bridge, pageClearData: clear };
+      renderWithLocale(
+        <HertaBridgeProvider bridge={bridge}>
+          <BanzhuanSettings />
+        </HertaBridgeProvider>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+      expect(clear).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("button", { name: "Confirm clear" }));
+      await waitFor(() => expect(clear).toHaveBeenCalledTimes(1));
+      // Cleared is an answer: a press on it does not arm again.
+      fireEvent.click(await screen.findByRole("button", { name: "Cleared" }));
+      expect(screen.getByRole("button", { name: "Cleared" })).toBeTruthy();
+      expect(clear).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps one width: every label is in the button, one shown (owner 2026-10-24)", () => {
+      const mock = createMockHertaBridge();
+      const bridge: HertaBridge = {
+        ...mock.bridge,
+        pageClearData: vi.fn(async () => true),
+      };
+      renderWithLocale(
+        <HertaBridgeProvider bridge={bridge}>
+          <BanzhuanSettings />
+        </HertaBridgeProvider>,
+      );
+      const button = screen.getByRole("button", { name: "Clear" });
+      const labels = [
+        ...button.querySelectorAll(".settings-btn__stack > span"),
+      ];
+      expect(labels.map((l) => l.textContent)).toEqual([
+        "Clear",
+        "Confirm clear",
+        "Cleared",
+        "Clear failed",
+      ]);
+      expect(
+        labels.filter((l) => !l.classList.contains("is-off")),
+      ).toHaveLength(1);
+    });
+
+    it("armed, a press anywhere else takes it back at once", () => {
+      const mock = createMockHertaBridge();
+      const clear = vi.fn(async () => true);
+      const bridge: HertaBridge = { ...mock.bridge, pageClearData: clear };
+      renderWithLocale(
+        <HertaBridgeProvider bridge={bridge}>
+          <BanzhuanSettings />
+        </HertaBridgeProvider>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+      expect(
+        screen.getByRole("button", { name: "Confirm clear" }),
+      ).toBeTruthy();
+      fireEvent.pointerDown(document.body);
+      expect(screen.getByRole("button", { name: "Clear" })).toBeTruthy();
+      expect(clear).not.toHaveBeenCalled();
+    });
+
+    it("is not offered without a page tab", () => {
+      renderPane();
+      expect(screen.queryByText("Browser data")).toBeNull();
     });
   });
 });

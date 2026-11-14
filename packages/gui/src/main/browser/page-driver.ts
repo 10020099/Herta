@@ -1,0 +1,1252 @@
+import {
+  type BrowserHost,
+  BrowserHostError,
+  isLoopbackUrl,
+  type PageActed,
+  type PageAction,
+  type PageElements,
+  type PageNavigated,
+  type PageNavigation,
+  type PageRead,
+  type PageReadRequest,
+  type PageShot,
+} from "@herta/core";
+import type { WebContents } from "electron";
+import {
+  type Located,
+  READ_SCRIPT,
+  type ReadElements,
+} from "./page-read-script.js";
+
+/** The elements a navigation or an action shows 板砖 (ADR 0083 §6). */
+const STEP_BUDGET = 4000;
+/** A read's own budget. */
+const READ_BUDGET = 8000;
+const CONSOLE_BUDGET = 2000;
+/** A navigation waits this long, an action's aftermath this long. */
+const NAV_TIMEOUT_MS = 15_000;
+/** How long a press or a key counts as what led to a page's navigation. */
+const GESTURE_FRESH_MS = 1500;
+const SETTLE_MAX_MS = 5000;
+const NETWORK_QUIET_MS = 500;
+/** One debugger command of a step: a page that never answers (a script that
+ *  does not stop) fails the step instead of holding the turn. */
+const COMMAND_TIMEOUT_MS = 10_000;
+/** Messages and requests kept per page. */
+const BUFFER = 200;
+
+/** Chromium's inspect mode, for the Trailblazer's picker (ADR 0083 §4). */
+const INSPECT_ON = {
+  mode: "searchForNode",
+  highlightConfig: {
+    showInfo: true,
+    contentColor: { r: 92, g: 182, b: 202, a: 0.22 },
+    borderColor: { r: 92, g: 182, b: 202, a: 0.9 },
+  },
+};
+const INSPECT_OFF = { mode: "none", highlightConfig: {} };
+
+/** Device widths for `resize` (ADR 0083 §6). */
+const PRESETS = {
+  phone: { width: 375, height: 812, mobile: true },
+  tablet: { width: 768, height: 1024, mobile: true },
+} as const;
+
+/** The keys `key` presses, as the debugger's input events name them. */
+const KEYS: Readonly<
+  Record<string, { code: string; vk: number; text?: string }>
+> = {
+  Enter: { code: "Enter", vk: 13, text: "\r" },
+  Tab: { code: "Tab", vk: 9 },
+  Escape: { code: "Escape", vk: 27 },
+  Backspace: { code: "Backspace", vk: 8 },
+  Delete: { code: "Delete", vk: 46 },
+  ArrowUp: { code: "ArrowUp", vk: 38 },
+  ArrowDown: { code: "ArrowDown", vk: 40 },
+  ArrowLeft: { code: "ArrowLeft", vk: 37 },
+  ArrowRight: { code: "ArrowRight", vk: 39 },
+  Home: { code: "Home", vk: 36 },
+  End: { code: "End", vk: 35 },
+  PageUp: { code: "PageUp", vk: 33 },
+  PageDown: { code: "PageDown", vk: 34 },
+  " ": { code: "Space", vk: 32, text: " " },
+};
+
+interface ConsoleEntry {
+  readonly seq: number;
+  readonly level: "error" | "warning" | "info";
+  readonly text: string;
+}
+
+interface RequestEntry {
+  method: string;
+  path: string;
+  type: string;
+  status: number | null;
+  failed: string | null;
+  start: number;
+  ms: number | null;
+}
+
+type Cdp = Electron.Debugger;
+
+const pathOf = (url: string): string => {
+  try {
+    const u = new URL(url);
+    return `${u.host}${u.pathname}`;
+  } catch {
+    return url;
+  }
+};
+
+/** A page off this machine is named by its host alone: its path is the
+ *  Trailblazer's browsing (review 2026-10-30). */
+const hostOf = (url: string): string => {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+};
+
+const remoteText = (arg: {
+  value?: unknown;
+  description?: string;
+  type?: string;
+}): string => {
+  if (arg.value !== undefined)
+    return typeof arg.value === "string"
+      ? arg.value
+      : JSON.stringify(arg.value);
+  return arg.description ?? arg.type ?? "";
+};
+
+/**
+ * One page's instrument (ADR 0083 §6, §9): the debugger session, the console
+ * and network as they happen, the isolated world the read script lives in,
+ * and whether 板砖's refs still stand. Attached when the page is made, for
+ * its whole life.
+ */
+/**
+ * The ref numbers a session has handed out. They count on across its pages:
+ * a page closed and opened again restarted at e1 with the counter inside it,
+ * and an older read's refs clicked whatever now held those numbers
+ * (review 2026-11-05).
+ */
+export interface RefCounter {
+  last: number;
+}
+
+export class PageInstrument {
+  private readonly cdp: Cdp;
+  private world: number | null = null;
+  private consoleSeq = 0;
+  private consoleRead = 0;
+  private readonly console: ConsoleEntry[] = [];
+  private readonly requests = new Map<string, RequestEntry>();
+  private readonly order: string[] = [];
+  /** Requests still loading, by id — apart from the capped list above. A
+   *  request evicted from that list while it loaded was never counted down:
+   *  a Vite module burst left the network-quiet wait stuck for the page's
+   *  life (review 2026-10-30, M3). */
+  private readonly inflight = new Set<string>();
+  private lastBusy = 0;
+  private loading = false;
+  /** 板砖's refs end at a navigation and at the Trailblazer's own input
+   *  (§9); a new read gives fresh ones. */
+  private refsLive = false;
+  /** The first ref number of the latest read (M1). */
+  private refFirst = 1;
+  /** Reads go one at a time: two in one parallel batch numbered from the
+   *  same ref, and a smaller one settling last sent the counter back, so a
+   *  ref of one named another element in the other (review 2026-11-05). */
+  private reading: Promise<unknown> = Promise.resolve();
+  /** Dispatching 板砖's own input: the Trailblazer's is everything else. */
+  private driving = 0;
+  /** The Trailblazer's last press or key on the page. */
+  private gestureAt = 0;
+  /** Where a step's navigation was stopped from going (`noteRefused`). */
+  private refused: string | null = null;
+  /** 板砖's steps in flight, by their abort signals: a dialog that opens
+   *  during one is his (review 2026-10-30 — an alert after the input's
+   *  150 ms held every later evaluate), and an abort ends the command a
+   *  step waits on. Counted: a run's steps share one signal. */
+  private readonly steps = new Map<AbortSignal, number>();
+  /** A dialog the page holds open, for the Trailblazer to answer. */
+  private dialog: { readonly type: string; readonly message: string } | null =
+    null;
+  private mainFrame: string | null = null;
+  /** The Trailblazer's picker, while it is on (ADR 0083 §4). */
+  private onPicked:
+    | ((pick: { readonly element: string; readonly html: string }) => void)
+    | null = null;
+  /** Inspect mode is set aside for 板砖's input: nothing picked meanwhile
+   *  is the Trailblazer's. */
+  private inspectAside = false;
+  status: number | null = null;
+
+  constructor(
+    private readonly wc: WebContents,
+    /** The session's ref numbers: they outlive this page (`RefCounter`). */
+    private readonly refCount: RefCounter = { last: 0 },
+  ) {
+    this.cdp = wc.debugger;
+    try {
+      this.cdp.attach("1.3");
+    } catch {
+      // Attached already (a second instrument would be a bug); the
+      // messages still arrive.
+    }
+    this.cdp.on("message", (_e, method, params) =>
+      this.onMessage(method, params as Record<string, unknown>),
+    );
+    for (const domain of ["Page", "Runtime", "Network", "Log"])
+      void this.cdp.sendCommand(`${domain}.enable`).catch(() => undefined);
+    void this.cdp
+      .sendCommand("Page.getFrameTree")
+      .then((t) => {
+        this.mainFrame = (
+          t as { frameTree: { frame: { id: string } } }
+        ).frameTree.frame.id;
+      })
+      .catch(() => undefined);
+    wc.on("did-start-loading", () => {
+      this.loading = true;
+      this.lastBusy = Date.now();
+    });
+    wc.on("did-stop-loading", () => {
+      this.loading = false;
+      this.lastBusy = Date.now();
+    });
+    wc.on("did-navigate", (_e, _url, code) => {
+      this.status = code > 0 ? code : null;
+      this.refsLive = false;
+    });
+    wc.on("did-navigate-in-page", () => {
+      this.refsLive = false;
+    });
+    // The Trailblazer's own press or key ends 板砖's refs.
+    wc.on("input-event", (_e, input) => {
+      if (this.driving > 0) return;
+      if (
+        input.type === "mouseDown" ||
+        input.type === "keyDown" ||
+        input.type === "rawKeyDown"
+      ) {
+        this.refsLive = false;
+        this.gestureAt = Date.now();
+      }
+    });
+    // A crash takes its requests with it, and no finish will ever come for
+    // them (review 2026-11-05, M8).
+    wc.on("render-process-gone", () => {
+      this.inflight.clear();
+      this.loading = false;
+      this.world = null;
+      this.refsLive = false;
+    });
+  }
+
+  /** Whether the Trailblazer has just pressed or typed on the page. One
+   *  gesture answers once: a page's retry loop gets no tab from it. */
+  takeGesture(): boolean {
+    const fresh = Date.now() - this.gestureAt <= GESTURE_FRESH_MS;
+    this.gestureAt = 0;
+    return fresh;
+  }
+
+  /** The page was stopped from going to `url` while a step ran. */
+  noteRefused(url: string): void {
+    this.refused = url;
+  }
+
+  /** Where the step in hand was stopped from going, once. */
+  takeRefused(): string | null {
+    const url = this.refused;
+    this.refused = null;
+    return url;
+  }
+
+  /** Pick an element: Chromium's own inspect mode — a hover highlights, a
+   *  click picks and does not reach the page. Nothing is injected; the pick
+   *  is read by the harness's read script in its isolated world. */
+  async startPick(
+    onPicked: (pick: {
+      readonly element: string;
+      readonly html: string;
+    }) => void,
+  ): Promise<void> {
+    this.onPicked = onPicked;
+    await this.cdp.sendCommand("DOM.enable");
+    await this.cdp.sendCommand("Overlay.enable");
+    await this.cdp.sendCommand("Overlay.setInspectMode", INSPECT_ON);
+  }
+
+  async stopPick(): Promise<void> {
+    if (this.onPicked === null) return;
+    this.onPicked = null;
+    await this.cdp
+      .sendCommand("Overlay.setInspectMode", INSPECT_OFF)
+      .catch(() => undefined);
+  }
+
+  /** One of 板砖's steps is running on this page, or its input's tail. */
+  get stepping(): boolean {
+    return this.steps.size > 0 || this.driving > 0;
+  }
+
+  get picking(): boolean {
+    return this.onPicked !== null;
+  }
+
+  /** The pointer is over the page at (x, y), in its CSS pixels: the inspect
+   *  highlight follows it, and a click picks what it hovers. */
+  hoverAt(x: number, y: number): void {
+    // Not between 板砖's press and its release.
+    if (this.onPicked === null || this.inspectAside) return;
+    void this.cdp
+      .sendCommand("Input.dispatchMouseEvent", { type: "mouseMoved", x, y })
+      .catch(() => undefined);
+  }
+
+  private async picked(backendNodeId: number): Promise<void> {
+    const done = this.onPicked;
+    if (done === null) return;
+    await this.stopPick();
+    try {
+      const world = await this.ensureWorld();
+      const node = (await this.send("DOM.resolveNode", {
+        backendNodeId,
+        executionContextId: world,
+      })) as { object: { objectId?: string } };
+      if (node.object.objectId === undefined) return;
+      const r = (await this.send("Runtime.callFunctionOn", {
+        objectId: node.object.objectId,
+        functionDeclaration:
+          "function () { return globalThis.__herta.describeNode(this); }",
+        returnByValue: true,
+      })) as { result: { value?: { element?: unknown; html?: unknown } } };
+      const v = r.result.value;
+      if (typeof v?.element !== "string" || typeof v.html !== "string") return;
+      done({ element: v.element, html: v.html });
+    } catch {
+      // The page changed under the pick: nothing was picked.
+    }
+  }
+
+  private onMessage(method: string, p: Record<string, unknown>): void {
+    switch (method) {
+      case "Overlay.inspectNodeRequested": {
+        const id = p.backendNodeId;
+        if (typeof id === "number" && !this.inspectAside) void this.picked(id);
+        return;
+      }
+      case "Runtime.consoleAPICalled": {
+        const type = String(p.type);
+        const args = (p.args as Parameters<typeof remoteText>[0][]) ?? [];
+        const level =
+          type === "error" || type === "assert"
+            ? "error"
+            : type === "warning"
+              ? "warning"
+              : "info";
+        this.pushConsole(level, args.map(remoteText).join(" "));
+        break;
+      }
+      case "Runtime.exceptionThrown": {
+        const d = p.exceptionDetails as {
+          text?: string;
+          exception?: { description?: string };
+        };
+        const text = d.exception?.description ?? d.text ?? "uncaught exception";
+        this.pushConsole("error", text.split("\n").slice(0, 3).join(" | "));
+        break;
+      }
+      case "Log.entryAdded": {
+        const e = p.entry as { level?: string; text?: string; url?: string };
+        if (e.level === "error")
+          this.pushConsole(
+            "error",
+            `${e.text ?? ""}${e.url !== undefined ? ` (${pathOf(e.url)})` : ""}`,
+          );
+        break;
+      }
+      case "Page.javascriptDialogOpening": {
+        // During a step, 板砖's: dismissed and reported. Otherwise the
+        // Trailblazer's to answer (§8) — until 板砖's next step needs the
+        // page (`during`).
+        this.dialog = {
+          type: String(p.type),
+          message: String(p.message ?? ""),
+        };
+        if (this.driving > 0 || this.steps.size > 0) this.dismissDialog();
+        break;
+      }
+      case "Page.javascriptDialogClosed":
+        this.dialog = null;
+        break;
+      case "Runtime.executionContextsCleared":
+        this.world = null;
+        break;
+      case "Runtime.executionContextDestroyed":
+        if (p.executionContextId === this.world) this.world = null;
+        break;
+      case "Page.frameNavigated": {
+        const f = p.frame as { id: string; parentId?: string };
+        if (f.parentId === undefined) {
+          this.mainFrame = f.id;
+          this.world = null;
+          this.refsLive = false;
+          // The old document's requests end with it, whether or not a
+          // finish comes: three left over made every later act wait out
+          // the five seconds (review 2026-11-05, M8).
+          this.inflight.clear();
+        }
+        break;
+      }
+      case "Network.requestWillBeSent": {
+        const id = String(p.requestId);
+        const r = p.request as { method: string; url: string };
+        if (!this.requests.has(id)) this.order.push(id);
+        this.inflight.add(id);
+        this.requests.set(id, {
+          method: r.method,
+          path: pathOf(r.url),
+          type: String(p.type ?? "Other"),
+          status: null,
+          failed: null,
+          start: Date.now(),
+          ms: null,
+        });
+        while (this.order.length > BUFFER) {
+          const old = this.order.shift() as string;
+          this.requests.delete(old);
+        }
+        this.lastBusy = Date.now();
+        break;
+      }
+      case "Network.responseReceived": {
+        const r = this.requests.get(String(p.requestId));
+        if (r !== undefined)
+          r.status = (p.response as { status: number }).status;
+        break;
+      }
+      case "Network.loadingFinished":
+      case "Network.loadingFailed": {
+        const r = this.requests.get(String(p.requestId));
+        this.inflight.delete(String(p.requestId));
+        if (r !== undefined && r.ms === null) {
+          r.ms = Date.now() - r.start;
+          if (method === "Network.loadingFailed")
+            r.failed = p.canceled === true ? "canceled" : String(p.errorText);
+        }
+        this.lastBusy = Date.now();
+        break;
+      }
+      default:
+    }
+  }
+
+  private dismissDialog(): void {
+    const d = this.dialog;
+    if (d === null) return;
+    this.dialog = null;
+    void this.cdp
+      .sendCommand("Page.handleJavaScriptDialog", { accept: false })
+      .catch(() => undefined);
+    this.pushConsole("warning", `dialog (${d.type}) dismissed: ${d.message}`);
+  }
+
+  /** One of 板砖's steps on the page. A dialog left open is dismissed first:
+   *  while it is up the page answers nothing. */
+  async during<T>(signal: AbortSignal, run: () => Promise<T>): Promise<T> {
+    this.steps.set(signal, (this.steps.get(signal) ?? 0) + 1);
+    this.dismissDialog();
+    try {
+      return await run();
+    } finally {
+      // The page's own events for the step's last input arrive just after.
+      setTimeout(() => {
+        const n = (this.steps.get(signal) ?? 1) - 1;
+        if (n > 0) this.steps.set(signal, n);
+        else this.steps.delete(signal);
+      }, 150);
+    }
+  }
+
+  /** A debugger command of a step, bounded by time and by the steps'
+   *  aborts: the debugger itself never gives up on a page that does not
+   *  answer. */
+  private send(method: string, params?: object): Promise<unknown> {
+    const signals = [...this.steps.keys()];
+    return new Promise((resolve, reject) => {
+      const finish = (): void => {
+        clearTimeout(timer);
+        for (const s of signals) s.removeEventListener("abort", abort);
+      };
+      const abort = (): void => {
+        finish();
+        reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+      };
+      const timer = setTimeout(() => {
+        finish();
+        reject(
+          new BrowserHostError(
+            "unavailable",
+            `the page did not answer in ${COMMAND_TIMEOUT_MS / 1000} s — a script on it may not be stopping`,
+          ),
+        );
+      }, COMMAND_TIMEOUT_MS);
+      for (const s of signals) {
+        if (s.aborted) {
+          abort();
+          return;
+        }
+        s.addEventListener("abort", abort, { once: true });
+      }
+      this.cdp.sendCommand(method, params).then(
+        (v) => {
+          finish();
+          resolve(v);
+        },
+        (e: unknown) => {
+          finish();
+          reject(e);
+        },
+      );
+    });
+  }
+
+  private pushConsole(level: ConsoleEntry["level"], text: string): void {
+    this.consoleSeq += 1;
+    this.console.push({
+      seq: this.consoleSeq,
+      level,
+      text: text.slice(0, 500),
+    });
+    if (this.console.length > BUFFER) this.console.shift();
+  }
+
+  /** Where the console stands now: errors after this mark belong to the
+   *  step that started here. */
+  mark(): number {
+    return this.consoleSeq;
+  }
+
+  errorsSince(mark: number): string[] {
+    return this.console
+      .filter((c) => c.seq > mark && c.level === "error")
+      .map((c) => c.text);
+  }
+
+  /** The console since the last console read (§6). */
+  readConsole(onlyErrors: boolean, pattern: string | undefined): PageRead {
+    const fresh = this.console.filter(
+      (c) =>
+        c.seq > this.consoleRead &&
+        (!onlyErrors || c.level === "error") &&
+        (pattern === undefined || c.text.includes(pattern)),
+    );
+    this.consoleRead = this.consoleSeq;
+    // One message a line, so a stored read's lines can be cited.
+    const lines = fresh.map(
+      (c) => `[${c.level}] ${c.text.replace(/\s*[\r\n]+\s*/g, " ⏎ ")}`,
+    );
+    const text = lines.join("\n");
+    return {
+      url: this.wc.getURL(),
+      title: this.wc.getTitle(),
+      text: text.slice(0, CONSOLE_BUDGET),
+      ...(text.length > CONSOLE_BUDGET ? { full: text } : {}),
+      count: fresh.length,
+      truncated: text.length > CONSOLE_BUDGET,
+    };
+  }
+
+  /** The last requests, failures marked (§6): no headers, no bodies. */
+  readNetwork(): PageRead {
+    const lines = this.order
+      .map((id) => this.requests.get(id))
+      .filter((r): r is RequestEntry => r !== undefined)
+      .map(
+        (r) =>
+          `${r.failed !== null || (r.status ?? 0) >= 400 ? "✗ " : ""}${r.method} ${r.path} ${r.failed ?? r.status ?? "…"} ${r.type.toLowerCase()}${r.ms !== null ? ` ${r.ms}ms` : ""}`,
+      );
+    const text = lines.join("\n");
+    return {
+      url: this.wc.getURL(),
+      title: this.wc.getTitle(),
+      text: text.slice(-READ_BUDGET),
+      ...(text.length > READ_BUDGET ? { full: text } : {}),
+      count: lines.length,
+      truncated: text.length > READ_BUDGET,
+    };
+  }
+
+  /** Run one of the read script's functions in the isolated world. */
+  async call<T>(fn: string, ...args: unknown[]): Promise<T> {
+    const world = await this.ensureWorld();
+    const expression = `__herta.${fn}(${args.map((a) => JSON.stringify(a ?? null)).join(", ")})`;
+    const r = (await this.send("Runtime.evaluate", {
+      expression,
+      contextId: world,
+      returnByValue: true,
+    })) as { result: { value?: unknown }; exceptionDetails?: unknown };
+    if (r.exceptionDetails !== undefined)
+      throw new BrowserHostError("unavailable", "the page could not be read");
+    return r.result.value as T;
+  }
+
+  private async ensureWorld(): Promise<number> {
+    if (this.world !== null) return this.world;
+    let frame = this.mainFrame;
+    if (frame === null) {
+      const t = (await this.send("Page.getFrameTree")) as {
+        frameTree: { frame: { id: string } };
+      };
+      frame = t.frameTree.frame.id;
+      this.mainFrame = frame;
+    }
+    const w = (await this.send("Page.createIsolatedWorld", {
+      frameId: frame,
+      worldName: "herta-read",
+    })) as { executionContextId: number };
+    await this.send("Runtime.evaluate", {
+      expression: READ_SCRIPT,
+      contextId: w.executionContextId,
+    });
+    this.world = w.executionContextId;
+    return w.executionContextId;
+  }
+
+  /** A fresh snapshot: new refs, which stand until the page changes or a
+   *  newer read hands out its own. */
+  snapshot(all: boolean, budget: number, root?: string): Promise<ReadElements> {
+    return this.oneRead(async () => {
+      const from = this.refCount.last;
+      const r = await this.call<ReadElements | { missing: true }>(
+        "snapshot",
+        all,
+        root ?? null,
+        budget,
+        from,
+      );
+      if ("missing" in r)
+        throw new BrowserHostError(
+          this.refsLive && !this.olderRef(root ?? "") ? "no_ref" : "stale_ref",
+          `${root} is not an element of the page now`,
+        );
+      this.read(from, r);
+      return r;
+    });
+  }
+
+  find(query: string): Promise<ReadElements> {
+    return this.oneRead(async () => {
+      const from = this.refCount.last;
+      const r = await this.call<ReadElements>(
+        "find",
+        query,
+        20,
+        READ_BUDGET,
+        from,
+      );
+      this.read(from, r);
+      return r;
+    });
+  }
+
+  /** After the read in front of it, whatever became of that one. */
+  private oneRead<T>(read: () => Promise<T>): Promise<T> {
+    const turn = this.reading.then(read, read);
+    this.reading = turn.catch(() => undefined);
+    return turn;
+  }
+
+  /** A read handed out refs past `from`: they are the live ones now. */
+  private read(from: number, r: ReadElements): void {
+    this.refFirst = from + 1;
+    this.refCount.last = Math.max(this.refCount.last, r.last);
+    this.refsLive = true;
+  }
+
+  /** A ref an older read handed out: refs count on for the page's life
+   *  (review 2026-10-30, M1), so it names nothing now. */
+  private olderRef(ref: string): boolean {
+    const n = Number(/^e(\d+)$/.exec(ref)?.[1] ?? Number.NaN);
+    return Number.isInteger(n) && n >= 1 && n < this.refFirst;
+  }
+
+  /** The element a ref names, scrolled into view: where to press. */
+  async locate(ref: string): Promise<Extract<Located, { x: number }>> {
+    if (!this.refsLive)
+      throw new BrowserHostError(
+        "stale_ref",
+        `${ref} belongs to a page that has changed since it was read`,
+      );
+    const r = await this.call<Located>("locate", ref);
+    if ("missing" in r)
+      throw this.olderRef(ref)
+        ? new BrowserHostError(
+            "stale_ref",
+            `${ref} belongs to an older read of the page`,
+          )
+        : new BrowserHostError("no_ref", `no element is ${ref}`);
+    if ("stale" in r)
+      throw new BrowserHostError(
+        "stale_ref",
+        `${ref} is no longer on the page`,
+      );
+    return r;
+  }
+
+  /** 板砖's own input: dispatched through the debugger, and not counted as
+   *  the Trailblazer's. While the Trailblazer's picker is on, inspect mode
+   *  is set aside for the input and put back after: it took 板砖's press as
+   *  their pick, a chip landed in the composer and the step reported
+   *  success (review 2026-10-30, M2). Both go through `send`: raw, a page
+   *  that stopped answering held the step past Stop and past every bound
+   *  (review 2026-11-05). */
+  async drive<T>(run: () => Promise<T>): Promise<T> {
+    this.driving += 1;
+    const picking = this.onPicked !== null;
+    if (picking) {
+      this.inspectAside = true;
+      await this.send("Overlay.setInspectMode", INSPECT_OFF).catch(
+        () => undefined,
+      );
+    }
+    try {
+      return await run();
+    } finally {
+      if (picking) {
+        if (this.onPicked !== null)
+          await this.send("Overlay.setInspectMode", INSPECT_ON).catch(
+            () => undefined,
+          );
+        this.inspectAside = false;
+      }
+      // The page's own events for this input arrive just after.
+      setTimeout(() => {
+        this.driving -= 1;
+      }, 150);
+    }
+  }
+
+  async click(x: number, y: number): Promise<void> {
+    await this.drive(async () => {
+      await this.send("Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x,
+        y,
+      });
+      for (const type of ["mousePressed", "mouseReleased"])
+        await this.send("Input.dispatchMouseEvent", {
+          type,
+          x,
+          y,
+          button: "left",
+          clickCount: 1,
+        });
+    });
+  }
+
+  async insertText(text: string): Promise<void> {
+    await this.drive(() =>
+      this.send("Input.insertText", { text }).then(() => undefined),
+    );
+  }
+
+  async key(key: string): Promise<void> {
+    const named = KEYS[key];
+    const ch = key.length === 1 ? key : null;
+    if (named === undefined && ch === null)
+      throw new BrowserHostError(
+        "no_ref",
+        `${key} is not a key this step presses`,
+      );
+    const code =
+      named?.code ??
+      (/[a-z]/i.test(ch as string)
+        ? `Key${(ch as string).toUpperCase()}`
+        : /[0-9]/.test(ch as string)
+          ? `Digit${ch}`
+          : "");
+    const vk = named?.vk ?? (ch as string).toUpperCase().charCodeAt(0);
+    const text = named?.text ?? ch ?? undefined;
+    await this.drive(async () => {
+      await this.send("Input.dispatchKeyEvent", {
+        type: text !== undefined ? "keyDown" : "rawKeyDown",
+        key,
+        code,
+        windowsVirtualKeyCode: vk,
+        ...(text !== undefined ? { text } : {}),
+      });
+      await this.send("Input.dispatchKeyEvent", {
+        type: "keyUp",
+        key,
+        code,
+        windowsVirtualKeyCode: vk,
+      });
+    });
+  }
+
+  async wheel(x: number, y: number, deltaY: number): Promise<void> {
+    await this.drive(() =>
+      this.send("Input.dispatchMouseEvent", {
+        type: "mouseWheel",
+        x,
+        y,
+        deltaX: 0,
+        deltaY,
+      }).then(() => undefined),
+    );
+  }
+
+  async emulate(
+    preset: "phone" | "tablet" | "desktop",
+    scheme?: "light" | "dark",
+  ): Promise<void> {
+    if (preset === "desktop")
+      await this.send("Emulation.clearDeviceMetricsOverride");
+    else {
+      const p = PRESETS[preset];
+      await this.send("Emulation.setDeviceMetricsOverride", {
+        width: p.width,
+        height: p.height,
+        deviceScaleFactor: 0,
+        mobile: p.mobile,
+      });
+    }
+    if (scheme !== undefined)
+      await this.send("Emulation.setEmulatedMedia", {
+        features: [{ name: "prefers-color-scheme", value: scheme }],
+      });
+    this.refsLive = false;
+  }
+
+  /** The view in the page's CSS pixels, as one PNG (§6): a screenshot's
+   *  pixels and a click's x/y are the same units. The debugger clips in the
+   *  document's coordinates, so the view's scroll is added: a click scrolls
+   *  its element into view, and a clip from the top showed a blank or
+   *  shifted page after it (review 2026-10-30). */
+  async capture(region?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }): Promise<PageShot> {
+    const vp = await this.call<{
+      width: number;
+      height: number;
+      dpr: number;
+      left?: number;
+      top?: number;
+    }>("viewport");
+    const clip = region ?? { x: 0, y: 0, width: vp.width, height: vp.height };
+    const r = (await this.send("Page.captureScreenshot", {
+      format: "png",
+      clip: {
+        ...clip,
+        x: clip.x + (vp.left ?? 0),
+        y: clip.y + (vp.top ?? 0),
+        scale: 1 / (vp.dpr || 1),
+      },
+    })) as { data: string };
+    return {
+      png: new Uint8Array(Buffer.from(r.data, "base64")),
+      width: Math.round(clip.width),
+      height: Math.round(clip.height),
+    };
+  }
+
+  /** After an action: a navigation it started, or half a second of network
+   *  quiet, at most five seconds (§6). */
+  async settle(signal: AbortSignal): Promise<void> {
+    const start = Date.now();
+    await new Promise((r) => setTimeout(r, 50));
+    while (Date.now() - start < SETTLE_MAX_MS) {
+      if (signal.aborted) return;
+      const quiet = !this.loading && this.inflight.size === 0;
+      if (quiet && Date.now() - this.lastBusy >= NETWORK_QUIET_MS) return;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  }
+
+  detach(): void {
+    try {
+      this.cdp.detach();
+    } catch {
+      // gone with the page
+    }
+  }
+}
+
+/** The page side of `BrowserHost` (ADR 0083 §6), for one app session. Main
+ *  owns the page; this runs 板砖's named steps on it and nothing else. */
+export class PageDriver implements BrowserHost {
+  constructor(
+    readonly sessionKey: string,
+    private readonly page: {
+      /** The session's page and its instrument, made if it has none, and
+       *  kept on the window (shown or parked) so it lays out and can be
+       *  captured. */
+      readonly live: () => { wc: WebContents; instrument: PageInstrument };
+      /** The page, when it has one, without making it. */
+      readonly existing: () => {
+        wc: WebContents;
+        instrument: PageInstrument;
+      } | null;
+      /** 板砖 opened a page: show it to the Trailblazer. */
+      readonly opened: () => void;
+    },
+  ) {}
+
+  currentUrl(): string | null {
+    const p = this.page.existing();
+    if (p === null || p.wc.isDestroyed()) return null;
+    return p.wc.getURL() || null;
+  }
+
+  private here(): { wc: WebContents; instrument: PageInstrument } {
+    const p = this.page.existing();
+    if (p === null || p.wc.isDestroyed())
+      throw new BrowserHostError("no_page", "no page is open yet");
+    const url = p.wc.getURL();
+    if (url !== "" && !isLoopbackUrl(url))
+      throw new BrowserHostError(
+        "off_loopback",
+        `the page is at ${pathOf(url)}, not on this machine`,
+      );
+    return p;
+  }
+
+  /** A step that ended off this machine — a redirect, a link, a script —
+   *  reads nothing there (§7, review 2026-10-30): the page is the
+   *  Trailblazer's, signed in as him. */
+  private leftMachine(wc: WebContents, instrument: PageInstrument): void {
+    // Stopped on its way out, the page stays where it was, and that used to
+    // read as a step that worked, with the old page's elements (review
+    // 2026-11-05, M5).
+    const refused = instrument.takeRefused();
+    if (refused !== null)
+      throw new BrowserHostError(
+        "off_loopback",
+        `the page tried to go on to ${hostOf(refused)}, not on this machine — it was stopped, and the step did not land`,
+      );
+    const url = wc.getURL();
+    if (url !== "" && !isLoopbackUrl(url))
+      throw new BrowserHostError(
+        "off_loopback",
+        `the page went on to ${hostOf(url)}, not on this machine — nothing on it was read`,
+      );
+  }
+
+  private async elements(i: PageInstrument): Promise<PageElements> {
+    try {
+      const e = await i.snapshot(false, STEP_BUDGET);
+      return { lines: e.lines, count: e.count, shown: e.shown };
+    } catch {
+      return { lines: "", count: 0, shown: 0 };
+    }
+  }
+
+  async navigate(
+    to: PageNavigation,
+    signal: AbortSignal,
+  ): Promise<PageNavigated> {
+    let url: string | null = null;
+    if ("url" in to) {
+      const raw = to.url.trim();
+      url =
+        /^[a-z][a-z0-9+.-]*:/i.test(raw) && !/^[a-z0-9.-]+:\d/i.test(raw)
+          ? raw
+          : `http://${raw}`;
+      if (!/^https?:\/\//i.test(url) && url !== "about:blank")
+        throw new BrowserHostError("scheme", "only http(s) addresses open");
+      if (!isLoopbackUrl(url))
+        throw new BrowserHostError(
+          "off_loopback",
+          `${pathOf(url)} is not on this machine`,
+        );
+    } else {
+      const have = this.page.existing();
+      if (have === null)
+        throw new BrowserHostError("no_page", "no page is open yet");
+      const h = have.wc.navigationHistory;
+      if (
+        (to.go === "back" && !h.canGoBack()) ||
+        (to.go === "forward" && !h.canGoForward())
+      )
+        throw new BrowserHostError(
+          "no_page",
+          `there is no page to go ${to.go} to`,
+        );
+      // `back` past the app lands where the Trailblazer browsed before:
+      // refused before it goes, as an address off this machine is (§7).
+      if (to.go !== "reload") {
+        const entry = h.getEntryAtIndex(
+          h.getActiveIndex() + (to.go === "back" ? -1 : 1),
+        );
+        if (entry !== undefined && entry !== null && !isLoopbackUrl(entry.url))
+          throw new BrowserHostError(
+            "off_loopback",
+            `going ${to.go} leads to ${hostOf(entry.url)}, not on this machine`,
+          );
+      }
+    }
+    const { wc, instrument } = this.page.live();
+    this.page.opened();
+    return instrument.during(signal, () =>
+      this.load(wc, instrument, to, url, signal),
+    );
+  }
+
+  private async load(
+    wc: WebContents,
+    instrument: PageInstrument,
+    to: PageNavigation,
+    url: string | null,
+    signal: AbortSignal,
+  ): Promise<PageNavigated> {
+    const mark = instrument.mark();
+    instrument.status = null;
+    instrument.takeRefused();
+    const done = new Promise<void>((resolve, reject) => {
+      const stop = (): void => {
+        cleanup();
+        resolve();
+      };
+      const fail = (
+        _e: unknown,
+        code: number,
+        desc: string,
+        _u: string,
+        isMain: boolean,
+      ): void => {
+        if (!isMain || code === -3) return;
+        cleanup();
+        reject(
+          new BrowserHostError("load_failed", `the page did not load: ${desc}`),
+        );
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(
+          new BrowserHostError(
+            "timeout",
+            "the page did not finish loading in 15 s",
+          ),
+        );
+      }, NAV_TIMEOUT_MS);
+      const abort = (): void => {
+        cleanup();
+        resolve();
+      };
+      const cleanup = (): void => {
+        clearTimeout(timer);
+        wc.off("did-stop-loading", stop);
+        wc.off("did-fail-load", fail);
+        signal.removeEventListener("abort", abort);
+      };
+      wc.on("did-stop-loading", stop);
+      wc.on("did-fail-load", fail);
+      signal.addEventListener("abort", abort, { once: true });
+    });
+    if (url !== null) void wc.loadURL(url).catch(() => undefined);
+    else if (!("url" in to)) {
+      const h = wc.navigationHistory;
+      if (to.go === "back") h.goBack();
+      else if (to.go === "forward") h.goForward();
+      else wc.reload();
+    }
+    await done;
+    if (signal.aborted)
+      throw Object.assign(new Error("aborted"), { name: "AbortError" });
+    this.leftMachine(wc, instrument);
+    return {
+      url: wc.getURL(),
+      title: wc.getTitle(),
+      status: instrument.status,
+      elements: await this.elements(instrument),
+      consoleErrors: instrument.errorsSince(mark),
+    };
+  }
+
+  async read(req: PageReadRequest, signal: AbortSignal): Promise<PageRead> {
+    const { wc, instrument } = this.here();
+    return instrument.during(signal, () => this.readIn(wc, instrument, req));
+  }
+
+  private async readIn(
+    wc: WebContents,
+    instrument: PageInstrument,
+    req: PageReadRequest,
+  ): Promise<PageRead> {
+    const view = (e: ReadElements): PageRead => ({
+      url: wc.getURL(),
+      title: wc.getTitle(),
+      text: e.lines,
+      ...(e.shown < e.count || e.full.length > e.lines.length
+        ? { full: e.full }
+        : {}),
+      count: e.count,
+      truncated: e.shown < e.count,
+    });
+    switch (req.mode) {
+      case "tree":
+        return view(
+          await instrument.snapshot(req.all === true, READ_BUDGET, req.ref),
+        );
+      case "find":
+        return view(await instrument.find(req.query));
+      case "text": {
+        const t = await instrument.call<ReadElements>("text", READ_BUDGET);
+        return { ...view(t), truncated: t.count > READ_BUDGET };
+      }
+      case "console":
+        return instrument.readConsole(req.onlyErrors === true, req.pattern);
+      default:
+        return instrument.readNetwork();
+    }
+  }
+
+  async act(req: PageAction, signal: AbortSignal): Promise<PageActed> {
+    const { wc, instrument } = this.here();
+    return instrument.during(signal, () =>
+      this.actIn(wc, instrument, req, signal),
+    );
+  }
+
+  private async actIn(
+    wc: WebContents,
+    instrument: PageInstrument,
+    req: PageAction,
+    signal: AbortSignal,
+  ): Promise<PageActed> {
+    instrument.takeRefused();
+    const before = wc.getURL();
+    const mark = instrument.mark();
+    let target: string | undefined;
+    let hit: string | undefined;
+    let password = false;
+    const at = async (
+      ref: string | undefined,
+      x: number | undefined,
+      y: number | undefined,
+    ): Promise<{ x: number; y: number }> => {
+      if (ref !== undefined) {
+        const l = await instrument.locate(ref);
+        target = l.target;
+        if (l.hit !== null) hit = l.hit;
+        password = l.password;
+        return { x: l.x, y: l.y };
+      }
+      if (x === undefined || y === undefined)
+        throw new BrowserHostError("no_ref", "give a ref, or x and y");
+      const there = await instrument.call<{
+        target: string;
+        password: boolean;
+      } | null>("at", x, y);
+      if (there !== null) {
+        target = there.target;
+        password = there.password;
+      }
+      return { x, y };
+    };
+    switch (req.action) {
+      case "click": {
+        const p = await at(req.ref, req.x, req.y);
+        await instrument.click(p.x, p.y);
+        break;
+      }
+      case "type": {
+        const refuseOff = (): void => {
+          if (password && !isLoopbackUrl(wc.getURL()))
+            throw new BrowserHostError(
+              "password_refused",
+              "a password is typed only on this machine's pages",
+            );
+        };
+        const p = await at(req.ref, req.x, req.y);
+        refuseOff();
+        await instrument.click(p.x, p.y);
+        // The mask follows where the text lands, not where 板砖 aimed: a
+        // press by x/y on a label or a wrapper, or one that lands on another
+        // element, can focus a password field (review 2026-10-30, M6).
+        if (await instrument.call<boolean>("focusedPassword")) password = true;
+        refuseOff();
+        await instrument.insertText(req.text);
+        if (req.submit === true) await instrument.key("Enter");
+        break;
+      }
+      case "key":
+        await instrument.key(req.key);
+        break;
+      case "scroll": {
+        const vp = await instrument.call<{ width: number; height: number }>(
+          "viewport",
+        );
+        const p =
+          req.ref !== undefined
+            ? await at(req.ref, undefined, undefined)
+            : { x: vp.width / 2, y: vp.height / 2 };
+        const screens = req.amount ?? 1;
+        await instrument.wheel(
+          p.x,
+          p.y,
+          (req.direction === "up" ? -1 : 1) * vp.height * screens * 0.85,
+        );
+        break;
+      }
+      case "select": {
+        const l = await instrument.locate(req.ref);
+        target = l.target;
+        if (l.select) {
+          if (req.value === undefined)
+            throw new BrowserHostError(
+              "no_ref",
+              "a select box needs the option to choose",
+            );
+          const r = await instrument.call<{
+            chosen: string | null;
+            options?: string[];
+          }>("choose", req.ref, req.value);
+          if (r.chosen === null)
+            throw new BrowserHostError(
+              "no_ref",
+              `no option ${JSON.stringify(req.value)}${r.options !== undefined ? `; the options are ${r.options.join(", ")}` : ""}`,
+            );
+        } else {
+          if (l.hit !== null) hit = l.hit;
+          await instrument.click(l.x, l.y);
+        }
+        break;
+      }
+      default:
+        await instrument.emulate(req.preset, req.scheme);
+    }
+    await instrument.settle(signal);
+    if (signal.aborted)
+      throw Object.assign(new Error("aborted"), { name: "AbortError" });
+    this.leftMachine(wc, instrument);
+    return {
+      url: wc.getURL(),
+      title: wc.getTitle(),
+      ...(target !== undefined ? { target } : {}),
+      ...(hit !== undefined ? { hit } : {}),
+      ...(password ? { password: true } : {}),
+      navigated: wc.getURL() !== before,
+      elements: await this.elements(instrument),
+      consoleErrors: instrument.errorsSince(mark),
+    };
+  }
+
+  async screenshot(
+    req: { region?: { x: number; y: number; width: number; height: number } },
+    signal: AbortSignal,
+  ): Promise<PageShot> {
+    const { instrument } = this.here();
+    return instrument.during(signal, () => instrument.capture(req.region));
+  }
+}

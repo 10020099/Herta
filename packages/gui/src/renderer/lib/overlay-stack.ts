@@ -26,10 +26,16 @@ import { useEffect, useSyncExternalStore } from "react";
  *  sits under the settings/key-prompt backdrops; the image lightbox floats
  *  over those (an intentional viewer the user just opened); menus above all. */
 export const OVERLAY_Z = {
+  /** Flow's panel over the main area (ADR 0084 §2): under the approval
+   *  card, which still draws above it, and under every dialog. */
+  flow: 30,
   approval: 40,
   settings: 60,
   keyPrompt: 60,
   lightbox: 64,
+  /** The keyboard cheat sheet (ADR 0082 §7): over Settings and the
+   *  lightbox it can be opened from, under the menus. */
+  shortcuts: 66,
   cardMenu: 70,
 } as const;
 
@@ -79,6 +85,21 @@ export function topOverlay(): string | null {
     }
   }
   return top?.id ?? null;
+}
+
+/** Whether an overlay above level `z` is open, leaving out `except`. */
+export function overlayOpenAbove(
+  z: number,
+  except: readonly string[] = [],
+): boolean {
+  return entries.some((e) => e.z > z && !except.includes(e.id));
+}
+
+/** The topmost overlay's z-level, or null when none is open. */
+export function topOverlayZ(): number | null {
+  let z: number | null = null;
+  for (const e of entries) if (z === null || e.z > z) z = e.z;
+  return z;
 }
 
 /**

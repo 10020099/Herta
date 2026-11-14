@@ -4,6 +4,7 @@ import { join } from "node:path";
 import {
   type PendingPermissionApproval,
   type PermissionRequest,
+  SessionApprovalCache,
   WorkspacePermissions,
 } from "@herta/core";
 import { describe, expect, it } from "vitest";
@@ -12,7 +13,11 @@ import { OverlayAskResolver } from "./overlay-ask-resolver.js";
 function makeRequest(over: Partial<PermissionRequest> = {}): PermissionRequest {
   return {
     id: "req-1",
-    call: { id: "call-1", tool: "write_new_file", input: { path: "a.ts" } },
+    call: {
+      id: "call-1",
+      tool: "str_replace_editor",
+      input: { command: "create", path: "a.ts" },
+    },
     reason: "write a new file",
     risk: "workspace_write",
     ...over,
@@ -46,19 +51,64 @@ function makeResolver(
   return { resolver, pending, cleared };
 }
 
+describe("OverlayAskResolver — a remember never covers a reach into .herta (review 2026-10-30)", () => {
+  it("remembering `myprog --build` leaves `myprog --out .herta/…` to the owner", async () => {
+    const pending: PendingPermissionApproval[] = [];
+    const resolver = new OverlayAskResolver({
+      setPendingOverlay: (o) => pending.push(o),
+      clearOverlay: () => {},
+      cache: new SessionApprovalCache(),
+      workspace: () => "C:/ws",
+    });
+    const cmd = (argv: string[]): PermissionRequest =>
+      makeRequest({
+        call: { id: "c", tool: "bash", input: { command: argv.join(" ") } },
+        risk: "workspace_write",
+        code: "command_ask_unknown",
+        // What the bash rule derived from the line.
+        argv,
+      });
+    const first = resolver.present(
+      cmd(["myprog", "--build"]),
+      new AbortController().signal,
+    );
+    resolver.resolveExternal({
+      requestId: pending[0]?.requestId ?? "",
+      decision: "allow",
+      persistence: "session",
+    });
+    expect(await first).toBe("allow");
+    // The remember covers its own program again, with no card…
+    expect(
+      await resolver.present(
+        cmd(["myprog", "--build"]),
+        new AbortController().signal,
+      ),
+    ).toBe("allow");
+    expect(pending).toHaveLength(1);
+    // …but not a reach into .herta under the same program.
+    void resolver.present(
+      cmd(["myprog", "--out", ".herta/permissions.json"]),
+      new AbortController().signal,
+    );
+    expect(pending).toHaveLength(2);
+    expect(pending[1]?.cacheable).toBe(false);
+  });
+});
+
 describe("OverlayAskResolver.present — payload enrichment", () => {
-  it("carries tool + summary, no command for non-run_command tools", () => {
+  it("carries tool + summary, and no command for a tool that runs none", () => {
     const { resolver, pending } = makeResolver();
     void resolver.present(makeRequest(), new AbortController().signal);
     expect(pending).toHaveLength(1);
     const p = pending[0];
-    expect(p?.tool).toBe("write_new_file");
+    expect(p?.tool).toBe("str_replace_editor");
     expect(p?.summary).toBe("write a new file");
     expect(p?.command).toBeUndefined();
     expect(p?.risk).toBe("workspace_write");
   });
 
-  it("derives command (argv joined) for run_command", () => {
+  it("a deleted tool's ask shows no command: `run_command`'s argv is read by nobody now (ADR 0086)", () => {
     const { resolver, pending } = makeResolver();
     void resolver.present(
       makeRequest({
@@ -71,7 +121,24 @@ describe("OverlayAskResolver.present — payload enrichment", () => {
       }),
       new AbortController().signal,
     );
-    expect(pending[0]?.command).toBe("npm install left-pad");
+    expect(pending[0]?.command).toBeUndefined();
+  });
+
+  it("a dev server's start shows the launcher entry's command (ADR 0083 §5)", () => {
+    const { resolver, pending } = makeResolver();
+    void resolver.present(
+      makeRequest({
+        call: {
+          id: "c",
+          tool: "dev_server",
+          input: { action: "start", name: "web" },
+        },
+        risk: "network",
+        argv: ["npm", "run", "dev"],
+      }),
+      new AbortController().signal,
+    );
+    expect(pending[0]?.command).toBe("npm run dev");
   });
 
   it("minimal contract (ADR 0040): bash asks carry the command line verbatim", () => {

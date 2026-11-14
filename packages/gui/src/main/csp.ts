@@ -84,8 +84,10 @@ export function buildCsp(opts: CspOptions): string {
       // needs an outbound origin — this is the directive that would stop an
       // injected script exfiltrating a transcript. The ONE opening is the
       // read-only asset scheme the 3D device card loads its meshes and
-      // atlases over (ADR 0057 §3). Scheme-scoped on purpose: 'self' on this
-      // file:// document would match every file: URL, i.e. any local file.
+      // atlases over (ADR 0057 §3). Scheme-scoped on purpose: when this was
+      // written the document was a file:// page, where 'self' matched every
+      // file: URL. It is on the app's own scheme now (`app-protocol.ts`),
+      // and still asks for nothing of its own over fetch.
       ["herta-asset:"]
     : ["'self'", opts.devOrigin ?? "", "ws:", "wss:", "herta-asset:"];
 
@@ -101,9 +103,10 @@ export function buildCsp(opts: CspOptions): string {
     // Bundled art plus the small assets Vite inlines as data: URIs, the
     // custom scheme attachment images are served over (ADR 0048) — stored
     // pictures stay on disk instead of riding the record as data: URIs —
-    // and the 3D device card's scheme (ADR 0057): its two scalar PNG maps
-    // load through an image element, not fetch.
-    "img-src 'self' data: blob: herta-attachment: herta-asset:",
+    // the 3D device card's scheme (ADR 0057): its two scalar PNG maps
+    // load through an image element, not fetch — and Flow's pictures (ADR
+    // 0084 §8), served from the app's own store, never a remote origin.
+    "img-src 'self' data: blob: herta-attachment: herta-asset: herta-flow:",
     // The custom scheme the voice clips are served over.
     "media-src 'self' herta-voice: data: blob:",
     "font-src 'self' data:",

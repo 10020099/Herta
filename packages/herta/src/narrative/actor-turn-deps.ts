@@ -11,6 +11,7 @@ import type {
   CodingAgentRuntime,
   CompletionProviderAdapter,
   EventBus,
+  PickedElement,
   ProviderAdapter,
   SystemBlock,
   TerminalRecord,
@@ -61,6 +62,10 @@ export interface ActorTurnDeps {
   readonly bus: EventBus<AgentEvent>;
   /** Factory that creates a fresh CodingAgentRuntime per `@板砖` invocation. */
   readonly runtimeFactory: () => CodingAgentRuntime;
+  /** Hands text to the running 板砖 as a steer — the session's steer
+   *  channel (ADR 0063). Her live `@板砖` in an answer during a run reaches
+   *  板砖 through it (ADR 0085 §4). Absent (the CLI): it steers nothing. */
+  readonly steerBackend?: (text: string) => void;
   /** Outer abort signal; passed through to provider and backend. */
   readonly signal?: AbortSignal;
   /**
@@ -73,6 +78,11 @@ export interface ActorTurnDeps {
    * not sanitize at read, so construction is the only gate.
    */
   readonly userAttachments?: readonly SystemBlock[];
+  /** The paths the user mentioned with the composer's `@` (ADR 0072
+   *  amendment 2026-10-20): recorded on the user block. */
+  readonly userMentions?: readonly string[];
+  /** Elements picked on the page (ADR 0083 §4), recorded on the user block. */
+  readonly userPicks?: readonly PickedElement[];
   /**
    * A 继续 turn (ADR 0071 §1.4): the user block is marked `resume`, and the
    * harness continues the interrupted 板砖 run (the bridge's `resume`) before
@@ -165,9 +175,15 @@ export interface ActorTurnDeps {
    * Fires with every completion prompt the turn asks for — each thought and
    * speech (the phase-2 funnel, an adopted speculative thought included) and
    * each beat. `runActorCompletionTurn` sets it to measure the turn for the
-   * usage log (long-run study item 6); a caller's own hook still fires.
+   * usage log (long-run study item 6); a caller's own hook still fires. It
+   * fires before the request leaves, and the turn's own throws there for a
+   * prompt larger than the model's window (`prompt-size.ts`).
    */
   readonly onCompletionPrompt?: (prompt: string) => void;
+  /** The most a completion prompt may estimate to. Absent, the model's own
+   *  window (`ACTOR_WINDOW_TOKENS`); a test sets a small one. Not the
+   *  recap's `contextWindowTokens`: that one is a knob for when to compact. */
+  readonly promptWindowTokens?: number;
   /**
    * The intent router's state (Slice 13). The actor runs in two-phase
    * mood-routing mode: every iteration always thinks first (（我 想）), then

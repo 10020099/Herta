@@ -1,3 +1,4 @@
+import { EXEC_WRAPPER_PROGRAMS } from "@herta/core";
 import { describe, expect, it } from "vitest";
 import {
   classifyCommand,
@@ -2233,6 +2234,534 @@ describe("classifyCommand — what git runs later, and where git points (2026-10
       ["npm", "dist-tag", "add", "pkg@1.0.0", "latest"],
     ]) {
       expect(code(argv), argv.join(" ")).toBe("command_ask_network");
+    }
+  });
+});
+
+describe("exec-wrappers: one list, peeled on both lanes (Mac findings 2026-10-24, item 1)", () => {
+  // Each wrapper running `rm -rf /`, in the shape its own options take.
+  const WRAPPED: Record<string, string[]> = {
+    sudo: ["sudo", "-u", "root"],
+    doas: ["doas"],
+    pkexec: ["pkexec"],
+    env: ["env", "-P", "/bin"],
+    nice: ["nice", "-n", "5"],
+    ionice: ["ionice", "-c", "3"],
+    nohup: ["nohup"],
+    setsid: ["setsid"],
+    stdbuf: ["stdbuf", "-o", "0"],
+    timeout: ["timeout", "5"],
+    xargs: ["xargs"],
+    command: ["command"],
+    builtin: ["builtin"],
+    time: ["/usr/bin/time", "-l"],
+    su: ["su", "-c", "rm -rf /"],
+    runuser: ["runuser", "-u", "root"],
+    chroot: ["chroot", "/srv/jail"],
+    strace: ["strace", "-f"],
+    ltrace: ["ltrace"],
+    watch: ["watch", "-n", "1"],
+    flock: ["flock", "/tmp/lock"],
+    script: ["script", "-q", "/dev/null"],
+    taskset: ["taskset", "0x1"],
+    unshare: ["unshare", "-r"],
+    busybox: ["busybox"],
+    proot: ["proot", "-r", "/srv"],
+    caffeinate: ["caffeinate", "-i"],
+    arch: ["arch", "-arm64"],
+    "sandbox-exec": ["sandbox-exec", "-p", "(version 1)"],
+    // The pre-release review of 2026-10-30.
+    exec: ["exec", "-a", "x"],
+    chrt: ["chrt", "-f", "10"],
+    unbuffer: ["unbuffer", "-p"],
+    firejail: ["firejail", "--noprofile"],
+    nsenter: ["nsenter", "-t", "1", "-m"],
+    "systemd-run": ["systemd-run", "--user", "-p", "Nice=5"],
+    faketime: ["faketime", "2020-01-01"],
+    fakeroot: ["fakeroot", "-u"],
+    prlimit: ["prlimit", "--nofile=1024"],
+    numactl: ["numactl", "-N", "0"],
+    bwrap: ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev"],
+    valgrind: ["valgrind", "--leak-check=full"],
+    "xvfb-run": ["xvfb-run", "-a", "-s", "-screen 0 1024x768x24"],
+    "ssh-agent": ["ssh-agent", "-t", "60"],
+    wsl: ["wsl", "-d", "Ubuntu", "-e"],
+  };
+  const payload = (w: string): string[] =>
+    w === "su"
+      ? (WRAPPED.su as string[])
+      : [...(WRAPPED[w] ?? []), "rm", "-rf", "/"];
+
+  it("every wrapper on the shared list has a shape here, and blocks what it wraps", () => {
+    expect(Object.keys(WRAPPED).sort()).toEqual(
+      [...EXEC_WRAPPER_PROGRAMS].sort(),
+    );
+    for (const w of EXEC_WRAPPER_PROGRAMS) {
+      const argv = payload(w);
+      // The argv lane: `nohup rm -rf /` and `time -l rm -rf /` were asks —
+      // the inner block was dropped as "not an escalating ask".
+      expect(classifyCommand(argv).kind, argv.join(" ")).toBe("block");
+      // A shell body (the bash lane's block scan).
+      expect(
+        classifyShellBody(
+          argv.map((a) => (/\s/.test(a) ? `'${a}'` : a)).join(" "),
+        ).hit,
+        argv.join(" "),
+      ).toBe(true);
+    }
+  });
+
+  it("a package manager's exec, taskset's list, env's --chdir and a deep chain hide nothing (review 2026-10-30)", () => {
+    for (const argv of [
+      ["pnpm", "exec", "rm", "-rf", "/"],
+      ["pnpm", "--filter", "web", "exec", "rm", "-rf", "/"],
+      ["yarn", "exec", "rm", "-rf", "/"],
+      ["npm", "exec", "--yes", "--", "rm", "-rf", "/"],
+      ["bun", "x", "rm", "-rf", "/"],
+      ["direnv", "exec", ".", "rm", "-rf", "/"],
+      ["taskset", "-c", "0", "rm", "-rf", "/"],
+      ["env", "--chdir", "/tmp", "rm", "-rf", "/"],
+      ["env", "--chdir", "/tmp", "-S", "rm -rf /"],
+      [
+        "nice",
+        "timeout",
+        "5",
+        "nohup",
+        "sudo",
+        "stdbuf",
+        "-oL",
+        "rm",
+        "-rf",
+        "/",
+      ],
+    ]) {
+      expect(classifyCommand(argv).kind, argv.join(" ")).toBe("block");
+      expect(classifyShellBody(argv.join(" ")).hit, argv.join(" ")).toBe(true);
+    }
+    // Their everyday shapes are what they were.
+    expect(classifyCommand(["pnpm", "run", "build"]).kind).not.toBe("block");
+    expect(classifyCommand(["pnpm", "exec", "vitest", "run"]).kind).not.toBe(
+      "block",
+    );
+  });
+
+  it("macOS's wrappers hide neither a keychain dump nor a harness write", () => {
+    expect(
+      classifyCommand(["arch", "-arm64", "security", "dump-keychain"]).kind,
+    ).toBe("block");
+    expect(
+      classifyCommand(["caffeinate", "-t", "60", "shutdown", "-h", "now"]).kind,
+    ).toBe("block");
+    const guard: WriteGuard = {
+      path: (op) => (op.split("/").includes(".herta") ? "state" : null),
+      body: (body) => (body.includes(".herta") ? "state" : null),
+      holds: (op) => op === ".",
+      gitInternal: (op) => op.startsWith(".git/"),
+    };
+    const code = (argv: string[]): string => {
+      const v = classifyCommand(argv, { writeGuard: guard });
+      return v.kind === "allow" ? "allow" : `${v.kind}:${v.code}`;
+    };
+    // The write guard reads the wrapped command too.
+    expect(code(["caffeinate", "cp", "x", ".herta/permissions.json"])).toBe(
+      "block:command_blocked",
+    );
+    expect(code(["timeout", "5", "tee", ".herta/x"])).toBe(
+      "block:command_blocked",
+    );
+    expect(code(["nohup", "find", ".", "-delete"])).toBe(
+      "ask:command_ask_harness_state",
+    );
+    expect(code(["caffeinate", "cp", "x", ".git/hooks/pre-commit"])).toBe(
+      "ask:command_ask_git_internals",
+    );
+    expect(code(["env", "bash", "-c", "echo x > .herta/x"])).toBe(
+      "block:command_blocked",
+    );
+  });
+
+  it("BSD script's command follows its file; env -S runs its string", () => {
+    expect(
+      classifyCommand(["script", "-q", "/dev/null", "rm", "-rf", "/"]).kind,
+    ).toBe("block");
+    expect(
+      classifyCommand(["script", "-qec", "rm -rf /", "/dev/null"]).kind,
+    ).toBe("block");
+    expect(classifyCommand(["env", "-S", "rm -rf /"]).kind).toBe("block");
+    expect(classifyCommand(["env", "-iS", "rm -rf ~"]).kind).toBe("block");
+    expect(classifyCommand(["env", "--split-string=rm -rf /"]).kind).toBe(
+      "block",
+    );
+    expect(classifyShellBody("env -S 'rm -rf /'").hit).toBe(true);
+  });
+
+  it("ordinary wrapper use still asks, and is not blocked", () => {
+    for (const argv of [
+      ["caffeinate", "-i", "npm", "run", "build"],
+      ["arch", "-x86_64", "npm", "test"],
+      ["sandbox-exec", "-f", "build.sb", "make"],
+      ["script", "-q", "/dev/null", "npm", "test"],
+      ["env", "-P", "/usr/bin", "npm", "test"],
+      ["env", "-S", "npm test"],
+      ["busybox", "ls"],
+    ]) {
+      expect(classifyCommand(argv).kind, argv.join(" ")).not.toBe("block");
+    }
+  });
+});
+
+describe("ditto, plutil and rsync write their operands (Mac findings 2026-10-24, item 2)", () => {
+  const guard: WriteGuard = {
+    path: (op) => (op.split("/").includes(".herta") ? "state" : null),
+    body: () => null,
+    gitInternal: (op) => op.startsWith(".git/"),
+  };
+  const code = (argv: string[]): string => {
+    const v = classifyCommand(argv, { writeGuard: guard });
+    return v.kind === "allow" ? "allow" : `${v.kind}:${v.code}`;
+  };
+
+  it("into .herta is refused, into .git is git's own class", () => {
+    expect(code(["ditto", "x", ".herta/permissions.json"])).toBe(
+      "block:command_blocked",
+    );
+    expect(
+      code([
+        "plutil",
+        "-convert",
+        "json",
+        "-o",
+        ".herta/permissions.json",
+        "x.plist",
+      ]),
+    ).toBe("block:command_blocked");
+    expect(code(["rsync", "-a", "x", ".herta/"])).toBe("block:command_blocked");
+    expect(code(["ditto", "x", ".git/hooks/pre-commit"])).toBe(
+      "ask:command_ask_git_internals",
+    );
+  });
+
+  it("ditto and a local rsync are copies, inside or out; a remote rsync is the network", () => {
+    expect(code(["ditto", "build", "dist"])).toBe("ask:command_ask_fs");
+    expect(code(["rsync", "-a", "src/", "backup/"])).toBe("ask:command_ask_fs");
+    expect(code(["ditto", "x", "/Applications/x"])).toBe(
+      "ask:command_ask_outside",
+    );
+    expect(code(["rsync", "-a", "src/", "user@host:/srv/"])).toBe(
+      "ask:command_ask_network",
+    );
+    expect(writtenOperands(["plutil", "-lint", "Info.plist"])).toEqual([
+      "Info.plist",
+    ]);
+  });
+});
+
+describe("BSD sed's `-i ''` (Mac findings 2026-10-24, item 8)", () => {
+  const code = (argv: string[]): string => {
+    const v = classifyCommand(argv);
+    return v.kind === "allow" ? "allow" : `${v.kind}:${v.code}`;
+  };
+
+  it("the empty backup suffix is not the script: the edit is named, and outside is outside", () => {
+    expect(code(["sed", "-i", "", "s/a/b/", "src/x.ts"])).toBe(
+      "ask:command_ask_write",
+    );
+    expect(code(["sed", "-i", "", "s/a/b/", "~/.zshrc"])).toBe(
+      "ask:command_ask_outside",
+    );
+    expect(code(["sed", "-i", ".bak", "s/a/b/", "~/.zshrc"])).toBe(
+      "ask:command_ask_outside",
+    );
+    expect(code(["sed", "-Ei", "", "s/a+/b/", "src/x.ts"])).toBe(
+      "ask:command_ask_write",
+    );
+    // GNU's spelling is unchanged.
+    expect(code(["sed", "-i", "s/a/b/", "~/.zshrc"])).toBe(
+      "ask:command_ask_outside",
+    );
+  });
+
+  it("the files written are the files, not the script", () => {
+    expect(writtenOperands(["sed", "-i", "", "s/a/b/", "x.txt"])).toEqual([
+      "x.txt",
+    ]);
+    expect(writtenOperands(["sed", "-i", "s/a/b/", "x.txt"])).toEqual([
+      "x.txt",
+    ]);
+  });
+});
+
+describe("git that only reads (ADR 0045 amendment 2026-11-11 (2))", () => {
+  const verdict = (line: string): string => {
+    const r = classifyCommand(line.split(" "));
+    return r.kind === "ask" ? r.code : r.kind;
+  };
+
+  it("plumbing that reads allows, where it asked as a change to the repository", () => {
+    for (const line of [
+      "git cat-file -p :src/text.mjs",
+      "git cat-file -t HEAD",
+      "git ls-tree -r HEAD",
+      "git rev-list --count HEAD",
+      "git describe --tags --always",
+      "git shortlog -sn",
+      "git merge-base main HEAD",
+      "git show-ref --heads",
+      "git for-each-ref --sort=-committerdate refs/heads",
+      "git check-ignore -v notes.json",
+      "git check-attr -a README.md",
+      "git diff-tree --no-commit-id --name-only -r HEAD",
+      "git diff-index --quiet HEAD",
+      "git diff-files --name-only",
+      "git count-objects -v",
+      "git name-rev HEAD",
+      "git whatchanged -1",
+      "git version",
+    ]) {
+      expect(verdict(line), line).toBe("allow");
+    }
+  });
+
+  it("a tag, a remote, the reflog, a symbolic ref and a worktree allow in the form that lists", () => {
+    for (const line of [
+      "git tag",
+      "git tag -l",
+      "git tag --list v1.*",
+      "git tag -n5",
+      "git tag --contains HEAD",
+      "git tag --sort=-creatordate",
+      "git tag --merged main -l",
+      "git remote",
+      "git remote -v",
+      "git remote get-url origin",
+      "git remote get-url --push origin",
+      "git reflog",
+      "git reflog show HEAD",
+      "git reflog -n 5",
+      "git symbolic-ref --short HEAD",
+      "git worktree list",
+      "git worktree list --porcelain",
+    ]) {
+      expect(verdict(line), line).toBe("allow");
+    }
+  });
+
+  it("and ask in every form that writes, deletes, signs or verifies", () => {
+    for (const line of [
+      "git tag v1.0",
+      "git tag -a v1.0 -m release",
+      "git tag -d v1.0",
+      "git tag --delete v1.0",
+      "git tag -f v1.0",
+      "git tag -v v1.0",
+      "git tag -s v1.0",
+      "git tag -l -d v1.0",
+      // A name with no option that says this is a listing creates a tag.
+      "git tag --sort=-creatordate v2",
+      "git remote add origin https://example.com/r.git",
+      "git remote remove origin",
+      "git remote set-url origin https://example.com/r.git",
+      "git remote rename a b",
+      "git remote prune origin",
+      "git remote update",
+      "git remote -v update",
+      "git remote show origin",
+      "git reflog expire --expire=now --all",
+      "git reflog delete HEAD@{1}",
+      "git symbolic-ref HEAD refs/heads/x",
+      "git symbolic-ref -d HEAD",
+      "git worktree add ../x",
+      "git worktree remove x",
+      "git worktree prune",
+      "git update-ref refs/heads/x HEAD",
+      "git fsck",
+      "git gc",
+      "git archive HEAD",
+      "git notes add -m x",
+      "git ls-remote",
+    ]) {
+      expect(verdict(line), line).not.toBe("allow");
+    }
+  });
+
+  it("an option that runs or writes something else asks, on these as on every git command", () => {
+    for (const line of [
+      "git cat-file --filters HEAD:x",
+      "git cat-file --textconv HEAD:x",
+      "git diff-tree --output=x HEAD",
+      "git diff-tree --ext-diff HEAD",
+      "git -c core.pager=./x.sh ls-tree HEAD",
+      "git --exec-path=./bin rev-list HEAD",
+    ]) {
+      expect(verdict(line), line).toBe("command_ask_opaque");
+    }
+  });
+
+  it("the allow tier is still not taught about global options", () => {
+    // The decision of 2026-08-25 stands: a read behind `-C dir` or
+    // `--no-pager` asks, for the new subcommands as for `git status`.
+    for (const line of [
+      "git --no-pager ls-tree HEAD",
+      "git -C sub ls-tree HEAD",
+      "git -C sub status",
+      "git --git-dir=.git cat-file -p HEAD",
+    ]) {
+      expect(verdict(line), line).toBe("command_ask_vcs");
+    }
+    expect(verdict("git -C .. rev-list HEAD")).toBe("command_ask_outside");
+  });
+
+  it("what allowed before allows as before, and its asking forms still ask", () => {
+    for (const line of [
+      "git status --porcelain",
+      "git log --oneline -5",
+      "git show HEAD",
+      "git branch --show-current",
+      "git stash list",
+      "git grep -n TODO",
+    ]) {
+      expect(verdict(line), line).toBe("allow");
+    }
+    expect(verdict("git stash")).toBe("command_ask_vcs");
+    expect(verdict("git stash drop")).not.toBe("allow");
+    expect(verdict("git branch -D x")).not.toBe("allow");
+    expect(verdict("git diff --no-index a b")).toBe("command_ask_reader_path");
+    expect(verdict("git grep --untracked x")).toBe(
+      "command_ask_recursive_read",
+    );
+  });
+});
+
+describe("kill by job number, and a chmod that only adds (ADR 0045 amendment 2026-11-11 (2))", () => {
+  const classify = (line: string) => classifyCommand(line.split(" "));
+  const verdict = (line: string): string => {
+    const r = classify(line);
+    return r.kind === "ask" ? r.code : r.kind;
+  };
+
+  it("a kill aimed only at this shell's own jobs allows", () => {
+    for (const line of [
+      "kill %1",
+      "kill -9 %1",
+      "kill -TERM %1 %2",
+      "kill -s KILL %%",
+      "kill -n 9 %+",
+      "kill -- %-",
+      "kill %node",
+      "kill %?server",
+    ]) {
+      expect(verdict(line), line).toBe("allow");
+    }
+  });
+
+  it("a pid among the targets, no target, and every other killer still ask", () => {
+    for (const line of [
+      "kill 1234",
+      "kill -9 1234",
+      "kill %1 1234",
+      "kill -9 -1234",
+      "kill -- -1234",
+      "kill",
+      "kill -9",
+      "kill -l",
+      "kill --signal=KILL %1",
+      "kill %",
+      "kill %1;x",
+      "pkill node",
+      "killall node",
+      "taskkill /F /PID 1234",
+    ]) {
+      expect(verdict(line), line).toBe("command_ask_process");
+    }
+  });
+
+  it("a chmod that only adds, on files inside the workspace, asks as a file-system change", () => {
+    for (const line of [
+      "chmod +x bin/run.sh",
+      "chmod u+x a.sh b.sh",
+      "chmod a+rx tool",
+      "chmod u+x,g+r script.sh",
+    ]) {
+      const r = classify(line);
+      expect(r.kind, line).toBe("ask");
+      if (r.kind !== "ask") continue;
+      expect(r.code, line).toBe("command_ask_fs");
+      expect(r.risk, line).toBe("workspace_write");
+    }
+  });
+
+  it("every other chmod is where it was", () => {
+    for (const line of [
+      "chmod 755 run.sh",
+      "chmod 000 run.sh",
+      "chmod -R +x scripts",
+      "chmod -x run.sh",
+      "chmod go-rwx notes.txt",
+      "chmod u+s tool",
+      "chmod +x",
+      "chmod +x ../outside.sh",
+      "chmod +x /usr/local/bin/tool",
+      "chmod +x ~/tool",
+    ]) {
+      const r = classify(line);
+      expect(r.kind, line).toBe("ask");
+      if (r.kind !== "ask") continue;
+      expect(r.code, line).toBe("command_ask_destructive");
+      expect(r.risk, line).toBe("workspace_destructive");
+    }
+  });
+});
+
+describe("the test and lint scripts, spelled the short way (owner 2026-11-12)", () => {
+  const verdict = (line: string): string => {
+    const r = classifyCommand(line.split(" "));
+    return r.kind === "ask" ? r.code : r.kind;
+  };
+
+  it("`npm t` and `pnpm lint` allow, as `npm test` and `pnpm run lint` do", () => {
+    for (const line of [
+      "npm t",
+      "npm t -- --watch=false",
+      "pnpm lint",
+      "pnpm lint --fix",
+      // What they are short for.
+      "npm test",
+      "pnpm test",
+      "npm run lint",
+      "pnpm run lint",
+    ]) {
+      expect(verdict(line), line).toBe("allow");
+    }
+  });
+
+  it("only those two: the other short spellings and bare script names still ask", () => {
+    for (const line of [
+      "pnpm t",
+      "npm tst",
+      "npm lint",
+      "yarn test",
+      "yarn lint",
+      "pnpm build",
+      "pnpm typecheck",
+      "pnpm exec lint",
+      "bun lint",
+      "npm T",
+    ]) {
+      expect(verdict(line), line).not.toBe("allow");
+    }
+    expect(verdict("npm run build")).toBe("command_ask_script");
+    expect(verdict("pnpm dlx lint")).toBe("command_ask_download_exec");
+  });
+
+  it("an option that points them at another directory still asks first", () => {
+    for (const line of [
+      "npm t --prefix ../other",
+      "npm --prefix ../other t",
+      "pnpm lint --dir ../other",
+      "pnpm --dir ../other lint",
+      "pnpm -C ../other lint",
+    ]) {
+      expect(verdict(line), line).toBe("command_ask_opaque");
     }
   });
 });

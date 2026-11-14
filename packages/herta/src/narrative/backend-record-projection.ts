@@ -16,19 +16,26 @@ import type {
   DoneMarkerSummary,
   EvidenceSection,
   RunCommandData,
-  SearchTextData,
   ShowExcerptData,
   SystemBlock,
   SystemBlockDigest,
 } from "@herta/core";
 import {
+  browserOpArg,
+  browserOpVerb,
   composeMarkerSummary,
   countDiffLines as countDiffLinesShared,
   type MarkerSummaryLabels,
+  serverOpArg,
+  serverOpVerb,
 } from "@herta/core";
 import { boundedTail } from "./bounded-tail.js";
 import { sanitizeActorText } from "./escape.js";
 import type { GitOutcome } from "./git-outcome.js";
+import { projectPageResult } from "./page-record-projection.js";
+import { isPageDigest } from "./page-voice.js";
+import { REMEMBERED_REPLACES } from "./record-voice.js";
+import { projectServerResult } from "./server-record-projection.js";
 
 /** system-body sanitize for one string field (see `sanitizeSystemBlock`). */
 export function cleanBody(s: string): string {
@@ -112,6 +119,98 @@ export function sanitizeDigest(digest: SystemBlockDigest): SystemBlockDigest {
         source: cleanBody(digest.source),
         path: cleanBody(digest.path),
       };
+    case "web-search":
+      // The query is model-authored; the titles and sites come from pages
+      // anyone can write (ADR 0080) — the least trusted strings after an
+      // attachment's.
+      return {
+        ...digest,
+        query: cleanBody(digest.query),
+        results: digest.results.map((r) => ({
+          title: cleanBody(r.title),
+          site: cleanBody(r.site),
+        })),
+      };
+    case "web-fetch":
+      return {
+        ...digest,
+        url: cleanBody(digest.url),
+        host: cleanBody(digest.host),
+        title: cleanBody(digest.title),
+        path: cleanBody(digest.path),
+      };
+    case "page-open":
+      // The page's own title and route (ADR 0083): text a page writes, the
+      // same trust class as a fetched page's.
+      return {
+        ...digest,
+        route: cleanBody(digest.route),
+        title: cleanBody(digest.title),
+      };
+    case "page-read":
+      return {
+        ...digest,
+        route: cleanBody(digest.route),
+        title: cleanBody(digest.title),
+        ...(digest.query !== undefined
+          ? { query: cleanBody(digest.query) }
+          : {}),
+        ...(digest.path !== undefined ? { path: cleanBody(digest.path) } : {}),
+      };
+    case "page-act": {
+      // The element names are the page's; the typed text and the chosen
+      // option are 板砖's, redacted by the tool. All ride the cleaner.
+      const opt = (v: string | undefined) =>
+        v !== undefined ? cleanBody(v) : undefined;
+      const target = opt(digest.target);
+      const hit = opt(digest.hit);
+      const typed = opt(digest.typed);
+      const key = opt(digest.key);
+      const value = opt(digest.value);
+      return {
+        ...digest,
+        route: cleanBody(digest.route),
+        title: cleanBody(digest.title),
+        ...(target !== undefined ? { target } : {}),
+        ...(hit !== undefined ? { hit } : {}),
+        ...(typed !== undefined ? { typed } : {}),
+        ...(key !== undefined ? { key } : {}),
+        ...(value !== undefined ? { value } : {}),
+      };
+    }
+    case "page-shot":
+      return {
+        ...digest,
+        route: cleanBody(digest.route),
+        path: cleanBody(digest.path),
+      };
+    case "server":
+      // Names and commands from herta.launch.json, which 板砖 may write —
+      // and a page it read could steer what it writes (ADR 0083 §5).
+      switch (digest.action) {
+        case "start":
+          return {
+            ...digest,
+            name: cleanBody(digest.name),
+            command: cleanBody(digest.command),
+            route: cleanBody(digest.route),
+          };
+        case "stop":
+        case "logs":
+          return { ...digest, name: cleanBody(digest.name) };
+        case "list":
+          return {
+            ...digest,
+            entries: digest.entries.map((e) => ({
+              ...e,
+              name: cleanBody(e.name),
+              route: cleanBody(e.route),
+            })),
+          };
+        case "reaped":
+          return { ...digest, names: digest.names.map(cleanBody) };
+      }
+      return digest;
     case "undo":
       // Paths 板砖 wrote, or its commands touched (ADR 0074): backend-derived
       // like every path here. The results and flags are harness-made.
@@ -190,9 +289,33 @@ export function sanitizeSection(s: EvidenceSection): EvidenceSection {
       };
     case "error":
       return { ...s, message: cleanBody(s.message) };
+    case "web-results":
+      // Titles and sites from the web (ADR 0080): a planted （我 说） in a
+      // page title must not forge an actor block.
+      return {
+        ...s,
+        items: s.items.map((i) => ({
+          title: cleanBody(i.title),
+          site: cleanBody(i.site),
+          url: cleanBody(i.url),
+        })),
+      };
+    case "web-page":
+      return {
+        ...s,
+        url: cleanBody(s.url),
+        title: cleanBody(s.title),
+        path: cleanBody(s.path),
+        text: cleanBody(s.text),
+      };
     case "hint":
       // Harness-authored in every shipped tool, but a tool is a plugin
       // seam — clean it like the rest.
+      return { ...s, text: cleanBody(s.text) };
+    case "page":
+      // What a page step read (ADR 0083): element names, page text,
+      // console messages — all written by the page. A planted （我 说） in
+      // a button's label must not forge an actor block.
       return { ...s, text: cleanBody(s.text) };
   }
 }
@@ -241,56 +364,120 @@ export function sanitizeSystemBlock(block: SystemBlock): SystemBlock {
 /** Presentation bounds for a projected search-hit list. Lines/chars match
  *  show_excerpt's presentation lane (this is reading, not a log tail); the
  *  per-line clip keeps a minified one-liner from eating the whole budget. */
-const SEARCH_ROW_MAX_ITEMS = 40;
-const SEARCH_ROW_MAX_CHARS = 4000;
-const SEARCH_ROW_MAX_LINE_CHARS = 200;
+/** How many of a run's receipts its marker lists: its last. */
+const RECEIPTS_LISTED = 6;
 
-/**
- * `↳ N matches in M files` with the hit list in the two-state evidence lane.
- * Item shape `path:line: content` — the citation form 板砖 and Herta both
- * already use for excerpts, so a later "show me line 33" is one hop away.
- */
-export function projectSearchResult(data: SearchTextData): SystemBlock {
-  const total = data.matches.length;
-  const files = new Set(data.matches.map((m) => m.path)).size;
-  const body =
-    total === 0
-      ? `↳ 0 matches${data.truncated ? " (truncated)" : ""}`
-      : `↳ ${total} matches in ${files} files${data.truncated ? " (truncated)" : ""}`;
-  const items: string[] = [];
-  let chars = 0;
-  for (const m of data.matches) {
-    if (items.length >= SEARCH_ROW_MAX_ITEMS) break;
-    const content =
-      m.content.length > SEARCH_ROW_MAX_LINE_CHARS
-        ? `${m.content.slice(0, SEARCH_ROW_MAX_LINE_CHARS)}…`
-        : m.content;
-    const item = `${m.path}:${m.line}: ${content}`;
-    if (chars + item.length > SEARCH_ROW_MAX_CHARS && items.length > 0) break;
-    items.push(item);
-    chars += item.length + 1;
+/** web_search's result data as the bridge reads it (`@herta/tools`'
+ *  `WebSearchData`; herta does not depend on tools). */
+interface WebSearchResultData {
+  readonly query: string;
+  readonly results: readonly {
+    readonly title: string;
+    readonly url: string;
+    readonly site: string | null;
+  }[];
+}
+
+/** web_fetch's result data (`@herta/tools`' `WebFetchData`). */
+interface WebFetchResultData {
+  readonly url: string;
+  readonly host: string;
+  readonly title: string;
+  readonly path: string;
+  readonly chars: number;
+  readonly head: string;
+}
+
+/** How much of a page's opening the record carries — what Herta reads in
+ *  the turn it was fetched and the user sees in the detail pane. 板砖 itself
+ *  read more (`PAGE_HEAD_CHARS`); the rest is in the stored file. */
+const WEB_PAGE_ROW_CHARS = 2000;
+
+const hostOf = (url: string): string => {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return url;
   }
-  const omitted = total - items.length;
+};
+
+/** `↳ web: N results` with the titles in the two-state lane (ADR 0080). */
+export function projectWebSearchResult(data: WebSearchResultData): SystemBlock {
+  const items = data.results.map((r) => ({
+    title: r.title.replace(/\s+/g, " ").trim(),
+    site: r.site ?? hostOf(r.url),
+    url: r.url,
+  }));
   const block: SystemBlock = {
     kind: "system",
     label: "差分协处理器",
-    body,
+    body: `↳ web results: ${items.length}`,
     digest: {
-      kind: "search",
-      pattern: data.pattern,
-      matches: total,
-      files,
-      truncated: data.truncated,
+      kind: "web-search",
+      query: data.query,
+      results: items.map(({ title, site }) => ({ title, site })),
     },
   };
   if (items.length === 0) return block;
-  const detailLines = [`↳ 匹配 /${data.pattern}/:`, ...items];
-  if (omitted > 0) detailLines.push(`（另有 ${omitted} 处未列出）`);
   return {
     ...block,
-    evidenceDetail: detailLines.join("\n"),
-    evidence: [{ kind: "matches", pattern: data.pattern, items, omitted }],
+    evidenceDetail: [
+      "↳ 网页结果:",
+      ...items.map((i) => `- ${i.title}（${i.site}）`),
+    ].join("\n"),
+    evidence: [{ kind: "web-results", items }],
   };
+}
+
+/** `↳ page <host>: "<title>"` with the opening in the two-state lane. */
+export function projectWebFetchResult(data: WebFetchResultData): SystemBlock {
+  const title = data.title.replace(/\s+/g, " ").trim();
+  const head = data.head.trim();
+  const text =
+    head.length > WEB_PAGE_ROW_CHARS
+      ? `${head.slice(0, WEB_PAGE_ROW_CHARS).trimEnd()} …`
+      : head;
+  return {
+    kind: "system",
+    label: "差分协处理器",
+    body: `↳ page ${data.host}${title !== "" ? `: "${title}"` : ""} · ${data.chars} chars`,
+    digest: {
+      kind: "web-fetch",
+      url: data.url,
+      host: data.host,
+      title,
+      path: data.path,
+      chars: data.chars,
+    },
+    ...(text.length > 0
+      ? {
+          evidenceDetail: `↳ 网页 ${title !== "" ? `「${title}」` : data.host}（${data.url}，存于 ${data.path}）\n${text}`,
+          evidence: [
+            {
+              kind: "web-page" as const,
+              url: data.url,
+              title,
+              path: data.path,
+              text,
+            },
+          ],
+        }
+      : {}),
+  };
+}
+
+/**
+ * Whether a row's detail becomes the run's done-marker tail (the last
+ * 板砖 row with one): a command's output, an excerpt, a search's hits. A
+ * page row's never does — what a read returned is 板砖's working material,
+ * not Herta's (owner 2026-10-23), and the marker reaches her verdict.
+ */
+export function ridesDoneMarker(block: SystemBlock): boolean {
+  return (
+    block.label === "差分协处理器" &&
+    block.evidenceDetail !== undefined &&
+    !isPageDigest(block.digest)
+  );
 }
 
 /**
@@ -323,13 +510,18 @@ export function projectBackendEventUnsanitized(
       const label = workflowLabel(event.tool, event.inputSummary);
       if (label === null) return null;
       // The editor's summary leads with its command word so the verb can be
-      // chosen; the row itself reads like edit_file's (`Writing <path>`).
+      // chosen; the row itself reads `Writing <path>` / `Reading <path>`. A
+      // page step's leads with its mode or action, which the verb says.
       const arg =
         event.tool === "str_replace_editor"
           ? event.inputSummary
               .replace(/^(view|create|str_replace|insert)\s*/, "")
               .trim()
-          : event.inputSummary.trim();
+          : browserOpVerb(event.tool) !== null
+            ? browserOpArg(event.tool, event.inputSummary)
+            : serverOpVerb(event.tool) !== null
+              ? serverOpArg(event.inputSummary)
+              : event.inputSummary.trim();
       const body = `${label} ${arg}`.trim();
       return {
         kind: "system",
@@ -404,27 +596,56 @@ export function projectBackendEventUnsanitized(
         // A saved fact, as the store holds it — redacted (ADR 0077). The op
         // row names only its kind; this says what 板砖 will remember, so the
         // user and Herta can see it (PHILOSOPHY §9). Bounded: a fact is one
-        // sentence by schema.
+        // sentence by schema. A correction also names the fact it took out
+        // (amendment 2026-11-09): a forgotten fact is as much the user's
+        // business as a remembered one.
         if (event.tool === "memory_save") {
-          const data = event.result.data as { text?: unknown } | undefined;
+          const data = event.result.data as
+            | { text?: unknown; replaced?: { text?: unknown } }
+            | undefined;
           if (typeof data?.text !== "string") return null;
-          const fact =
-            data.text.length > 200 ? `${data.text.slice(0, 200)}…` : data.text;
+          const bounded = (text: string, max: number): string =>
+            (text.length > max ? `${text.slice(0, max)}…` : text)
+              .replace(/\s+/g, " ")
+              .trim();
+          const old = data.replaced?.text;
           return {
             kind: "system",
             label: "差分协处理器",
-            body: `↳ remembered: ${fact.replace(/\s+/g, " ").trim()}`,
+            body: `↳ remembered: ${bounded(data.text, 200)}${
+              typeof old === "string"
+                ? `${REMEMBERED_REPLACES}${bounded(old, 120)}`
+                : ""
+            }`,
           };
         }
-        // search_text surfaces its hits (2026-08-17). Same reasoning as
-        // show_excerpt and for the same lane: a search's op row said only that
-        // a search happened, so "which lines mention X" — the answer 板砖 was
-        // sent for — reached nobody unless it re-presented the lines. Bounded
-        // hard: this is a hit list, not the files.
-        if (event.tool === "search_text") {
-          const data = event.result.data as SearchTextData | undefined;
-          if (data === undefined || !Array.isArray(data.matches)) return null;
-          return projectSearchResult(data);
+        // The web (ADR 0080): what a search found and what a page says ride
+        // the two-state lane like an excerpt — in
+        // front of Herta this turn, a citation after.
+        if (event.tool === "web_search") {
+          const data = event.result.data as WebSearchResultData | undefined;
+          if (data === undefined || !Array.isArray(data.results)) return null;
+          return projectWebSearchResult(data);
+        }
+        // The page steps (ADR 0083 §10): what came of each — the page
+        // opened, what was read, what was done, the picture taken.
+        if (browserOpVerb(event.tool) !== null) {
+          return projectPageResult(event.tool, event.result.data);
+        }
+        // The launcher (ADR 0083 §5): a server started, stopped, listed,
+        // its log read.
+        if (event.tool === "dev_server") {
+          return projectServerResult(event.result.data);
+        }
+        if (event.tool === "web_fetch") {
+          const data = event.result.data as WebFetchResultData | undefined;
+          if (
+            data === undefined ||
+            typeof data.url !== "string" ||
+            typeof data.path !== "string"
+          )
+            return null;
+          return projectWebFetchResult(data);
         }
         // digest_document (ADR 0043): the overview rides the two-state lane
         // like an excerpt — in front of Herta this turn, a citation after —
@@ -469,64 +690,17 @@ export function projectBackendEventUnsanitized(
               : {}),
           };
         }
-        // Success: run_command (incl. the background trio) surfaces a result
-        // block — its output is otherwise invisible. The minimal contract's
-        // `bash` (ADR 0040) returns the same RunCommandData and gets the same
-        // rows. Other tools' successes stay silent; their Writing/Reading
-        // start-line already covered them.
-        if (
-          event.tool !== "run_command" &&
-          event.tool !== "bash" &&
-          event.tool !== "command_output" &&
-          event.tool !== "command_stop"
-        )
-          return null;
+        // Success: a command surfaces a result block — its output is
+        // otherwise invisible. Other tools' successes stay silent; their
+        // Writing/Reading start-line already covered them.
+        if (event.tool !== "bash") return null;
         const data = event.result.data as Partial<RunCommandData> | undefined;
         if (data === undefined) return null;
 
-        // Managed background commands (ADR 0025 slice 4): a "background …"
-        // status row instead of an exit row, so the record shows a dev
-        // server as running rather than "exit ?". Structured `bg` digest
-        // (2026-07-23) lets renderers localize; a null exitCode means the
-        // process ended by signal/kill — never render a literal "null".
-        if (data.backgroundId !== undefined) {
-          const bgState =
-            event.tool === "command_stop"
-              ? "stopped"
-              : data.running === true
-                ? "running"
-                : "exited";
-          const bgVerb =
-            bgState === "exited"
-              ? data.exitCode === null || data.exitCode === undefined
-                ? "exited (signal)"
-                : `exited (${data.exitCode})`
-              : bgState;
-          const bgStdout = (data.stdout ?? "").trimEnd();
-          const bgTail =
-            event.tool === "command_output" && bgStdout.length > 0
-              ? boundedTail(data.stdout ?? "", "", { sourceTruncated: false })
-              : { text: "" };
-          return {
-            kind: "system",
-            label: "差分协处理器",
-            body: `↳ background ${data.backgroundId}: ${bgVerb}`,
-            digest: {
-              kind: "bg",
-              id: data.backgroundId,
-              state: bgState,
-              ...(bgState === "exited"
-                ? { exitCode: data.exitCode ?? null }
-                : {}),
-            },
-            ...(bgTail.text.length > 0
-              ? {
-                  evidenceDetail: `↳ 输出:\n${bgTail.text}`,
-                  evidence: [{ kind: "output", text: bgTail.text }] as const,
-                }
-              : {}),
-          };
-        }
+        // The standard set's managed background commands had their own row
+        // here (`↳ background bg-1: running`, a `bg` digest). The tools are
+        // deleted (ADR 0086); a record that holds such rows still draws them,
+        // from the digest.
 
         // Test runs: terse tests line, no output detail (the testRun summary
         // is complete on its own).
@@ -701,41 +875,34 @@ export function workflowLabel(
   inputSummary = "",
 ): Extract<SystemBlockDigest, { kind: "op" }>["verb"] | null {
   switch (tool) {
-    case "read_file":
-    case "glob":
     // show_excerpt starts as a Reading row like any other read; what makes
     // it different is its FINISHED row, which carries the excerpt.
     case "show_excerpt":
-    // command_output reads a background process's output; the arg says
-    // `bg-N output` (2026-08-17 — was `Running bg-N`).
-    case "command_output":
       return "Reading";
-    case "search_text":
-      return "Searching";
-    case "edit_file":
-    case "write_new_file":
-      return "Writing";
-    // Minimal contract (ADR 0040): one editor tool, four commands — the verb
-    // comes from the summary's leading word, which the loop's summarizeInput
-    // guarantees is the command (`view path` / `str_replace path` …).
+    // One editor tool, four commands (ADR 0040) — the verb comes from the
+    // summary's leading word, which the loop's summarizeInput guarantees is
+    // the command (`view path` / `str_replace path` …).
     case "str_replace_editor":
       return /^view(\s|$)/.test(inputSummary) ? "Reading" : "Writing";
-    case "run_command":
     case "bash":
       return "Running";
-    case "command_stop":
-      // Not a run. Herta reads these rows, and `Running bg-1` on the stop
-      // call read as a second launch (real session 2026-08-16).
-      return "Stopping";
-    case "git_status":
-    case "git_diff":
-      return "Inspecting";
+    // `Searching`, `Stopping` and `Inspecting` were the standard set's verbs
+    // (ADR 0086). No tool earns them now; the digest's type keeps them for
+    // the records that hold them.
     case "memory_save":
       return "Saving memory";
     case "digest_document":
       return "Digesting";
+    case "web_search":
+      return "Searching the web";
+    case "web_fetch":
+      return "Reading web page";
     default:
-      return null;
+      // The page steps (ADR 0083 §10): the verb follows the mode or action
+      // the summary leads with — shared with the desktop's live feed.
+      return (
+        browserOpVerb(tool, inputSummary) ?? serverOpVerb(tool, inputSummary)
+      );
   }
 }
 
@@ -745,10 +912,23 @@ export function workflowLabel(
 const CN_MARKER_LABELS = (stateWord: string): MarkerSummaryLabels => ({
   stateWord,
   file: (n) => `${n} 个文件`,
-  tests: (passed, failed) =>
-    failed === 0
-      ? `测试 ${passed}/${passed}`
-      : `测试 ${passed} 通过，${failed} 失败`,
+  // The last test run decides (owner 2026-11-13, `testRollup`). `counts` is
+  // the wording every marker with a failed run had before, kept for a marker
+  // whose order is not known.
+  tests: (r) => {
+    switch (r.kind) {
+      case "passed":
+        return `测试 ${r.runs}/${r.runs}`;
+      case "passed-after-failures":
+        return `测试通过（此前失败 ${r.failed} 次）`;
+      case "failed":
+        return r.runs === 1
+          ? "测试失败"
+          : `测试失败（${r.runs} 次中 ${r.failed} 次）`;
+      case "counts":
+        return `测试 ${r.passed} 通过，${r.failed} 失败`;
+    }
+  },
   risk: (n) => `${n} 风险`,
   lines: (add, del) => `+${add} −${del}`,
   // Git outcome identity (ADR 0049 §4): a commit is remembered by its sha,
@@ -830,12 +1010,19 @@ export function buildDoneMarker(
   const word = STATUS_WORD[report.status] ?? report.status;
   const fileCount = report.changedFiles.length;
   // Test counts computed once; feed both the canonical body and the structured
-  // markerSummary so they can never drift.
+  // markerSummary so they can never drift. `report.tests` is in the order the
+  // runs happened (the runtime appends each as its command returns), so the
+  // last one that passed or failed is how the run's testing ENDED.
+  let lastDecided: "passed" | "failed" | undefined;
+  for (const t of report.tests) {
+    if (t.status === "passed" || t.status === "failed") lastDecided = t.status;
+  }
   const testCounts =
     report.tests.length > 0
       ? {
           passed: report.tests.filter((t) => t.status === "passed").length,
           failed: report.tests.filter((t) => t.status === "failed").length,
+          ...(lastDecided !== undefined ? { last: lastDecided } : {}),
         }
       : undefined;
   const riskCount = report.residualRisks.length;
@@ -919,15 +1106,23 @@ export function buildDoneMarker(
     sections.push({ kind: "findings", items });
   }
   if (receipts.length > 0) {
+    // The last ones, with how many are left out. It was the first six: a long
+    // run's reads, with what it did at the end unlisted, and in the live run
+    // of 2026-11-06 she read that as not done, said so and dispatched it again.
     const items = receipts
-      .slice(0, 6)
+      .slice(-RECEIPTS_LISTED)
       .map((e) =>
         e.source !== undefined && e.source.length > 0
           ? `${e.summary}（${e.source}）`
           : e.summary,
       );
+    const earlier = receipts.length - items.length;
     detailParts.push(`↳ 依据: ${items.join("; ")}`);
-    sections.push({ kind: "evidence", items });
+    sections.push({
+      kind: "evidence",
+      items,
+      ...(earlier > 0 ? { earlier } : {}),
+    });
   }
   const evidenceDetail =
     detailParts.length > 0 ? detailParts.join("\n") : undefined;

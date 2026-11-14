@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createMinimalTools, createMvpTools } from "./index.js";
+import { createMinimalTools } from "./index.js";
 
 /**
  * Every tool's model-facing JSON schema describes every field (2026-09-18).
@@ -35,27 +35,37 @@ function fieldDescriptions(
   }
 }
 
-describe("every tool schema describes every field", () => {
-  const tools = [
-    ...createMvpTools({ digestModel: null, vision: true, lang: "zh" }),
-    // The minimal contract's tools. A non-existent bash is fine here: the
-    // schema builder only spells example paths with it, and shellPathsFor
-    // falls back to an identity mapping when the probe cannot run.
-    ...createMinimalTools({
-      bashPath: "/nonexistent/bash",
-      workspaceShellPath: () => "/ws",
-      digestModel: null,
-      vision: true,
-      lang: "zh",
-    }),
-  ];
+/** The web tools mount only with a client (ADR 0080); a stub that never
+ *  answers is enough for their schemas. */
+const webClient = {
+  search: async () => [],
+  fetchPage: async () => ({ title: "", markdown: "" }),
+};
 
-  it("covers both contracts", () => {
+describe("every tool schema describes every field", () => {
+  // A non-existent bash is fine here: the schema builder only spells example
+  // paths with it, and shellPathsFor falls back to an identity mapping when
+  // the probe cannot run.
+  const tools = createMinimalTools({
+    bashPath: "/nonexistent/bash",
+    workspaceShellPath: () => "/ws",
+    digestModel: null,
+    vision: true,
+    lang: "zh",
+    webClient,
+  });
+
+  it("covers the whole set, with every optional tool mounted", () => {
     const names = new Set(tools.map((t) => t.name));
     expect(names).toContain("bash");
     expect(names).toContain("str_replace_editor");
-    expect(names).toContain("edit_file");
     expect(names).toContain("show_excerpt");
+    expect(names).toContain("report_finding");
+    expect(names).toContain("memory_save");
+    expect(names).toContain("digest_document");
+    expect(names).toContain("view_image");
+    expect(names).toContain("web_search");
+    expect(names).toContain("web_fetch");
   });
 
   for (const tool of tools) {

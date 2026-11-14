@@ -19,14 +19,17 @@ import type {
   ResolveApprovalOpts,
   ResumeEvent,
   RewindResult,
+  ServerListing,
   SessionAgentEvent,
   SessionDeletedEvent,
   SessionExportSource,
   SessionMetadata,
   SessionSearchHit,
   SessionTopic,
+  StartServerResult,
   SteerTextResult,
   SubmitTextResult,
+  TalkTextResult,
   TerminalRecord,
   TitleEvent,
   TurnLifecycleEvent,
@@ -37,7 +40,20 @@ import type {
   WorkingDiff,
   WorkspaceEvent,
 } from "@herta/app-server";
+import type {
+  PageBounds,
+  PageNavigation,
+  PageState,
+} from "../../shared/browser-page.js";
+import type {
+  FlowEvent,
+  FlowIssueView,
+  FlowRefreshOutcome,
+  FlowSettingsView,
+  FlowStateView,
+} from "../../shared/flow.js";
 import type { LiveToolSnapshot } from "../../shared/live-tool-feed.js";
+import type { ShortcutId } from "../../shared/shortcuts.js";
 
 /** One file's progress in an attach in flight, from main (2026-10-01). */
 export interface AttachProgressEvent extends AttachProgress {
@@ -57,7 +73,7 @@ export interface SessionSnapshot {
   readonly workspaceRoot: string;
   readonly record: TerminalRecord;
   /** Long-session windowing (2026-07-12): `record` is the trailing
-   *  RECORD_TAIL_BLOCKS window of the full record and this is the absolute
+   *  trailing window of the full record and this is the absolute
    *  index it starts at (= how many OLDER blocks exist, pageable via
    *  `recordSlice`). Optional on the wire — absent means 0 (the window is
    *  the whole record; older fixtures/fakes stay valid). */
@@ -149,17 +165,11 @@ export interface DreamConfig {
  *  its announced early-August-2026 update, so "low" is safe to persist now. */
 export type BackendThinking = "low" | "high" | "max";
 
-/** 板砖's model-facing tool contract (ADR 0040, 2026-08-17). */
-export type BackendContractChoice = "standard" | "minimal";
-
 /** The user-facing backend config (Settings → Coprocessor): the reasoning
- *  tier, and (ADR 0040) the tool contract. `contract` is optional so an older
- *  bridge that only knows the tier (the website demo) still type-checks; the
- *  row hides when it is absent. `bashFound` is read-side information from
- *  main — whether the minimal contract can actually run on this machine. */
+ *  tier. `bashFound` is read-side information from main: whether 板砖 can run
+ *  on this machine at all (ADR 0086). There is no tool-set choice any more. */
 export interface BackendConfig {
   readonly thinking: BackendThinking;
-  readonly contract?: BackendContractChoice;
   readonly bashFound?: boolean;
 }
 
@@ -600,6 +610,21 @@ export type StageImagesReply =
  * `window.herta`. Commands round-trip through ipcRenderer.invoke;
  * `on*` register ipcRenderer.on listeners and return an unsubscribe.
  */
+/** What `recordWindow` is asked for. `jump`: the chat shows blocks
+ *  `[start, end)` and wants block `to` on screen; main decides between the
+ *  gap and a window of its own (`jumpRange` in `@herta/core/record-window`).
+ *  `later`: `count` of weight in blocks from `after` on, to where a turn
+ *  opens. Going back to the latest asks for nothing: the store kept the
+ *  trailing window. */
+export type RecordWindowRequest =
+  | {
+      readonly kind: "jump";
+      readonly start: number;
+      readonly end: number;
+      readonly to: number;
+    }
+  | { readonly kind: "later"; readonly after: number; readonly count: number };
+
 export interface HertaBridge {
   /** The OS platform (process.platform in the preload). The renderer gates
    *  the custom window controls on it — macOS keeps its native traffic
@@ -611,6 +636,16 @@ export interface HertaBridge {
   submitText(
     text: string,
     stagedImageIds?: readonly string[],
+    /** Paths mentioned with the composer's `@` (ADR 0072 amendment
+     *  2026-10-20), recorded on the user block. */
+    mentions?: readonly string[],
+    /** Elements picked on the page (ADR 0083 §4), each `line` in the text,
+     *  recorded on the user block. */
+    picks?: readonly {
+      readonly line: string;
+      readonly element: string;
+      readonly route: string;
+    }[],
   ): Promise<SubmitTextResult>;
   interrupt(turnId?: string): Promise<{ readonly ok: boolean }>;
   /** Current estimate for the actor prompt that Herta will send next. */
@@ -624,7 +659,30 @@ export interface HertaBridge {
    *  there was no step to reach and the composer keeps holding the text for
    *  the next turn. OPTIONAL — fakes and the website demo omit it, and the
    *  held strip then offers no steer. */
-  steerText?(text: string): Promise<SteerTextResult>;
+  steerText?(
+    text: string,
+    /** Elements picked on the page whose lines the text holds (ADR 0083
+     *  §4). */
+    picks?: readonly {
+      readonly line: string;
+      readonly element: string;
+      readonly route: string;
+    }[],
+  ): Promise<SteerTextResult>;
+  /** A message to Herta while 板砖 works (ADR 0085 step 3): `accepted`
+   *  means the words are in the record and she answers them while the run
+   *  goes on; `queued` means no run is working and the composer holds the
+   *  text for the next turn. OPTIONAL — fakes and the website demo omit it,
+   *  and the composer then holds the message as before. */
+  talkText?(
+    text: string,
+    mentions?: readonly string[],
+    picks?: readonly {
+      readonly line: string;
+      readonly element: string;
+      readonly route: string;
+    }[],
+  ): Promise<TalkTextResult>;
   /** 继续 (ADR 0071 §1.4): continue the interrupted 板砖 run. Resolves when
    *  the turn has ended, like `submitText`; never rejects. OPTIONAL with
    *  `onResume` — fakes and the website demo omit them, and no strip shows. */
@@ -657,16 +715,28 @@ export interface HertaBridge {
    *  card. OPTIONAL so existing bridge fakes keep compiling — the sidebar
    *  degrades to title-only filtering without it. */
   searchSessions?(query: string): Promise<readonly SessionSearchHit[]>;
-  /** Long-session windowing: fetch up to `count` record blocks ENDING at
-   *  absolute index `before` (exclusive) for the active session — the store's
+  /** Long-session windowing: fetch `count` of weight in record blocks ENDING
+   *  at absolute index `before` (exclusive) for the active session, back to a
+   *  message that opens a turn (`@herta/core/record-window`) — the store's
    *  "load earlier" paging. Resolves `{ start, blocks }` where `start` is the
    *  absolute index of `blocks[0]`; an empty slice means nothing older / a
-   *  session mismatch. OPTIONAL so bridge fakes keep compiling — the load-
-   *  earlier affordance hides without it. */
+   *  session mismatch. OPTIONAL so bridge fakes keep compiling — the
+   *  load-earlier affordance hides without it. */
   recordSlice?(
     sessionId: string,
     before: number,
     count: number,
+  ): Promise<{ readonly start: number; readonly blocks: TerminalRecord }>;
+  /** A window that is not a page of older blocks (owner 2026-11-12): what a
+   *  jump brings, or a page of later blocks for a chat that shows a window
+   *  of history. The answer is `{ start, blocks }` like a slice; the store
+   *  joins it to the window the chat shows when the two touch and shows it
+   *  instead when they do not. Empty when there is nothing to bring or the
+   *  session changed. OPTIONAL: without it a jump reaches only what is
+   *  already loaded. */
+  recordWindow?(
+    sessionId: string,
+    req: RecordWindowRequest,
   ): Promise<{ readonly start: number; readonly blocks: TerminalRecord }>;
   /** Both resolve `null` when main has no session host (bootstrap failed) or
    *  the open/create could not produce a session — the previous non-null
@@ -822,8 +892,13 @@ export interface HertaBridge {
     sessionId: string,
   ): Promise<ReadWorkspaceBranchesReply>;
   /** The viewer's 打开 button: open the jailed path with the OS default
-   *  application (shell.openPath). False when refused/missing. */
+   *  application (shell.openPath). A file the OS would run when opened — a
+   *  program, a script, a shortcut — is shown in its folder instead, and
+   *  that answers true as well. False when refused/missing. */
   openWorkspaceFile?(sessionId: string, path: string): Promise<boolean>;
+  /** A file chip's 在资源管理器中显示 (ADR 0072 amendment 2026-10-20): show
+   *  the jailed path in the OS file manager. False when refused/missing. */
+  revealWorkspaceFile?(sessionId: string, path: string): Promise<boolean>;
   /** The real filesystem path of a dropped `File`. Electron 43 removed
    *  `File.path`, so only the preload can answer this — the renderer never
    *  holds a File beyond the drop handler. */
@@ -963,6 +1038,12 @@ export interface HertaBridge {
    *  Anything else is refused by main. OPTIONAL — fakes and the website
    *  demo omit it, and the links then do not render. */
   openExternal?(url: string): Promise<void>;
+  /** Open a web page the session's record names (ADR 0080 §5) — a page
+   *  板砖 fetched or a search result it was shown — in the OS browser. Main
+   *  checks the URL against that session's own web rows; false when it is
+   *  not there. OPTIONAL — fakes and the demo omit it, and the links then
+   *  stay plain text. */
+  openWebPage?(sessionId: string, url: string): Promise<boolean>;
   /** The token-plan key (ADR 0062 §1.8), stored and checked like the
    *  pay-as-you-go one. Optional alongside it. */
   getMiniMaxPlanKeyStatus?(): Promise<DeepSeekKeyStatus>;
@@ -1054,8 +1135,75 @@ export interface HertaBridge {
    *  for them. OPTIONAL — fakes and the website demo omit the pair. */
   windowIsFullScreen?(): Promise<boolean>;
   onWindowFullScreen?(cb: (fullScreen: boolean) => void): () => void;
-  /** The application menu's Settings… item (Cmd+, on macOS). OPTIONAL. */
+  /** The application menu's Settings… item (Ctrl/⌘+,). OPTIONAL. */
   onOpenSettings?(cb: () => void): () => void;
+  /** The application menu's Close (Ctrl/⌘+W, ADR 0082 §2): the renderer
+   *  closes the viewer's tab, or the window. OPTIONAL. */
+  onCloseRequested?(cb: () => void): () => void;
+  /** The browser page (ADR 0083), a main-owned view over the viewer's page
+   *  tab. OPTIONAL as a set: without `pageShow` there is no page tab.
+   *  Lay the session's page over the tab's content area (CSS pixels). */
+  pageShow?(sessionId: string, bounds: PageBounds): void;
+  /** Take the page off the window; it keeps running. */
+  pageHide?(): void;
+  /** Take the page off the window at once and answer with its still frame
+   *  (a data URL) to show in its place. */
+  pageFreeze?(): Promise<string | null>;
+  pageNavigate?(sessionId: string, to: PageNavigation): void;
+  /** The session's page, or null before its first address. */
+  pageState?(sessionId: string): Promise<PageState | null>;
+  /** The page's own address in the OS browser (main reads it). */
+  pageOpenExternal?(sessionId: string): Promise<void>;
+  /** Settings → 差分协处理器 → Browser data (ADR 0083 §8): the page
+   *  partition's sign-ins, cookies, storage and cache, cleared. */
+  pageClearData?(): Promise<boolean>;
+  /** The page tab was closed: the session's page ends (owner 2026-10-23). */
+  pageClose?(sessionId: string): void;
+  /** The picker on or off (ADR 0083 §4). */
+  pagePick?(sessionId: string, on: boolean): void;
+  /** An element picked — or `pick: null`, the pick ended without one. */
+  onPagePicked?(
+    cb: (event: {
+      readonly sessionId: string;
+      readonly pick: {
+        readonly element: string;
+        readonly route: string;
+        readonly html: string;
+      } | null;
+    }) => void,
+  ): () => void;
+  /** The launcher's entries for the new-tab page (ADR 0083 §4). */
+  serversList?(sessionId: string): Promise<ServerListing>;
+  /** The Trailblazer's Run; `confirmed` — the confirm card's `shown` —
+   *  answers an ask-class command's first start in the session (question
+   *  8). */
+  serversStart?(
+    sessionId: string,
+    name: string,
+    confirmed?: string,
+  ): Promise<StartServerResult>;
+  serversStop?(sessionId: string, name: string): Promise<{ ok: boolean }>;
+  /** A session's server changed state: the new-tab page reads again. */
+  onServersChanged?(cb: (sessionId: string) => void): () => void;
+  onPageState?(cb: (state: PageState) => void): () => void;
+  /** An app shortcut pressed while the page had the focus (§3). */
+  onPageCommand?(cb: (id: ShortcutId) => void): () => void;
+  /** 板砖 opened a page in this session (ADR 0083 §6): show its tab. */
+  onPageOpen?(cb: (sessionId: string) => void): () => void;
+  /** Flow (ADR 0084): the day's issue of the Trailblazer's world. OPTIONAL
+   *  as a set: without `flowState` there is no Flow button. */
+  flowState?(): Promise<FlowStateView>;
+  /** The issues of the last seven days, newest first. */
+  flowIssues?(): Promise<readonly FlowIssueView[]>;
+  /** Refresh now (§6): a new issue for today, inside the day's budget. */
+  flowRefresh?(): Promise<FlowRefreshOutcome>;
+  /** The panel showed this issue: the button's dot goes. */
+  flowMarkRead?(issueId: string): void;
+  /** A post's source, in the OS browser (main checks the address). */
+  flowOpenSource?(url: string): void;
+  flowSettings?(): Promise<FlowSettingsView>;
+  flowSetSettings?(next: FlowSettingsView): Promise<FlowSettingsView>;
+  onFlow?(cb: (e: FlowEvent) => void): () => void;
   onWorkspace(cb: (e: WorkspaceEvent) => void): () => void;
   /** The workspace's repository state (ADR 0058) — the rail's repository
    *  card. OPTIONAL: fakes and the website demo omit the pair, and the card

@@ -1,17 +1,18 @@
 import { isAbsolute, resolve } from "node:path";
-import {
-  isPathInside,
-  type PermissionRule,
-  type RulePermissionEngine,
-  type RuleVerdict,
-  type ToolCallRequest,
-  type ToolContext,
+import type {
+  PermissionRule,
+  RuleVerdict,
+  ToolCallRequest,
+  ToolContext,
 } from "@herta/core";
 import { detectInProgressState, resolveGitDir } from "../git/repo-probe.js";
 import { formatInputIssues } from "../input-issues.js";
 import {
   gitInternalsWrite,
+  harnessHomeWriteDenial,
   hertaStateWriteDenial,
+  holdsHarnessHome,
+  holdsWorkspace,
   namesHertaState,
   resolveSafePath,
 } from "../path-safety.js";
@@ -19,6 +20,7 @@ import { classifyCommand, type WriteGuard } from "./classifier.js";
 import { readPatchTargets } from "./patch-targets.js";
 import { checkReaderArgvPaths } from "./reader-guard.js";
 import { runCommandInputSchema } from "./schema.js";
+import { hostIdentity } from "./self-kill.js";
 
 /**
  * run_command's write guard (2026-09-30): the harness's own state (`.herta`)
@@ -36,8 +38,13 @@ export function runCommandWriteGuard(
   const at = (operand: string): string =>
     isAbsolute(operand) ? resolve(operand) : resolve(cwd, operand);
   return {
+    // The workspace's own `.herta`, and the harness's home wherever the
+    // workspace is (the automatic-review choices, 2026-11-12).
     path: (operand) =>
-      operand === "" ? null : hertaStateWriteDenial(workspaceRoot, at(operand)),
+      operand === ""
+        ? null
+        : (hertaStateWriteDenial(workspaceRoot, at(operand)) ??
+          harnessHomeWriteDenial(at(operand))),
     // The workspace's own root does not count: a managed sandbox lives
     // under `~/.herta/workspaces`, and `cmd /c "cd <workspace> && …"` named
     // `.herta` and was refused (release review 2026-10-13).
@@ -45,8 +52,13 @@ export function runCommandWriteGuard(
       namesHertaState(body, workspaceRoot)
         ? "hands a shell a command that names .herta — the harness's own state; no command may change it"
         : null,
+    // As written or canonically: `find …/VERIFY/WS -delete` from another
+    // case of the root reaches `.herta` all the same (Mac findings
+    // 2026-10-24, item 3).
     holds: (operand) =>
-      operand !== "" && isPathInside(at(operand), resolve(workspaceRoot)),
+      operand !== "" &&
+      (holdsWorkspace(at(operand), resolve(workspaceRoot)) ||
+        holdsHarnessHome(at(operand))),
     patch: (file) => (file === "" ? null : readPatchTargets(at(file))),
     gitInternal: (operand) =>
       operand !== "" && gitInternalsWrite(workspaceRoot, at(operand)),
@@ -81,12 +93,16 @@ export function makeRunCommandRule(): PermissionRule {
         return gitDir === null ? null : detectInProgressState(gitDir);
       },
       writeGuard: runCommandWriteGuard(ctx.workspaceRoot, safe.resolved),
+      host: hostIdentity(),
     });
     if (verdict.kind === "block") {
       return {
         kind: "deny",
         code: verdict.code,
         reason: verdict.reason,
+        ...(verdict.suggestion !== undefined
+          ? { suggestion: verdict.suggestion }
+          : {}),
       };
     }
     if (verdict.kind === "allow") {
@@ -124,8 +140,4 @@ export function makeRunCommandRule(): PermissionRule {
       cwd: safe.resolved,
     };
   };
-}
-
-export function registerRunCommandRule(engine: RulePermissionEngine): void {
-  engine.registerRule("run_command", makeRunCommandRule());
 }

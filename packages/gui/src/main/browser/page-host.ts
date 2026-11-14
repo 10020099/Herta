@@ -1,0 +1,752 @@
+import { isLoopbackUrl } from "@herta/core";
+import { redactSecrets } from "@herta/tools";
+import {
+  type BrowserWindow,
+  type IpcMain,
+  ipcMain,
+  type NativeImage,
+  type Session,
+  screen,
+  session,
+  shell,
+  WebContentsView,
+} from "electron";
+import { CMD } from "../../preload/channels.js";
+import {
+  type PageBounds,
+  type PageNavigation,
+  type PageState,
+  pageUrlAllowed,
+  typedPageUrl,
+} from "../../shared/browser-page.js";
+import type { ShortcutId } from "../../shared/shortcuts.js";
+import { PageDriver, PageInstrument, type RefCounter } from "./page-driver.js";
+import { appCommandForPageKey } from "./page-keys.js";
+
+/** The page's own persistent partition, apart from the app's session
+ *  (ADR 0083 §8): sign-ins persist across sessions, as in Claude Desktop. */
+export const PAGE_PARTITION = "persist:herta-browser";
+
+/** How many pages stay live across sessions (ADR 0083 §3). Past it, the
+ *  page least recently shown is closed and only its address kept. */
+export const MAX_LIVE_PAGES = 3;
+
+/** The page's corner radius, the page tab body's own (reference-ux.css). */
+const PAGE_RADIUS_PX = 10;
+
+/** The page's scrollbars in the app's own shape — a thin rounded thumb on
+ *  no track, no arrow buttons — instead of the OS's (owner 2026-10-30). A
+ *  neutral grey, since a page may be light or dark. Display only, and only
+ *  the old prefixed rules: a page that styles its own scrollbars with the
+ *  standard properties keeps them. */
+const PAGE_SCROLLBAR_CSS = `
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+::-webkit-scrollbar-thumb {
+  background: rgba(128, 128, 128, 0.42);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(128, 128, 128, 0.62);
+  background-clip: padding-box;
+}
+`;
+
+/** Where a parked page waits: on the window, outside what it shows. */
+const PARK_X = -30_000;
+/** A page 板砖 opens before the Trailblazer has shown it lays out at this
+ *  size until the tab reports its own. */
+const DEFAULT_SIZE = { width: 1024, height: 768 } as const;
+
+/** How long after one page is sent to the system browser the next waits:
+ *  a page that redirects in a loop sends one, not a stream of tabs. */
+const SEND_OUT_GAP_MS = 1500;
+
+/**
+ * Chromium's sandbox is off in this process (review H2). The AppImage's
+ * AppRun adds `--no-sandbox` where the system refuses unprivileged user
+ * namespaces (Ubuntu 24.04's AppArmor default); a page then runs with no
+ * jail around it, and a site exploiting an engine bug runs as the user.
+ * Read once at start, from the switch and the environment variable that
+ * both turn it off.
+ */
+export function chromiumSandboxOff(
+  argv: readonly string[],
+  hasSwitch: (name: string) => boolean,
+  env: NodeJS.ProcessEnv,
+): boolean {
+  return (
+    hasSwitch("no-sandbox") ||
+    argv.includes("--no-sandbox") ||
+    (env.ELECTRON_DISABLE_SANDBOX ?? "") !== ""
+  );
+}
+
+/** The page partition, hardened once: every permission request denied
+ *  (camera, microphone, location, notifications, clipboard read), and
+ *  downloads cancelled (ADR 0083 §8). */
+let pageSessionReady: Session | null = null;
+export function pageSession(): Session {
+  if (pageSessionReady !== null) return pageSessionReady;
+  const s = session.fromPartition(PAGE_PARTITION);
+  s.setPermissionRequestHandler((_wc, _perm, done) => done(false));
+  s.setPermissionCheckHandler(() => false);
+  s.on("will-download", (event) => event.preventDefault());
+  pageSessionReady = s;
+  return s;
+}
+
+interface LivePage {
+  readonly view: WebContentsView;
+  readonly instrument: PageInstrument;
+  lastShown: number;
+  size: { width: number; height: number };
+}
+
+/** How often the picker follows the pointer over the page. */
+const PICK_FOLLOW_MS = 33;
+
+/** How often the shown page's still frame is refreshed. A page taken off
+ *  the window cannot be captured, so the frame a freeze shows is the last
+ *  one taken while it was shown (spike, 2026-10-23). The capture is an
+ *  async readback, ~6–8 ms; nothing is encoded until a freeze asks. */
+const STILL_REFRESH_MS = 1500;
+
+export interface PageHostEvents {
+  /** The header's state changed (address, title, loading, history). */
+  readonly state: (state: PageState) => void;
+  /** An app command pressed inside the page, kept from it. */
+  readonly command: (id: ShortcutId) => void;
+  /** 板砖 opened a page: the Trailblazer is shown it. */
+  readonly opened: (sessionId: string) => void;
+  /** The Trailblazer picked an element (ADR 0083 §4), or the pick ended
+   *  without one (`null`: Escape, a navigation, the picker turned off). */
+  readonly picked?: (
+    sessionId: string,
+    pick: {
+      readonly element: string;
+      readonly route: string;
+      readonly html: string;
+    } | null,
+  ) => void;
+}
+
+/**
+ * The browser pages of one window (ADR 0083 §3). Main owns each page: one
+ * `WebContentsView` per session, laid over the viewer's page tab where the
+ * renderer reports it. When the tab is hidden the page is PARKED — still on
+ * the window, outside what it shows — so it keeps its layout and 板砖 can
+ * still capture it (a page off the window cannot be captured at all: spike,
+ * 2026-10-23). Another session's page is taken off the window, and keeps
+ * running. Closed with the session, the window or the app; past
+ * `MAX_LIVE_PAGES` the least recently shown is closed and reloads from its
+ * address when shown again.
+ */
+export class PageHost {
+  private readonly pages = new Map<string, LivePage>();
+  /** A closed page's address, so showing it again reloads it. */
+  private readonly addresses = new Map<string, string>();
+  private readonly drivers = new Map<string, PageDriver>();
+  private readonly refCounts = new Map<string, RefCounter>();
+  /** The page on the window, and whether it is laid over the tab (shown)
+   *  or parked. */
+  private onWindow: string | null = null;
+  private placed = false;
+  /** The shown page's latest still frame, kept as an image. */
+  private still: { readonly id: string; readonly image: NativeImage } | null =
+    null;
+  private stillTimer: ReturnType<typeof setInterval> | null = null;
+  /** The picker following the pointer, while a pick is on. */
+  private pickFollow: ReturnType<typeof setInterval> | null = null;
+  /** When each session's page last sent one to the system browser. */
+  private readonly sentOutAt = new Map<string, number>();
+
+  constructor(
+    private readonly win: BrowserWindow,
+    private readonly events: PageHostEvents,
+    private readonly mac: boolean,
+    /** Chromium's sandbox is off (`chromiumSandboxOff`): a page off this
+     *  machine opens in the system browser, whose sandbox works, never in
+     *  the page (review H2, owner 2026-11-03). */
+    private readonly sandboxOff = false,
+  ) {}
+
+  /** A page that may not load here: off this machine while the sandbox is
+   *  off. Local dev servers still load. */
+  private outsideHere(url: string): boolean {
+    return this.sandboxOff && /^https?:/i.test(url) && !isLoopbackUrl(url);
+  }
+
+  /** Send an outside page to the system browser, for the Trailblazer alone:
+   *  an address typed (`typed`), or a page's move right after a press or a
+   *  key of theirs, and one tab a gesture (review 2026-11-05, M7). Without
+   *  that test a page that moved just after a step opened a tab, a hidden
+   *  page's retry loop opened one every 1.5 s, and their own click during a
+   *  read of 板砖's was dropped. A step's own move is refused, and the step
+   *  says so (M5). */
+  private sendOut(sessionId: string, url: string, typed = false): void {
+    const instrument = this.pages.get(sessionId)?.instrument;
+    if (!typed && instrument?.takeGesture() !== true) {
+      if (instrument?.stepping === true) instrument.noteRefused(url);
+      return;
+    }
+    const now = Date.now();
+    const last = this.sentOutAt.get(sessionId);
+    if (last !== undefined && now - last < SEND_OUT_GAP_MS) return;
+    this.sentOutAt.set(sessionId, now);
+    void shell.openExternal(url).catch(() => undefined);
+  }
+
+  /** Lay the session's page over `bounds` (the renderer's CSS pixels). */
+  show(sessionId: string, bounds: PageBounds): void {
+    const page = this.pages.get(sessionId) ?? this.revive(sessionId);
+    if (page === null) return;
+    const z = this.win.webContents.getZoomFactor();
+    const box = {
+      x: Math.round(bounds.x * z),
+      y: Math.round(bounds.y * z),
+      width: Math.max(0, Math.round(bounds.width * z)),
+      height: Math.max(0, Math.round(bounds.height * z)),
+    };
+    this.putOnWindow(sessionId, page);
+    page.view.setBounds(box);
+    page.size = { width: box.width, height: box.height };
+    page.lastShown = Date.now();
+    if (!this.placed) {
+      this.placed = true;
+      this.startStills(sessionId, page);
+    }
+  }
+
+  /** The tab is hidden: the page is parked, and keeps running. */
+  hide(): void {
+    const id = this.onWindow;
+    if (id === null || !this.placed) return;
+    const page = this.pages.get(id);
+    if (page === undefined) return;
+    this.park(page);
+  }
+
+  /**
+   * Park the shown page at once, and answer with its still frame (a JPEG
+   * data URL) for the renderer to show in its place: an overlay opening
+   * over the viewer, or the divider pressed. At once, because a native page
+   * draws over any overlay, and under the pointer it takes the mouse from
+   * the window (spike, 2026-10-23).
+   */
+  async freeze(): Promise<string | null> {
+    const id = this.onWindow;
+    const page = id === null ? undefined : this.pages.get(id);
+    if (id === null || page === undefined || !this.placed) return null;
+    let image = this.still?.id === id ? this.still.image : null;
+    if (image === null)
+      image = await page.view.webContents.capturePage().catch(() => null);
+    if (this.onWindow === id && this.placed) this.park(page);
+    if (image === null || image.isEmpty()) return null;
+    return `data:image/jpeg;base64,${image.toJPEG(85).toString("base64")}`;
+  }
+
+  /** The driver 板砖's steps run on, for one session (ADR 0083 §6). */
+  driverFor(sessionId: string): PageDriver {
+    const have = this.drivers.get(sessionId);
+    if (have !== undefined) return have;
+    const driver = new PageDriver(sessionId, {
+      live: () => {
+        const page =
+          this.pages.get(sessionId) ??
+          this.revive(sessionId) ??
+          this.create(sessionId);
+        if (this.onWindow !== sessionId) {
+          this.putOnWindow(sessionId, page);
+          this.park(page);
+        }
+        return { wc: page.view.webContents, instrument: page.instrument };
+      },
+      existing: () => {
+        const page = this.pages.get(sessionId);
+        return page === undefined
+          ? null
+          : { wc: page.view.webContents, instrument: page.instrument };
+      },
+      opened: () => this.events.opened(sessionId),
+    });
+    this.drivers.set(sessionId, driver);
+    return driver;
+  }
+
+  /** The current state of a session's page, or null when it has none. */
+  state(sessionId: string): PageState | null {
+    const page = this.pages.get(sessionId);
+    return page === undefined ? null : stateOf(sessionId, page.view);
+  }
+
+  /** The Trailblazer's URL bar and buttons (§4): anywhere http(s) goes —
+   *  with the sandbox off, an outside address to the system browser. */
+  navigate(sessionId: string, to: PageNavigation): void {
+    if ("url" in to) {
+      const url = typedPageUrl(to.url);
+      if (url === null) return;
+      if (this.outsideHere(url)) {
+        this.sendOut(sessionId, url, true);
+        return;
+      }
+      const page = this.pages.get(sessionId) ?? this.create(sessionId);
+      void page.view.webContents.loadURL(url).catch(() => undefined);
+      return;
+    }
+    const page = this.pages.get(sessionId);
+    if (page === undefined) return;
+    const wc = page.view.webContents;
+    const history = wc.navigationHistory;
+    if (to.go === "back" && history.canGoBack()) history.goBack();
+    else if (to.go === "forward" && history.canGoForward()) history.goForward();
+    else if (to.go === "reload") wc.reload();
+    else if (to.go === "stop") wc.stop();
+  }
+
+  /** A dev server answers (ADR 0083 §5): the page tab opens on it — unless
+   *  the page is already somewhere, which is the Trailblazer's place or
+   *  板砖's, not the launcher's to move. */
+  openOn(sessionId: string, url: string): void {
+    const at = this.pages.get(sessionId)?.view.webContents.getURL() ?? "";
+    if (at !== "" && at !== "about:blank") return;
+    this.navigate(sessionId, { url });
+    this.events.opened(sessionId);
+  }
+
+  /** The page's address in the OS browser — read here, never taken from
+   *  the renderer, and only an http(s) one. */
+  async openExternally(sessionId: string): Promise<void> {
+    const url = this.pages.get(sessionId)?.view.webContents.getURL() ?? "";
+    if (/^https?:\/\//i.test(url)) await shell.openExternal(url);
+  }
+
+  /** The session ended (closed, deleted): its page goes. */
+  closeSession(sessionId: string): void {
+    this.addresses.delete(sessionId);
+    this.refCounts.delete(sessionId);
+    this.drivers.delete(sessionId);
+    this.close(sessionId);
+  }
+
+  /** The Trailblazer's picker (ADR 0083 §4): on, a click in the page picks
+   *  an element for the composer; off, or Escape, ends it. A navigation
+   *  ends it too. */
+  pick(sessionId: string, on: boolean): void {
+    this.stopFollow();
+    const page = this.pages.get(sessionId);
+    if (page === undefined) {
+      if (on) this.events.picked?.(sessionId, null);
+      return;
+    }
+    if (!on) {
+      void page.instrument.stopPick();
+      this.events.picked?.(sessionId, null);
+      this.focusApp();
+      return;
+    }
+    const wc = page.view.webContents;
+    wc.once("did-navigate", () => {
+      if (page.instrument.picking) this.pick(sessionId, false);
+    });
+    if (!wc.isFocused()) wc.focus();
+    void page.instrument
+      .startPick(({ element, html }) => {
+        this.stopFollow();
+        this.events.picked?.(sessionId, {
+          element,
+          route: routeOf(wc.getURL()),
+          html: redactSecrets(html.replace(/\s+/g, " ").trim()).slice(0, 400),
+        });
+        this.focusApp();
+      })
+      .then(() => this.followPointer(sessionId, page))
+      .catch(() => {
+        this.stopFollow();
+        this.events.picked?.(sessionId, null);
+      });
+  }
+
+  /**
+   * While a pick is on, the pointer's place over the page is handed to it
+   * from here. The page's view did not always receive the pointer's moves
+   * — the step 7 lab (2026-10-24) saw its clicks arrive and no move, so
+   * nothing highlighted — and Chromium's inspect tool picks the node the
+   * last move hovered, so a click picked nothing either.
+   */
+  private followPointer(sessionId: string, page: LivePage): void {
+    this.stopFollow();
+    let last = "";
+    this.pickFollow = setInterval(() => {
+      if (!page.instrument.picking || page.view.webContents.isDestroyed()) {
+        this.stopFollow();
+        return;
+      }
+      if (this.onWindow !== sessionId || !this.placed) return;
+      const cursor = screen.getCursorScreenPoint();
+      const content = this.win.getContentBounds();
+      const box = page.view.getBounds();
+      const zoom = page.view.webContents.getZoomFactor();
+      const x = Math.round((cursor.x - content.x - box.x) / zoom);
+      const y = Math.round((cursor.y - content.y - box.y) / zoom);
+      if (x < 0 || y < 0 || x * zoom >= box.width || y * zoom >= box.height)
+        return;
+      const at = `${x},${y}`;
+      if (at === last) return;
+      last = at;
+      page.instrument.hoverAt(x, y);
+    }, PICK_FOLLOW_MS);
+  }
+
+  /** The keys go back to the app once a pick ends: the chip is in the
+   *  composer, and Enter sends it (the step 7 lab: the page kept the keys,
+   *  and Enter went to the page). */
+  private focusApp(): void {
+    if (!this.win.isDestroyed() && !this.win.webContents.isDestroyed())
+      this.win.webContents.focus();
+  }
+
+  private stopFollow(): void {
+    if (this.pickFollow === null) return;
+    clearInterval(this.pickFollow);
+    this.pickFollow = null;
+  }
+
+  /** The Trailblazer closed the page tab (owner, 2026-10-23): the page
+   *  ends, as a browser tab's does, and the tab opens next on the server
+   *  list. 板砖's driver stays — its next navigation opens a page again. */
+  closePage(sessionId: string): void {
+    this.addresses.delete(sessionId);
+    this.close(sessionId);
+  }
+
+  dispose(): void {
+    this.stopFollow();
+    this.stopStills();
+    this.still = null;
+    for (const id of [...this.pages.keys()]) this.close(id);
+    this.addresses.clear();
+    this.drivers.clear();
+  }
+
+  /** Put this session's page on the window, taking another's off. */
+  private putOnWindow(sessionId: string, page: LivePage): void {
+    if (this.onWindow === sessionId) return;
+    if (this.onWindow !== null) this.takeOff(this.onWindow);
+    this.win.contentView.addChildView(page.view);
+    this.onWindow = sessionId;
+    this.placed = false;
+  }
+
+  /** Off the window entirely: another session's turn. */
+  private takeOff(sessionId: string): void {
+    const page = this.pages.get(sessionId);
+    if (this.onWindow === sessionId) {
+      this.onWindow = null;
+      this.placed = false;
+      this.stopStills();
+    }
+    if (page === undefined) return;
+    this.giveBackFocus(page);
+    // A window that closed takes its child views with it, and every getter
+    // on it throws, `contentView` included: the window's `closed` disposes
+    // this host, and the throw skipped the servers' stop after it (Mac
+    // check, 2026-10-24).
+    if (!this.win.isDestroyed())
+      this.win.contentView.removeChildView(page.view);
+  }
+
+  /** Still on the window, outside what it shows, at its last size. */
+  private park(page: LivePage): void {
+    this.placed = false;
+    this.stopStills();
+    this.giveBackFocus(page);
+    const size = page.size;
+    page.view.setBounds({ x: PARK_X, y: 0, ...size });
+  }
+
+  /** A page out of sight keeps the keyboard if it had it, and every key
+   *  then went to a page nobody could see — Escape could not close the
+   *  cheat sheet opened over it (spike, 2026-10-23). The app takes it back. */
+  private giveBackFocus(page: LivePage): void {
+    const wc = page.view.webContents;
+    if (!wc.isDestroyed() && wc.isFocused()) this.focusApp();
+  }
+
+  private startStills(id: string, page: LivePage): void {
+    this.stopStills();
+    const take = (): void => {
+      const wc = page.view.webContents;
+      if (this.onWindow !== id || !this.placed || wc.isDestroyed()) return;
+      void wc.capturePage().then(
+        (image) => {
+          if (this.onWindow === id && !image.isEmpty())
+            this.still = { id, image };
+        },
+        () => undefined,
+      );
+    };
+    setTimeout(take, 200);
+    this.stillTimer = setInterval(take, STILL_REFRESH_MS);
+  }
+
+  private stopStills(): void {
+    if (this.stillTimer !== null) clearInterval(this.stillTimer);
+    this.stillTimer = null;
+  }
+
+  private close(sessionId: string): void {
+    const page = this.pages.get(sessionId);
+    if (page === undefined) return;
+    if (this.onWindow === sessionId) this.takeOff(sessionId);
+    if (this.still?.id === sessionId) this.still = null;
+    this.pages.delete(sessionId);
+    page.instrument.detach();
+    if (!page.view.webContents.isDestroyed()) page.view.webContents.close();
+  }
+
+  private revive(sessionId: string): LivePage | null {
+    const url = this.addresses.get(sessionId);
+    if (url === undefined) return null;
+    this.addresses.delete(sessionId);
+    const page = this.create(sessionId);
+    void page.view.webContents.loadURL(url).catch(() => undefined);
+    return page;
+  }
+
+  private create(sessionId: string): LivePage {
+    const view = new WebContentsView({
+      webPreferences: {
+        session: pageSession(),
+        sandbox: true,
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    });
+    // The same corners as the page tab's body (reference-ux.css).
+    view.setBorderRadius(PAGE_RADIUS_PX);
+    const wc = view.webContents;
+    // A new window loads in the same tab, under the same rules (§8).
+    wc.setWindowOpenHandler(({ url }) => {
+      if (!pageUrlAllowed(url)) return { action: "deny" };
+      if (this.outsideHere(url)) this.sendOut(sessionId, url);
+      else void wc.loadURL(url).catch(() => undefined);
+      return { action: "deny" };
+    });
+    // With the sandbox off, a link, a script or a redirect that leaves this
+    // machine goes to the system browser instead (H2).
+    const guard = (event: { preventDefault: () => void }, url: string) => {
+      if (!pageUrlAllowed(url)) {
+        event.preventDefault();
+        return;
+      }
+      if (this.outsideHere(url)) {
+        event.preventDefault();
+        this.sendOut(sessionId, url);
+      }
+    };
+    wc.on("will-navigate", guard);
+    wc.on("will-redirect", (event, url) => {
+      // A frame's redirect is the frame's: stopped if it may not load, and
+      // no tab for it (review 2026-11-05, M6).
+      if (event.isMainFrame === false) {
+        if (!pageUrlAllowed(url) || this.outsideHere(url))
+          event.preventDefault();
+        return;
+      }
+      guard(event, url);
+    });
+    wc.on("will-frame-navigate", (event) => {
+      if (event.isMainFrame) guard(event, event.url);
+    });
+    // Each document gets the scrollbar sheet again: inserted CSS does not
+    // outlive a navigation.
+    wc.on("dom-ready", () => {
+      if (!wc.isDestroyed())
+        void wc.insertCSS(PAGE_SCROLLBAR_CSS).catch(() => undefined);
+    });
+    const push = (): void => {
+      if (!wc.isDestroyed()) this.events.state(stateOf(sessionId, view));
+    };
+    for (const name of [
+      "did-start-loading",
+      "did-stop-loading",
+      "did-navigate",
+      "did-navigate-in-page",
+      "page-title-updated",
+    ] as const) {
+      wc.on(name as "did-stop-loading", push);
+    }
+    wc.on("before-input-event", (event, input) => {
+      // Escape ends a pick in progress (ADR 0083 §4) and is kept from the
+      // page while it does.
+      if (
+        input.type === "keyDown" &&
+        input.key === "Escape" &&
+        this.pages.get(sessionId)?.instrument.picking === true
+      ) {
+        event.preventDefault();
+        this.pick(sessionId, false);
+        return;
+      }
+      const id = appCommandForPageKey(input, this.mac);
+      if (id === null) return;
+      event.preventDefault();
+      this.events.command(id);
+    });
+    const page: LivePage = {
+      view,
+      instrument: new PageInstrument(wc, this.refCountOf(sessionId)),
+      lastShown: Date.now(),
+      size: { ...DEFAULT_SIZE },
+    };
+    this.pages.set(sessionId, page);
+    this.capLive(sessionId);
+    return page;
+  }
+
+  /** The session's ref numbers, kept across its pages. */
+  private refCountOf(sessionId: string): RefCounter {
+    let count = this.refCounts.get(sessionId);
+    if (count === undefined) {
+      count = { last: 0 };
+      this.refCounts.set(sessionId, count);
+    }
+    return count;
+  }
+
+  /** Past the cap, the page least recently shown closes; its address is
+   *  kept so that showing it again reloads it. */
+  private capLive(keep: string): void {
+    while (this.pages.size > MAX_LIVE_PAGES) {
+      let oldest: [string, LivePage] | null = null;
+      for (const entry of this.pages) {
+        if (entry[0] === keep) continue;
+        if (oldest === null || entry[1].lastShown < oldest[1].lastShown)
+          oldest = entry;
+      }
+      if (oldest === null) return;
+      const url = oldest[1].view.webContents.getURL();
+      if (pageUrlAllowed(url) && url !== "about:blank")
+        this.addresses.set(oldest[0], url);
+      this.close(oldest[0]);
+    }
+  }
+}
+
+/** The part of `ipcMain` the page's IPC uses; injectable for tests. */
+export type PageIpc = Pick<
+  IpcMain,
+  "on" | "handle" | "removeAllListeners" | "removeHandler"
+>;
+
+/**
+ * The browser page's IPC (ADR 0083), re-run per createWindow: macOS reopens
+ * a window from the Dock after the last one closed, in the same process.
+ * Every registration replaces its channel's last one. The hand-kept list of
+ * removals this had missed `pageClearData`, so the second window died
+ * registering it twice, and `pageClose` / `pagePick`, whose listeners
+ * stacked and still called the closed window's pages (Mac check,
+ * 2026-10-24).
+ */
+export function registerPageHandlers(
+  pages: PageHost,
+  ipc: PageIpc = ipcMain,
+): void {
+  const on: PageIpc["on"] = (channel, listener) => {
+    ipc.removeAllListeners(channel);
+    return ipc.on(channel, listener);
+  };
+  const handle: PageIpc["handle"] = (channel, listener) => {
+    ipc.removeHandler(channel);
+    ipc.handle(channel, listener);
+  };
+  on(CMD.pageShow, (_e, sessionId: unknown, bounds: unknown) => {
+    const b = pageBoundsOf(bounds);
+    if (typeof sessionId === "string" && b !== null) pages.show(sessionId, b);
+  });
+  on(CMD.pageHide, () => pages.hide());
+  on(CMD.pageClose, (_e, sessionId: unknown) => {
+    if (typeof sessionId === "string") pages.closePage(sessionId);
+  });
+  on(CMD.pagePick, (_e, sessionId: unknown, picking: unknown) => {
+    if (typeof sessionId === "string") pages.pick(sessionId, picking === true);
+  });
+  on(CMD.pageNavigate, (_e, sessionId: unknown, to: unknown) => {
+    const move = pageNavigationOf(to);
+    if (typeof sessionId === "string" && move !== null)
+      pages.navigate(sessionId, move);
+  });
+  handle(CMD.pageFreeze, () => pages.freeze());
+  // Settings' "Clear browser data" (ADR 0083 §8): the page partition only,
+  // never the app's own session.
+  handle(CMD.pageClearData, async () => {
+    try {
+      const s = pageSession();
+      await s.clearStorageData();
+      await s.clearCache();
+      await s.clearAuthCache();
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  handle(CMD.pageState, (_e, sessionId: unknown) =>
+    typeof sessionId === "string" ? pages.state(sessionId) : null,
+  );
+  handle(CMD.pageOpenExternal, (_e, sessionId: unknown) =>
+    typeof sessionId === "string" ? pages.openExternally(sessionId) : undefined,
+  );
+}
+
+const finite = (n: unknown): n is number =>
+  typeof n === "number" && Number.isFinite(n);
+
+/** What the renderer sent as the page tab's box, or null when it is not one. */
+function pageBoundsOf(value: unknown): PageBounds | null {
+  if (typeof value !== "object" || value === null) return null;
+  const b = value as Record<string, unknown>;
+  return finite(b.x) && finite(b.y) && finite(b.width) && finite(b.height)
+    ? { x: b.x, y: b.y, width: b.width, height: b.height }
+    : null;
+}
+
+/** What the renderer asked of the page, or null when it is not a move. */
+function pageNavigationOf(value: unknown): PageNavigation | null {
+  if (typeof value !== "object" || value === null) return null;
+  const v = value as Record<string, unknown>;
+  if (typeof v.url === "string") return { url: v.url.slice(0, 4096) };
+  if (
+    v.go === "back" ||
+    v.go === "forward" ||
+    v.go === "reload" ||
+    v.go === "stop"
+  )
+    return { go: v.go };
+  return null;
+}
+
+function stateOf(sessionId: string, view: WebContentsView): PageState {
+  const wc = view.webContents;
+  return {
+    sessionId,
+    url: wc.getURL(),
+    title: wc.getTitle(),
+    loading: wc.isLoading(),
+    canGoBack: wc.navigationHistory.canGoBack(),
+    canGoForward: wc.navigationHistory.canGoForward(),
+  };
+}
+
+/** A page's host, port and path — never its query (ADR 0083 §10). */
+function routeOf(url: string): string {
+  try {
+    const u = new URL(url);
+    return `${u.host}${u.pathname === "/" ? "" : u.pathname}`;
+  } catch {
+    return url;
+  }
+}

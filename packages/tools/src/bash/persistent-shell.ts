@@ -1,8 +1,11 @@
 import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
-import { type BackgroundProcess, isPathInside } from "@herta/core";
+import type { BackgroundProcess } from "@herta/core";
 import { childProcessEnv } from "../child-env.js";
+import { ConsoleDecoder } from "../console-decode.js";
+import { workspaceSpelling } from "../path-safety.js";
+import { groupAlive } from "../run-command/runner.js";
 import {
   listMsysProcesses,
   type MsysGroup,
@@ -25,10 +28,17 @@ import { type ShellPaths, shellPathsFor } from "./shell-paths.js";
  * classifier reasons about relative paths against the workspace, and that
  * invariant must hold when the next command is classified.
  *
+ * `set -x` and `set -v` last for the call that sets them: the wrapper turns
+ * both off, unseen, before its marker line. Left on, either one echoed that
+ * line — the marker in it, with no exit code behind it — and the call waited
+ * out its whole timeout, then lost its shell (review 2026-11-10). The reader
+ * holds its own end as well: a call ends at the marker's LINE, never at the
+ * marker's first appearance.
+ *
  * Timeout kills the whole process tree and the next call respawns a fresh
  * shell (state lost — the model is told). Registered with the brief's
- * BackgroundHost as an INTERNAL entry, so `stopAll()` at brief end reaps it
- * like any background process without reporting it as one.
+ * BackgroundHost, so `stopAll()` at brief end reaps it; that is routine and
+ * reported nowhere.
  */
 export interface ShellRunResult {
   /** Merged stdout+stderr, `\r\n` normalized, marker stripped, capped. */
@@ -38,6 +48,12 @@ export interface ShellRunResult {
   capped: boolean;
   /** null on timeout or shell death. */
   exitCode: number | null;
+  /** The exit status of each stage of the LAST pipeline the command ran
+   *  (`PIPESTATUS`), left to right; one entry when that was a single
+   *  command. `exitCode` is the last stage's, so a failure upstream of a
+   *  pipe (`npm test | tee log`) shows only here. Absent on timeout, abort
+   *  and shell death. */
+  pipeStatus?: readonly number[];
   timedOut: boolean;
   shellExited: boolean;
   durationMs: number;
@@ -56,6 +72,9 @@ export interface PersistentShellOpts {
   env?: Record<string, string>;
   /** Capture cap on merged output per command (default 1 MiB). */
   maxOutputBytes?: number;
+  /** The code page a line is read in when it is not UTF-8
+   *  (console-decode.ts). Left out: the machine's own, once it is known. */
+  legacyEncoding?: string | null;
   /** Each bash this shell starts (a restart after a timeout starts another),
    *  and each one's end — the run's journal records them, so a relaunch
    *  after a crash ends a shell still running (ADR 0071 §1.6). */
@@ -70,7 +89,7 @@ export interface PersistentShellOpts {
   onShellPid?: (pid: number, group: MsysGroup & { ps: string }) => void;
 }
 
-/** BackgroundHost id under which the shell registers (internal). */
+/** BackgroundHost id under which the shell registers. */
 export const SHELL_BG_ID = "shell";
 
 const DEFAULT_MAX_OUTPUT = 1_048_576;
@@ -86,6 +105,11 @@ const TASKKILL_TIMEOUT_MS = 15_000;
 
 interface Waiter {
   marker: string;
+  /** The marker's own line —
+   *  `<marker>:<exit code>:<0|1>:<stage statuses, each followed by a comma>:<$PWD>`
+   *  — which is what ends the command. An echo of the wrapper has the marker
+   *  in it and not this shape. */
+  markerLine: RegExp;
   resolve: (r: Omit<ShellRunResult, "durationMs" | "freshShell">) => void;
   timer: ReturnType<typeof setTimeout> | null;
   onAbort: (() => void) | null;
@@ -176,7 +200,6 @@ export function feedLiveLines(
 
 export class PersistentShell implements BackgroundProcess {
   readonly id = SHELL_BG_ID;
-  readonly internal = true;
   readonly argv: readonly string[];
   readonly paths: ShellPaths;
   /** The shell's own spelling of the workspace (what `pwd` prints there). */
@@ -209,10 +232,15 @@ export class PersistentShell implements BackgroundProcess {
   private currentCwd: string;
   private spawnCount = 0;
   private readonly opts: Required<
-    Omit<PersistentShellOpts, "env" | "onSpawn" | "onExit" | "onShellPid">
+    Omit<
+      PersistentShellOpts,
+      "env" | "onSpawn" | "onExit" | "onShellPid" | "legacyEncoding"
+    >
   > & {
     env: Record<string, string>;
   };
+  /** undefined: the machine's own, read when a shell starts. */
+  private readonly legacyEncoding: string | null | undefined;
   private readonly onSpawn: ((pid: number) => void) | undefined;
   private readonly onExit: ((pid: number) => void) | undefined;
   private readonly onShellPid:
@@ -226,6 +254,7 @@ export class PersistentShell implements BackgroundProcess {
       env: opts.env ?? {},
       maxOutputBytes: opts.maxOutputBytes ?? DEFAULT_MAX_OUTPUT,
     };
+    this.legacyEncoding = opts.legacyEncoding;
     this.onSpawn = opts.onSpawn;
     this.onExit = opts.onExit;
     this.onShellPid = opts.onShellPid;
@@ -268,8 +297,8 @@ export class PersistentShell implements BackgroundProcess {
     if (this.shellAlive()) return true;
     this.pruneGroups();
     // Windows: whether an exited shell's MSYS group still has members takes
-    // a `ps` to know; answer yes and let `kill` find out (the shell is an
-    // internal entry, so a yes costs no report line).
+    // a `ps` to know; answer yes and let `kill` find out (reaping the
+    // shell is reported nowhere, so a yes costs nothing).
     return this.exitedGroups.size > 0 || this.exitedMsysGroups.length > 0;
   }
 
@@ -284,6 +313,13 @@ export class PersistentShell implements BackgroundProcess {
   async kill(): Promise<void> {
     const child = this.child;
     this.child = null;
+    // The next command starts a fresh shell, in the workspace: say so now.
+    // The rules and the reviewer read `cwd` before that command runs, and
+    // kept judging it against a `cd` the killed shell took with it — a
+    // timed-out `cd packages/app && npm test` made the next `rm -rf build`
+    // look like the app's build while it ran at the root (release review
+    // 2026-10-22).
+    this.currentCwd = this.opts.workspaceRoot;
     // What exited shells left behind first — including when no shell is up.
     for (const group of this.exitedGroups) {
       try {
@@ -366,8 +402,6 @@ export class PersistentShell implements BackgroundProcess {
       this.onSpawn?.(spawnedPid);
       child.once("exit", () => this.onExit?.(spawnedPid));
     }
-    child.stdout?.setEncoding("utf8");
-    child.stderr?.setEncoding("utf8");
     const onData = (chunk: string): void => {
       const text = chunk.replace(/\r\n/g, "\n");
       // The newest window — this chunk plus the few characters before it a
@@ -379,8 +413,21 @@ export class PersistentShell implements BackgroundProcess {
       if (this.waiter?.child === child) this.feedLive(this.waiter, text);
       this.onOutput(window);
     };
-    child.stdout?.on("data", onData);
-    child.stderr?.on("data", onData);
+    // Each stream is read on its own (console-decode.ts): a chunk can end
+    // inside a character, and a line a native Windows program wrote in the
+    // machine's code page is read as that, not as broken UTF-8.
+    for (const stream of [child.stdout, child.stderr]) {
+      if (stream === null) continue;
+      const decoder = new ConsoleDecoder(this.legacyEncoding);
+      stream.on("data", (chunk: Buffer) => {
+        const text = decoder.write(chunk);
+        if (text.length > 0) onData(text);
+      });
+      stream.on("end", () => {
+        const text = decoder.end();
+        if (text.length > 0) onData(text);
+      });
+    }
     // Only THIS child's death fails a waiter that belongs to it — after a
     // timeout the old process may exit late, while a fresh shell is already
     // serving the next command.
@@ -388,7 +435,11 @@ export class PersistentShell implements BackgroundProcess {
       // `kill()` lets go of the child before killing its whole group, so
       // only a shell that exited ON ITS OWN is still `this.child` here.
       const ownExit = this.child === child;
-      if (ownExit) this.child = null;
+      if (ownExit) {
+        this.child = null;
+        // As in `kill`: the next command starts in the workspace.
+        this.currentCwd = this.opts.workspaceRoot;
+      }
       // Its process group outlives it while a backgrounded job runs there
       // (see isRunning). Remembered only if a member is alive right now: a
       // group that is already empty, or one kill() just felled, would be a
@@ -412,7 +463,10 @@ export class PersistentShell implements BackgroundProcess {
         this.failWaiter({ shellExited: true, timedOut: false });
     });
     child.on("error", () => {
-      if (this.child === child) this.child = null;
+      if (this.child === child) {
+        this.child = null;
+        this.currentCwd = this.opts.workspaceRoot;
+      }
       if (this.waiter?.child === child)
         this.failWaiter({ shellExited: true, timedOut: false });
     });
@@ -582,11 +636,14 @@ export class PersistentShell implements BackgroundProcess {
     // The marker is in: every later chunk must come back here until its
     // line is complete — the window test above no longer sees it.
     this.markerSeen = true;
-    const after = this.buf.slice(idx + w.marker.length);
-    const m = /^:(-?\d+):([01]):([^\n]*)\n/.exec(after);
+    // From the marker's first appearance on, for its LINE: a shell that
+    // echoes what it runs shows the marker first inside the wrapper's own
+    // text, and stopping there waited for an exit code that never follows.
+    const m = w.markerLine.exec(this.buf.slice(idx));
     if (m === null) return; // marker line not complete yet
-    const rawOutput = this.buf.slice(0, idx).replace(/\n$/, "");
-    this.buf = after.slice(m[0].length);
+    const lineAt = idx + m.index;
+    const rawOutput = this.buf.slice(0, lineAt).replace(/\n$/, "");
+    this.buf = this.buf.slice(lineAt + m[0].length);
     this.waiter = null;
     this.markerSeen = false;
     if (w.timer !== null) clearTimeout(w.timer);
@@ -605,17 +662,26 @@ export class PersistentShell implements BackgroundProcess {
       output = `[earlier output dropped — ${outputBytes} bytes total, showing the last ${Math.min(keptBytes, this.opts.maxOutputBytes)}]\n${output}`;
     }
     const cwdReset = m[2] === "1";
-    const pwdShell = m[3] as string;
+    const pipeStatus = (m[3] as string)
+      .split(",")
+      .filter((x) => x.length > 0)
+      .map(Number);
+    const pwdShell = m[4] as string;
     const native = this.paths.toNative(pwdShell);
+    // Spelled from the root: after `cd …/VERIFY/WS/.herta` the shell IS in
+    // `.herta`, and falling back to the root judged what ran next from the
+    // wrong directory (Mac findings 2026-10-24, item 3).
     this.currentCwd =
-      native !== null && isPathInside(this.opts.workspaceRoot, native)
-        ? native
-        : this.opts.workspaceRoot;
+      (native === null
+        ? null
+        : workspaceSpelling(this.opts.workspaceRoot, native)) ??
+      this.opts.workspaceRoot;
     w.resolve({
       output,
       outputBytes,
       capped,
       exitCode: Number(m[1]),
+      ...(pipeStatus.length > 0 ? { pipeStatus } : {}),
       timedOut: false,
       shellExited: false,
       cwd: this.currentCwd,
@@ -669,6 +735,10 @@ export class PersistentShell implements BackgroundProcess {
     >((resolvePromise) => {
       const w: Waiter = {
         marker,
+        // The marker is letters, digits and underscores: itself as a pattern.
+        markerLine: new RegExp(
+          `${marker}:(-?\\d+):([01]):([0-9,]*):([^\\n]*)\\n`,
+        ),
         resolve: resolvePromise,
         timer: null,
         onAbort: null,
@@ -728,12 +798,21 @@ export class PersistentShell implements BackgroundProcess {
       // `set +e +u` first: a `set -e` the model wrote in an earlier call must
       // not make THIS call's first non-zero status kill the shell (its own
       // `set -e` inside the command still applies within that command).
+      // `set +xv` after it, on the group's own closing line: that line was
+      // read with the group, before a `set -v` inside it could echo it, and
+      // its `2>/dev/null` swallows what `set -x` would trace of it. Neither
+      // then reaches the marker line below.
+      // The stage statuses are read in the SAME assignment as `$?`: any
+      // command in between would replace them. They are joined by `printf
+      // -v`, not by `"${a[*]}"`, which joins with whatever `IFS` the command
+      // left behind, and not by a `$(…)`, which is a fork per call.
+      const stages = "PIPESTATUS[@]";
       const script = [
         "{",
         "set +e; set +u",
         command,
-        "} </dev/null",
-        `__herta_rc=$?; __herta_reset=0; case "$PWD/" in "$__herta_ws"/*) ;; *) cd "$__herta_ws" && __herta_reset=1 ;; esac; printf '\\n%s:%s:%s:%s\\n' '${marker}' "$__herta_rc" "$__herta_reset" "$PWD"`,
+        `} </dev/null; { __herta_ps=("\${${stages}}") __herta_rc=$?; set +xv; } 2>/dev/null`,
+        `__herta_reset=0; case "$PWD/" in "$__herta_ws"/*) ;; *) cd "$__herta_ws" && __herta_reset=1 ;; esac; printf -v __herta_pl '%s,' "\${__herta_ps[@]}"; printf '\\n%s:%s:%s:%s:%s\\n' '${marker}' "$__herta_rc" "$__herta_reset" "$__herta_pl" "$PWD"`,
         "",
       ].join("\n");
       child.stdin?.write(script);
@@ -751,15 +830,6 @@ export class PersistentShell implements BackgroundProcess {
  *  nothing and only checks. Any error — ESRCH (empty), EPERM (the id now
  *  belongs to someone else's processes) — means there is nothing of ours
  *  left to kill. */
-function groupAlive(group: number): boolean {
-  try {
-    process.kill(-group, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /** End these Windows processes and what each started (`taskkill /T`);
  *  one already gone is the outcome wanted. Bounded, never rejects. */
 function killWinpids(pids: readonly number[]): Promise<void> {

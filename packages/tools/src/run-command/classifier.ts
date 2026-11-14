@@ -1,11 +1,13 @@
 import {
   type CommandConsequence,
+  packageExecCommand,
   type RepoInProgressState,
   type RiskLevel,
   SCRIPT_INTERPRETERS,
 } from "@herta/core";
 import { isCredentialPath } from "../credential-denylist.js";
 import { patchTargetPaths } from "./patch-targets.js";
+import { type HostIdentity, selfKillDenial } from "./self-kill.js";
 
 export type Verdict =
   | { kind: "allow" }
@@ -18,7 +20,14 @@ export type Verdict =
        *  part of the tier decision. */
       consequence?: CommandConsequence;
     }
-  | { kind: "block"; reason: string; code: "command_blocked" };
+  | {
+      kind: "block";
+      reason: string;
+      code: "command_blocked";
+      /** The move that serves the line's purpose instead, where the block
+       *  knows one (a kill of the app itself, 2026-11-04). */
+      suggestion?: string;
+    };
 
 /** Home, every way a shell spells it (platform review 2026-09-23: the `$HOME`
  *  spellings of `rm -rf ~` dropped from block to an ordinary ask). Compared
@@ -138,6 +147,8 @@ function shellBodyTokens(body: string): string[] {
 interface WrapperSpec {
   /** Flags that consume the NEXT word as their value (`sudo -u root …`). */
   valueFlags?: ReadonlySet<string>;
+  /** Flags that consume the next TWO words (`bwrap --bind src dest …`). */
+  pairFlags?: ReadonlySet<string>;
   /** Bare operands the wrapper eats before the command (`timeout 5 …`). */
   operands?: number;
   /** Leading `K=V` words belong to the wrapper (`env FOO=bar …`). */
@@ -164,7 +175,14 @@ const EXEC_WRAPPERS: ReadonlyMap<string, WrapperSpec> = new Map<
   ["pkexec", { valueFlags: new Set(["--user"]) }],
   [
     "env",
-    { valueFlags: new Set(["-u", "--unset", "-C", "-S"]), assignments: true },
+    {
+      // `-P altpath` is BSD env's search path (Mac findings 2026-10-24):
+      // unknown, it read `/bin` as the command and `env -P /bin rm -rf /`
+      // asked. `-S` is a value here and a body in `extractShellReentry`.
+      // `--chdir DIR` is `-C`'s long form (review 2026-10-30).
+      valueFlags: new Set(["-u", "--unset", "-C", "--chdir", "-S", "-P"]),
+      assignments: true,
+    },
   ],
   ["nice", { valueFlags: new Set(["-n", "--adjustment"]) }],
   ["ionice", { valueFlags: new Set(["-c", "-n", "-p"]) }],
@@ -210,14 +228,142 @@ const EXEC_WRAPPERS: ReadonlyMap<string, WrapperSpec> = new Map<
   ["ltrace", { valueFlags: new Set(["-o", "-e", "-p", "-s"]) }],
   ["watch", { valueFlags: new Set(["-n", "--interval", "-d"]) }],
   ["flock", { valueFlags: new Set(["-w", "--timeout", "-E"]), operands: 1 }],
-  ["script", { valueFlags: new Set(["-c", "--command", "-f", "-t"]) }],
-  ["taskset", { valueFlags: new Set(["-c", "-p"]), operands: 1 }],
+  // BSD `script [-aeFkqr] [-t time] [file [command …]]` runs the command
+  // after its typescript FILE (Mac findings 2026-10-24): modelled on GNU's
+  // `-c` alone, `script -q /dev/null rm -rf /` read `/dev/null` as the
+  // command. GNU's `-c BODY` is `extractShellReentry`'s.
+  [
+    "script",
+    { valueFlags: new Set(["-c", "--command", "-f", "-t", "-T"]), operands: 1 },
+  ],
+  // `-c` says the mask is a CPU list, and takes no word of its own: as a
+  // value flag it ate the list, and the mask operand then ate the command
+  // (`taskset -c 0 rm -rf /` asked, review 2026-10-30).
+  ["taskset", { operands: 1 }],
   [
     "unshare",
     { valueFlags: new Set(["--map-user", "--map-group", "-S", "-G"]) },
   ],
-  ["busybox", { operands: 1 }],
+  // The applet IS the command: `operands: 1` ate it, so `busybox rm -rf /`
+  // peeled to `/` (2026-10-26, found by the every-wrapper test).
+  ["busybox", {}],
   ["proot", { valueFlags: new Set(["-r", "-b", "-w"]) }],
+  // macOS's own (Mac findings 2026-10-24, item 1): unknown, each hid its
+  // command — `caffeinate rm -rf /` and `arch -arm64 security dump-keychain`
+  // asked as 「未识别的命令」. `arch -arm64` / `-x86_64` are bare flags.
+  ["caffeinate", { valueFlags: new Set(["-t", "-w"]) }],
+  ["arch", { valueFlags: new Set(["-arch", "-d", "-e"]) }],
+  ["sandbox-exec", { valueFlags: new Set(["-f", "-n", "-p", "-D"]) }],
+  // The pre-release review of 2026-10-30: unknown, each hid its command
+  // behind an ask a remember of the wrapper's name covered.
+  ["exec", { valueFlags: new Set(["-a"]) }],
+  ["chrt", { valueFlags: new Set(["-T", "-P", "-D"]), operands: 1 }],
+  ["unbuffer", {}],
+  ["firejail", {}],
+  [
+    "nsenter",
+    {
+      valueFlags: new Set([
+        "-t",
+        "--target",
+        "-S",
+        "--setuid",
+        "-G",
+        "--setgid",
+      ]),
+    },
+  ],
+  [
+    "systemd-run",
+    {
+      valueFlags: new Set([
+        "-p",
+        "--property",
+        "-u",
+        "--unit",
+        "-E",
+        "--setenv",
+        "--uid",
+        "--gid",
+        "--working-directory",
+        "--description",
+        "--slice",
+        "-M",
+        "--machine",
+        "-H",
+        "--host",
+      ]),
+    },
+  ],
+  ["faketime", { valueFlags: new Set(["-m"]), operands: 1 }],
+  [
+    "fakeroot",
+    {
+      valueFlags: new Set(["-l", "--lib", "--faked", "-i", "-s", "-b"]),
+    },
+  ],
+  ["prlimit", { valueFlags: new Set(["-p", "--pid", "-o", "--output"]) }],
+  ["numactl", { valueFlags: new Set(["-C", "-N", "-m", "-p", "-i", "-P"]) }],
+  [
+    "bwrap",
+    {
+      valueFlags: new Set([
+        "--chdir",
+        "--tmpfs",
+        "--proc",
+        "--dev",
+        "--dir",
+        "--remount-ro",
+        "--unsetenv",
+        "--uid",
+        "--gid",
+        "--hostname",
+        "--seccomp",
+        "--info-fd",
+        "--argv0",
+      ]),
+      pairFlags: new Set([
+        "--bind",
+        "--bind-try",
+        "--ro-bind",
+        "--ro-bind-try",
+        "--dev-bind",
+        "--dev-bind-try",
+        "--symlink",
+        "--setenv",
+        "--file",
+        "--bind-data",
+        "--ro-bind-data",
+        "--chmod",
+      ]),
+    },
+  ],
+  ["valgrind", {}],
+  [
+    "xvfb-run",
+    {
+      valueFlags: new Set([
+        "-n",
+        "--server-num",
+        "-e",
+        "--error-file",
+        "-f",
+        "--auth-file",
+        "-s",
+        "--server-args",
+        "-p",
+        "--xauth-protocol",
+      ]),
+    },
+  ],
+  ["ssh-agent", { valueFlags: new Set(["-a", "-E", "-t", "-P", "-O"]) }],
+  // Windows: the line after `wsl`'s own options runs in the distribution.
+  [
+    "wsl",
+    {
+      valueFlags: new Set(["-d", "--distribution", "-u", "--user", "--cd"]),
+    },
+  ],
 ]);
 
 /** Bounded wrapper peel: the command a chain of exec-wrappers ends up running,
@@ -225,7 +371,15 @@ const EXEC_WRAPPERS: ReadonlyMap<string, WrapperSpec> = new Map<
 function peelExecWrappers(tokens: readonly string[]): string[] | null {
   let cur: readonly string[] = tokens;
   let peeled = false;
-  for (let round = 0; round < 4 && cur.length > 0; round += 1) {
+  // Eight deep: at four, `nice timeout 5 nohup sudo stdbuf -oL cp x
+  // .herta/…` left its write to the write guard unread (review 2026-10-30).
+  for (let round = 0; round < 8 && cur.length > 0; round += 1) {
+    const run = packageExecCommand(cur);
+    if (run !== null) {
+      cur = run;
+      peeled = true;
+      continue;
+    }
     const spec = EXEC_WRAPPERS.get(interpreterName(cur[0] as string));
     if (spec === undefined) break;
     let i = 1;
@@ -239,6 +393,8 @@ function peelExecWrappers(tokens: readonly string[]): string[] | null {
       if (t.startsWith("-") && t.length > 1) {
         i += 1;
         if (spec.valueFlags?.has(t) === true && i < cur.length) i += 1;
+        else if (spec.pairFlags?.has(t) === true)
+          i = Math.min(cur.length, i + 2);
         continue;
       }
       if (spec.assignments === true && /^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) {
@@ -454,7 +610,9 @@ function recursiveContentRead(argv: readonly string[]): Verdict | null {
     kind: "ask",
     risk: "workspace_read",
     code: "command_ask_recursive_read",
-    reason: `${a0} recursive/unfiltered content read bypasses the credential denylist — prefer search_text`,
+    // The advice names what the session has. It said "prefer search_text",
+    // a tool bash sessions never had (review 2026-11-10) and none has now.
+    reason: `${a0} recursive/unfiltered content read bypasses the credential denylist — prefer git grep, which reads tracked files only, or name the files`,
   };
 }
 
@@ -555,7 +713,21 @@ function textFilterVerdict(
   return null;
 }
 
-const SH_FAMILY = new Set(["sh", "bash", "zsh", "dash", "ksh"]);
+/** The shells whose `-c` body is read. An unknown one hid a block-tier
+ *  body behind an ordinary ask (review 2026-11-05, G12). */
+const SH_FAMILY = new Set([
+  "sh",
+  "bash",
+  "zsh",
+  "dash",
+  "ksh",
+  "mksh",
+  "yash",
+  "ash",
+  "fish",
+  "csh",
+  "tcsh",
+]);
 /** Not shells themselves, but they hand a shell command string to one. */
 const COMMAND_STRING_WRAPPERS = new Set(["su", "runuser", "script"]);
 const POWERSHELL_FAMILY = new Set(["powershell", "pwsh"]);
@@ -638,6 +810,40 @@ function extractShellReentry(argv: readonly string[]): Reentry | null {
           ? { kind: "body", via: `${name} -c`, body }
           : null;
       }
+    }
+    return null;
+  }
+
+  // `env -S STRING` splits STRING into a command and runs it, GNU and BSD
+  // alike: the peel steps over `-S`'s value as an option's, so `env -S 'rm
+  // -rf /'` ran unread (2026-10-26). The words after STRING are its
+  // arguments.
+  if (name === "env") {
+    for (let i = 1; i < argv.length; i++) {
+      const a = argv[i] as string;
+      if (a === "--") return null;
+      const glued = /^(?:-[0iv]*S|--split-string=)(.+)$/s.exec(a);
+      const body =
+        glued !== null
+          ? (glued[1] as string)
+          : /^(?:-[0iv]*S|--split-string)$/.test(a)
+            ? argv[++i]
+            : undefined;
+      if (body !== undefined) {
+        return body.length > 0
+          ? {
+              kind: "body",
+              via: "env -S",
+              body: [body, ...argv.slice(i + 1)].join(" "),
+            }
+          : null;
+      }
+      if (["-u", "--unset", "-C", "--chdir", "-P"].includes(a)) {
+        i += 1;
+        continue;
+      }
+      if (a.startsWith("-") || /^[A-Za-z_][A-Za-z0-9_]*=/.test(a)) continue;
+      return null; // the command: the peel's to read
     }
     return null;
   }
@@ -1061,6 +1267,15 @@ function posixCatastrophe(a0: string, argv: readonly string[]): string | null {
  * `echo "a; shutdown"` from being blocked — the block tier has no override,
  * so a false positive there is a hard failure with no way past it.
  */
+const FIND_EXEC_ACTION = /(?:^|\s)-(?:exec|execdir|ok|okdir)\s/;
+
+/** Whether an odd run of backslashes stands right before `at`. */
+function endsInOneBackslash(text: string, at: number): boolean {
+  let run = 0;
+  for (let i = at - 1; i >= 0 && text[i] === "\\"; i -= 1) run += 1;
+  return run % 2 === 1;
+}
+
 export function splitShellSegments(body: string): string[] {
   const out: string[] = [];
   let current = "";
@@ -1073,6 +1288,20 @@ export function splitShellSegments(body: string): string[] {
   for (let i = 0; i < joined.length; i += 1) {
     const ch = joined[i] as string;
     const prev = i > 0 ? joined[i - 1] : "";
+    // `find … -exec cmd {} \;`: the semicolon is find's own, an argument. Cut
+    // there, the lone `\` left behind read as a system root and the commonest
+    // find line was refused outright (review 2026-11-05). Only after an
+    // `-exec`: in cmd and PowerShell bodies a backslash escapes nothing, and
+    // `\\;` is an escaped backslash and a real separator.
+    if (
+      ch === ";" &&
+      quote === null &&
+      endsInOneBackslash(joined, i) &&
+      FIND_EXEC_ACTION.test(current)
+    ) {
+      current += ch;
+      continue;
+    }
     if (quote !== null) {
       current += ch;
       // A backslash-escaped quote does not close the string (POSIX single
@@ -1143,6 +1372,165 @@ function gitSubcommandIndex(argv: readonly string[]): number | null {
     i += GIT_GLOBAL_VALUE_FLAGS.has(a) ? 2 : 1;
   }
   return null;
+}
+
+/**
+ * A job of the shell that runs the line: `%1`, `%%`, `%+`, `%-`, `%name`,
+ * `%?text` (ADR 0045 amendment 2026-11-11 (2)).
+ *
+ * `kill %1` asked exactly as `kill 1234` does. A pid can be any process on
+ * the machine. A job number can only be one this shell started in the
+ * background, which under the persistent bash means one 板砖 started in
+ * this session: the server a brief told it to run and then stop. Under
+ * `run_command` there is no shell and no job, and the line fails.
+ */
+const JOB_SPEC_RE = /^%(?:\d+|[%+-]|\??[\w./-]+)$/;
+
+/** `kill` whose every target is a job of its own shell. A signal may be
+ *  named (`-9`, `-TERM`, `-s KILL`); a pid among the targets, no target at
+ *  all, and the forms that do not kill (`-l`) are not this. */
+function killsOnlyOwnJobs(argv: readonly string[]): boolean {
+  let targets = 0;
+  let rest = false;
+  for (let i = 1; i < argv.length; i += 1) {
+    const a = argv[i] as string;
+    if (!rest && a === "--") {
+      rest = true;
+      continue;
+    }
+    if (!rest && (a === "-s" || a === "-n")) {
+      i += 1;
+      continue;
+    }
+    if (!rest && a.startsWith("-")) {
+      if (a.startsWith("--") || a === "-l" || a === "-L") return false;
+      if (!/^-[A-Za-z0-9]+$/.test(a)) return false;
+      continue;
+    }
+    if (!JOB_SPEC_RE.test(a)) return false;
+    targets += 1;
+  }
+  return targets > 0;
+}
+
+/**
+ * A mode that only ADDS read, write or execute: `+x`, `u+x`, `a+rx`. Nothing
+ * is taken away, so nothing is lost; a mode that removes, sets outright
+ * (`755`) or marks setuid is not this (ADR 0045 amendment 2026-11-11 (2)).
+ */
+const CHMOD_ADDS_RE = /^[ugoa]*\+[rwxX]+(?:,[ugoa]*\+[rwxX]+)*$/;
+
+/**
+ * Subcommands that only read the repository, whatever their options (ADR
+ * 0045 amendment 2026-11-11 (2)). Before it the allow tier named ten
+ * subcommands, and every other one asked as "git X changes the repository":
+ * `git cat-file -p`, `git ls-tree`, `git describe`, `git rev-list --count`.
+ * The card was wrong about what the line does, and it was a card.
+ *
+ * None of these writes a ref, the index or the working tree, and none
+ * reaches a remote. What one of them prints is what `git show` and `git log`
+ * already print: the repository's own content. The options that make any
+ * git command run or write something else (`--output`, `--ext-diff`,
+ * `--textconv`, `--filters`, `-c`) are judged before this, for every
+ * subcommand alike (`ESCAPE_HATCH_FLAGS`).
+ */
+const GIT_READ_ONLY: ReadonlySet<string> = new Set([
+  "cat-file",
+  "ls-tree",
+  "rev-list",
+  "describe",
+  "shortlog",
+  "merge-base",
+  "show-ref",
+  "for-each-ref",
+  "check-ignore",
+  "check-attr",
+  "diff-tree",
+  "diff-index",
+  "diff-files",
+  "count-objects",
+  "name-rev",
+  "whatchanged",
+  "version",
+]);
+
+/** `git tag` that lists: no name to create, and no option but a listing's.
+ *  A name is a pattern only where an option says this is a listing. */
+function gitTagLists(args: readonly string[]): boolean {
+  let lists = false;
+  let positional = false;
+  for (let i = 0; i < args.length; i += 1) {
+    const a = args[i] as string;
+    if (a === "--") {
+      positional ||= i + 1 < args.length;
+      break;
+    }
+    if (!a.startsWith("-")) {
+      positional = true;
+      continue;
+    }
+    if (a === "-l" || a === "--list" || /^-n\d*$/.test(a)) {
+      lists = true;
+      continue;
+    }
+    if (/^--(contains|no-contains|merged|no-merged|points-at)(=.*)?$/.test(a)) {
+      lists = true;
+      // The commit it asks about, when it is the next word.
+      if (!a.includes("=") && args[i + 1]?.startsWith("-") === false) i += 1;
+      continue;
+    }
+    if (
+      /^(-i|--ignore-case|--column(=.*)?|--no-column|--color(=.*)?|--no-color|--sort=.*|--format=.*)$/.test(
+        a,
+      )
+    ) {
+      continue;
+    }
+    // Anything else creates, deletes, moves, signs or verifies a tag.
+    return false;
+  }
+  return !positional || lists;
+}
+
+/** `git remote` that lists: bare, `-v`, or `get-url <name>`. Every other
+ *  verb changes the remotes or asks one over the network. */
+function gitRemoteLists(args: readonly string[]): boolean {
+  const verbose = (a: string): boolean => a === "-v" || a === "--verbose";
+  const at = args.findIndex((a) => !a.startsWith("-"));
+  if (at === -1) return args.every(verbose);
+  if (args[at] !== "get-url" || !args.slice(0, at).every(verbose)) return false;
+  const rest = args.slice(at + 1);
+  return (
+    rest.filter((a) => !a.startsWith("-")).length === 1 &&
+    rest
+      .filter((a) => a.startsWith("-"))
+      .every((a) => a === "--push" || a === "--all")
+  );
+}
+
+/** A subcommand that reads in the form given and writes in another. */
+function gitOnlyReads(sub: string, args: readonly string[]): boolean {
+  if (GIT_READ_ONLY.has(sub)) return true;
+  const verb = args.find((a) => !a.startsWith("-"));
+  switch (sub) {
+    case "tag":
+      return gitTagLists(args);
+    case "remote":
+      return gitRemoteLists(args);
+    case "reflog":
+      // Bare, `show`, or a ref: the log. `expire`, `delete` and `drop` cut it.
+      return verb === undefined || !["expire", "delete", "drop"].includes(verb);
+    case "symbolic-ref":
+      // One name reads what it points at; a second name, `-d` or `-m` write.
+      return (
+        !args.some((a) => /^(-d|--delete|-m)$/.test(a)) &&
+        args.filter((a) => !a.startsWith("-")).length === 1
+      );
+    case "worktree":
+      return verb === "list";
+    default:
+      return false;
+  }
 }
 
 /**
@@ -1486,8 +1874,11 @@ function opaqueShape(
  * …`) and every command of a shell body (`cmd //c "npx -y …"`, `bash -c
  * "terraform destroy …"`) are classified in their own right. Only a class
  * in ESCALATING_CODES is taken — a harmless inside never lends the wrapper
- * an allow — and the most severe one found wins. Bounded by the re-entry
- * depth cap, past which the block tier has already failed closed.
+ * an allow — and the most severe one found wins. A BLOCK inside blocks the
+ * line: keeping asks only made `["nohup", "rm", "-rf", "/"]` and
+ * `/usr/bin/time -l rm -rf /` asks on the argv contract, where the bash
+ * lane's body scan blocked them (Mac findings 2026-10-24). Bounded by the
+ * re-entry depth cap, past which the block tier has already failed closed.
  */
 function innerEscalation(
   argv: readonly string[],
@@ -1500,7 +1891,12 @@ function innerEscalation(
     verdict: Extract<Verdict, { kind: "ask" }>;
     via: string;
   }> = [];
+  const blocked: Verdict[] = [];
   const take = (v: Verdict, via: string): void => {
+    if (v.kind === "block") {
+      blocked.push({ ...v, reason: `${via}: ${v.reason}` });
+      return;
+    }
     if (v.kind === "ask" && ESCALATING_CODES.includes(v.code)) {
       found.push({ verdict: v, via });
     }
@@ -1526,6 +1922,7 @@ function innerEscalation(
       );
     }
   }
+  if (blocked.length > 0) return blocked[0] as Verdict;
   if (found.length === 0) return null;
   found.sort(
     (a, b) =>
@@ -2015,6 +2412,8 @@ const ESCAPE_HATCH_FLAGS: ReadonlyMap<string, ReadonlySet<string>> = new Map<
       "--ext-diff",
       "--textconv",
       "--no-textconv",
+      // git cat-file: runs the smudge filter repo config names for the path.
+      "--filters",
     ]),
   ],
   ["rg", new Set(["--pre", "--hostname-bin"])],
@@ -2269,6 +2668,9 @@ export interface ClassifyCommandOpts {
    *  resolve them (its workspace, its cwd, its links). A denial from either
    *  side turns the verdict into a block. Absent → no such check. */
   writeGuard?: WriteGuard;
+  /** The processes that are this app (2026-11-04): a kill aimed at one of
+   *  them is blocked. Absent → no such check. */
+  host?: HostIdentity;
 }
 
 /** See `ClassifyCommandOpts.writeGuard`. `path` and `body` return a denial
@@ -2322,33 +2724,279 @@ export function classifyCommand(
   opts?: ClassifyCommandOpts,
 ): Verdict {
   const verdict = classifyCommandTiers(argv, opts);
+  if (verdict.kind === "block") return verdict;
+  // A kill aimed at the app itself (2026-11-04): blocked whatever tier the
+  // kill earned, since an approval of it — the user's or a review's — closes
+  // the app mid-run.
+  if (opts?.host !== undefined) {
+    // `$PPID` counts only where the shell expands it: `kill '$PPID'` is a
+    // literal, and the words have lost their quotes by here.
+    const shell = opts.shell === true && opts.unresolved !== false;
+    const self = selfKillBlock(argv, opts.host, shell, 0);
+    if (self !== null) return self;
+  }
   const guard = opts?.writeGuard;
-  if (guard === undefined || verdict.kind === "block") return verdict;
+  if (guard === undefined) return verdict;
   // The harness's own state is not command-writable (2026-09-30): whatever
   // tier the command earned, a write into it is refused outright — the same
   // hard line the editors draw, since a card for it would be one click from
   // the agent granting itself rules or trust.
-  for (const operand of writtenOperands(argv)) {
-    const denial = guard.path(operand);
-    if (denial !== null) {
-      return { kind: "block", code: "command_blocked", reason: denial };
+  //
+  // The line as written AND the command its exec-wrappers run: judging only
+  // the first word let `caffeinate cp x .herta/permissions.json` — or `sudo`,
+  // `timeout 5`, `nohup` in front of any writer — past every guard below
+  // (Mac findings 2026-10-24, item 1).
+  const peeled = peelExecWrappers(argv);
+  const forms = peeled !== null && peeled.length > 0 ? [argv, peeled] : [argv];
+  for (const form of forms) {
+    for (const operand of writtenOperands(form)) {
+      const denial = guard.path(operand);
+      if (denial !== null) {
+        return { kind: "block", code: "command_blocked", reason: denial };
+      }
     }
   }
-  const reentry = extractShellReentry(argv);
-  if (reentry?.kind === "body") {
+  const reentries = forms.map(extractShellReentry);
+  for (const reentry of reentries) {
+    if (reentry?.kind !== "body") continue;
     const denial = guard.body(reentry.body);
     if (denial !== null) {
       return { kind: "block", code: "command_blocked", reason: denial };
     }
   }
   if (verdict.kind === "ask") {
-    return (
-      harnessReach(argv, guard) ??
-      gitInternalsReach(argv, verdict, guard, reentry) ??
-      verdict
-    );
+    for (const [i, form] of forms.entries()) {
+      const reached =
+        harnessReach(form, guard) ??
+        gitInternalsReach(form, verdict, guard, reentries[i] ?? null);
+      if (reached !== null) return reached;
+    }
   }
   return verdict;
+}
+
+/**
+ * The block for a line that would end one of the app's own processes: the
+ * line as written, the command its exec-wrappers run, and each command of a
+ * body it hands another shell (`cmd /c taskkill …`, `powershell -Command
+ * Stop-Process …`), to the re-entry depth the block scan reads. A body is
+ * always shell-expanded, so its `$PPID` counts.
+ */
+function selfKillBlock(
+  argv: readonly string[],
+  host: HostIdentity,
+  shell: boolean,
+  depth: number,
+): Verdict | null {
+  const peeled = peelExecWrappers(argv);
+  const forms = peeled !== null && peeled.length > 0 ? [argv, peeled] : [argv];
+  for (const form of forms) {
+    const denial = selfKillDenial(form, host, shell);
+    if (denial !== null) {
+      return {
+        kind: "block",
+        code: "command_blocked",
+        reason: denial.reason,
+        suggestion: denial.suggestion,
+      };
+    }
+    const reentry = extractShellReentry(form);
+    if (reentry?.kind !== "body" || depth >= MAX_REENTRY_DEPTH) continue;
+    for (const kill of pipedKills(reentry.body)) {
+      const inner = selfKillBlock(kill, host, true, depth + 1);
+      if (inner !== null) return inner;
+    }
+    for (const segment of splitShellSegments(reentry.body)) {
+      for (const piece of blockPieces(segment)) {
+        const tokens = commandWords(shellBodyTokens(piece));
+        if (tokens.length === 0) continue;
+        const inner = selfKillBlock(tokens, host, true, depth + 1);
+        if (inner !== null) return inner;
+      }
+    }
+  }
+  return null;
+}
+
+/** `selfKillBlock` for a line the shell lane read itself (`exec kill 1`, a
+ *  heredoc fed to a shell). */
+export function selfKillVerdict(
+  argv: readonly string[],
+  host: HostIdentity,
+): Verdict | null {
+  return selfKillBlock(argv, host, true, 0);
+}
+
+/** A line the shell lane reads: the kills its pipes spell. */
+export function pipedKillVerdict(
+  line: string,
+  host: HostIdentity,
+): Verdict | null {
+  for (const kill of pipedKills(line)) {
+    const self = selfKillBlock(kill, host, true, 0);
+    if (self !== null) return self;
+  }
+  return null;
+}
+
+/** The pipelines of a shell line, each cut at its `|`. */
+function pipelinesOf(body: string): string[][] {
+  const lines: string[][] = [];
+  let stages: string[] = [];
+  let stage = "";
+  let quote: string | null = null;
+  const endStage = (): void => {
+    stages.push(stage);
+    stage = "";
+  };
+  const endLine = (): void => {
+    endStage();
+    if (stages.length > 1) lines.push(stages);
+    stages = [];
+  };
+  for (let i = 0; i < body.length; i += 1) {
+    const ch = body[i] as string;
+    if (quote !== null) {
+      if (ch === quote) quote = null;
+      stage += ch;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      stage += ch;
+    } else if (ch === "|" && body[i + 1] !== "|" && body[i - 1] !== "|") {
+      endStage();
+    } else if (ch === ";" || ch === "\n" || ch === "|" || ch === "&") {
+      if (stage.trim().length > 0 || stages.length > 0) endLine();
+    } else {
+      stage += ch;
+    }
+  }
+  endLine();
+  return lines;
+}
+
+/**
+ * The kill by name a pipe spells (review 2026-11-05, G4): `pgrep x | xargs
+ * kill` is `pkill x`, `pidof x | xargs kill` is `killall x`, and `Get-Process
+ * x | Stop-Process` is `Stop-Process -Name x`. Only those: any other pipe's
+ * targets cannot be told from the line, and it asks as before.
+ */
+export function pipedKills(body: string): string[][] {
+  const kills: string[][] = [];
+  for (const stages of pipelinesOf(body)) {
+    for (let i = 0; i + 1 < stages.length; i += 1) {
+      const left = commandWords(shellBodyTokens(stages[i] as string));
+      const right = commandWords(shellBodyTokens(stages[i + 1] as string));
+      const from = (left[0] ?? "").toLowerCase().replace(/\.exe$/u, "");
+      const to = (right[0] ?? "").toLowerCase();
+      const xargsKill = to === "xargs" && right.includes("kill");
+      if (from === "pgrep" && xargsKill) {
+        kills.push(["pkill", ...left.slice(1)]);
+      } else if (from === "pidof" && xargsKill) {
+        kills.push(["killall", ...left.slice(1)]);
+      } else if (
+        (from === "get-process" || from === "gps") &&
+        (to === "stop-process" || to === "spps" || to === "kill")
+      ) {
+        const named = left[1]?.startsWith("-") === true;
+        kills.push([
+          "Stop-Process",
+          ...(named ? [] : ["-Name"]),
+          ...left.slice(1),
+        ]);
+      }
+    }
+  }
+  return kills;
+}
+
+/**
+ * A body's segment cut at the groups and blocks it opens, so each command
+ * inside reads as a command: `(kill 1)`, `{ kill 1; }`, `try { Stop-Process 1 }`
+ * (review 2026-11-05: each asked where `kill 1` blocks). A bracket glued to a
+ * word stays with it: `${PPID}`, `$(id -u)`, `k()`.
+ */
+function blockPieces(segment: string): string[] {
+  const out: string[] = [];
+  let from = 0;
+  let quote: string | null = null;
+  // Brackets glued to a word, whose closers belong to them.
+  let glued = 0;
+  for (let i = 0; i < segment.length; i += 1) {
+    const ch = segment[i] as string;
+    if (quote !== null) {
+      if (ch === quote) quote = null;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+    } else if (ch === "(" || ch === "{") {
+      if (i === 0 || /[\s)]/.test(segment[i - 1] as string)) {
+        out.push(segment.slice(from, i));
+        from = i + 1;
+      } else {
+        glued += 1;
+      }
+    } else if (ch === ")" || ch === "}") {
+      if (glued > 0) {
+        glued -= 1;
+      } else {
+        out.push(segment.slice(from, i));
+        from = i + 1;
+      }
+    }
+  }
+  out.push(segment.slice(from));
+  return out;
+}
+
+/** The words that stand before the program of a command in a body. */
+const BODY_HEAD_WORDS: ReadonlySet<string> = new Set([
+  "!",
+  "if",
+  "then",
+  "elif",
+  "else",
+  "do",
+  "while",
+  "until",
+  "time",
+  "coproc",
+  "call",
+  "start",
+]);
+
+/**
+ * A command's words from its program on: past control-flow words, `FOO=1`,
+ * a leading redirect, `$x =` and cmd's `@`, `call`, `start` with its options.
+ */
+function commandWords(tokens: readonly string[]): readonly string[] {
+  let i = 0;
+  while (i < tokens.length) {
+    const t = tokens[i] as string;
+    const word = t.toLowerCase();
+    if (BODY_HEAD_WORDS.has(word)) {
+      i += 1;
+      if (word === "start") while (tokens[i]?.startsWith("/") === true) i += 1;
+      continue;
+    }
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) {
+      i += 1;
+      continue;
+    }
+    // `2>/dev/null`, `>nul`; a redirect's target as a word of its own.
+    if (/^\d*[<>]/.test(t)) {
+      i += /^\d*[<>]+&?$/.test(t) ? 2 : 1;
+      continue;
+    }
+    if (/^\$\w+$/.test(t) && tokens[i + 1] === "=") {
+      i += 2;
+      continue;
+    }
+    break;
+  }
+  const rest = tokens.slice(i);
+  const head = rest[0];
+  if (head === undefined || !head.startsWith("@") || head.length === 1)
+    return rest;
+  return [head.slice(1), ...rest.slice(1)];
 }
 
 /** A `.git` path segment in shell text: `.git/hooks`, `.git\config`,
@@ -2498,7 +3146,12 @@ function pathTouchesHerta(p: string): boolean {
 /** Verbs whose every non-flag operand is a path they create, change, move or
  *  remove. `cp`/`install` sources are only read, but a copy OUT of `.herta`
  *  has no honest use a reader tool does not serve, and naming the destination
- *  alone would miss `-t DIR` spellings. */
+ *  alone would miss `-t DIR` spellings. `ditto` (macOS's cp), `plutil` (it
+ *  rewrites a plist in place, or into `-o FILE`) and `rsync` were missing, so
+ *  `ditto x .herta/permissions.json` asked as unknown where `cp` blocked, and
+ *  `ditto x .git/hooks/pre-commit` skipped the git-internals class (Mac
+ *  findings 2026-10-24, item 2). A plutil key path or an rsync `-e` value
+ *  read as an operand names no file there, so it costs nothing. */
 const PATH_WRITING_VERBS: ReadonlySet<string> = new Set([
   "rm",
   "rmdir",
@@ -2521,6 +3174,9 @@ const PATH_WRITING_VERBS: ReadonlySet<string> = new Set([
   "rd",
   "remove-item",
   "ri",
+  "ditto",
+  "plutil",
+  "rsync",
 ]);
 
 /**
@@ -2577,7 +3233,10 @@ export function writtenOperands(argv: readonly string[]): string[] {
         files.push(...args.slice(i + 1));
         break;
       }
-      if (!nonFlag(a)) continue;
+      if (!nonFlag(a)) {
+        if (takesSedBackupSuffix(a, args[i + 1], args.slice(i + 2))) i += 1;
+        continue;
+      }
       if (!scriptGiven) {
         scriptGiven = true; // the first operand is the script
         continue;
@@ -2840,6 +3499,27 @@ function classifyCommandTiers(
     }
   }
   if (id === "chmod") {
+    // `chmod +x bin/run.sh` was carded as destructive (「破坏性命令」): the
+    // step every "write a script and run it" brief takes, and it destroys
+    // nothing. Adding permissions to files inside the workspace is a
+    // file-system change like `mkdir` or `touch`, and asks as one. Never
+    // undoable (`writesUndoable` knows printers and `mkdir -p` only), so it
+    // is still a card or a review. Every other chmod stays where it was.
+    const [mode, ...paths] = argv.slice(1);
+    if (
+      mode !== undefined &&
+      CHMOD_ADDS_RE.test(mode) &&
+      paths.length > 0 &&
+      paths.every((p) => !p.startsWith("-")) &&
+      outsideOperand(argv, live) === null
+    ) {
+      return {
+        kind: "ask",
+        risk: "workspace_write",
+        code: "command_ask_fs",
+        reason: `chmod adds permissions: ${argv.slice(1).join(" ")}`,
+      };
+    }
     return {
       kind: "ask",
       risk: "workspace_destructive",
@@ -3046,6 +3726,19 @@ function classifyCommandTiers(
   ) {
     return { kind: "allow" };
   }
+  // The same two scripts, spelled the short way (owner 2026-11-12): `npm t`
+  // is npm's own alias for `npm test`, and `pnpm lint` is `pnpm run lint`.
+  // Both asked as an unrecognized command. Only these two: `pnpm t`,
+  // `npm tst`, `yarn test` and any other script by its bare name still ask.
+  // One difference from `pnpm run lint`: where the package has no `lint`
+  // script, pnpm runs a `lint` program from `node_modules/.bin` instead of
+  // failing. That is the project's own code either way, as a script is.
+  if (
+    (a0 === "npm" && argv[1] === "t") ||
+    (a0 === "pnpm" && argv[1] === "lint")
+  ) {
+    return { kind: "allow" };
+  }
   // The node test runner and version queries (permission lab 2026-08-17):
   // `node --test test/` was 12 of 65 asks in 15 briefs — the 极简 model runs
   // tests through node directly, not `npm test`, and each run prompted as
@@ -3143,9 +3836,12 @@ function classifyCommandTiers(
     const config = gitConfigVerdict(gitSubArgs, live);
     if (config !== null) return config;
   }
+  // The subcommand stands right after `git`. The allow tier is not taught
+  // about global options, on purpose (2026-08-25): behind `-C dir` or
+  // `--no-pager` a read still asks.
+  const gitPlain = a0 === "git" && gitSub === 1 && gitSubName !== null;
   if (
-    a0 === "git" &&
-    typeof argv[1] === "string" &&
+    gitPlain &&
     [
       "status",
       "diff",
@@ -3157,7 +3853,7 @@ function classifyCommandTiers(
       "grep",
       "blame",
       "stash", // only `git stash list` / `show` — see below
-    ].includes(argv[1])
+    ].includes(gitSubName)
   ) {
     // `git diff --no-index <p1> <p2>` is git's arbitrary-filesystem compare —
     // it works outside any repo and, against /dev/null, prints a whole file
@@ -3165,7 +3861,7 @@ function classifyCommandTiers(
     // repo) the reader guard cannot see (git is not a reader). ASK: the
     // displayed paths are visible, so the user can knowingly approve/deny
     // (audit T3.4 review). Regular git diff/show stay repo-confined → allow.
-    if (argv[1] === "diff" && argv.includes("--no-index")) {
+    if (gitSubName === "diff" && gitSubArgs.includes("--no-index")) {
       return {
         kind: "ask",
         risk: "workspace_read",
@@ -3180,8 +3876,8 @@ function classifyCommandTiers(
     // ignored .env). Its escape hatches ask: `--no-index` (whole tree),
     // `--untracked` / `--no-exclude-standard` (ignored files back in).
     if (
-      argv[1] === "grep" &&
-      argv.some(
+      gitSubName === "grep" &&
+      gitSubArgs.some(
         (a) =>
           a === "--no-index" ||
           a === "--untracked" ||
@@ -3197,18 +3893,21 @@ function classifyCommandTiers(
       };
     }
     // `git stash` mutates unless it is `list` / `show`.
-    if (argv[1] === "stash" && !(argv[2] === "list" || argv[2] === "show")) {
+    if (
+      gitSubName === "stash" &&
+      !(gitSubArgs[0] === "list" || gitSubArgs[0] === "show")
+    ) {
       return {
         kind: "ask",
         risk: "workspace_write",
         code: "command_ask_vcs",
-        reason: `git ${argv.slice(1, 3).join(" ")} changes the working tree`,
+        reason: `git ${["stash", ...gitSubArgs.slice(0, 1)].join(" ")} changes the working tree`,
       };
     }
     // `git branch` LISTS (no operand, or the query flags); a name operand
     // creates, and -d/-D/-m/-M/-c/-C/-u… mutate.
-    if (argv[1] === "branch") {
-      const rest = argv.slice(2);
+    if (gitSubName === "branch") {
+      const rest = gitSubArgs;
       const mutatingFlag = rest.some((a) =>
         /^-[dDmMcCu]$|^--(delete|move|copy|force|set-upstream-to|unset-upstream|edit-description|track)(=|$)/.test(
           a,
@@ -3229,6 +3928,11 @@ function classifyCommandTiers(
         };
       }
     }
+    return { kind: "allow" };
+  }
+  // The subcommands that only read, and the listing forms of three that also
+  // write (ADR 0045 amendment 2026-11-11 (2)).
+  if (gitPlain && gitOnlyReads(gitSubName, gitSubArgs)) {
     return { kind: "allow" };
   }
   // Every other git subcommand changes the repository or the working tree
@@ -3403,6 +4107,8 @@ function classifyCommandTiers(
       reason: `${id} deletes: ${argv.slice(1).join(" ")}`,
     };
   }
+  // A job of this shell, by its number: see JOB_SPEC_RE.
+  if (id === "kill" && killsOnlyOwnJobs(argv)) return { kind: "allow" };
   if (["kill", "pkill", "killall", "taskkill"].includes(id)) {
     return {
       kind: "ask",
@@ -3411,7 +4117,13 @@ function classifyCommandTiers(
       reason: `${id} ends processes: ${argv.slice(1).join(" ")}`,
     };
   }
-  if (["mkdir", "touch", "cp", "mv", "ln", "rename"].includes(id)) {
+  // `ditto` is macOS's cp, and an rsync that reached no other machine (that
+  // is the network class above) is a copy too (2026-10-26).
+  if (
+    ["mkdir", "touch", "cp", "mv", "ln", "rename", "ditto", "rsync"].includes(
+      id,
+    )
+  ) {
     const out = outsideOperand(argv, live);
     if (out !== null) return outsideAsk(id, out);
     return {
@@ -3999,6 +4711,35 @@ function interpreterShape(
   return { kind: "script", script };
 }
 
+/**
+ * BSD sed's `-i SUFFIX`: the backup suffix is the NEXT word, and `''` means
+ * none — `sed -i '' 's/a/b/' f`, the spelling the macOS host note teaches.
+ * Read as the script, the empty word made the line unknown, and the card lost
+ * its "outside the workspace" warning (Mac findings 2026-10-24, item 8). GNU
+ * takes that word as the script, but an empty or `.bak`-shaped one is no sed
+ * program either, so reading it as the suffix loses nothing — while a script
+ * still follows it. With only a file after it, GNU reads the word as the
+ * script and edits the file: `sed -i '' .herta/permissions.json` asked as an
+ * unknown, where at v0.1.9 it blocked (review 2026-10-30).
+ */
+function takesSedBackupSuffix(
+  flag: string,
+  next: string | undefined,
+  after: readonly string[],
+): boolean {
+  if (
+    !/^-[a-zA-Z]*i$/.test(flag) ||
+    next === undefined ||
+    (next !== "" && !/^\.[\w.~-]*$/.test(next))
+  )
+    return false;
+  const scriptFlag = after.some((a) =>
+    /^(?:-e|--expression|-f|--file)(?:=|$)/.test(a),
+  );
+  const words = after.filter((a) => a === "-" || !a.startsWith("-")).length;
+  return scriptFlag || words >= 2;
+}
+
 /** A sed script made only of line-address substitutions, deletes and prints
  *  — the shapes that touch nothing but the addressed file. The `e` flag or
  *  command (runs the pattern space!), `w`/`W`/`r`/`R` file commands, `-f`
@@ -4071,7 +4812,10 @@ function namedProgramVerdict(
         files.push(...argv.slice(i + 1));
         break;
       }
-      if (a.startsWith("-") && a.length > 1) continue;
+      if (a.startsWith("-") && a.length > 1) {
+        if (takesSedBackupSuffix(a, argv[i + 1], argv.slice(i + 2))) i += 1;
+        continue;
+      }
       if (scripts.length === 0) scripts.push(a);
       else files.push(a);
     }

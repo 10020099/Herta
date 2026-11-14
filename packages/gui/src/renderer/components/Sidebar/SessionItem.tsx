@@ -502,17 +502,46 @@ export function SessionItem(props: SessionItemProps): JSX.Element {
       }}
       onKeyDown={(e) => {
         if (e.key === "Escape") {
-          // Consume it — a stray Escape reaching the approval panel's window
-          // listener denies a pending permission gate (audit 2026-07-24, H2).
-          e.stopPropagation();
+          // Consumed only when the card had something to close — its 确认删除
+          // or its tip. Otherwise the Escape is not the card's: it goes on,
+          // and mid-turn it stops the run as it does anywhere outside a field
+          // (ADR 0082 §5). Swallowed every time, a card the session keys had
+          // left focused made Escape do nothing at all (release review
+          // 2026-10-22). The approval panel denies only an Escape from inside
+          // itself, so a card's never reaches it as a denial.
+          const had = confirming || tipAt !== null;
           setConfirming(false);
           closeTip();
+          if (had) {
+            e.stopPropagation();
+            e.preventDefault();
+          }
           return;
         }
         if (e.key === "F2") {
           // Rename, as a file manager does (ADR 0072 §3).
           e.preventDefault();
           startRename();
+          return;
+        }
+        if (
+          (e.key === "ArrowDown" || e.key === "ArrowUp") &&
+          !e.altKey &&
+          !e.ctrlKey &&
+          !e.metaKey &&
+          !e.shiftKey
+        ) {
+          // The card above or below (ADR 0082 §10) — focus only; Enter opens.
+          e.preventDefault();
+          const cards = Array.from(
+            cardRef.current
+              ?.closest(".sidebar")
+              ?.querySelectorAll<HTMLElement>('[data-testid="session-card"]') ??
+              [],
+          );
+          const i = cards.indexOf(e.currentTarget);
+          // focus-scrolls: arrow navigation — the card must come into view.
+          cards[e.key === "ArrowDown" ? i + 1 : i - 1]?.focus();
           return;
         }
         if (e.key === "Enter" || e.key === " ") {

@@ -148,6 +148,35 @@ describe("parseSSE", () => {
     expect(seen).toEqual([{ a: 1 }]);
   });
 
+  // Review 2026-11-10, second pass: a deadline's reason is a plain Error.
+  it("a read cut by the call's own signal is an abort, whatever reason it was given", async () => {
+    for (const reason of [
+      new Error("review timed out"),
+      Object.assign(new Error("timed out"), { name: "TimeoutError" }),
+    ]) {
+      const enc = new TextEncoder();
+      const ctl = new AbortController();
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(enc.encode(`data: {"a":1}\n\n`));
+          // As the transport does: the body fails with the signal's reason.
+          ctl.signal.addEventListener("abort", () =>
+            controller.error(ctl.signal.reason),
+          );
+        },
+      });
+      const seen: unknown[] = [];
+      const reading = (async () => {
+        for await (const v of parseSSE(stream, ctl.signal)) {
+          seen.push(v);
+          ctl.abort(reason);
+        }
+      })();
+      await expect(reading).rejects.toMatchObject({ name: "AbortError" });
+      expect(seen).toEqual([{ a: 1 }]);
+    }
+  });
+
   it("lets an AbortError read rejection through unwrapped (user interrupt)", async () => {
     const abortErr = new Error("This operation was aborted");
     abortErr.name = "AbortError";
@@ -192,5 +221,97 @@ describe("parseSSE", () => {
       parseSSE(stream, ctl.signal, { idleTimeoutMs: 50 }),
     );
     expect(events).toEqual([{ ok: true }]);
+  });
+});
+
+describe("parseSSE — a 200 that is not a stream (review 2026-11-10)", () => {
+  const html =
+    "<!DOCTYPE html>\n<html><head><title>Sign in to the network</title></head>\n<body>portal</body></html>\n";
+
+  it("a page where a stream was expected is an error, not an empty answer", async () => {
+    const ctl = new AbortController();
+    await expect(
+      collect(parseSSE(streamFrom([html]), ctl.signal)),
+    ).rejects.toMatchObject({
+      name: "ProviderError",
+      code: "sse",
+      retryable: true,
+      message: expect.stringContaining("not an event stream: <!DOCTYPE html>"),
+    });
+  });
+
+  it("so is a JSON error sent as one line with no line break", async () => {
+    const ctl = new AbortController();
+    await expect(
+      collect(
+        parseSSE(
+          streamFrom(['{"error":{"message":"upstream ', 'unavailable"}}']),
+          ctl.signal,
+        ),
+      ),
+    ).rejects.toMatchObject({
+      code: "sse",
+      message: expect.stringContaining('{"error":{"message":"upstream'),
+    });
+  });
+
+  it("the message carries a short single line of what came", async () => {
+    const ctl = new AbortController();
+    const page = `<html>\n${"<p>x</p>\t  ".repeat(200)}\n`;
+    const err = await collect(parseSSE(streamFrom([page]), ctl.signal)).catch(
+      (e: unknown) => e as Error,
+    );
+    expect(err).toBeInstanceOf(Error);
+    const shown = (err as Error).message.split("event stream: ")[1] ?? "";
+    expect(shown).toBe("<html>");
+  });
+
+  it("a stream that only kept alive is still an empty one", async () => {
+    const ctl = new AbortController();
+    const events = await collect(
+      parseSSE(streamFrom([": keepalive\n\n", ": keepalive\n\n"]), ctl.signal),
+    );
+    expect(events).toEqual([]);
+  });
+
+  it("a stray line among real events is still ignored", async () => {
+    const ctl = new AbortController();
+    const events = await collect(
+      parseSSE(
+        streamFrom([
+          "garbage\n\n",
+          `data: {"ok":true}\n\n`,
+          "data: [DONE]\n\n",
+        ]),
+        ctl.signal,
+      ),
+    );
+    expect(events).toEqual([{ ok: true }]);
+  });
+
+  it("a stray line before [DONE] is not an error either", async () => {
+    const ctl = new AbortController();
+    const events = await collect(
+      parseSSE(streamFrom(["garbage\n\n", "data: [DONE]\n\n"]), ctl.signal),
+    );
+    expect(events).toEqual([]);
+  });
+
+  it("a body with no blank line in it is not held whole", async () => {
+    // Never closes: without the bound the parser would wait for its end.
+    const enc = new TextEncoder();
+    let sent = 0;
+    const endless = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        sent += 1;
+        controller.enqueue(enc.encode("x".repeat(8_192)));
+      },
+    });
+    const ctl = new AbortController();
+    await expect(collect(parseSSE(endless, ctl.signal))).rejects.toMatchObject({
+      code: "sse",
+      retryable: true,
+    });
+    expect(sent).toBeLessThan(20);
   });
 });

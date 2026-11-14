@@ -3,12 +3,14 @@ import { access } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import {
+  type BrowserHost,
   defaultWorkspaceFor,
   deleteSessionFiles,
   dispatchJournalDir,
   dispatchJournalPath,
   dreamDirFor,
   ensureHertaGitignore,
+  importLegacyReviewChoices,
   readSessionFile,
   readSessionFileAsync,
   listSessionHeaders as readSessionHeaders,
@@ -16,9 +18,11 @@ import {
   readSessionTitle,
   readSessionTopics,
   resolveEffectiveWorkspace,
+  type ServerHost,
   type TerminalRecord,
   type TerminalRecordBlock,
   V2RecordPersister,
+  WorkspacePermissions,
   workspacesBaseDir,
   writeSessionTitle,
 } from "@herta/core";
@@ -32,12 +36,17 @@ import {
   resolveDreamConfig,
   runDreamPass,
 } from "@herta/knowledge";
-import { reportProviderUsage } from "@herta/providers";
+import {
+  providerFetch,
+  reportProviderFailure,
+  reportProviderUsage,
+} from "@herta/providers";
 import {
   reapOrphanedDispatches,
   sealOpenDispatch,
 } from "./dispatch-recovery.js";
 import { DreamTrigger } from "./dream-trigger.js";
+import { reapOrphanedServers, ServerJournal } from "./server-recovery.js";
 import { SessionImpl } from "./session.js";
 import {
   DEFAULT_HIT_LIMIT,
@@ -59,6 +68,7 @@ import type {
   SessionExportSource,
   SessionHost,
   SessionMetadata,
+  SessionModels,
 } from "./types.js";
 import { installUsageLog } from "./usage-log.js";
 
@@ -78,6 +88,9 @@ class SessionHostImpl implements SessionHost {
   private _active: Session | null = null;
   private readonly dreamTrigger: DreamTrigger;
   private dreamIntervalHandle: ReturnType<typeof setInterval> | null = null;
+  /** Aborted at `dispose`: the dream pass's calls take its signal, so a
+   *  pass in flight ends there (review 2026-11-10, second pass). */
+  private readonly dreamAbort = new AbortController();
   /** Mutable live DeepSeek key. Seeded from config; updated by setDeepSeekKey
    *  (no-key onboarding / Settings). Each session reads it through a getter, so
    *  a change takes effect on the NEXT turn with no restart. */
@@ -87,7 +100,15 @@ class SessionHostImpl implements SessionHost {
    *  says otherwise — the CLI never does. */
   private readonly pdfTranscriptsHolder = { current: true };
   /** Composer predictions (2026-10-10): on unless the user turned them off. */
+  /** The desktop's browser pages (ADR 0083); null without them. */
+  private browserProvider: ((sessionId: string) => BrowserHost) | null = null;
+  /** The desktop's launcher (ADR 0083 §5); null without one. */
+  private serverProvider: ((sessionId: string) => ServerHost) | null = null;
+  private serverJournalInstance: ServerJournal | null = null;
   private readonly predictionsHolder = { current: true };
+  /** The models and 板砖's effort (ADR 0081), live the same way: seeded from
+   *  the config, read by each session at a turn's or a dispatch's start. */
+  private readonly modelsHolder: { current: SessionModels };
   /** Serializes create/open/delete/closeActive (audit 2026-07-10, finding
    *  11): each op awaits a long disk load and then assigns `_active`
    *  unconditionally, so two concurrent activations could leave `_active`
@@ -104,6 +125,13 @@ class SessionHostImpl implements SessionHost {
 
   constructor(private readonly config: AppServerConfig) {
     this.keyHolder = { current: config.providers.apiKey };
+    this.modelsHolder = {
+      current: {
+        actorModel: config.providers.actorModel,
+        backendModel: config.providers.backendModel,
+        ...(config.thinking !== undefined ? { thinking: config.thinking } : {}),
+      },
+    };
     const dreamCfg = resolveDreamConfig(config.dream);
 
     this.dreamTrigger = new DreamTrigger({
@@ -241,8 +269,8 @@ class SessionHostImpl implements SessionHost {
       // Dream uses the SAME live key as chat (the live holder, seeded from the
       // secure store), not any external env/file source. No key → skip silently.
       const key = this.keyHolder.current.trim();
-      if (key === "") {
-        // No key configured — skip silently. D4: no throw.
+      if (key === "" || this.dreamAbort.signal.aborted) {
+        // No key configured, or the host is gone — skip silently. D4: no throw.
         return;
       }
       const dreamCfg = resolveDreamConfig(this.config.dream);
@@ -251,6 +279,7 @@ class SessionHostImpl implements SessionHost {
       // to run to completion beside the live turn on the same key.
       const activityAtStart = this.dreamTrigger.activityCount;
       const shouldYield = (): boolean =>
+        this.dreamAbort.signal.aborted ||
         this._active?.turnInFlight === true ||
         this.dreamTrigger.activityCount !== activityAtStart;
       const client = new RealDeepSeekClient({
@@ -261,6 +290,17 @@ class SessionHostImpl implements SessionHost {
         // that runs while the user is away was the one the log never saw.
         onUsage: (u) =>
           reportProviderUsage({ endpoint: "chat", source: "dream", ...u }),
+        // And the calls that ended with no answer, as every other provider's
+        // do since the review of 2026-11-10.
+        onFailure: (f) =>
+          reportProviderFailure({ endpoint: "chat", site: "dream", ...f }),
+        // The app's own transport (audit S3): the pass used the platform's
+        // fetch, which reads neither the OS proxy nor the OS trust store, so
+        // behind an intercepting proxy the chat worked and no dream ever ran.
+        fetch: providerFetch(),
+        // Cut when the host is disposed. The user coming back does not cut a
+        // call: the pass yields at its next episode, as before (ADR 0069).
+        signal: this.dreamAbort.signal,
       });
 
       // Enumerate sessions, GROUPED by the interaction language each was
@@ -376,6 +416,22 @@ class SessionHostImpl implements SessionHost {
     this.pdfTranscriptsHolder.current = enabled;
   }
 
+  /** The desktop's browser pages (ADR 0083): each session opened from here
+   *  on gets its own page through this. */
+  setBrowserProvider(
+    provider: ((sessionId: string) => BrowserHost) | null,
+  ): void {
+    this.browserProvider = provider;
+  }
+
+  /** The desktop's launcher (ADR 0083 §5): each session opened from here on
+   *  gets its dev servers, and dev_server, through this. */
+  setServerProvider(
+    provider: ((sessionId: string) => ServerHost) | null,
+  ): void {
+    this.serverProvider = provider;
+  }
+
   /** Update the composer-prediction switch (Settings, 2026-10-10). The next
    *  finished turn — in this session or any later one — reads the new
    *  value. Persistence is the caller's job. */
@@ -383,7 +439,41 @@ class SessionHostImpl implements SessionHost {
     this.predictionsHolder.current = enabled;
   }
 
+  /** Update the models and 板砖's effort (ADR 0081). Herta's next turn and
+   *  板砖's next dispatch — in this session or any later one — read them; a
+   *  turn or a run in flight finishes on what it started with. Persistence
+   *  is the caller's job. */
+  setModels(models: Partial<SessionModels>): void {
+    this.modelsHolder.current = { ...this.modelsHolder.current, ...models };
+  }
+
+  models(): SessionModels {
+    return this.modelsHolder.current;
+  }
+
+  /** The launcher's record of its servers (ADR 0083 §5): the desktop's
+   *  main journals each server it starts here, so a relaunch can end what
+   *  an exit left running. */
+  serverJournal(): ServerJournal {
+    this.serverJournalInstance ??= new ServerJournal(this.serverJournalFile());
+    return this.serverJournalInstance;
+  }
+
+  private serverJournalFile(): string {
+    return join(dispatchJournalDir(this.config.transcriptDir), "servers.json");
+  }
+
   async reapOrphanedProcesses(): Promise<void> {
+    try {
+      const servers = await reapOrphanedServers(this.serverJournalFile());
+      if (servers.ended > 0) {
+        console.log(
+          `[herta] dev servers left by the last exit, ended: ${servers.ended}`,
+        );
+      }
+    } catch (err) {
+      console.error("[herta] reaping dev servers failed:", err);
+    }
     try {
       const reaped = await reapOrphanedDispatches(
         dispatchJournalDir(this.config.transcriptDir),
@@ -404,7 +494,39 @@ class SessionHostImpl implements SessionHost {
     return this.serializeLifecycle(() => this.createSessionInner(opts));
   }
 
+  /** The one-time carry-over of the old per-workspace review choices, run
+   *  before the first session's stack reads the store. */
+  private legacyReviewChoices: Promise<number> | null = null;
+  private importLegacyReviewChoicesOnce(): Promise<number> {
+    const file = this.config.reviewChoicesFile;
+    if (file === undefined) return Promise.resolve(0);
+    this.legacyReviewChoices ??= importLegacyReviewChoices({
+      file,
+      surface: "app-server",
+      transcriptDir: this.config.transcriptDir,
+    });
+    return this.legacyReviewChoices;
+  }
+
+  /** Drop the automatic-review choice recorded for a session's managed
+   *  workspace. Never throws: a file that cannot be written keeps a line
+   *  nothing reads. */
+  private forgetManagedWorkspaceChoice(sessionId: string): void {
+    const file = this.config.reviewChoicesFile;
+    if (file === undefined) return;
+    try {
+      const choice = new WorkspacePermissions(
+        () => defaultWorkspaceFor(homedir(), sessionId),
+        file,
+      );
+      if (choice.autoReview() !== null) choice.setAutoReview(null);
+    } catch {
+      // best effort
+    }
+  }
+
   private async createSessionInner(opts: CreateSessionOpts): Promise<Session> {
+    await this.importLegacyReviewChoicesOnce();
     // Opening/creating a session is user activity — reset the dream idle
     // clock (audit finding 21: only submitText did, so a pass could fire
     // right as the user navigated in).
@@ -442,6 +564,9 @@ class SessionHostImpl implements SessionHost {
       deepSeekKey: () => this.keyHolder.current,
       transcribePdfPictures: () => this.pdfTranscriptsHolder.current,
       composerPredictions: () => this.predictionsHolder.current,
+      models: () => this.modelsHolder.current,
+      browser: this.browserProvider?.(sessionId) ?? null,
+      servers: this.serverProvider?.(sessionId) ?? null,
       persister,
       ...(opts.lang !== undefined ? { lang: opts.lang } : {}),
     });
@@ -454,6 +579,7 @@ class SessionHostImpl implements SessionHost {
   }
 
   private async openSessionInner(opts: OpenSessionOpts): Promise<Session> {
+    await this.importLegacyReviewChoicesOnce();
     this.dreamTrigger.noteActivity();
     const sessionFile = join(
       this.config.transcriptDir,
@@ -516,6 +642,9 @@ class SessionHostImpl implements SessionHost {
       deepSeekKey: () => this.keyHolder.current,
       transcribePdfPictures: () => this.pdfTranscriptsHolder.current,
       composerPredictions: () => this.predictionsHolder.current,
+      models: () => this.modelsHolder.current,
+      browser: this.browserProvider?.(opts.sessionId) ?? null,
+      servers: this.serverProvider?.(opts.sessionId) ?? null,
       persister,
       initialRecord: record,
       // How the last turn ENDED, when the file recorded it. Its absence is
@@ -525,6 +654,15 @@ class SessionHostImpl implements SessionHost {
       ...(lang !== undefined ? { lang } : {}),
     });
     this._active = this.wrapSession(session);
+    // Servers the last exit left running, ended at this launch: the session
+    // they belonged to hears it (ADR 0083 §5).
+    if (this.serverProvider !== null) {
+      void this.serverJournal()
+        .takeReaped(opts.sessionId)
+        .then((names) => {
+          if (names.length > 0) session.noteServer?.({ kind: "reaped", names });
+        });
+    }
     return this._active;
   }
 
@@ -631,6 +769,11 @@ class SessionHostImpl implements SessionHost {
     // main thread), and this whole method runs inside the lifecycle
     // serializer, so nothing reopens the session until it is gone.
     if (wasActive) await this.closeActiveInner();
+    // The session's managed workspace goes with it, and so does the choice
+    // made for that folder: it is kept outside the folder now, and would
+    // otherwise stay in the file for good. While the folder is still there,
+    // so that its key is the one the choice was stored under.
+    this.forgetManagedWorkspaceChoice(sessionId);
     try {
       await deleteSessionFiles(
         this.config.transcriptDir,
@@ -758,6 +901,8 @@ class SessionHostImpl implements SessionHost {
       clearInterval(this.dreamIntervalHandle);
       this.dreamIntervalHandle = null;
     }
+    // A pass in flight ends at its call, without consuming its episode.
+    this.dreamAbort.abort();
   }
 }
 

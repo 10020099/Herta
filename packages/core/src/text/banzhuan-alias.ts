@@ -37,21 +37,128 @@ export const BRICK_INPUT_MENTION = /(?<![\w@])@brick\b/gi;
 const FENCE_OPEN_LINE = /^\s*```[^`\n]*\s*$/;
 const FENCE_CLOSE_LINE = /^\s*```\s*$/;
 
+/** A fence line (CommonMark): up to three spaces, then three or more
+ *  backticks or tildes, then the info string. */
+const FENCE_LINE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+
+/**
+ * The stretches of `text` that are QUOTATION, not speech, as `[start, end)`
+ * offsets in order: each CLOSED fenced code block, from its opening fence
+ * line through its closing one, and — outside those — each single-backtick
+ * inline code span.
+ *
+ * A fenced block is quoted text as surely as a span is (ADR 0078 amendment
+ * 2026-10-21): a quoted file passage arrives fenced, and inside a fence the
+ * span rule alone mis-paired — a passage holding `` `@板砖` ``, or one fenced
+ * with four backticks because it holds a code block, left the token bare
+ * and dispatched 板砖 on the Trailblazer's behalf. A fence closes on a line
+ * of the same character, at least as long, and nothing else; an UNCLOSED
+ * fence quotes nothing, so a stray fence can never swallow a real `@板砖`.
+ */
+export function quotationRanges(
+  text: string,
+): Array<readonly [number, number]> {
+  const fenced: Array<readonly [number, number]> = [];
+  const lines = text.split("\n");
+  const starts: number[] = [];
+  let at = 0;
+  for (const line of lines) {
+    starts.push(at);
+    at += line.length + 1;
+  }
+  for (let i = 0; i < lines.length; i++) {
+    const open = FENCE_LINE.exec(lines[i] ?? "");
+    if (open === null) continue;
+    const mark = open[1] ?? "";
+    // A backtick fence's info string holds no backtick (CommonMark).
+    if (mark.startsWith("`") && (open[2] ?? "").includes("`")) continue;
+    for (let j = i + 1; j < lines.length; j++) {
+      const close = FENCE_LINE.exec(lines[j] ?? "");
+      if (
+        close !== null &&
+        (close[1] ?? "")[0] === mark[0] &&
+        (close[1] ?? "").length >= mark.length &&
+        (close[2] ?? "").trim() === ""
+      ) {
+        fenced.push([
+          starts[i] ?? 0,
+          (starts[j] ?? 0) + (lines[j] ?? "").length,
+        ]);
+        i = j;
+        break;
+      }
+    }
+  }
+  const out: Array<readonly [number, number]> = [];
+  let last = 0;
+  const spansIn = (from: number, to: number): void => {
+    for (const m of text.slice(from, to).matchAll(INLINE_CODE_SPAN)) {
+      const s = from + (m.index ?? 0);
+      out.push([s, s + m[0].length]);
+    }
+  };
+  for (const r of fenced) {
+    spansIn(last, r[0]);
+    out.push(r);
+    last = r[1];
+  }
+  spansIn(last, text.length);
+  return out;
+}
+
+/** Apply `map` to the stretches of `text` OUTSIDE quotation (closed fenced
+ *  blocks and inline code spans, `quotationRanges`), leaving the quotation
+ *  verbatim. */
+export function mapOutsideQuotation(
+  text: string,
+  map: (segment: string) => string,
+): string {
+  let out = "";
+  let last = 0;
+  for (const [s, e] of quotationRanges(text)) {
+    out += map(text.slice(last, s));
+    out += text.slice(s, e);
+    last = e;
+  }
+  return out + map(text.slice(last));
+}
+
 /** Apply `map` to the stretches of `text` OUTSIDE single-backtick inline
- *  code spans, leaving the spans (backticks included) verbatim. */
+ *  code spans. The spans (backticks included) stay verbatim, unless `span`
+ *  is given: then each goes through it. */
 export function mapOutsideInlineSpans(
   text: string,
   map: (segment: string) => string,
+  span: (code: string) => string = (code) => code,
 ): string {
   let out = "";
   let last = 0;
   for (const m of text.matchAll(INLINE_CODE_SPAN)) {
     const idx = m.index ?? 0;
     out += map(text.slice(last, idx));
-    out += m[0];
+    out += span(m[0]);
     last = idx + m[0].length;
   }
   return out + map(text.slice(last));
+}
+
+/**
+ * A QUOTED trigger token as an EN conversation shows it: `@Brick`, the name
+ * an EN user reads on the chip and types (owner 2026-11-13). It stays code,
+ * never a chip: a quoted token dispatches nothing, and a chip would say it
+ * had.
+ *
+ * It was left as the wire token on the rule that code is verbatim. But the
+ * commonest quoted token is one the harness writes itself: past the per-turn
+ * dispatch budget a further `@板砖` of Herta's is committed quoted
+ * (`neutralizeBanzhuanTrigger`), and an English conversation then showed a
+ * lone CJK token in the middle of her sentence. Only the token is renamed. A
+ * bare 板砖 in a span, and everything in a fenced block, is still verbatim: a
+ * path or an identifier may hold it. `text` is a span or its inside; zh is
+ * returned byte-identical.
+ */
+export function aliasQuotedTrigger(text: string, lang: "zh" | "en"): string {
+  return lang === "en" ? text.replaceAll("@板砖", "@Brick") : text;
 }
 
 /**
@@ -75,7 +182,8 @@ export function aliasBanzhuanPlain(text: string, lang: "zh" | "en"): string {
  * rendering: like `aliasBanzhuanPlain`, but a 板砖 inside a single-backtick
  * inline span or a ``` fenced region stays verbatim — parity with the GUI,
  * whose tokenizer exempts code nodes and whose bubble exempts fence
- * segments. The fence scan is line-based (shapes above); an unclosed fence
+ * segments. One exception, the GUI's too: the trigger token quoted in a
+ * span reads `@Brick` (`aliasQuotedTrigger`). The fence scan is line-based (shapes above); an unclosed fence
  * extends to the end of the text, matching the pacer's stance. Inline spans
  * are only recognised OUTSIDE fences (inside a fence everything is verbatim
  * anyway). zh is returned byte-identical.
@@ -90,8 +198,10 @@ export function aliasBanzhuanDisplay(text: string, lang: "zh" | "en"): string {
   const flushPlain = (): void => {
     if (plain.length === 0) return;
     out.push(
-      mapOutsideInlineSpans(plain.join("\n"), (seg) =>
-        seg.replaceAll("板砖", "Brick"),
+      mapOutsideInlineSpans(
+        plain.join("\n"),
+        (seg) => seg.replaceAll("板砖", "Brick"),
+        (code) => aliasQuotedTrigger(code, "en"),
       ),
     );
     plain = [];
@@ -121,11 +231,13 @@ export function aliasBanzhuanDisplay(text: string, lang: "zh" | "en"): string {
  * the bare word "brick" (no `@`) is never a trigger. A single-backtick
  * inline code span is exempt (audit 2026-07-16): a quoted `` `@brick` `` is
  * the user MENTIONING the token, not typing it (same span rule as the GUI
- * tokenizer / parse.ts). zh is unchanged.
+ * tokenizer / parse.ts). So is a closed fenced block (ADR 0078 amendment
+ * 2026-10-21): a quoted passage that says `@brick` is not the user typing it.
+ * zh is unchanged.
  */
 export function aliasBrickInput(text: string, lang: "zh" | "en"): string {
   if (lang !== "en") return text;
-  return mapOutsideInlineSpans(text, (seg) =>
+  return mapOutsideQuotation(text, (seg) =>
     seg.replace(BRICK_INPUT_MENTION, "@板砖"),
   );
 }
@@ -140,5 +252,10 @@ export function aliasBrickInput(text: string, lang: "zh" | "en"): string {
  * `@板砖` on send. zh is returned byte-identical.
  */
 export function dealiasBrickDraft(text: string, lang: "zh" | "en"): string {
-  return lang === "en" ? text.replaceAll("@板砖", "@Brick") : text;
+  // Outside quotation only, as `aliasBrickInput` maps: a quote's fenced
+  // source keeps its own `@板砖` (release review 2026-10-22: the recall
+  // rewrote it, and the re-sent quote no longer matched the file).
+  return lang === "en"
+    ? mapOutsideQuotation(text, (seg) => seg.replaceAll("@板砖", "@Brick"))
+    : text;
 }

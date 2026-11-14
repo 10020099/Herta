@@ -1,4 +1,6 @@
 import type { ExecutionStatus } from "../bridge/types.js";
+import type { BrowserOpVerb } from "../browser-host.js";
+import type { ServerOpVerb } from "../server-host.js";
 
 /**
  * Canonical system-block labels emitted by the v0.2 harness into
@@ -46,6 +48,22 @@ export interface UserBlock {
    *  regenerate after a crash re-runs it as a resume, not as chat. Never
    *  enters the prompt (the serializer reads `text`). */
   readonly resume?: true;
+  /** Talk while 板砖's run worked (ADR 0085 §2–§3): said to Herta, not to
+   *  板砖 — a steer is the other kind — and not a turn of its own. Her view
+   *  draws it after the run it fell in. Absent on every other user block. */
+  readonly duringRun?: true;
+  /** The workspace paths the user mentioned with the composer's `@` (ADR
+   *  0072 amendment 2026-10-20), as they appear in `text`. The text keeps the
+   *  paths — 板砖, the title and the search read them as written — and this
+   *  lets Herta's prompt name each by its file name and the bubble draw it
+   *  as a chip. Absent when nothing was mentioned. */
+  readonly mentions?: readonly string[];
+  /** Elements the user picked on the page with the picker (ADR 0083 §4),
+   *  as they appear in `text`: each `line` is what 板砖 reads — the page's
+   *  host and path, the element, its HTML — and Herta reads the element in
+   *  her words instead, the chip the user saw. Absent when nothing was
+   *  picked. */
+  readonly picks?: readonly PickedElement[];
   /** Wall-clock ISO time the block was emitted/persisted. Optional for
    *  backward compat (pre-timestamp sessions lack it). Stamped at the output
    *  boundaries (live sink emit + JSONL persist), never at construction — the
@@ -92,8 +110,29 @@ export interface HertaBlock {
   readonly surface: "speech" | "thought";
   readonly text: string;
   readonly selfCorrection?: string;
+  /** Her answer to talk while 板砖's run worked (ADR 0085 §2–§3): her view
+   *  draws it after the run, with the talk it answers, and it is not her
+   *  verdict on the run. Absent on every other block, her checkpoints
+   *  included. */
+  readonly duringRun?: true;
+  /** The sentence(s) of this answer that reached the running 板砖 as a steer
+   *  — her live `@板砖` during a run (ADR 0085 §4; owner 2026-11-04: the
+   *  sentence, not the whole reply). The text keeps them; this names what
+   *  板砖 was handed, for the card's steer row. Never enters the prompt. */
+  readonly steered?: string;
   /** Wall-clock ISO time the block was emitted/persisted. See `UserBlock.at`. */
   readonly at?: string;
+}
+
+/** An element picked on the page (ADR 0083 §4). */
+export interface PickedElement {
+  /** The text the message carries: `localhost:5173/login · button "Sign
+   *  in" · <button …>Sign in</button>` — 板砖 reads it as written. */
+  readonly line: string;
+  /** The element as the page names it: `button "Sign in"`. */
+  readonly element: string;
+  /** The page's host, port and path. */
+  readonly route: string;
 }
 
 /**
@@ -114,8 +153,23 @@ export interface DoneMarkerSummary {
   readonly state: ExecutionStatus;
   /** Count of changed files (0 when the run touched none). */
   readonly fileCount: number;
-  /** Present only when the run executed ≥1 test; mirrors the `tests P/F` roll-up. */
-  readonly tests?: { readonly passed: number; readonly failed: number };
+  /**
+   * Present only when the run executed ≥1 test. `passed` and `failed` count
+   * its test RUNS, in the order they ran — not its tests.
+   *
+   * `last` is how the last of those runs went, and it decides how the
+   * roll-up reads (owner 2026-11-13, `testRollup`). A run that went red, was
+   * fixed and went green counts one of each, and "1 passed, 1 failed" read as
+   * a failure still standing: the supervisor vetoed Herta's true "3/3 passed"
+   * on it and she told the user a test was failing (live run 2026-11-13).
+   * Absent on a record written before this field, whose order is not known:
+   * its roll-up reads by the two counts, as it always did.
+   */
+  readonly tests?: {
+    readonly passed: number;
+    readonly failed: number;
+    readonly last?: "passed" | "failed";
+  };
   /** Count of residual risks flagged by the backend (0 when none). */
   readonly riskCount: number;
   /**
@@ -232,7 +286,15 @@ export type SystemBlockDigest =
         /** digest_document (ADR 0043): a side-model pass over a whole
          *  attached document — neither a read nor a run, and worth its own
          *  word because it spends model tokens. */
-        | "Digesting";
+        | "Digesting"
+        /** web_search (ADR 0080): the arg is the query. */
+        | "Searching the web"
+        /** web_fetch (ADR 0080): the arg is the URL. */
+        | "Reading web page"
+        /** The page steps (ADR 0083 §10): `browserOpVerb` names them. */
+        | BrowserOpVerb
+        /** `dev_server` (ADR 0083 §5, §10): `serverOpVerb` names them. */
+        | ServerOpVerb;
       readonly arg: string;
       /** The command runs tests — recognised at dispatch from the WHOLE
        *  input (`arg` is the 80-char header, which can cut the test run off),
@@ -466,6 +528,159 @@ export type SystemBlockDigest =
       readonly truncated: boolean;
     }
   | {
+      /** A web_search result (ADR 0080). The titles ride `evidenceDetail`
+       *  (the two-state lane, like a search_text hit list); the digest keeps
+       *  the query and what came back, so a later turn knows a search
+       *  happened and what it found without re-paying for the list. */
+      readonly kind: "web-search";
+      /** The query as the model wrote it (sanitized). */
+      readonly query: string;
+      readonly results: readonly {
+        readonly title: string;
+        /** The site's own name, or the URL's host when it gave none. */
+        readonly site: string;
+      }[];
+    }
+  | {
+      /** A web_fetch result (ADR 0080). The page's opening rides
+       *  `evidenceDetail`; the digest keeps the CITATION — which page, where
+       *  the stored copy sits — so a later turn can send 板砖 back to the
+       *  stored page rather than fetch again. `url` is display-only: Herta's
+       *  prompt names the host and the title (ADR 0080 §5). */
+      readonly kind: "web-fetch";
+      readonly url: string;
+      readonly host: string;
+      /** Empty when the page has none. */
+      readonly title: string;
+      /** The stored page, workspace-relative (`.herta/web/…`). */
+      readonly path: string;
+      readonly chars: number;
+    }
+  | {
+      /** A page 板砖 opened (browser_navigate, ADR 0083 §10). `route` is
+       *  host, port and path — the app's own route, never the query, which
+       *  is bookkeeping and may carry a token. `go` names a history step. */
+      readonly kind: "page-open";
+      readonly route: string;
+      /** Empty when the page has none. */
+      readonly title: string;
+      /** The main document's HTTP status; null when none was seen. */
+      readonly status: number | null;
+      readonly go?: "back" | "forward" | "reload";
+      /** Console errors the opening raised (the first three ride the
+       *  evidence). */
+      readonly errors: number;
+    }
+  | {
+      /** What 板砖 read of the page (browser_read). The read itself rides
+       *  `evidenceDetail`, bounded (ADR 0083 §10): a tree's first 1 500
+       *  chars, the console's first three errors, at most five failed
+       *  requests. `path` is the whole read, stored when it was cut. */
+      readonly kind: "page-read";
+      readonly mode: "tree" | "find" | "text" | "console" | "network";
+      readonly route: string;
+      readonly title: string;
+      /** Elements, chars, console messages or requests, by mode. */
+      readonly count: number;
+      readonly truncated: boolean;
+      /** tree: every element with a role, not only those to act on. */
+      readonly all?: true;
+      /** find: the text looked for. */
+      readonly query?: string;
+      readonly path?: string;
+      /** console: its errors; network: its failed requests. */
+      readonly failures?: number;
+    }
+  | {
+      /** What 板砖 did on the page (browser_act). `target` and `hit` are
+       *  elements as the page names them (`button "Sign in"`); `typed` is
+       *  redacted, or masked for a password field. */
+      readonly kind: "page-act";
+      readonly action:
+        | "click"
+        | "type"
+        | "key"
+        | "scroll"
+        | "select"
+        | "resize";
+      /** The page's route after the step. */
+      readonly route: string;
+      readonly title: string;
+      readonly navigated: boolean;
+      readonly target?: string;
+      readonly hit?: string;
+      readonly typed?: string;
+      readonly password?: true;
+      readonly submit?: true;
+      readonly key?: string;
+      readonly direction?: "up" | "down";
+      /** select: the option chosen; absent for a toggle. */
+      readonly value?: string;
+      readonly preset?: "phone" | "tablet" | "desktop";
+      readonly scheme?: "light" | "dark";
+      readonly errors: number;
+    }
+  | {
+      /** A dev server started from `herta.launch.json` (ADR 0083 §5) — by
+       *  板砖's `dev_server` or the Trailblazer's Run. `route` is where it
+       *  answers (`localhost:5173`); `already` says its port answered before
+       *  anything was started, so nothing was. */
+      readonly kind: "server";
+      readonly action: "start";
+      readonly by: "banzhuan" | "trailblazer";
+      readonly name: string;
+      /** `npm run dev`, as the entry wrote it. */
+      readonly command: string;
+      readonly route: string;
+      readonly already: boolean;
+    }
+  | {
+      /** A dev server stopped, by 板砖 or the Trailblazer. `wasRunning`
+       *  false: it had already ended. */
+      readonly kind: "server";
+      readonly action: "stop";
+      readonly by: "banzhuan" | "trailblazer";
+      readonly name: string;
+      readonly wasRunning: boolean;
+    }
+  | {
+      /** 板砖 read a dev server's log; the output rides the two-state lane
+       *  (`output`), as a background command's does. */
+      readonly kind: "server";
+      readonly action: "logs";
+      readonly name: string;
+      readonly state: "starting" | "ready" | "exited" | "stopped";
+      readonly exitCode?: number | null;
+    }
+  | {
+      /** 板砖 listed the launcher's entries and what runs. */
+      readonly kind: "server";
+      readonly action: "list";
+      readonly entries: readonly {
+        readonly name: string;
+        /** `idle`: in the file, never started this session. */
+        readonly state: "starting" | "ready" | "exited" | "stopped" | "idle";
+        readonly route: string;
+      }[];
+    }
+  | {
+      /** Servers the app's last exit left running, ended at this launch
+       *  (ADR 0083 §5, as ADR 0071 does for a run's processes). */
+      readonly kind: "server";
+      readonly action: "reaped";
+      readonly names: readonly string[];
+    }
+  | {
+      /** A screenshot 板砖 took (browser_screenshot): what it saw, kept,
+       *  since the live page changes (ADR 0083 §11). */
+      readonly kind: "page-shot";
+      readonly route: string;
+      readonly path: string;
+      readonly width: number;
+      readonly height: number;
+      readonly region: boolean;
+    }
+  | {
       /** A conclusion the backend recorded via `report_finding` (ADR 0039).
        *  Unlike excerpt/search this is NOT two-state: the claim IS the
        *  deliverable, short by schema, and it survives compaction whole —
@@ -572,6 +787,10 @@ export type EvidenceSection =
        *  it). */
       readonly kind: "evidence";
       readonly items: readonly string[];
+      /** How many earlier receipts `items` leaves out: it holds a run's
+       *  last. Absent when it holds them all, and on older records, whose
+       *  list was a run's first. */
+      readonly earlier?: number;
     }
   | {
       /** An attached document's head excerpt (`↳ 附件 <name>`). Verbatim from
@@ -638,6 +857,35 @@ export type EvidenceSection =
       readonly omitted: number;
     }
   | {
+      /** A web_search result list (`↳ 网页结果:`), ADR 0080: each result's
+       *  title, site and URL, in the order the search ranked them. */
+      readonly kind: "web-results";
+      readonly items: readonly {
+        readonly title: string;
+        readonly site: string;
+        readonly url: string;
+      }[];
+    }
+  | {
+      /** A fetched page's opening (`↳ 网页`), ADR 0080 — text from the web,
+       *  bounded by the bridge; the whole page is at `path`. */
+      readonly kind: "web-page";
+      readonly url: string;
+      readonly title: string;
+      readonly path: string;
+      readonly text: string;
+    }
+  | {
+      /** What a page step read (ADR 0083 §10), bounded by the bridge: tree
+       *  or find lines without their refs (`button "Sign in"`), the page's
+       *  text, console errors, or failed requests. `omitted` counts what the
+       *  bound left out. Page text: data, never instructions. */
+      readonly kind: "page";
+      readonly mode: "tree" | "find" | "text" | "console" | "network";
+      readonly text: string;
+      readonly omitted: number;
+    }
+  | {
       /** A failed tool call's own `suggestion` (`↳ 提示:`), 2026-08-17 — the
        *  same sentence the model reads about what went wrong and how to
        *  fix it, so Herta's commentary on a failure is grounded in the
@@ -692,6 +940,17 @@ export interface SystemBlock {
    * system blocks have no role.
    */
   readonly role?: "done-marker" | "noop-marker";
+  /**
+   * A standing notice about what THIS session cannot do, which the reader
+   * must not have to ask for. One today: `backend_unavailable`, the note a
+   * new session carries when the machine has no bash and 板砖 cannot run
+   * (ADR 0086). A fact about the block, like `role`: a renderer that folds
+   * out-of-turn system notes behind a click shows a notice open (owner
+   * 2026-11-12 — the desktop drew this one as a closed `System` row, its
+   * sentence one click away, while it said that nothing runs). Invisible to
+   * Herta's prompt, which reads the body as before.
+   */
+  readonly notice?: "backend_unavailable";
   /**
    * Structured roll-up mirroring the done-marker `body` for localizing
    * renderers. See `DoneMarkerSummary`. Set ONLY on done-marker blocks by the

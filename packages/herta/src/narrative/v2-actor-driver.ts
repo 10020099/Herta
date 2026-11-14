@@ -3,6 +3,7 @@ import type {
   CodingAgentRuntime,
   CompletionProviderAdapter,
   EventBus,
+  PickedElement,
   ProviderAdapter,
   SystemBlock,
   SystemBlockLabel,
@@ -121,7 +122,10 @@ function corpusHasContent(corpus: MetaThinkCorpus): boolean {
 
 export interface V2ActorDriverDeps {
   readonly provider: CompletionProviderAdapter;
-  readonly model: string;
+  /** The completion model, or a getter for the live choice (ADR 0081): read
+   *  once at a turn's start, so every call of the turn — thought, speech,
+   *  beats, retries — uses the model the turn began with. */
+  readonly model: string | (() => string);
   /** Structured static Herta prefix. See `StaticHertaPrefix` in
    *  `@herta/herta`'s narrative/actor-prompt. */
   readonly staticPrefix: StaticHertaPrefix;
@@ -133,6 +137,10 @@ export interface V2ActorDriverDeps {
   readonly staticPrefixForTurn?: () => StaticHertaPrefix;
   readonly bus: EventBus<AgentEvent>;
   readonly runtimeFactory: () => CodingAgentRuntime;
+  /** Hands text to the running 板砖 as a steer — the session's steer
+   *  channel (ADR 0063). Her live `@板砖` in an answer during a run reaches
+   *  板砖 through it (ADR 0085 §4). Absent (the CLI): it steers nothing. */
+  readonly steerBackend?: (text: string) => void;
   /**
    * Optional persister. If set, every block appended by `runTurn` is pushed
    * synchronously to the persister via `appendBlock(block)`. Survives across
@@ -557,9 +565,22 @@ export class V2ActorDriver {
     userAttachments: readonly SystemBlock[] = [],
     // A 继续 turn (ADR 0071 §1.4): the interrupted 板砖 run continues before
     // Herta speaks, like a typed `@板砖` — no router, no speculative thought.
-    opts: { readonly resume?: true } = {},
+    opts: {
+      readonly resume?: true;
+      /** The paths mentioned with the composer's `@` (ADR 0072 amendment
+       *  2026-10-20), recorded on the user block. */
+      readonly mentions?: readonly string[];
+      /** Elements picked on the page (ADR 0083 §4). */
+      readonly picks?: readonly PickedElement[];
+    } = {},
   ): Promise<TerminalRecord> {
     const prevLen = this.record.length;
+    // One model for the whole turn (ADR 0081): a Settings change lands at
+    // the next turn, never between this turn's calls.
+    const model = this.modelNow();
+    // Project rules can change while a session stays open, so the prefix this
+    // turn hands out is re-derived from the driver's CURRENT one (a step-event
+    // rebuild, ADR 0069 §1, or a `/resume` rebind) with a fresh env.
     const staticPrefix = this.staticPrefixForCurrentRequest();
 
     // Slice 13: classify intent before the actor runs. Router failure
@@ -658,7 +679,9 @@ export class V2ActorDriver {
         ? startThoughtSpeculation({
             deps: {
               provider: this.deps.provider,
-              model: this.deps.model,
+              model,
+              // Re-read after the step rebuild above (ADR 0069 §1) so the
+              // first turn after a fold already speaks the new prefix.
               staticPrefix: this.staticPrefixForCurrentRequest(),
               attachedMetaThink: corpusActive
                 ? this.planMetaThink(this.currentIntentState).attachment
@@ -760,10 +783,13 @@ export class V2ActorDriver {
     try {
       result = await runActorCompletionTurn({ record: this.record }, text, {
         provider: this.deps.provider,
-        model: this.deps.model,
+        model,
         staticPrefix: this.staticPrefixForCurrentRequest(),
         bus: this.deps.bus,
         runtimeFactory: this.deps.runtimeFactory,
+        ...(this.deps.steerBackend !== undefined
+          ? { steerBackend: this.deps.steerBackend }
+          : {}),
         sink: this.deps.sink,
         onPrompt: this.deps.onPrompt,
         ...(voiceEligible && this.deps.onPrimarySpeechStart !== undefined
@@ -775,6 +801,12 @@ export class V2ActorDriver {
         signal,
         precomputedRecap,
         ...(userAttachments.length > 0 ? { userAttachments } : {}),
+        ...(opts.mentions !== undefined && opts.mentions.length > 0
+          ? { userMentions: opts.mentions }
+          : {}),
+        ...(opts.picks !== undefined && opts.picks.length > 0
+          ? { userPicks: opts.picks }
+          : {}),
         ...(opts.resume === true ? { resume: true as const } : {}),
         lang: this.deps.lang ?? "zh",
         intentState: this.currentIntentState,
@@ -916,6 +948,12 @@ export class V2ActorDriver {
    * Call once, immediately after the session is pointed at (before any user
    * turn), so that invariant holds.
    */
+  /** The completion model as it stands now (ADR 0081). */
+  private modelNow(): string {
+    const m = this.deps.model;
+    return typeof m === "function" ? m() : m;
+  }
+
   async regenerateLastReply(signal: AbortSignal): Promise<TerminalRecord> {
     const last = this.record[this.record.length - 1];
     if (last === undefined || last.kind !== "user") return this.record;
@@ -1056,7 +1094,7 @@ export class V2ActorDriver {
     return predictNextUserMessage(
       {
         provider: this.deps.provider,
-        model: this.deps.model,
+        model: this.modelNow(),
         record: this.record,
         lang,
         ...(notes !== undefined ? { notes } : {}),
@@ -1092,10 +1130,11 @@ export class V2ActorDriver {
     // that commissioned it. Taking the last user block of any kind withdrew
     // only the steer and left the commission and half the run standing,
     // with no 完成 marker.
+    // Nor is talk during the run (ADR 0085): it is inside the turn too.
     let userIndex = -1;
     for (let i = this.record.length - 1; i >= 0; i--) {
       const b = this.record[i];
-      if (b?.kind === "user" && b.steer !== true) {
+      if (b?.kind === "user" && b.steer !== true && b.duringRun !== true) {
         userIndex = i;
         break;
       }
@@ -1104,9 +1143,12 @@ export class V2ActorDriver {
     if (userBlock === undefined || userBlock.kind !== "user") return null;
     const withdrawn = this.record.slice(userIndex);
     // Everything the user said in the withdrawn turn comes back: the
-    // commission, then each steer in order, as paragraphs of one draft.
+    // commission, then each steer and each word to her during the run, in
+    // order, as paragraphs of one draft.
     const steers = withdrawn.flatMap((b) =>
-      b.kind === "user" && b.steer === true ? [b.text] : [],
+      b.kind === "user" && (b.steer === true || b.duringRun === true)
+        ? [b.text]
+        : [],
     );
     const userText = [userBlock.text, ...steers].join("\n\n");
     // Durable-first: truncate the persisted JSONL BEFORE mutating the in-memory

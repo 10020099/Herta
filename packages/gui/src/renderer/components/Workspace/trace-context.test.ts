@@ -384,6 +384,154 @@ describe("tallySegment", () => {
       digests: 0,
       memories: 0,
       stops: 0,
+      webSearches: 0,
+      pages: [],
+      appPages: [],
+      pageSteps: 0,
+      servers: [],
     });
+  });
+
+  it("counts web searches and the sites of the pages read (ADR 0080)", () => {
+    const ops = opsOf([
+      user(),
+      op("Searching the web", "vitest update flag"),
+      op("Reading web page", "https://vitest.dev/config/update"),
+      op("Reading web page", "https://vitest.dev/guide/snapshot"),
+      op("Reading web page", "https://github.com/vitest-dev/vitest/issues/1"),
+    ]);
+    const tally = tallySegment(ops);
+    expect(tally.webSearches).toBe(1);
+    expect(tally.pages).toEqual(["vitest.dev", "github.com"]);
+    expect(tally.reads).toEqual([]);
+  });
+
+  it("counts the app's pages opened and the other page steps (ADR 0083)", () => {
+    const ops = opsOf([
+      user(),
+      op("Opening page", "localhost:5173/login"),
+      op("Reading page", ""),
+      op("Typing", ""),
+      op("Clicking", ""),
+      op("Opening page", "back"),
+      op("Opening page", "localhost:5173/login"),
+      op("Taking screenshot", ""),
+    ]);
+    const tally = tallySegment(ops);
+    expect(tally.appPages).toEqual(["localhost:5173/login"]);
+    // A history step is a step, not a page.
+    expect(tally.pageSteps).toBe(5);
+    expect(tally.pages).toEqual([]);
+  });
+
+  it("names the dev servers started (ADR 0083 §5)", () => {
+    const tally = tallySegment(
+      opsOf([
+        user(),
+        op("Starting dev server", "web"),
+        op("Reading server log", "web"),
+        op("Starting dev server", "web"),
+        op("Starting dev server", "api"),
+      ]),
+    );
+    expect(tally.servers).toEqual(["web", "api"]);
+  });
+});
+
+describe("steers on the card (ADR 0085 amendment 2026-11-04)", () => {
+  const steer = (text: string): TerminalRecordBlock =>
+    ({ kind: "user", text, steer: true }) as TerminalRecordBlock;
+
+  it("the scope keeps each steer where 板砖 took it, live and ended", () => {
+    const record = [
+      user(),
+      op("Reading", "a.ts"),
+      steer("先别动 api 目录"),
+      op("Reading", "b.ts"),
+    ];
+    const live = traceScope(record);
+    expect(live.kind === "trace" && live.steers).toEqual([
+      { beforeOp: 1, text: "先别动 api 目录", speaker: "trailblazer" },
+    ]);
+    const ended = traceScope([...record, marker]);
+    expect(ended.kind === "ended" && ended.steers).toEqual([
+      { beforeOp: 1, text: "先别动 api 目录", speaker: "trailblazer" },
+    ]);
+  });
+
+  it("a steer closes the node it lands in, and stands before the next", () => {
+    const record = [
+      user(),
+      op("Reading", "a.ts"),
+      steer("先别动 api 目录"),
+      op("Reading", "b.ts"),
+      steer("顺便看看测试"),
+    ];
+    const scope = traceScope(record);
+    if (scope.kind !== "trace") throw new Error(scope.kind);
+    const trace = buildTrace(scope.ops, { steers: scope.steers });
+    // Two reads, one phase — split by the steer between them.
+    expect(trace.segments.map((s) => s.ops.length)).toEqual([1, 1]);
+    expect(trace.steers).toEqual([
+      {
+        key: 0,
+        beforeSegment: 1,
+        text: "先别动 api 目录",
+        speaker: "trailblazer",
+      },
+      // After the last node: the next ordinal.
+      {
+        key: 1,
+        beforeSegment: 2,
+        text: "顺便看看测试",
+        speaker: "trailblazer",
+      },
+    ]);
+    // Anti-vacuous: without the steers, the reads are one node.
+    expect(buildTrace(scope.ops).segments).toHaveLength(1);
+  });
+
+  it("a steer before the window's first node leaves with the nodes before it", () => {
+    const ops: TraceOp[] = [];
+    const steers = [
+      { beforeOp: 1, text: "早", speaker: "trailblazer" as const },
+    ];
+    for (let i = 0; i < TRACE_MAX_SEGMENTS + 2; i++) {
+      ops.push({
+        verb: i % 2 === 0 ? "Reading" : "Writing",
+        arg: `f${i}`,
+        status: "ok",
+        phase: i % 2 === 0 ? "explore" : "modify",
+      });
+    }
+    const trace = buildTrace(ops, { steers, settled: true });
+    expect(trace.segments).toHaveLength(TRACE_MAX_SEGMENTS);
+    expect(trace.steers).toEqual([]);
+  });
+});
+
+describe("talk and her steer on the card (ADR 0085 step 3)", () => {
+  it("talk does not end the scan; her answer that steered is a steer, in her name", () => {
+    const record = [
+      user(),
+      op("Reading", "a.ts"),
+      { kind: "user", text: "几点？", duringRun: true } as TerminalRecordBlock,
+      {
+        kind: "herta",
+        surface: "speech",
+        text: "三点。@板砖 先补测试。",
+        duringRun: true,
+        steered: "@板砖 先补测试。",
+      } as TerminalRecordBlock,
+      op("Writing", "a.ts"),
+    ];
+    const scope = traceScope(record);
+    expect(scope.kind).toBe("trace");
+    if (scope.kind !== "trace") return;
+    expect(scope.ops).toHaveLength(2);
+    expect(scope.complete).toBe(true);
+    expect(scope.steers).toEqual([
+      { beforeOp: 1, text: "@板砖 先补测试。", speaker: "herta" },
+    ]);
   });
 });

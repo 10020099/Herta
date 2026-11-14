@@ -12,20 +12,28 @@
 // detection and the session entrance.
 
 import type { TerminalRecord } from "@herta/app-server";
+import {
+  RECORD_WINDOW_TRIM_AT,
+  RECORD_WINDOW_WEIGHT,
+  recordWeight,
+  turnStartAtOrBefore,
+  windowStart,
+} from "@herta/core/record-window";
 import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
-import type { SessionStore } from "../../store/session-store.js";
+import { type SessionStore, shownWindow } from "../../store/session-store.js";
 import type { ConversationScroll } from "./useConversationScroll.js";
 
 // Unpinned live-window trim (2026-08-25). Deliberately laxer than the pinned
-// 260→200: the reader is IN this history, so trims should be rare and only
-// ever claim rows provably off-screen above. Begin considering a cut past
-// this many mounted blocks…
-export const UNPINNED_TRIM_AT = 500;
-/** …never cut into the newest blocks (mirror of the pinned tail bound —
- *  scrolling back down must land on real history, not a paging button)… */
-export const UNPINNED_TRIM_KEEP_TAIL = 200;
-/** …and don't bother for cuts smaller than this (each trim costs a geometry
- *  read and a full-window commit; tiny ones would churn per append). */
+// trim: the reader is IN this history, so trims should be rare and only ever
+// claim rows provably off-screen above. Begin considering a cut past this
+// window weight (`@herta/core/record-window`: what the chat draws, not how
+// many rows 板砖 wrote)…
+export const UNPINNED_TRIM_AT = 5000;
+/** …never cut into the newest window (mirror of the pinned tail bound —
+ *  scrolling back down must land on real history, not a paging button), and
+ *  don't bother for cuts smaller than this many blocks (each trim costs a
+ *  geometry read and a full-window commit; tiny ones would churn per
+ *  append). */
 export const UNPINNED_TRIM_MIN = 50;
 
 export function useRecordWindow(opts: {
@@ -34,8 +42,21 @@ export function useRecordWindow(opts: {
   readonly record: TerminalRecord;
   readonly recordStart: number;
   readonly sessionId: string | null;
-}): { readonly loadEarlier: () => void } {
-  const { scroll, sessionStore, record, recordStart, sessionId } = opts;
+  /** Counts returns to the latest (the store's `latestLandings`). */
+  readonly latestLandings: number;
+}): {
+  readonly loadEarlier: () => void;
+  readonly loadLater: () => void;
+  readonly backToLatest: () => void;
+} {
+  const {
+    scroll,
+    sessionStore,
+    record,
+    recordStart,
+    sessionId,
+    latestLandings,
+  } = opts;
 
   // ── Load-earlier paging (long sessions, 2026-07-12) ─────────────────────
   // The store holds only the trailing window; recordStart > 0 means older
@@ -76,6 +97,8 @@ export function useRecordWindow(opts: {
     hasHeadroom,
     armHeadroomRebase,
     releaseHeadroom,
+    rePin,
+    scrollToBottom,
   } = scroll;
   const loadEarlier = useCallback((): void => {
     const el = scrollRef.current;
@@ -83,7 +106,7 @@ export function useRecordWindow(opts: {
       el === null
         ? null
         : {
-            expectFrom: sessionStore.getSnapshot().recordStart,
+            expectFrom: shownWindow(sessionStore.getSnapshot()).start,
             scrollHeight: el.scrollHeight,
             scrollTop: el.scrollTop,
           };
@@ -102,30 +125,67 @@ export function useRecordWindow(opts: {
     el.scrollTop = anchor.scrollTop + (el.scrollHeight - anchor.scrollHeight);
   }, [recordStart, scrollRef]);
 
+  // ── A window of history (owner 2026-11-12) ──────────────────────────────
+  // After a far jump the chat shows a window of history in place of the
+  // trailing one. Reading on from it pages LATER blocks in: they land below
+  // the fold, so nothing has to be anchored, but the pin is dropped first so
+  // the follow does not carry the reader to the end of the page they asked
+  // for.
+  const loadLater = useCallback((): void => {
+    releasePin();
+    void sessionStore.loadLaterBlocks();
+  }, [sessionStore, releasePin]);
+  // The chip's click while a window of history is on screen: the store
+  // shows the trailing window again, and the landing below takes the reader
+  // to its end.
+  const backToLatest = useCallback((): void => {
+    sessionStore.returnToLatest();
+  }, [sessionStore]);
+  // Each return lands pinned at the bottom, the way a session opens: the
+  // window that was on screen is gone, so there is no place to keep. Layout
+  // effect, so the swap and the landing are one paint. A session switch
+  // re-baselines without landing; the entrance owns that.
+  const landedRef = useRef<{ sid: string | null; n: number }>({
+    sid: sessionId,
+    n: latestLandings,
+  });
+  useLayoutEffect(() => {
+    const prev = landedRef.current;
+    landedRef.current = { sid: sessionId, n: latestLandings };
+    if (prev.sid !== sessionId || latestLandings <= prev.n) return;
+    prependAnchorRef.current = null;
+    trimAnchorRef.current = null;
+    rePin();
+    scrollToBottom();
+  }, [latestLandings, sessionId, rePin, scrollToBottom]);
+
   // Live-window trim (audit T3.5): live appends grow the windowed record
-  // without bound — the 200-block tail bound (RECORD_TAIL_BLOCKS) applies
-  // only to reset/open payloads — so a marathon sitting climbs mounted DOM
-  // rows and per-commit reconcile cost forever. While the reader is PINNED
-  // at the bottom, drop the window back to the tail bound once it runs 60
-  // past it (hysteresis, not a per-block slice): the removed rows sit far
-  // above the fold, the browser clamps scrollTop at the shrunken bottom
-  // (still pinned), and "load earlier" pages them back on demand. Never
+  // without bound — the tail bound applies only to reset/open payloads — so
+  // a marathon sitting climbs mounted DOM rows and per-commit reconcile cost
+  // forever. While the reader is PINNED at the bottom, drop the window back
+  // to the tail bound once it runs well past it (hysteresis, not a per-block
+  // slice): the removed rows sit far above the fold, the browser clamps
+  // scrollTop at the shrunken bottom (still pinned), and "load earlier" pages
+  // them back on demand. Weighed by what the chat draws, and cut at a turn
+  // (ADR 0085 amendment 2026-11-05): counted in blocks, this folded a short
+  // conversation the moment its runs passed 260 rows. Never
   // trims under an unpinned reader (they may be reading those rows — the
   // geometry-guarded sibling below owns that case) or while a morph clone
   // is measuring row slots (a shrinking flow would move its landing slot —
   // the same bug class the morphs just escaped).
   useEffect(() => {
     if (!isPinned() || isMorphInFlight()) return;
-    if (record.length > 260) {
-      // An armed reservation is a content-coordinate total; trimming rows
-      // above it without sliding it down converts their height into spacer,
-      // shoving the pinned view (streaming reply included) off the top
-      // (review 2026-07-31). The height isn't knowable until the shrunken
-      // flow lays out, so flag the next sync to rebase — the spacer keeps
-      // its current size across the trim.
-      armHeadroomRebase();
-      sessionStore.trimRecordWindow(200);
-    }
+    if (recordWeight(record) <= RECORD_WINDOW_TRIM_AT) return;
+    const cut = windowStart(record, RECORD_WINDOW_WEIGHT);
+    if (cut === 0) return; // one long turn: nothing to cut at
+    // An armed reservation is a content-coordinate total; trimming rows
+    // above it without sliding it down converts their height into spacer,
+    // shoving the pinned view (streaming reply included) off the top
+    // (review 2026-07-31). The height isn't knowable until the shrunken
+    // flow lays out, so flag the next sync to rebase — the spacer keeps
+    // its current size across the trim.
+    armHeadroomRebase();
+    sessionStore.trimRecordWindow(record.length - cut);
   }, [record, sessionStore, isPinned, isMorphInFlight, armHeadroomRebase]);
 
   // Unpinned live-window trim (2026-08-25): the T3.5 trim above stands down
@@ -160,7 +220,7 @@ export function useRecordWindow(opts: {
     prevUnpinnedEndRef.current = end;
     if (end <= prevEnd) return; // reset/rewind/trim/prepend — not append growth
     if (isPinned()) return; // the pinned trim above owns this
-    if (record.length <= UNPINNED_TRIM_AT) return;
+    if (recordWeight(record) <= UNPINNED_TRIM_AT) return;
     if (
       isMorphInFlight() ||
       isGliding() ||
@@ -201,9 +261,10 @@ export function useRecordWindow(opts: {
     if (found === -1) return;
     const cut = Number(rows[found]?.dataset.absIndex);
     if (!Number.isFinite(cut)) return;
-    const trimCount = Math.min(
-      cut - recordStart,
-      record.length - UNPINNED_TRIM_KEEP_TAIL,
+    // Talk is a bubble too: back to the turn that holds it, so no run is cut.
+    const trimCount = turnStartAtOrBefore(
+      record,
+      Math.min(cut - recordStart, windowStart(record, RECORD_WINDOW_WEIGHT)),
     );
     if (trimCount < UNPINNED_TRIM_MIN) return;
     trimAnchorRef.current = {
@@ -279,5 +340,5 @@ export function useRecordWindow(opts: {
     trimAnchorRef.current = null;
   }, [sessionId]);
 
-  return { loadEarlier };
+  return { loadEarlier, loadLater, backToLatest };
 }

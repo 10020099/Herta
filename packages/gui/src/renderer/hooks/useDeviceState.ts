@@ -55,6 +55,29 @@ function fineWorkingState(record: TerminalRecord): BanzhuanDeviceState {
       case "Inspecting":
       case "Searching":
       case "Digesting":
+      case "Searching the web":
+      case "Reading web page":
+      case "Opening page":
+      case "Reading page":
+      case "Finding on page":
+      case "Reading console":
+      case "Reading network":
+      case "Taking screenshot":
+        return "reading";
+      // Acting on the running app is checking it (ADR 0083).
+      case "Clicking":
+      case "Typing":
+      case "Pressing":
+      case "Scrolling":
+      case "Choosing":
+      case "Resizing page":
+        return "verifying";
+      // The launcher (ADR 0083 §5): a server is a command that runs.
+      case "Starting dev server":
+      case "Stopping dev server":
+        return "runningCommand";
+      case "Reading server log":
+      case "Listing dev servers":
         return "reading";
       case "Writing":
         return "writing";

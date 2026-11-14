@@ -4,6 +4,7 @@ import { useHertaBridge } from "../../context/HertaBridgeContext.js";
 import { useSessionSelector } from "../../hooks/useSessionSelector.js";
 import { useT } from "../../i18n/LocaleProvider.js";
 import { OVERLAY_Z, useModalOverlay } from "../../lib/overlay-stack.js";
+import { KeyCaps } from "../common/KeyCaps.js";
 import { DiffBody } from "../Workspace/DiffBody.js";
 import { countHeredocs, foldHeredocs } from "./fold-heredocs.js";
 import {
@@ -15,6 +16,37 @@ import {
 
 /** Exit-animation duration; must match .approval-panel.is-out in reference-ux.css. */
 const EXIT_MS = 200;
+
+/** How long the card must be in view, with no typing, before its number
+ *  keys answer (ADR 0082 §6, amended 2026-10-22): a key meant for something
+ *  else must never approve unread. */
+export const APPROVAL_ARM_MS = 800;
+
+/** A key that is somebody typing: a character, an edit, or an IME's key.
+ *  Each restarts the wait before the number keys arm. */
+function isTyping(e: KeyboardEvent): boolean {
+  if (e.ctrlKey || e.metaKey || e.altKey) return false;
+  return (
+    e.key.length === 1 ||
+    e.key === "Backspace" ||
+    e.key === "Delete" ||
+    e.key === "Enter" ||
+    e.key === "Process" ||
+    e.isComposing ||
+    e.keyCode === 229
+  );
+}
+
+type AllowChoice = "once" | "session" | "auto_review";
+
+/** The allow buttons the request shows, left to right — what 1, 2, 3 press. */
+function allowChoices(p: PendingPermissionApproval): AllowChoice[] {
+  return [
+    "once",
+    ...(p.cacheable === true ? (["session"] as const) : []),
+    ...(p.offerAutoReview === true ? (["auto_review"] as const) : []),
+  ];
+}
 
 /**
  * User-only approval surface for backend (@板砖) permission gates. Reads the
@@ -111,11 +143,10 @@ export function ApprovalPanel(): JSX.Element | null {
   // must not steal focus from inside the modal (an invisible Allow button
   // catching a stray Enter). When the covering modal closes, `isTop` flips
   // back and the focus effect re-fires — the panel regains focus naturally.
-  const isTop = useModalOverlay(
-    "approval",
-    shown !== null && !leaving,
-    OVERLAY_Z.approval,
-  );
+  // On the stack through its 200 ms exit too: the card is still on screen,
+  // and an Escape there was taken for the bare page's and stopped the run
+  // (release review 2026-10-22). Its own keys stand down as it leaves.
+  const isTop = useModalOverlay("approval", shown !== null, OVERLAY_Z.approval);
 
   // One resolution per request: the panel stays interactive until the
   // `resolved` overlay event round-trips over IPC, so an unlatched panel let
@@ -210,6 +241,79 @@ export function ApprovalPanel(): JSX.Element | null {
   // trap keeps keyboard focus from leaving the user's one live decision).
   // resolve closes over `shown`/`resolving`; re-bind on the deps that change
   // the closure's behavior.
+  // The number keys (ADR 0082 §6): 1 / 2 / 3 press the allow buttons left to
+  // right. They arm once the card has been in view for APPROVAL_ARM_MS with
+  // no typing anywhere — their keycaps fade in as they do, so a cap is on
+  // screen exactly when its key works. Release review 2026-10-22: the wait
+  // ran from the card's mount alone, so a held message typed straight on
+  // (the card takes the focus as it appears) reached a digit at 801 ms and
+  // approved unread; and a card that waited behind Settings was armed the
+  // moment Settings closed. Now every typed key restarts the wait, and so
+  // does the card coming into view: from under a dialog, or the window
+  // shown or focused again.
+  const [armed, setArmed] = useState(false);
+  const armedRef = useRef(false);
+  const live = shown !== null && !leaving && isTop;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: resolve closes over shown/resolving intentionally
+  useEffect(() => {
+    armedRef.current = false;
+    setArmed(false);
+    if (!live || shown === null) return;
+    let timer: number | undefined;
+    const arm = (on: boolean): void => {
+      armedRef.current = on;
+      setArmed(on);
+    };
+    const restart = (): void => {
+      window.clearTimeout(timer);
+      arm(false);
+      timer = window.setTimeout(() => arm(true), APPROVAL_ARM_MS);
+    };
+    restart();
+    // Capture phase, so a key another surface stops still counts as typing;
+    // the answer is decided here too, before the key could count as such.
+    const onKey = (e: KeyboardEvent): void => {
+      // Only in the panel, where the card puts the focus; never before the
+      // keys arm, on a repeat, mid-IME, with a modifier, or while the answer
+      // is in flight. A digit never denies.
+      if (
+        /^[1-9]$/u.test(e.key) &&
+        armedRef.current &&
+        !resolving &&
+        !e.repeat &&
+        !(e.isComposing || e.keyCode === 229) &&
+        !(e.ctrlKey || e.metaKey || e.altKey)
+      ) {
+        const root = panelRef.current;
+        const target = e.target;
+        const choice = allowChoices(shown)[Number(e.key) - 1];
+        if (
+          root !== null &&
+          target instanceof Node &&
+          root.contains(target) &&
+          choice !== undefined
+        ) {
+          e.preventDefault();
+          resolve("allow", choice);
+          return;
+        }
+      }
+      if (isTyping(e)) restart();
+    };
+    const onShown = (): void => {
+      if (document.visibilityState === "visible") restart();
+    };
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("focus", onShown);
+    document.addEventListener("visibilitychange", onShown);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("focus", onShown);
+      document.removeEventListener("visibilitychange", onShown);
+    };
+  }, [live, shown, resolving]);
+
   // biome-ignore lint/correctness/useExhaustiveDependencies: resolve closes over shown/resolving intentionally
   useEffect(() => {
     if (shown === null || leaving || !isTop) return;
@@ -277,6 +381,17 @@ export function ApprovalPanel(): JSX.Element | null {
 
   if (shown === null) return null;
 
+  // Each allow button's digit, before its label (ADR 0082 §6).
+  const choices = allowChoices(shown);
+  const digit = (choice: AllowChoice): JSX.Element => {
+    const n = String(choices.indexOf(choice) + 1);
+    return (
+      <KeyCaps keys={[{ key: n }]} className="keycaps--digit" decorative />
+    );
+  };
+  const digitShortcut = (choice: AllowChoice): string =>
+    String(choices.indexOf(choice) + 1);
+
   // Localize the summary by ask-class code; unknown/absent codes fall back
   // to the raw (neutral-English) rule reason. See REASON_KEY.
   const reasonKey =
@@ -298,7 +413,7 @@ export function ApprovalPanel(): JSX.Element | null {
   return (
     <div
       ref={panelRef}
-      className={`approval-panel${leaving ? " is-out" : ""}`}
+      className={`approval-panel${leaving ? " is-out" : ""}${armed ? " is-armed" : ""}`}
       data-testid="approval-panel"
       role="dialog"
       // The one place in the product where D4 puts the decision in the user's
@@ -416,18 +531,22 @@ export function ApprovalPanel(): JSX.Element | null {
           type="button"
           className="approval-btn approval-btn--allow"
           disabled={resolving}
+          aria-keyshortcuts={digitShortcut("once")}
           onClick={() => resolve("allow", "once")}
         >
-          {t("approval.allow")}
+          {digit("once")}
+          <span>{t("approval.allow")}</span>
         </button>
         {shown.cacheable === true && (
           <button
             type="button"
             className="approval-btn approval-btn--always"
             disabled={resolving}
+            aria-keyshortcuts={digitShortcut("session")}
             onClick={() => resolve("allow", "session")}
           >
-            {t("approval.alwaysAllow")}
+            {digit("session")}
+            <span>{t("approval.alwaysAllow")}</span>
           </button>
         )}
         {shown.offerAutoReview === true && (
@@ -439,17 +558,21 @@ export function ApprovalPanel(): JSX.Element | null {
             // workspace; offered only where it would answer this request
             // (the `offerAutoReview` gate, same contract as `cacheable`).
             onClick={() => resolve("allow", "auto_review")}
+            aria-keyshortcuts={digitShortcut("auto_review")}
           >
-            {t("approval.autoReviewEnable")}
+            {digit("auto_review")}
+            <span>{t("approval.autoReviewEnable")}</span>
           </button>
         )}
         <button
           type="button"
           className="approval-btn approval-btn--deny"
           disabled={resolving}
+          aria-keyshortcuts="Escape"
           onClick={() => resolve("deny")}
         >
-          {t("approval.deny")}
+          <KeyCaps keys={[{ key: "Escape" }]} decorative />
+          <span>{t("approval.deny")}</span>
         </button>
       </div>
     </div>
